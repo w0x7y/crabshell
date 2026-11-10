@@ -1,15 +1,18 @@
-//! Tests for the reactive core: signals, effects, flush and owners. The
-//! tests the design doc requires for Phase 1 are marked.
+//! Tests for the reactive core, in two parts: signals, effects, flush and
+//! owners; then memos and untrack. The tests the design doc requires for
+//! Phase 1 are marked.
 //!
 //! Each test runs on its own thread, so each starts with an empty runtime.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::io;
+use std::panic::{self, AssertUnwindSafe};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use crate::runtime::is_unborrowed;
-use crate::{MAX_RUNS_PER_FLUSH, Runtime, Signal};
+use crate::{MAX_RUNS_PER_FLUSH, Runtime, Signal, untrack};
 
 /// Counts how many times a closure ran.
 #[derive(Clone, Default)]
@@ -500,4 +503,306 @@ fn user_values_and_closures_are_dropped_with_no_runtime_borrow() {
     });
     owner.dispose(); // drops the signal's value and the effect's closure
     assert_eq!(drops.get_untracked(), 3);
+}
+
+// ---- Memos and untrack ----
+
+// Required by the design doc for Phase 1.
+#[test]
+fn diamond_runs_the_effect_once_per_set() {
+    let rt = Runtime::current();
+    let owner = rt.new_owner();
+    let a = owner.signal(1);
+    let b = owner.memo(move || a.get() + 1);
+    let c = owner.memo(move || a.get() * 10);
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let log = Rc::clone(&seen);
+    owner.effect(move || log.borrow_mut().push((b.get(), c.get())));
+
+    rt.flush();
+    a.set(2);
+    rt.flush();
+
+    // One entry per flush: the effect ran once for the single `set`, not
+    // once for each of the two memos it reads.
+    assert_eq!(*seen.borrow(), [(2, 10), (3, 20)]);
+}
+
+// Required by the design doc for Phase 1.
+#[test]
+fn memo_with_an_equal_value_does_not_rerun_its_dependents() {
+    let rt = Runtime::current();
+    let owner = rt.new_owner();
+    let n = owner.signal(2);
+    let parity_runs = Counter::default();
+    let label_runs = Counter::default();
+    let effect_runs = Counter::default();
+
+    let counter = parity_runs.clone();
+    let is_even = owner.memo(move || {
+        counter.hit();
+        n.get() % 2 == 0
+    });
+    let counter = label_runs.clone();
+    let label = owner.memo(move || {
+        counter.hit();
+        if is_even.get() { "even" } else { "odd" }
+    });
+    let counter = effect_runs.clone();
+    owner.effect(move || {
+        counter.hit();
+        label.get();
+    });
+    rt.flush();
+    assert_eq!(
+        (parity_runs.get(), label_runs.get(), effect_runs.get()),
+        (1, 1, 1)
+    );
+
+    // 2 -> 4: `is_even` recomputes to the same `true`, so neither the memo
+    // that reads it nor the effect further down runs.
+    n.set(4);
+    rt.flush();
+    assert_eq!(
+        (parity_runs.get(), label_runs.get(), effect_runs.get()),
+        (2, 1, 1)
+    );
+
+    // 4 -> 5: the value changes, and everything downstream runs.
+    n.set(5);
+    rt.flush();
+    assert_eq!(
+        (parity_runs.get(), label_runs.get(), effect_runs.get()),
+        (3, 2, 2)
+    );
+}
+
+// Required by the design doc for Phase 1.
+#[test]
+fn disposing_an_owner_frees_every_slot_it_created() {
+    let rt = Runtime::current();
+    let before = rt.node_count();
+    // A value that counts its clones: once it's back to one, every signal
+    // value and closure holding a clone has been dropped.
+    let token = Rc::new(());
+
+    let root = rt.new_owner();
+    let held = root.signal(Rc::clone(&token));
+    let child = root.child();
+    let strong_count = child.memo(move || held.with(Rc::strong_count));
+    let captured = Rc::clone(&token);
+    child.effect(move || {
+        let _keep = &captured;
+        strong_count.get();
+    });
+    let grandchild = child.child();
+    grandchild.signal(Rc::clone(&token));
+    rt.flush();
+
+    // root, held, child, strong_count, the effect, grandchild, its signal
+    assert_eq!(rt.node_count(), before + 7);
+    root.dispose();
+    assert_eq!(rt.node_count(), before);
+    assert_eq!(Rc::strong_count(&token), 1);
+}
+
+// Required by the design doc for Phase 1.
+#[test]
+fn try_get_on_disposed_handles_returns_none() {
+    let rt = Runtime::current();
+    let owner = rt.new_owner();
+    let n = owner.signal(1);
+    let read_only = n.read_only();
+    let doubled = owner.memo(move || n.get() * 2);
+    assert_eq!(
+        (n.try_get(), read_only.try_get(), doubled.try_get()),
+        (Some(1), Some(1), Some(2))
+    );
+
+    owner.dispose();
+    assert_eq!(n.try_get(), None);
+    assert_eq!(n.try_with(|n| *n), None);
+    assert_eq!(read_only.try_get(), None);
+    assert_eq!(doubled.try_get(), None);
+}
+
+#[test]
+fn memo_computes_only_when_read_while_stale() {
+    let rt = Runtime::current();
+    let owner = rt.new_owner();
+    let n = owner.signal(1);
+    let computes = Counter::default();
+    let counter = computes.clone();
+    let doubled = owner.memo(move || {
+        counter.hit();
+        n.get() * 2
+    });
+    rt.flush();
+    assert_eq!(computes.get(), 0, "nothing has read it yet");
+
+    assert_eq!(doubled.get(), 2);
+    assert_eq!(doubled.get(), 2);
+    assert_eq!(computes.get(), 1);
+
+    n.set(2);
+    n.set(3);
+    rt.flush();
+    assert_eq!(computes.get(), 1, "stale, but nothing read it");
+    assert_eq!(doubled.get_untracked(), 6);
+    assert_eq!(computes.get(), 2);
+}
+
+#[test]
+fn deep_chain_stops_at_an_equal_middle_value() {
+    let rt = Runtime::current();
+    let owner = rt.new_owner();
+    let n = owner.signal(1);
+    let runs: [Counter; 4] = Default::default();
+    let [k1, k2, k3, ke] = runs.clone();
+    let m1 = owner.memo(move || {
+        k1.hit();
+        n.get()
+    });
+    let m2 = owner.memo(move || {
+        k2.hit();
+        m1.get() > 0
+    });
+    let m3 = owner.memo(move || {
+        k3.hit();
+        u8::from(m2.get())
+    });
+    owner.effect(move || {
+        ke.hit();
+        m3.get();
+    });
+    let counts = || runs.each_ref().map(Counter::get);
+    rt.flush();
+    n.set(2); // m2 stays true: m3 and the effect don't run
+    rt.flush();
+    assert_eq!(counts(), [2, 2, 1, 1]);
+    n.set(-1);
+    rt.flush();
+    assert_eq!(counts(), [3, 3, 2, 2]);
+}
+
+#[test]
+fn untracked_reads_record_no_dependency() {
+    let rt = Runtime::current();
+    let owner = rt.new_owner();
+    let tracked = owner.signal(0);
+    let quiet = owner.signal(0);
+    let quiet_view = quiet.read_only();
+    let quiet_memo = owner.memo(move || quiet.get());
+    let runs = Counter::default();
+    let counter = runs.clone();
+    owner.effect(move || {
+        counter.hit();
+        tracked.get();
+        quiet.get_untracked();
+        quiet_view.with_untracked(|_| ());
+        quiet_memo.get_untracked();
+    });
+    rt.flush();
+    quiet.set(1);
+    rt.flush();
+    assert_eq!(runs.get(), 1);
+    tracked.set(1);
+    rt.flush();
+    assert_eq!(runs.get(), 2);
+}
+
+#[test]
+fn untrack_resumes_tracking_after_a_panic() {
+    let rt = Runtime::current();
+    let owner = rt.new_owner();
+    let quiet = owner.signal(0);
+    let loud = owner.signal(0);
+    let runs = Counter::default();
+    let counter = runs.clone();
+    owner.effect(move || {
+        counter.hit();
+        let caught = panic::catch_unwind(AssertUnwindSafe(|| {
+            untrack(|| {
+                quiet.get();
+                panic!("inside untrack");
+            })
+        }));
+        assert!(caught.is_err());
+        loud.get(); // tracked again
+    });
+    rt.flush();
+    quiet.set(1);
+    rt.flush();
+    assert_eq!(runs.get(), 1, "the read inside untrack wasn't recorded");
+    loud.set(1);
+    rt.flush();
+    assert_eq!(runs.get(), 2, "the read after it was");
+    assert_eq!(untrack(|| 5), 5, "outside any effect it just runs f");
+}
+
+#[test]
+fn disposing_owners_removes_their_edges_from_long_lived_signals() {
+    let rt = Runtime::current();
+    let service = rt.new_owner();
+    let clock = service.signal(0);
+    let doubled = service.memo(move || clock.get() * 2);
+    doubled.get();
+    let (start_subscribers, start_nodes) = (clock.subscriber_count(), rt.node_count());
+    for _ in 0..50 {
+        let window = rt.new_owner().child();
+        window.effect(move || {
+            clock.get();
+            doubled.get();
+        });
+        let local = window.memo(move || clock.get() + doubled.get());
+        window.effect(move || {
+            local.get();
+        });
+        rt.flush();
+        window.dispose();
+    }
+    assert_eq!(clock.subscriber_count(), start_subscribers);
+    assert_eq!(doubled.subscriber_count(), 0);
+    // The 50 root owners above were never disposed; only they remain.
+    assert_eq!(rt.node_count(), start_nodes + 50);
+}
+
+#[test]
+fn handles_compare_hash_and_print_by_key_alone() {
+    /// Implements none of the traits, to show the handles don't need them.
+    struct Plain;
+
+    let owner = Runtime::current().new_owner();
+    let a = owner.signal(Plain);
+    let b = owner.signal(Plain);
+    let a_again = a;
+    assert_eq!(a, a_again);
+    assert_ne!(a, b);
+    assert_eq!(a.read_only(), a_again.read_only());
+    assert_ne!(a.read_only(), b.read_only());
+    let unique: HashSet<Signal<Plain>> = [a, b, a_again].into_iter().collect();
+    assert_eq!(unique.len(), 2);
+
+    let memo = owner.memo(|| 1);
+    let effect = owner.effect(|| ());
+    let child = owner.child();
+    assert_ne!(owner, child);
+    let printed = [
+        format!("{a:?}"),
+        format!("{:?}", a.read_only()),
+        format!("{memo:?}"),
+        format!("{effect:?}"),
+        format!("{owner:?}"),
+    ];
+    for (text, name) in printed
+        .iter()
+        .zip(["Signal", "ReadSignal", "Memo", "Effect", "Owner"])
+    {
+        assert!(text.starts_with(&format!("{name}(NodeId(")), "{text}");
+    }
+    assert_eq!(
+        printed[0].strip_prefix("Signal"),
+        printed[1].strip_prefix("ReadSignal"),
+        "a view prints its signal's key"
+    );
 }

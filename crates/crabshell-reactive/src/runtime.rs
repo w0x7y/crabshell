@@ -1,12 +1,12 @@
 //! The runtime: this thread's arena of nodes, the dependency edges between
 //! them, and `flush`.
 //!
-//! Every handle (`Signal`, `Effect`, `Owner`) is a [`NodeId`] into one arena
-//! that lives in a thread-local `RefCell`. Functions here borrow it for a few
-//! lines at a time and never while user code runs. An effect's closure is
-//! taken out of its node before it is called and put back after, and user
-//! values are dropped only after the borrow has ended. So user code can call
-//! back into the runtime freely.
+//! Every handle (`Signal`, `Memo`, `Effect`, `Owner`) is a [`NodeId`] into one
+//! arena that lives in a thread-local `RefCell`. Functions here borrow it for a
+//! few lines at a time and never while user code runs. A memo's or effect's
+//! closure is taken out of its node before it is called and put back after,
+//! and user values are dropped only after the borrow has ended. So user code
+//! can call back into the runtime freely.
 
 use std::any::{Any, type_name};
 use std::cell::RefCell;
@@ -31,8 +31,17 @@ new_key_type! {
     pub(crate) struct NodeId;
 }
 
-/// An effect's closure with its type erased.
-pub(crate) type Compute = Box<dyn FnMut()>;
+/// What one run of a memo's or effect's closure produced.
+pub(crate) struct Computed {
+    /// Whether the value changed. Always true for an effect.
+    pub(crate) changed: bool,
+    /// A value the run replaced or didn't keep. The runtime drops it after
+    /// telling the readers.
+    pub(crate) leftover: Option<Box<dyn Any>>,
+}
+
+/// A memo's or effect's closure with its types erased.
+pub(crate) type Compute = Box<dyn FnMut() -> Computed>;
 
 /// Why a read or write found no value. This can happen in correct code, so
 /// `try_get()` and `try_set()` report it instead of panicking.
@@ -65,14 +74,14 @@ struct Node {
     /// Set once the effect was caught in a cycle. A disabled node never runs
     /// again.
     disabled: bool,
-    /// The effect's closure. `None` for signals and owners, while the
-    /// closure is running, and once the node is disabled.
+    /// The memo's or effect's closure. `None` for signals and owners, while
+    /// the closure is running, and once the node is disabled.
     compute: Option<Compute>,
     /// Everything created under this owner.
     children: Vec<NodeId>,
-    /// The signals this effect read on its last run.
+    /// The signals and memos this memo or effect read on its last run.
     sources: Vec<NodeId>,
-    /// The effects that read this signal on their last run.
+    /// The memos and effects that read this signal or memo on their last run.
     subscribers: Vec<NodeId>,
 }
 
@@ -80,6 +89,11 @@ enum Kind {
     Owner,
     /// `value` is an `Rc<RefCell<Option<T>>>` that always holds `Some`.
     Signal {
+        value: Rc<dyn Any>,
+    },
+    /// `value` is an `Rc<RefCell<Option<T>>>`, `None` until the first
+    /// computation.
+    Memo {
         value: Rc<dyn Any>,
     },
     /// `queued` is true while the effect waits in the flush queue, so it is
@@ -94,15 +108,18 @@ impl Kind {
         match self {
             Kind::Owner => "owner",
             Kind::Signal { .. } => "signal",
+            Kind::Memo { .. } => "memo",
             Kind::Effect { .. } => "effect",
         }
     }
 }
 
-/// How up to date an effect is. Signals and owners stay `Clean`.
+/// How up to date a memo or effect is. Signals and owners stay `Clean`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum State {
     Clean,
+    /// A memo it read may have changed. Refreshing those memos tells.
+    Check,
     /// Something it read has changed, so it must run again.
     Dirty,
 }
@@ -112,8 +129,9 @@ struct Graph {
     nodes: SlotMap<NodeId, Node>,
     /// Effects waiting for the next flush round.
     queue: Vec<NodeId>,
-    /// The effect that what is read now becomes a dependency of: the one
-    /// whose closure is running. `None` outside any run.
+    /// The memo or effect that what is read now becomes a dependency of: the
+    /// one whose closure is running. `None` outside any run and inside
+    /// [`untrack`].
     observer: Option<NodeId>,
     next_seq: u64,
     flushing: bool,
@@ -136,6 +154,12 @@ fn with_graph<R>(f: impl FnOnce(&mut Graph) -> R) -> R {
 #[cfg(test)]
 pub(crate) fn is_unborrowed() -> bool {
     GRAPH.with(|graph| graph.try_borrow_mut().is_ok())
+}
+
+/// How many memos and effects read this node on their last run.
+#[cfg(test)]
+pub(crate) fn subscriber_count(id: NodeId) -> usize {
+    with_graph(|g| g.nodes.get(id).map_or(0, |node| node.subscribers.len()))
 }
 
 /// A key's slot index and version.
@@ -189,12 +213,34 @@ impl Runtime {
         flush();
     }
 
-    /// The number of live nodes (owners, signals and effects) on this
+    /// The number of live nodes (owners, signals, memos and effects) on this
     /// thread. Tests use it to check that disposing an owner frees
     /// everything created under it.
     pub fn node_count(&self) -> usize {
         with_graph(|g| g.nodes.len())
     }
+}
+
+/// Runs `f` without recording what it reads as dependencies of the running
+/// memo or effect, and returns `f`'s result. Recording resumes afterward,
+/// even if `f` panics.
+///
+/// Use it to read a value once without rerunning when it changes, such as
+/// the initial value a child widget is built with inside a parent's effect.
+pub fn untrack<R>(f: impl FnOnce() -> R) -> R {
+    /// Puts the observer back when dropped, which also happens while a panic
+    /// unwinds out of `f`.
+    struct Restore(Option<NodeId>);
+
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let observer = self.0;
+            with_graph(|g| g.observer = observer);
+        }
+    }
+
+    let _restore = Restore(with_graph(|g| g.observer.take()));
+    f()
 }
 
 #[track_caller]
@@ -205,6 +251,11 @@ pub(crate) fn create_owner(parent: Option<NodeId>) -> NodeId {
 #[track_caller]
 pub(crate) fn create_signal(owner: NodeId, value: Rc<dyn Any>) -> NodeId {
     create(Some(owner), Kind::Signal { value }, None)
+}
+
+#[track_caller]
+pub(crate) fn create_memo(owner: NodeId, value: Rc<dyn Any>, compute: Compute) -> NodeId {
+    create(Some(owner), Kind::Memo { value }, Some(compute))
 }
 
 /// The new effect is queued straight away. It runs in the next flush round:
@@ -228,7 +279,7 @@ fn create(owner: Option<NodeId>, kind: Kind, compute: Option<Compute>) -> NodeId
         let seq = g.next_seq;
         g.next_seq += 1;
         let is_effect = matches!(kind, Kind::Effect { .. });
-        // Effects start dirty: they haven't run yet.
+        // Memos and effects start dirty: they haven't run yet.
         let state = if compute.is_some() {
             State::Dirty
         } else {
@@ -266,8 +317,9 @@ pub(crate) fn set_name(id: NodeId, name: String) {
     });
 }
 
-/// Reads a signal's value. If `track` is true and an effect is running, it
-/// starts depending on this signal.
+/// Reads a signal's or memo's value. A stale memo is recomputed first. If
+/// `track` is true and a memo or effect is running, it starts depending on
+/// this node.
 #[track_caller]
 pub(crate) fn read<T: 'static, R>(
     id: NodeId,
@@ -275,13 +327,35 @@ pub(crate) fn read<T: 'static, R>(
     handle: &str,
     f: impl FnOnce(&T) -> R,
 ) -> Result<R, Missing> {
-    let value = with_graph(|g| match g.nodes.get(id).map(|node| &node.kind) {
-        Some(Kind::Signal { value }) => Some(Rc::clone(value)),
-        _ => None,
+    let found = with_graph(|g| {
+        let node = g.nodes.get(id)?;
+        match &node.kind {
+            Kind::Signal { value } => Some((Rc::clone(value), false, false)),
+            // A memo whose closure is out of its node (and not because it was
+            // disabled) is computing right now.
+            Kind::Memo { value } => Some((
+                Rc::clone(value),
+                true,
+                node.compute.is_none() && !node.disabled,
+            )),
+            Kind::Owner | Kind::Effect { .. } => None,
+        }
     });
-    let Some(value) = value else {
+    let Some((value, is_memo, computing)) = found else {
         return Err(Missing::Disposed);
     };
+    if computing {
+        panic!(
+            "{handle}<{}> was read while computing its own value (a dependency cycle)",
+            type_name::<T>()
+        );
+    }
+    if is_memo {
+        refresh(id);
+    }
+    // Subscribe only after the refresh. If the memo changed, it marked its
+    // subscribers dirty, and the reader, which is about to see the new
+    // value, shouldn't be one of them yet.
     if track {
         with_graph(|g| subscribe(g, id));
     }
@@ -294,7 +368,7 @@ pub(crate) fn read<T: 'static, R>(
     };
     let current = slot
         .as_ref()
-        .expect("invariant: a signal always holds a value");
+        .expect("invariant: a signal or refreshed memo holds a value");
     Ok(f(current))
 }
 
@@ -427,24 +501,43 @@ fn flush() {
     with_graph(|g| g.flushing = false);
 }
 
-/// Runs an effect if something it read has changed. Returns whether it ran.
+/// Brings a memo or effect up to date, running it if needed. Returns whether
+/// it ran (for a memo, whether its value changed). Signals and owners are
+/// always up to date.
 fn refresh(id: NodeId) -> bool {
-    let dirty = with_graph(|g| {
-        g.nodes
-            .get(id)
-            .is_some_and(|node| !node.disabled && node.state == State::Dirty)
+    let sources = with_graph(|g| match g.nodes.get(id) {
+        Some(node) if !node.disabled && node.state == State::Check => node.sources.clone(),
+        _ => Vec::new(),
+    });
+    // A memo this node read may have changed. Refresh those memos in order.
+    // One whose value changes marks this node dirty, and then there's no
+    // need to look further.
+    for source in sources {
+        refresh(source);
+        if with_graph(|g| g.nodes.get(id).map(|node| node.state)) != Some(State::Check) {
+            break;
+        }
+    }
+    let dirty = with_graph(|g| match g.nodes.get_mut(id) {
+        Some(node) if !node.disabled => {
+            if node.state == State::Check {
+                node.state = State::Clean;
+            }
+            node.state == State::Dirty
+        }
+        _ => false,
     });
     dirty && run(id)
 }
 
-/// Runs an effect's closure with no borrow held, recording what it reads.
-/// Returns whether it ran.
+/// Runs a memo's or effect's closure with no borrow held, recording what it
+/// reads. Returns whether it ran (for a memo, whether its value changed).
 fn run(id: NodeId) -> bool {
     let taken = with_graph(|g| {
         let node = g.nodes.get_mut(id)?;
         let compute = node.compute.take()?;
         // Clean before the run, so a write during the run that affects this
-        // effect marks it dirty again.
+        // node marks it dirty again.
         node.state = State::Clean;
         // Dependencies are recorded afresh on every run.
         let sources = mem::take(&mut node.sources);
@@ -456,7 +549,7 @@ fn run(id: NodeId) -> bool {
     };
 
     let outer = with_graph(|g| g.observer.replace(id));
-    compute();
+    let Computed { changed, leftover } = compute();
     with_graph(|g| g.observer = outer);
 
     let orphan = with_graph(|g| {
@@ -466,10 +559,15 @@ fn run(id: NodeId) -> bool {
             return Some(compute);
         };
         node.compute = Some(compute);
+        if changed {
+            mark_subscribers(g, id, State::Dirty);
+        }
         None
     });
+    // After the readers were told.
+    drop(leftover);
     drop(orphan);
-    true
+    changed
 }
 
 /// Stops an effect for good.
@@ -485,29 +583,37 @@ fn disable(id: NodeId) {
     drop(compute);
 }
 
-/// Marks the effects that read `id` as `state` and queues them.
+/// Marks what read `id` as `state`, everything further downstream as
+/// `Check`, and queues the effects among them.
 fn mark_subscribers(g: &mut Graph, id: NodeId, state: State) {
     let Some(node) = g.nodes.get(id) else {
         return;
     };
-    for subscriber in node.subscribers.clone() {
-        let Some(node) = g.nodes.get_mut(subscriber) else {
+    let mut stack: Vec<(NodeId, State)> = node.subscribers.iter().map(|&s| (s, state)).collect();
+    while let Some((id, state)) = stack.pop() {
+        let Some(node) = g.nodes.get_mut(id) else {
             continue;
         };
         if node.disabled || node.state >= state {
             continue;
         }
+        // A node that was already stale has marked its own subscribers.
+        let was_clean = node.state == State::Clean;
         node.state = state;
-        if let Kind::Effect { queued } = &mut node.kind
-            && !*queued
-        {
-            *queued = true;
-            g.queue.push(subscriber);
+        match &mut node.kind {
+            Kind::Effect { queued } if !*queued => {
+                *queued = true;
+                g.queue.push(id);
+            }
+            Kind::Memo { .. } if was_clean => {
+                stack.extend(node.subscribers.iter().map(|&s| (s, State::Check)));
+            }
+            _ => {}
         }
     }
 }
 
-/// Makes the running effect, if any, depend on `source`.
+/// Makes the running memo or effect, if any, depend on `source`.
 fn subscribe(g: &mut Graph, source: NodeId) {
     let Some(observer) = g.observer else {
         return;

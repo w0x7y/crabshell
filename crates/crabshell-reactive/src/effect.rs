@@ -3,7 +3,7 @@
 use std::marker::PhantomData;
 
 use crate::handle::{NotSend, handle_impls};
-use crate::runtime::{self, NodeId};
+use crate::runtime::{self, Computed, NodeId};
 
 /// Code that reruns when what it read changes. Every widget binding is one.
 ///
@@ -11,7 +11,7 @@ use crate::runtime::{self, NodeId};
 /// queued straight away. Created during a [`Runtime::flush`](crate::Runtime::flush),
 /// for example by another effect, it runs later in that same flush; created
 /// anywhere else, it runs at the next flush. After that it reruns whenever a
-/// signal it read on its last run changes. It stops for good when
+/// signal or memo it read on its last run changes. It stops for good when
 /// its owner is disposed, or when it is caught in a dependency cycle, which
 /// is logged with its debug name.
 pub struct Effect {
@@ -23,9 +23,16 @@ handle_impls!(Effect);
 
 impl Effect {
     #[track_caller]
-    pub(crate) fn new(owner: NodeId, f: impl FnMut() + 'static) -> Self {
+    pub(crate) fn new(owner: NodeId, mut f: impl FnMut() + 'static) -> Self {
+        let compute = move || {
+            f();
+            Computed {
+                changed: true,
+                leftover: None,
+            }
+        };
         Effect {
-            id: runtime::create_effect(owner, Box::new(f)),
+            id: runtime::create_effect(owner, Box::new(compute)),
             _not_send: PhantomData,
         }
     }

@@ -7,7 +7,7 @@ use std::rc::Rc;
 use crate::handle::{Marker, handle_impls};
 use crate::runtime::{self, NodeId};
 
-/// A value you set. An effect that reads it reruns after it changes.
+/// A value you set. A memo or effect that reads it reruns after it changes.
 ///
 /// Create one with [`Owner::signal`](crate::Owner::signal). The handle is a
 /// small `Copy` key, so closures capture it by value. The value itself lives
@@ -29,6 +29,12 @@ impl<T: 'static> Signal<T> {
         }
     }
 
+    /// How many memos and effects read this on their last run.
+    #[cfg(test)]
+    pub(crate) fn subscriber_count(&self) -> usize {
+        runtime::subscriber_count(self.id)
+    }
+
     /// The slot index and version of this signal's key.
     #[cfg(test)]
     pub(crate) fn slot(&self) -> (u32, u32) {
@@ -43,8 +49,8 @@ impl<T: 'static> Signal<T> {
         }
     }
 
-    /// Returns a clone of the value. Inside an effect, this makes it depend
-    /// on the signal.
+    /// Returns a clone of the value. Inside a memo or effect, this makes it
+    /// depend on the signal.
     ///
     /// # Panics
     ///
@@ -58,8 +64,8 @@ impl<T: 'static> Signal<T> {
         self.with(T::clone)
     }
 
-    /// Calls `f` with a reference to the value, without cloning it. Inside
-    /// an effect, this makes it depend on the signal.
+    /// Calls `f` with a reference to the value, without cloning it. Inside a
+    /// memo or effect, this makes it depend on the signal.
     ///
     /// # Panics
     ///
@@ -100,8 +106,8 @@ impl<T: 'static> Signal<T> {
         runtime::read(self.id, true, "Signal", f).ok()
     }
 
-    /// Stores a new value, marks every effect that read this signal as
-    /// stale, and queues them. Nothing runs until the next
+    /// Stores a new value, marks every memo and effect that read this signal
+    /// as stale, and queues the effects. Nothing runs until the next
     /// [`Runtime::flush`](crate::Runtime::flush). Dependents are notified
     /// even when the new value equals the old one.
     ///

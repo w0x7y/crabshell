@@ -4,9 +4,9 @@ use std::marker::PhantomData;
 
 use crate::handle::{NotSend, handle_impls};
 use crate::runtime::{self, NodeId};
-use crate::{Effect, Signal};
+use crate::{Effect, Memo, Signal};
 
-/// Owns every signal, effect and child owner created through it, and
+/// Owns every signal, memo, effect and child owner created through it, and
 /// frees them all when it is disposed.
 ///
 /// Each widget opens one, and dropping the widget disposes it.
@@ -44,6 +44,13 @@ impl Owner {
     #[track_caller]
     pub fn signal<T: 'static>(&self, value: T) -> Signal<T> {
         Signal::new(self.id, value)
+    }
+
+    /// Creates a [`Memo`] that derives its value with `f`. `f` first runs
+    /// when something reads the memo.
+    #[track_caller]
+    pub fn memo<T: PartialEq + 'static>(&self, f: impl FnMut() -> T + 'static) -> Memo<T> {
+        Memo::new(self.id, f)
     }
 
     /// Creates an [`Effect`] that runs `f` in the next flush round (see

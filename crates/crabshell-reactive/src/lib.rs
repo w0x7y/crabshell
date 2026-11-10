@@ -4,22 +4,25 @@
 //! |---|---|---|
 //! | [`Signal<T>`] | [`Owner::signal`] | A value you set |
 //! | [`ReadSignal<T>`] | [`Signal::read_only`] | A read-only view of a signal |
+//! | [`Memo<T>`] | [`Owner::memo`], needs `T: PartialEq` | A derived value, recomputed only when read while stale |
 //! | [`Effect`] | [`Owner::effect`] | Code that reruns when what it read changes |
 //!
 //! `crabshell-ui`'s `Cx` wraps an [`Owner`], so widget code writes
-//! `cx.signal(..)` and `cx.effect(..)`.
+//! `cx.signal(..)`, `cx.memo(..)` and `cx.effect(..)`.
 //!
 //! # How it behaves
 //!
 //! - Handles are `Copy` keys into this thread's arena, and can't be sent to
 //!   another thread.
-//! - `get()` and `with()` inside an effect record a dependency.
-//!   `get_untracked()` and `with_untracked()` don't. Dependencies are
-//!   recorded afresh on every run.
+//! - `get()` and `with()` inside a memo or effect record a dependency.
+//!   `get_untracked()`, `with_untracked()` and anything inside [`untrack`]
+//!   don't. Dependencies are recorded afresh on every run.
 //! - `set()` and `update()` store the value, mark what read it as stale and
 //!   queue effects. They never run anything; [`Runtime::flush`] does.
 //!   `try_set()` and `try_update()` return `false` on a disposed signal
 //!   instead of panicking.
+//! - A memo recomputes only when read while stale. Its dependents rerun only
+//!   if the new value differs from the old one.
 //! - `flush()` runs queued effects in creation order, each at most once per
 //!   round. Effects queued by writes during the flush run in a later round
 //!   of the same flush. An effect queued again after running
@@ -39,9 +42,10 @@
 //! let owner = runtime.new_owner(); // a widget opens one of these
 //!
 //! let count = owner.signal(1);
+//! let doubled = owner.memo(move || count.get() * 2);
 //! let shown = Rc::new(Cell::new(0));
 //! let sink = Rc::clone(&shown);
-//! owner.effect(move || sink.set(count.get() * 2)); // a binding is one of these
+//! owner.effect(move || sink.set(doubled.get())); // a binding is one of these
 //!
 //! runtime.flush(); // the event loop calls this once per iteration
 //! assert_eq!(shown.get(), 2);
@@ -81,6 +85,7 @@
 
 mod effect;
 mod handle;
+mod memo;
 mod owner;
 mod runtime;
 mod signal;
@@ -89,6 +94,7 @@ mod signal;
 mod tests;
 
 pub use effect::Effect;
+pub use memo::Memo;
 pub use owner::Owner;
-pub use runtime::{MAX_RUNS_PER_FLUSH, Runtime};
+pub use runtime::{MAX_RUNS_PER_FLUSH, Runtime, untrack};
 pub use signal::{ReadSignal, Signal};
