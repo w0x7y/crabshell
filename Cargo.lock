@@ -170,6 +170,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "crabshell-render"
+version = "0.0.0"
+dependencies = [
+ "crabshell-ui",
+]
+
+[[package]]
 name = "crabshell-spike"
 version = "0.0.0"
 dependencies = [
