@@ -1,11 +1,18 @@
 [package]
 name = "crabshell-render"
 version = "0.0.0"
-description = "Draws Crabshell windows into pixmaps; for now, plans damage"
+description = "Draws Crabshell windows into pixmaps: shapes, text and damage tracking"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
 
 [dependencies]
+cosmic-text.workspace = true
 crabshell-ui.workspace = true
+tiny-skia.workspace = true
+
+[dev-dependencies]
+# Tests build windows to draw, and read and write golden images.
+crabshell-reactive.workspace = true
+png.workspace = true

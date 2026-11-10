@@ -7,9 +7,6 @@
 //! held, and a window's [`DamageHistory`] remembers what changed in recent
 //! frames, so a buffer that skipped frames also gets those areas repainted.
 
-// Drawing, which comes next, plans each frame; for now only tests do.
-#![cfg_attr(not(test), allow(dead_code, reason = "drawing isn't written yet"))]
-
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 
