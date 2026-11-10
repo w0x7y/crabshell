@@ -1,5 +1,5 @@
 //! Text: finding fonts through fontconfig, and the cosmic-text buffer each
-//! `Text` widget is measured with and drawn from.
+//! [`Text`](crate::Text) widget is measured with and drawn from.
 //!
 //! Scanning every installed font would cost tens of milliseconds at startup,
 //! so the font database starts empty. Each family a style names is resolved
@@ -242,7 +242,7 @@ fn metrics(font: &Font) -> Metrics {
     Metrics::new(size, (size * 1.2).round())
 }
 
-/// The text of one `Text` widget, shaped and laid out by
+/// The text of one [`Text`](crate::Text) widget, shaped and laid out by
 /// cosmic-text. Layout measures with this buffer and the renderer draws from
 /// it, so the measured and drawn sizes are the same.
 pub(crate) struct TextNode {

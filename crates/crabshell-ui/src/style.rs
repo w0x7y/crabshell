@@ -122,7 +122,7 @@ pub struct Padding {
 /// to the widget's default: no background, black text in
 /// [`Font::DEFAULT`], no padding, square corners, no border, fully opaque.
 ///
-/// `Text` takes `color` and `font` from the nearest widget
+/// [`Text`](crate::Text) takes `color` and `font` from the nearest widget
 /// that sets them, starting with itself and going up. Nothing else inherits.
 ///
 /// `font` and `padding` change the layout; the other fields only change how
@@ -142,9 +142,9 @@ pub struct Padding {
 pub struct Style {
     /// Fills the widget's rectangle.
     pub background: Option<Color>,
-    /// The text color, inherited by `Text`.
+    /// The text color, inherited by [`Text`](crate::Text).
     pub color: Option<Color>,
-    /// The text font, inherited by `Text`.
+    /// The text font, inherited by [`Text`](crate::Text).
     pub font: Option<Font>,
     /// Space between the edge and the content.
     pub padding: Option<Padding>,

@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 cosmic-text.workspace = true
+crabshell-reactive.workspace = true
 fontconfig.workspace = true
 taffy.workspace = true
 tracing.workspace = true
