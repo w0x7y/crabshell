@@ -2,3 +2,4 @@
 //! empty reactive runtime.
 
 mod style;
+mod text;
