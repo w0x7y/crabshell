@@ -69,11 +69,22 @@ fn a_panicking_binding_is_logged_with_its_widget_path() {
 fn dropping_a_window_frees_everything_it_created() {
     let mut h = Harness::new();
     let count = h.cx.signal(0);
+    let items = h.cx.signal(vec![1, 2]);
     let before = h.runtime.node_count();
-    let row = Row::new().gap(move || count.get()).child(
-        Button::new(Text::new(move || count.get().to_string()))
-            .style(move || Style::new().radius(count.get() as f32)),
-    );
+    let row = Row::new()
+        .gap(move || count.get())
+        .child(
+            Button::new(Text::new(move || count.get().to_string()))
+                .style(move || Style::new().radius(count.get() as f32)),
+        )
+        .children_keyed(
+            move || items.get(),
+            |n| *n,
+            |cx, n| {
+                let local = cx.signal(1);
+                Text::new(move || format!("{} {}", n.get(), local.get()))
+            },
+        );
     let window = h.window(
         h.panel().height(move || 30 + count.get()).child(row),
         200.0,

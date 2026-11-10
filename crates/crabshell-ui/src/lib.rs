@@ -55,6 +55,7 @@
 
 mod cx;
 mod geometry;
+mod keyed;
 mod layout;
 mod prop;
 mod style;

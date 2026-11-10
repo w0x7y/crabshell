@@ -17,6 +17,7 @@ use taffy::TaffyTree;
 
 use crate::cx::Cx;
 use crate::geometry::{Rect, Size};
+use crate::keyed::KeyedSlot;
 use crate::prop::{Prop, PropKind};
 use crate::style::{Padding, Style};
 use crate::text::TextNode;
@@ -49,11 +50,12 @@ pub(crate) struct Node {
     pub(crate) cx: Cx,
     pub(crate) style: Style,
     pub(crate) kind: NodeKind,
-    /// The children in order, grouped by the call that added them.
+    /// The children in order, grouped by the call that added them: one node
+    /// per `child`, any number per `children_keyed`.
     pub(crate) groups: Vec<Vec<NodeId>>,
     /// The number the next child's path gets: how many children a row,
-    /// column or stack has created so far. Never reused, so no two children
-    /// share a path.
+    /// column or stack has created so far, single or keyed. Never reused, so
+    /// no two children share a path.
     pub(crate) next_child: usize,
     /// The rectangle from the last layout, in window coordinates. `None`
     /// until the first.
@@ -273,7 +275,7 @@ impl Tree {
 
         self.bind_opt(id, style, "style", set_style);
         self.bind_kind(id, kind);
-        self.mount_children(id, children, &cx);
+        self.mount_children(id, children, &cx, &path);
         id
     }
 
@@ -331,8 +333,9 @@ impl Tree {
         }
     }
 
-    /// Mounts a container's children, each `child` call as one group.
-    fn mount_children(&mut self, id: NodeId, children: Vec<ElementChild>, cx: &Cx) {
+    /// Mounts a container's children, each `child` call as one group and
+    /// each `children_keyed` call as a group its effect fills.
+    fn mount_children(&mut self, id: NodeId, children: Vec<ElementChild>, cx: &Cx, path: &Rc<str>) {
         for child in children {
             let Some(node) = self.node(id) else {
                 return;
@@ -342,6 +345,16 @@ impl Tree {
                 ElementChild::One(element) => {
                     let child = self.mount(*element, cx, id);
                     self.set_group(id, group, vec![child]);
+                }
+                ElementChild::Keyed(mount) => {
+                    self.set_group(id, group, Vec::new());
+                    mount(KeyedSlot {
+                        tree: self.this.clone(),
+                        container: id,
+                        group,
+                        cx: cx.clone(),
+                        path: Rc::clone(path),
+                    });
                 }
             }
         }
@@ -374,6 +387,30 @@ impl Tree {
         self.taffy
             .set_children(parent, &children)
             .expect("invariant: every node in a child group is in the tree");
+        self.needs_layout = true;
+    }
+
+    /// Removes `id` and everything under it, and repaints where it was.
+    /// Their owners are disposed by whoever owns them, after the tree is
+    /// released.
+    pub(crate) fn unmount(&mut self, id: NodeId) {
+        if let Some(node) = self.taffy.get_node_context(id)
+            && node.rect.is_some()
+        {
+            add_damage(&mut self.damage, node.bounds);
+        }
+        let mut removed = Vec::new();
+        let mut pending = vec![id];
+        while let Some(next) = pending.pop() {
+            removed.push(next);
+            if let Ok(children) = self.taffy.children(next) {
+                pending.extend(children);
+            }
+        }
+        for node in removed.into_iter().rev() {
+            // `remove` only fails for a node that isn't in the tree.
+            let _ = self.taffy.remove(node);
+        }
         self.needs_layout = true;
     }
 

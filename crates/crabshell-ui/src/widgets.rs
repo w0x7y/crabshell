@@ -4,9 +4,14 @@
 //! created: then each description becomes a node in the window's tree, and
 //! each closure property becomes an effect that updates that node.
 
+use std::hash::Hash;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use crabshell_reactive::Memo;
+
+use crate::cx::Cx;
+use crate::keyed::{self, KeyedMount};
 use crate::prop::{IntoProp, Prop};
 use crate::style::Style;
 
@@ -55,14 +60,17 @@ pub(crate) enum ElementKind {
     Button,
 }
 
-/// One entry of a container's child list.
+/// One entry of a container's child list: a single widget, or a keyed list
+/// that grows and shrinks.
 pub(crate) enum Child {
     One(Box<dyn Widget>),
+    Keyed(KeyedMount),
 }
 
 /// A [`Child`] with its widget turned into an element.
 pub(crate) enum ElementChild {
     One(Box<Element>),
+    Keyed(KeyedMount),
 }
 
 /// Turns every child widget into its element, which does the same for its
@@ -72,6 +80,7 @@ fn describe(children: Vec<Child>) -> Vec<ElementChild> {
         .into_iter()
         .map(|child| match child {
             Child::One(widget) => ElementChild::One(Box::new(widget.into_element())),
+            Child::Keyed(mount) => ElementChild::Keyed(mount),
         })
         .collect()
 }
@@ -154,12 +163,38 @@ pub struct IconPixels {
     pub data: Rc<[u8]>,
 }
 
-/// The method every container has: `child`.
+/// The methods every container has: `child` and `children_keyed`.
 macro_rules! container_methods {
     () => {
         /// Adds `child` after the children added so far.
         pub fn child(mut self, child: impl Widget) -> Self {
             self.children.push(Child::One(Box::new(child)));
+            self
+        }
+
+        /// Adds one child per item, after the children added so far.
+        ///
+        /// `items` runs in an effect, so the list updates when a signal it
+        /// read changes. `key` names each item. `view` builds the child for
+        /// a key the first time it appears, and that child is kept while
+        /// its key stays in the list, even if it moves. `view` receives the
+        /// item's [`Cx`] and a [`Memo`] that updates when that item's value
+        /// changes. When a key leaves the list, its child and everything
+        /// created in `view` are freed. If two items share a key, only the
+        /// first is shown and the duplicate is logged.
+        pub fn children_keyed<T, K, W>(
+            mut self,
+            items: impl FnMut() -> Vec<T> + 'static,
+            key: impl FnMut(&T) -> K + 'static,
+            view: impl FnMut(&Cx, Memo<T>) -> W + 'static,
+        ) -> Self
+        where
+            T: Clone + PartialEq + 'static,
+            K: Eq + Hash + 'static,
+            W: Widget,
+        {
+            self.children
+                .push(Child::Keyed(keyed::mount(items, key, view)));
             self
         }
     };

@@ -6,6 +6,7 @@
 //! fontconfig picks depends on the machine.
 
 mod invalidation;
+mod keyed;
 mod layout;
 mod style;
 mod text;
