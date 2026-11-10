@@ -22,7 +22,7 @@ use taffy::{
 use crate::geometry::{Point, Rect};
 use crate::style::Font;
 use crate::text::TextSystem;
-use crate::tree::{Node, NodeId, NodeKind, Tree, add_damage};
+use crate::tree::{Node, NodeId, NodeKind, Tree, add_damage, icon_rect};
 use crate::widgets::{Align, Justify};
 
 /// The kind of container a node sits in, which decides how it is placed.
@@ -129,12 +129,16 @@ impl Tree {
         let Some(node) = self.taffy.get_node_context_mut(id) else {
             return rect.union(children);
         };
-        // What the node itself draws: its rectangle, and text lines that
-        // overflow it. Text isn't clipped, so overflow shows as in CSS.
+        // What the node itself draws: its rectangle, and text or an icon
+        // that overflows it. Nothing is clipped, so overflow shows as in CSS.
         let mut painted = rect;
-        if let NodeKind::Text(text) = &mut node.kind {
-            text.finish(content, fonts);
-            painted = painted.union(text.line_box());
+        match &mut node.kind {
+            NodeKind::Text(text) => {
+                text.finish(content, fonts);
+                painted = painted.union(text.ink_box());
+            }
+            NodeKind::Icon(icon) => painted = painted.union(icon_rect(content, icon.size)),
+            _ => {}
         }
         // Repaint where the node was and where it is now.
         match node.rect {

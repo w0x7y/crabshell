@@ -335,3 +335,32 @@ fn text_defaults_to_black() {
     };
     assert_eq!(text.color(), crate::Color::rgb(0, 0, 0));
 }
+
+#[test]
+fn bounds_cover_a_node_and_everything_it_paints() {
+    let mut h = Harness::new();
+    // The icon overflows its 16-pixel box by 4 above and below.
+    let row = Row::new()
+        .padding(10, 4)
+        .child(Icon::new("x").size(24))
+        .child(Text::new("text"));
+    let window = h.window(h.panel().child(row), 100.0, 36.0);
+    let view = window.view();
+    let icon = node_at(view.root(), &[0, 0]);
+    assert_eq!(icon.rect(), Rect::new(4.0, 10.0, 24.0, 16.0));
+    assert_eq!(icon.bounds(), Rect::new(4.0, 6.0, 24.0, 24.0));
+    let row = node_at(view.root(), &[0]);
+    assert!(
+        row.bounds().y <= 6.0 && row.bounds().bottom() >= 30.0,
+        "{:?}",
+        row.bounds()
+    );
+    // Text bounds reach past the line box by the ink allowance.
+    let text = node_at(view.root(), &[0, 1]);
+    assert!(
+        text.bounds().y < text.rect().y,
+        "{:?} {:?}",
+        text.bounds(),
+        text.rect()
+    );
+}

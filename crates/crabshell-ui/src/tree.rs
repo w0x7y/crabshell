@@ -65,7 +65,7 @@ pub(crate) struct Node {
     pub(crate) rect: Option<Rect>,
     /// `rect` without padding.
     pub(crate) content: Rect,
-    /// What the node draws: `rect`, and for text, lines that overflow it.
+    /// What the node draws: `rect`, and text or an icon that overflows it.
     pub(crate) painted: Rect,
     /// `painted` together with every descendant's.
     pub(crate) bounds: Rect,
@@ -606,6 +606,18 @@ impl Surface {
 
 fn set_style(tree: &mut Tree, id: NodeId, style: Style) {
     tree.update_style(id, |node| node.style = style);
+}
+
+/// Where an icon of `size` logical pixels is drawn in its node's `content`
+/// box: a square, centered, on whole pixels. It overflows a smaller box.
+pub(crate) fn icon_rect(content: Rect, size: u32) -> Rect {
+    let side = size as f32;
+    Rect::new(
+        content.x + ((content.width - side) / 2.0).round(),
+        content.y + ((content.height - side) / 2.0).round(),
+        side,
+        side,
+    )
 }
 
 /// Adds `rect` to the areas to repaint, unless it is empty or already there.

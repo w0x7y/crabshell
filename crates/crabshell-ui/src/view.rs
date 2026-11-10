@@ -8,7 +8,7 @@ use taffy::TraversePartialTree;
 use crate::geometry::{Point, Rect, Size};
 use crate::style::{Color, Style};
 use crate::text::TextNode;
-use crate::tree::{Node, NodeId, NodeKind, Tree};
+use crate::tree::{Node, NodeId, NodeKind, Tree, icon_rect};
 use crate::widgets::IconSource;
 
 /// The color text uses when no ancestor sets one.
@@ -68,6 +68,13 @@ impl<'a> NodeView<'a> {
         self.node.rect.unwrap_or_default()
     }
 
+    /// The area the node and everything inside it painted at the last
+    /// layout: its rectangle, text and icons that overflow it, and its
+    /// descendants' bounds. Nothing outside it needs drawing for this node.
+    pub fn bounds(&self) -> Rect {
+        self.node.bounds
+    }
+
     /// The style in effect, with a button's hover and pressed styles laid
     /// over its own. Inherited fields aren't filled in;
     /// [`TextView::color`] has the color text is drawn in.
@@ -91,19 +98,10 @@ impl<'a> NodeView<'a> {
                 color: self.inherited_color(),
             }),
             NodeKind::Icon(icon) => match &icon.source {
-                Some(source) => {
-                    let side = icon.size as f32;
-                    let area = self.node.content;
-                    Content::Icon(IconView {
-                        source,
-                        rect: Rect::new(
-                            area.x + ((area.width - side) / 2.0).round(),
-                            area.y + ((area.height - side) / 2.0).round(),
-                            side,
-                            side,
-                        ),
-                    })
-                }
+                Some(source) => Content::Icon(IconView {
+                    source,
+                    rect: icon_rect(self.node.content, icon.size),
+                }),
                 None => Content::None,
             },
             _ => Content::None,

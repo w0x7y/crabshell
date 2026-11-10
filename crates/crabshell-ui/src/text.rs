@@ -409,14 +409,18 @@ impl TextNode {
         self.origin = Point::new(content.x, content.y + top);
     }
 
-    /// The area the lines take, which can stick out of a box too small for
-    /// them.
-    pub(crate) fn line_box(&self) -> Rect {
+    /// The area the glyphs may cover: the lines' box, which can stick out
+    /// of a widget too small for it, grown by an em left and right and half
+    /// an em above and below. Ink reaches past the line box: stacked accents
+    /// rise above it, and a combining mark at the start hangs left of the
+    /// text by nearly the width of the base it lacks.
+    pub(crate) fn ink_box(&self) -> Rect {
+        let em = self.buffer.metrics().font_size;
         Rect::new(
-            self.origin.x,
-            self.origin.y,
-            self.width().ceil(),
-            self.height(),
+            self.origin.x - em,
+            self.origin.y - em / 2.0,
+            self.width().ceil() + 2.0 * em,
+            self.height() + em,
         )
     }
 

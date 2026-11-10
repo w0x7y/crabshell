@@ -104,11 +104,11 @@ fn removed_children_free_everything_they_created() {
     items.set(vec![1, 2, 3]);
     h.frame(&window);
     assert!(h.runtime.node_count() > empty);
-    let rects: Vec<_> = {
+    let bounds: Vec<_> = {
         let view = window.view();
         node_at(view.root(), &[0])
             .children()
-            .map(|child| child.rect())
+            .map(|child| child.bounds())
             .collect()
     };
     window.take_damage();
@@ -118,8 +118,8 @@ fn removed_children_free_everything_they_created() {
     assert_eq!(h.runtime.node_count(), empty);
     assert!(texts(&window).is_empty());
     let damage = window.take_damage();
-    for rect in rects {
-        assert!(damage.contains(&rect), "{rect:?} missing from {damage:?}");
+    for area in bounds {
+        assert!(damage.contains(&area), "{area:?} missing from {damage:?}");
     }
 }
 

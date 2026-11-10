@@ -128,7 +128,13 @@ fn a_layout_change_that_moves_nothing_still_repaints_its_widget() {
     label.set(String::from("ba"));
     h.frame(&window);
     assert_eq!(rect_at(&window, &[0, 0]), text);
-    assert_eq!(window.take_damage(), vec![text]);
+    // Its bounds: the text's rectangle and the ink allowance around it.
+    let bounds = super::node_at(window.view().root(), &[0, 0]).bounds();
+    assert!(
+        bounds.x < text.x && bounds.right() > text.right(),
+        "{bounds:?}"
+    );
+    assert_eq!(window.take_damage(), vec![bounds]);
 }
 
 #[test]
@@ -323,4 +329,95 @@ fn the_damage_covers_every_glyph_pixel() {
         damage.y <= top && damage.bottom() >= bottom,
         "glyphs {top}..{bottom}, {damage:?}"
     );
+}
+
+#[test]
+fn an_icon_bigger_than_its_box_is_repainted_whole() {
+    let mut h = Harness::new();
+    let first = h.cx.signal(true);
+    // 36 pixels with 10 of padding above and below leave a 16-pixel box for
+    // a 24-pixel icon, centered: it spans 6 to 30.
+    let row = Row::new().padding(10, 4).child(
+        Icon::new(move || {
+            crate::IconSource::Name(if first.get() { "one" } else { "two" }.to_owned())
+        })
+        .size(24),
+    );
+    let window = h.window(h.panel().child(row), 60.0, 36.0);
+    window.take_damage();
+    first.set(false);
+    h.runtime.flush();
+    let damage = covered(&window.take_damage());
+    assert!(damage.y <= 6.0 && damage.bottom() >= 30.0, "{damage:?}");
+    assert!(damage.x <= 4.0 && damage.right() >= 28.0, "{damage:?}");
+}
+
+/// The logical area the glyphs of `path`'s text cover at `scale`, placed
+/// as the renderer places them.
+fn ink(window: &crate::Window, text: &mut crate::TextSystem, path: &[usize], scale: f32) -> Rect {
+    use cosmic_text::SwashCache;
+
+    let view = window.view();
+    let crate::Content::Text(view_text) = super::node_at(view.root(), path).content() else {
+        panic!("a text node has text content");
+    };
+    let origin = view_text.origin();
+    let mut cache = SwashCache::new();
+    let mut ink = Rect::default();
+    for run in view_text.runs() {
+        let baseline = ((origin.y + run.line_y) * scale).round();
+        for glyph in run.glyphs {
+            let physical = glyph.physical((origin.x * scale, baseline), scale);
+            let Some(image) = cache.get_image_uncached(text.font_system(), physical.cache_key)
+            else {
+                continue;
+            };
+            let left = (physical.x + image.placement.left) as f32;
+            let top = (physical.y - image.placement.top) as f32;
+            let (width, height) = (image.placement.width as f32, image.placement.height as f32);
+            if width > 0.0 && height > 0.0 {
+                ink = ink.union(Rect::new(
+                    left / scale,
+                    top / scale,
+                    width / scale,
+                    height / scale,
+                ));
+            }
+        }
+    }
+    ink
+}
+
+fn covers(outer: Rect, inner: Rect) -> bool {
+    outer.x <= inner.x
+        && outer.y <= inner.y
+        && outer.right() >= inner.right()
+        && outer.bottom() >= inner.bottom()
+}
+
+#[test]
+fn glyph_ink_outside_the_line_box_is_repainted() {
+    // Stacked accents rise above the line; a leading combining mark hangs
+    // left of the text's origin.
+    for (from, to) in [("\u{1ED6}", "O"), ("\u{1EB6}", "A"), ("\u{303}x", "x")] {
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+            let mut h = Harness::new();
+            let label = h.cx.signal(String::from(from));
+            let row = Row::new()
+                .padding(8, 8)
+                .align(Align::Center)
+                .child(Text::new(move || label.get()));
+            let window = h.window(h.panel().child(row), 60.0, 40.0);
+            window.take_damage();
+            let old = ink(&window, &mut h.text, &[0, 0], scale);
+            label.set(String::from(to));
+            h.frame(&window);
+            let new = ink(&window, &mut h.text, &[0, 0], scale);
+            let damage = covered(&window.take_damage());
+            assert!(
+                covers(damage, old) && covers(damage, new),
+                "{from:?} to {to:?} at {scale}: ink {old:?} and {new:?}, damage {damage:?}"
+            );
+        }
+    }
 }
