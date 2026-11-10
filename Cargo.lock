@@ -192,6 +192,7 @@ dependencies = [
  "fontconfig",
  "taffy",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

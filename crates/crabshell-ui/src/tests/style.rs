@@ -67,6 +67,22 @@ fn merge_takes_the_fields_the_top_style_sets() {
 }
 
 #[test]
+fn only_font_and_padding_affect_layout() {
+    let base = Style::new().padding(2, 8).font(Font::new("Inter", 13.0));
+    assert!(
+        base.same_layout(
+            &base
+                .background(Color::rgb(1, 2, 3))
+                .radius(9.0)
+                .opacity(0.1)
+        )
+    );
+    assert!(!base.same_layout(&base.padding(3, 8)));
+    assert!(!base.same_layout(&base.font(Font::new("Inter", 14.0))));
+    assert!(!base.same_layout(&base.font(Font::new("Inter", 13.0).weight(700))));
+}
+
+#[test]
 fn font_defaults_to_regular_weight() {
     const BOLD: Font = Font::new("Inter", 13.0).weight(700);
     assert_eq!(Font::new("Inter", 13.0).weight, 400);

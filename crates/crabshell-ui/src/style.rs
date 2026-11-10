@@ -243,6 +243,11 @@ impl Style {
             opacity: or(over.opacity, self.opacity),
         }
     }
+
+    /// Whether the two styles lay out the same: same font and padding.
+    pub(crate) fn same_layout(&self, other: &Style) -> bool {
+        self.font == other.font && self.padding == other.padding
+    }
 }
 
 /// `Option::or`, which isn't a `const fn` on stable Rust.

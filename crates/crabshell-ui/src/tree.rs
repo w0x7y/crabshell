@@ -1,0 +1,491 @@
+//! A window's tree of nodes: turning elements into nodes, applying property
+//! changes, and recording when the window needs a layout.
+//!
+//! The nodes live in taffy's tree, each carrying a [`Node`] as its context,
+//! so taffy's parent and child links are the only ones.
+//!
+//! The tree sits in an `Rc<RefCell<..>>` that the [`Window`](crate::Window)
+//! owns. Effects reach it through a `Weak`, so they never keep a dropped
+//! window alive. It is never borrowed while user code runs: closures run
+//! before the borrow, and user closures and values live in the reactive
+//! runtime rather than here, so the runtime drops them.
+
+use std::cell::{RefCell, RefMut};
+use std::rc::{Rc, Weak};
+
+use taffy::TaffyTree;
+
+use crate::cx::Cx;
+use crate::geometry::Size;
+use crate::prop::{Prop, PropKind};
+use crate::style::{Padding, Style};
+use crate::text::TextNode;
+use crate::widgets::{Align, Element, ElementChild, ElementKind, IconSource, Justify};
+use crate::window::{Anchors, Layer, Output, PanelWindow};
+
+pub(crate) type NodeId = taffy::NodeId;
+
+pub(crate) struct Tree {
+    /// This tree, for effects to reach without keeping it alive.
+    pub(crate) this: Weak<RefCell<Tree>>,
+    pub(crate) taffy: TaffyTree<Node>,
+    pub(crate) root: NodeId,
+    pub(crate) output: Output,
+    pub(crate) surface: Surface,
+    /// The size the compositor gave the window.
+    pub(crate) size: Size,
+    pub(crate) needs_layout: bool,
+}
+
+pub(crate) struct Node {
+    /// The widget type, such as `"Row"`.
+    pub(crate) name: &'static str,
+    /// The widget path, such as `PanelWindow[DP-1]/Row/Button[2]`, for log
+    /// lines.
+    pub(crate) path: Rc<str>,
+    /// The context of the widget's own owner.
+    pub(crate) cx: Cx,
+    pub(crate) style: Style,
+    pub(crate) kind: NodeKind,
+    /// The children in order, grouped by the call that added them.
+    pub(crate) groups: Vec<Vec<NodeId>>,
+    /// The number the next child's path gets: how many children a row,
+    /// column or stack has created so far. Never reused, so no two children
+    /// share a path.
+    pub(crate) next_child: usize,
+}
+
+pub(crate) enum NodeKind {
+    /// The `PanelWindow` itself.
+    Root,
+    Flex(Flex),
+    Stack,
+    Spacer,
+    Text(TextNode),
+    Icon(IconNode),
+    Button,
+}
+
+pub(crate) struct Flex {
+    #[allow(dead_code, reason = "layout, which comes later, reads it")]
+    pub(crate) column: bool,
+    pub(crate) gap: u32,
+    pub(crate) padding_vertical: Option<u32>,
+    pub(crate) padding_horizontal: Option<u32>,
+    pub(crate) align: Align,
+    pub(crate) justify: Justify,
+}
+
+pub(crate) struct IconNode {
+    /// `None` until the icon's binding first runs.
+    pub(crate) source: Option<IconSource>,
+    pub(crate) size: u32,
+}
+
+/// The layer-surface settings of the window.
+#[derive(Default)]
+pub(crate) struct Surface {
+    pub(crate) anchors: Anchors,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) exclusive_zone: Option<i32>,
+    pub(crate) layer: Layer,
+    /// Something changed since the platform last read the settings.
+    pub(crate) changed: bool,
+}
+
+/// What a property change invalidates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Change {
+    None,
+    Paint,
+    Layout,
+}
+
+/// Borrows the tree for an effect.
+pub(crate) fn borrow(tree: &RefCell<Tree>) -> RefMut<'_, Tree> {
+    tree.try_borrow_mut()
+        .expect("invariant: a window's tree is not borrowed while effects run")
+}
+
+impl Node {
+    fn new(name: &'static str, path: Rc<str>, cx: Cx, kind: NodeKind) -> Node {
+        Node {
+            name,
+            path,
+            cx,
+            style: Style::new(),
+            kind,
+            groups: Vec::new(),
+            next_child: 0,
+        }
+    }
+
+    /// The style in effect.
+    pub(crate) fn effective_style(&self) -> Style {
+        self.style
+    }
+
+    /// The padding in effect: a row's or column's own wins over its style's.
+    #[allow(dead_code, reason = "layout, which comes later, reads it")]
+    pub(crate) fn padding(&self) -> Padding {
+        let style = self.effective_style().padding.unwrap_or_default();
+        match &self.kind {
+            NodeKind::Flex(flex) => Padding {
+                vertical: flex.padding_vertical.unwrap_or(style.vertical),
+                horizontal: flex.padding_horizontal.unwrap_or(style.horizontal),
+            },
+            _ => style,
+        }
+    }
+}
+
+impl Tree {
+    /// A tree holding only the window's root node, owned by `cx`.
+    pub(crate) fn new(this: Weak<RefCell<Tree>>, output: Output, cx: Cx, path: Rc<str>) -> Tree {
+        let mut taffy = TaffyTree::new();
+        let root = taffy
+            .new_leaf_with_context(
+                taffy::Style::default(),
+                Node::new("PanelWindow", path, cx, NodeKind::Root),
+            )
+            .expect("invariant: adding a leaf to taffy never fails");
+        Tree {
+            this,
+            taffy,
+            root,
+            output,
+            surface: Surface::default(),
+            size: Size::default(),
+            needs_layout: true,
+        }
+    }
+
+    pub(crate) fn node(&self, id: NodeId) -> Option<&Node> {
+        self.taffy.get_node_context(id)
+    }
+
+    pub(crate) fn node_mut(&mut self, id: NodeId) -> Option<&mut Node> {
+        self.taffy.get_node_context_mut(id)
+    }
+
+    /// Applies the window's own properties and adds its child, which the
+    /// caller already turned into an element.
+    pub(crate) fn mount_panel(&mut self, panel: PanelWindow, child: Option<Element>) {
+        let root = self.root;
+        let PanelWindow {
+            output: _,
+            anchors,
+            width,
+            height,
+            exclusive_zone,
+            layer,
+            style,
+            child: _,
+        } = panel;
+        self.bind_opt(root, anchors, "anchors", |tree, _, value| {
+            tree.surface.set(|s| &mut s.anchors, value);
+        });
+        self.bind_opt(root, width, "width", |tree, _, value| {
+            tree.surface.set(|s| &mut s.width, value);
+        });
+        self.bind_opt(root, height, "height", |tree, _, value| {
+            tree.surface.set(|s| &mut s.height, value);
+        });
+        self.bind_opt(root, exclusive_zone, "exclusive_zone", |tree, _, value| {
+            tree.surface.set(|s| &mut s.exclusive_zone, Some(value));
+        });
+        self.bind_opt(root, layer, "layer", |tree, _, value| {
+            tree.surface.set(|s| &mut s.layer, value);
+        });
+        self.bind_opt(root, style, "style", set_style);
+        if let Some(child) = child {
+            let cx = self.node(root).map(|node| node.cx.clone());
+            let cx = cx.expect("invariant: the root node exists while the tree does");
+            let child = self.mount(child, &cx, root);
+            self.set_group(root, 0, vec![child]);
+        }
+        self.surface.changed = true;
+    }
+
+    /// Turns `element` and everything in it into nodes under a new child
+    /// owner of `parent_cx`. The caller adds the returned node to `parent`.
+    pub(crate) fn mount(&mut self, element: Element, parent_cx: &Cx, parent: NodeId) -> NodeId {
+        let Element {
+            name,
+            style,
+            mut kind,
+            children,
+        } = element;
+        let index = self.next_index(parent);
+        let parent_path = self.node(parent).map_or("", |node| &node.path);
+        let path: Rc<str> = match index {
+            Some(index) => format!("{parent_path}/{name}[{index}]"),
+            None => format!("{parent_path}/{name}"),
+        }
+        .into();
+        let cx = parent_cx.child().named(path.to_string());
+
+        // The node starts with defaults; the properties are applied below.
+        let node_kind = match &mut kind {
+            ElementKind::Flex(props) => NodeKind::Flex(Flex {
+                column: props.column,
+                gap: 0,
+                padding_vertical: None,
+                padding_horizontal: None,
+                align: Align::default(),
+                justify: Justify::default(),
+            }),
+            ElementKind::Stack => NodeKind::Stack,
+            ElementKind::Spacer => NodeKind::Spacer,
+            ElementKind::Text(_) => NodeKind::Text(TextNode::new()),
+            ElementKind::Icon(_) => NodeKind::Icon(IconNode {
+                source: None,
+                size: crate::Icon::DEFAULT_SIZE,
+            }),
+            ElementKind::Button => NodeKind::Button,
+        };
+        let id = self
+            .taffy
+            .new_leaf_with_context(
+                taffy::Style::default(),
+                Node::new(name, Rc::clone(&path), cx.clone(), node_kind),
+            )
+            .expect("invariant: adding a leaf to taffy never fails");
+
+        self.bind_opt(id, style, "style", set_style);
+        self.bind_kind(id, kind);
+        self.mount_children(id, children, &cx);
+        id
+    }
+
+    /// Applies the properties only one kind of widget has.
+    fn bind_kind(&mut self, id: NodeId, kind: ElementKind) {
+        match kind {
+            ElementKind::Flex(props) => {
+                self.bind_opt(id, props.gap, "gap", |tree, id, value| {
+                    tree.update_flex(id, |flex| replace(&mut flex.gap, value))
+                });
+                self.bind_opt(id, props.padding_vertical, "padding", |tree, id, value| {
+                    tree.update_flex(id, |flex| replace(&mut flex.padding_vertical, Some(value)))
+                });
+                self.bind_opt(
+                    id,
+                    props.padding_horizontal,
+                    "padding",
+                    |tree, id, value| {
+                        tree.update_flex(id, |flex| {
+                            replace(&mut flex.padding_horizontal, Some(value))
+                        })
+                    },
+                );
+                self.bind_opt(id, props.align, "align", |tree, id, value| {
+                    tree.update_flex(id, |flex| replace(&mut flex.align, value))
+                });
+                self.bind_opt(id, props.justify, "justify", |tree, id, value| {
+                    tree.update_flex(id, |flex| replace(&mut flex.justify, value))
+                });
+            }
+            ElementKind::Text(props) => {
+                self.bind(id, props.text, "text", |tree, id, value| {
+                    tree.update_text(id, |text| text.set_content(value))
+                });
+                self.bind_opt(id, props.ellipsis, "ellipsis", |tree, id, value| {
+                    tree.update_text(id, |text| text.set_ellipsis(value))
+                });
+                self.bind_opt(id, props.max_lines, "max_lines", |tree, id, value| {
+                    tree.update_text(id, |text| text.set_max_lines(value))
+                });
+            }
+            ElementKind::Icon(props) => {
+                self.bind(id, props.source, "icon", |tree, id, value| {
+                    tree.update_icon(id, |icon| match replace(&mut icon.source, Some(value)) {
+                        // A new picture of the same size only needs a repaint.
+                        Change::None => Change::None,
+                        _ => Change::Paint,
+                    })
+                });
+                self.bind_opt(id, props.size, "size", |tree, id, value| {
+                    tree.update_icon(id, |icon| replace(&mut icon.size, value))
+                });
+            }
+            ElementKind::Stack | ElementKind::Spacer | ElementKind::Button => {}
+        }
+    }
+
+    /// Mounts a container's children, each `child` call as one group.
+    fn mount_children(&mut self, id: NodeId, children: Vec<ElementChild>, cx: &Cx) {
+        for child in children {
+            let Some(node) = self.node(id) else {
+                return;
+            };
+            let group = node.groups.len();
+            match child {
+                ElementChild::One(element) => {
+                    let child = self.mount(*element, cx, id);
+                    self.set_group(id, group, vec![child]);
+                }
+            }
+        }
+    }
+
+    /// The number in the path of `parent`'s next child, such as the 2 in
+    /// `Row/Button[2]`. `None` for the only child of a window or button.
+    fn next_index(&mut self, parent: NodeId) -> Option<usize> {
+        let node = self.node_mut(parent)?;
+        if !matches!(node.kind, NodeKind::Flex(_) | NodeKind::Stack) {
+            return None;
+        }
+        let index = node.next_child;
+        node.next_child += 1;
+        Some(index)
+    }
+
+    /// Replaces the nodes of one child group of `parent`, adding the group if
+    /// it is the next one.
+    pub(crate) fn set_group(&mut self, parent: NodeId, group: usize, nodes: Vec<NodeId>) {
+        let Some(node) = self.node_mut(parent) else {
+            return;
+        };
+        if group == node.groups.len() {
+            node.groups.push(nodes);
+        } else if let Some(slot) = node.groups.get_mut(group) {
+            *slot = nodes;
+        }
+        let children: Vec<NodeId> = node.groups.iter().flatten().copied().collect();
+        self.taffy
+            .set_children(parent, &children)
+            .expect("invariant: every node in a child group is in the tree");
+        self.needs_layout = true;
+    }
+
+    /// Applies `prop` to node `id` with `apply`: once now for a value, or
+    /// from an effect under the node's owner for a binding. The effect is
+    /// named after the widget path and `name`, for log lines.
+    pub(crate) fn bind<T: 'static>(
+        &mut self,
+        id: NodeId,
+        prop: Prop<T>,
+        name: &str,
+        apply: fn(&mut Tree, NodeId, T),
+    ) {
+        match prop.0 {
+            PropKind::Value(value) => apply(self, id, value),
+            PropKind::Binding(mut compute) => {
+                let Some(node) = self.node(id) else {
+                    return;
+                };
+                let label = format!("{}.{name}", node.path);
+                let tree = self.this.clone();
+                node.cx
+                    .effect(move || {
+                        // The user's closure runs before the tree is borrowed.
+                        let value = compute();
+                        if let Some(tree) = tree.upgrade() {
+                            apply(&mut borrow(&tree), id, value);
+                        }
+                    })
+                    .named(label);
+            }
+        }
+    }
+
+    fn bind_opt<T: 'static>(
+        &mut self,
+        id: NodeId,
+        prop: Option<Prop<T>>,
+        name: &str,
+        apply: fn(&mut Tree, NodeId, T),
+    ) {
+        if let Some(prop) = prop {
+            self.bind(id, prop, name, apply);
+        }
+    }
+
+    /// Runs `f` on node `id`, if it still exists, and records and returns
+    /// what it invalidated.
+    pub(crate) fn update(&mut self, id: NodeId, f: impl FnOnce(&mut Node) -> Change) -> Change {
+        let Some(node) = self.node_mut(id) else {
+            return Change::None;
+        };
+        let change = f(node);
+        self.invalidate(id, change);
+        change
+    }
+
+    /// Runs `f` on node `id` and works out from the style in effect before
+    /// and after whether the change needs a layout or only a repaint.
+    pub(crate) fn update_style(&mut self, id: NodeId, f: impl FnOnce(&mut Node)) -> Change {
+        self.update(id, |node| {
+            let before = node.effective_style();
+            f(node);
+            let after = node.effective_style();
+            if before == after {
+                Change::None
+            } else if before.same_layout(&after) {
+                Change::Paint
+            } else {
+                Change::Layout
+            }
+        })
+    }
+
+    fn update_flex(&mut self, id: NodeId, f: impl FnOnce(&mut Flex) -> Change) {
+        self.update(id, |node| match &mut node.kind {
+            NodeKind::Flex(flex) => f(flex),
+            _ => Change::None,
+        });
+    }
+
+    fn update_text(&mut self, id: NodeId, f: impl FnOnce(&mut TextNode) -> bool) {
+        self.update(id, |node| match &mut node.kind {
+            NodeKind::Text(text) => {
+                if f(text) {
+                    Change::Layout
+                } else {
+                    Change::None
+                }
+            }
+            _ => Change::None,
+        });
+    }
+
+    fn update_icon(&mut self, id: NodeId, f: impl FnOnce(&mut IconNode) -> Change) {
+        self.update(id, |node| match &mut node.kind {
+            NodeKind::Icon(icon) => f(icon),
+            _ => Change::None,
+        });
+    }
+
+    /// Records that the window needs a layout, if the change asks for one.
+    pub(crate) fn invalidate(&mut self, _id: NodeId, change: Change) {
+        if change == Change::Layout {
+            self.needs_layout = true;
+        }
+    }
+}
+
+impl Surface {
+    /// Sets one field and remembers that the settings changed.
+    fn set<T: PartialEq>(&mut self, field: impl FnOnce(&mut Surface) -> &mut T, value: T) {
+        let slot = field(self);
+        if *slot != value {
+            *slot = value;
+            self.changed = true;
+        }
+    }
+}
+
+fn set_style(tree: &mut Tree, id: NodeId, style: Style) {
+    tree.update_style(id, |node| node.style = style);
+}
+
+/// Stores `value` in `slot` and reports a layout change if it differs.
+pub(crate) fn replace<T: PartialEq>(slot: &mut T, value: T) -> Change {
+    if *slot == value {
+        Change::None
+    } else {
+        *slot = value;
+        Change::Layout
+    }
+}

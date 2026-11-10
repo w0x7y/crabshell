@@ -1,9 +1,18 @@
-//! [`PanelWindow`], the description of a bar.
+//! [`PanelWindow`], the description of a bar, and [`Window`], the live tree
+//! built from it.
 
+use std::cell::RefCell;
 use std::ops::BitOr;
+use std::rc::Rc;
 
+use crabshell_reactive::{Owner, untrack};
+
+use crate::cx::Cx;
+use crate::geometry::Size;
 use crate::prop::{IntoProp, Prop};
 use crate::style::Style;
+use crate::tree::{Tree, borrow};
+use crate::view::WindowView;
 use crate::widgets::Widget;
 
 /// A monitor, as the compositor names it.
@@ -118,7 +127,7 @@ pub enum Layer {
 
 /// A bar: a layer-shell surface on one output with one child.
 ///
-/// This is a description. It takes no keyboard
+/// This is a description; [`Window::new`] builds it. It takes no keyboard
 /// focus. Every property takes a value or a closure.
 ///
 /// ```
@@ -202,5 +211,123 @@ impl PanelWindow {
     pub fn child(mut self, child: impl Widget) -> PanelWindow {
         self.child = Some(Box::new(child));
         self
+    }
+}
+
+/// What the platform needs to set up the window's layer surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SurfaceConfig {
+    /// The anchored edges.
+    pub anchors: Anchors,
+    /// The requested width; 0 lets the compositor choose.
+    pub width: u32,
+    /// The requested height; 0 lets the compositor choose.
+    pub height: u32,
+    /// The exclusive zone, with the default worked out.
+    pub exclusive_zone: i32,
+    /// The layer.
+    pub layer: Layer,
+}
+
+/// A live window: the tree of nodes built from a [`PanelWindow`].
+///
+/// The platform owns one per layer surface, and runs the reactive flush
+/// once per event-loop iteration so bindings update it.
+///
+/// Dropping the window disposes its owner, which frees every node and
+/// binding in it.
+pub struct Window {
+    pub(crate) tree: Rc<RefCell<Tree>>,
+    owner: Owner,
+}
+
+impl Window {
+    /// Builds `panel` under a new child owner of `cx`.
+    ///
+    /// Properties set to values take effect now. Bindings are effects, so
+    /// they first run at the next [`Runtime::flush`]; run it before the
+    /// first layout.
+    ///
+    /// [`Runtime::flush`]: crabshell_reactive::Runtime::flush
+    pub fn new(cx: &Cx, mut panel: PanelWindow) -> Window {
+        // Describe the whole tree first: that runs the user's `into_element`
+        // code, which must not see the tree borrowed or subscribe whatever
+        // effect is building this window.
+        let child = untrack(|| panel.child.take().map(|child| child.into_element()));
+        let path: Rc<str> = format!("PanelWindow[{}]", panel.output.name).into();
+        let cx = cx.child().named(path.to_string());
+        let owner = cx.owner();
+        let output = panel.output.clone();
+        let tree = Rc::new_cyclic(|this| RefCell::new(Tree::new(this.clone(), output, cx, path)));
+        borrow(&tree).mount_panel(panel, child);
+        Window { tree, owner }
+    }
+
+    /// The output the window is on.
+    pub fn output(&self) -> Output {
+        self.tree.borrow().output.clone()
+    }
+
+    /// The layer-surface settings. Read them only after the first
+    /// [`Runtime::flush`]: settings given as closures are bindings, which
+    /// first run then, and until they do these are the defaults.
+    ///
+    /// [`Runtime::flush`]: crabshell_reactive::Runtime::flush
+    pub fn surface(&self) -> SurfaceConfig {
+        let tree = self.tree.borrow();
+        let surface = &tree.surface;
+        let exclusive_zone = surface.exclusive_zone.unwrap_or_else(|| {
+            let thickness = match surface.anchors.edge() {
+                Some(Edge::Top | Edge::Bottom) => surface.height,
+                Some(Edge::Left | Edge::Right) => surface.width,
+                None => 0,
+            };
+            i32::try_from(thickness).unwrap_or(i32::MAX)
+        });
+        SurfaceConfig {
+            anchors: surface.anchors,
+            width: surface.width,
+            height: surface.height,
+            exclusive_zone,
+            layer: surface.layer,
+        }
+    }
+
+    /// Whether the settings in [`surface`](Self::surface) changed since the
+    /// last call. The first call returns `true`, even before the first flush,
+    /// when [`surface`](Self::surface) still holds the defaults.
+    pub fn take_surface_changed(&self) -> bool {
+        std::mem::take(&mut borrow(&self.tree).surface.changed)
+    }
+
+    /// The size the compositor gave the window, in logical pixels.
+    pub fn size(&self) -> Size {
+        self.tree.borrow().size
+    }
+
+    /// Sets the size the compositor gave the window, from a configure
+    /// event. A new size needs a layout.
+    pub fn set_size(&self, size: Size) {
+        let mut tree = borrow(&self.tree);
+        if tree.size != size {
+            tree.size = size;
+            tree.needs_layout = true;
+        }
+    }
+
+    /// Whether something changed that needs a layout.
+    pub fn needs_layout(&self) -> bool {
+        self.tree.borrow().needs_layout
+    }
+
+    /// A read-only view of the tree. Release it before the next flush.
+    pub fn view(&self) -> WindowView<'_> {
+        WindowView::new(self.tree.borrow())
+    }
+}
+
+impl Drop for Window {
+    fn drop(&mut self) {
+        self.owner.dispose();
     }
 }

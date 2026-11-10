@@ -13,3 +13,7 @@ crabshell-reactive.workspace = true
 fontconfig.workspace = true
 taffy.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+# Only to capture log lines in tests (panicking handlers, duplicate keys).
+tracing-subscriber.workspace = true
