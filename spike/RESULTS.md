@@ -45,7 +45,7 @@ Per run, Quickshell then spike:
 
 PSS splits shared pages among the processes that map them. The second `qs` shares its Qt and Mesa libraries with the user's running `rime` instance, which lowers its PSS. RSS doesn't depend on what else is running, so it is the headline number. Private_Dirty is memory only that process uses.
 
-**How each run was measured.** The same script ran both programs:
+**How each run was measured.** The same script, `baseline/harness.py`, ran both programs (see "How to rerun"):
 1. Take the wall-clock time just before the fork/exec.
 2. Find the first frame from the program's own log.
 3. Count voluntary context switches over all threads from 4 s to 9 s after the first frame (the method under "Idle wakeups").
@@ -141,7 +141,7 @@ The fontconfig caches stay mapped because the fontconfig crate never calls `FcFi
 
 ## Idle wakeups: how they were measured
 
-Neither `perf` nor `strace` is installed, and I didn't install system packages. Instead a small script snapshots `/proc/<pid>/task/<tid>/status` and `/proc/<pid>/task/<tid>/schedstat` for every thread, 2 s after launch and again 5 s later.
+Neither `perf` nor `strace` is installed, and I didn't install system packages. Instead a small script snapshots `/proc/<pid>/task/<tid>/status` and `/proc/<pid>/task/<tid>/schedstat` for every thread, 2 s after launch and again 5 s later. `baseline/harness.py` counts wakeups the same way.
 
 It counts `voluntary_ctxt_switches`: each time a thread blocks (in `epoll_wait`, a futex, anything) and then wakes, this goes up by one. It is a superset of epoll wakeups, so 0 is a strong result. Both threads also showed 0 involuntary switches, 0 timeslices and 0 µs of CPU in every window.
 
@@ -176,17 +176,37 @@ The one-shot 10 s RSS timer fires outside the window. With `perf`, the design do
 To run both yourself:
 
 ```sh
-printf 'xwayland disable\nswaybg_command -\noutput HEADLESS-1 resolution 1280x720 scale 1.5\n' > /tmp/hl.conf
-WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman sway -c /tmp/hl.conf &
+mkdir -p target/measure
+printf 'xwayland disable\nswaybg_command -\noutput HEADLESS-1 resolution 1280x720 scale 1.5\n' > target/measure/headless.conf
+WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman sway -c target/measure/headless.conf &
 # Note which wayland-N socket appeared in $XDG_RUNTIME_DIR, then:
 WAYLAND_DISPLAY=wayland-N target/release/crabshell-spike &   # expect buffer 1280x45, scale 1.5
-WAYLAND_DISPLAY=wayland-N grim -o HEADLESS-1 /tmp/headless.png
+WAYLAND_DISPLAY=wayland-N grim -o HEADLESS-1 target/measure/headless.png
 swaymsg -s $XDG_RUNTIME_DIR/sway-ipc.$UID.<sway pid>.sock output HEADLESS-1 unplug   # expect "compositor closed the layer surface, exiting"
 ```
 
-## Reproduce
+## How to rerun
+
+Run these from the repository root on a Sway or other wlroots session. Each run puts a bar on screen for 15 s.
+
+The checks, and the spike's own log, which gives its first frame and VmRSS 10 s later:
 
 ```sh
 cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo build --release
 timeout 15 target/release/crabshell-spike 2> run.log; cat run.log
 ```
+
+The Quickshell comparison, exactly as run for the table above: three interleaved runs of each program. Each run prints one JSON line; take the median of each field. Logs go to `target/measure/`. It needs `qs` (0.3.2 here) and Python 3.11 or newer, plus `grim` if you take a screenshot.
+
+```sh
+cargo build --release
+for i in 1 2 3; do
+  sleep 2
+  python3 -I baseline/harness.py target/measure/qs$i qs -- \
+    qs -p baseline/quickshell --no-color --log-times --log-rules 'qt.scenegraph.time.renderloop=true'
+  sleep 2
+  python3 -I baseline/harness.py target/measure/spike$i spike -- target/release/crabshell-spike
+done
+```
+
+To re-take `baseline/screenshot.png`, add `--screenshot baseline/screenshot.png --region '0,48 1920x30'` before the `--` of one `qs` run. The bar sits at y = 48 here because another Quickshell bar holds the top 48 px; without one, use the default region `0,0 1920x30`. `python3 -I baseline/harness.py --help` lists the options.
