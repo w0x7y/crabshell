@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = ["spike"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.99"
+license = "MIT OR Apache-2.0"
+
+# Every external crate is pinned to one exact version here ("=x.y.z").
+# Member crates refer to them with `name.workspace = true`.
+[workspace.dependencies]
+calloop = { version = "=0.14.5", features = ["executor", "signals"] }
+cosmic-text = { version = "=0.19.0", default-features = false, features = ["std", "swash"] }
+fontconfig = "=0.11.0"
+smithay-client-toolkit = { version = "=0.21.1", default-features = false, features = ["calloop"] }
+tiny-skia = { version = "=0.12.0", default-features = false, features = ["std", "simd"] }
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["fmt", "std"] }
+zbus = { version = "=6.2.1", default-features = false, features = ["default-rt", "proxy"] }

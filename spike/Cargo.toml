@@ -1,0 +1,22 @@
+[package]
+name = "crabshell-spike"
+version = "0.0.0"
+description = "Phase 0 spike: one layer-shell bar drawn on the CPU"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "crabshell-spike"
+path = "src/main.rs"
+
+[dependencies]
+calloop.workspace = true
+cosmic-text.workspace = true
+fontconfig.workspace = true
+smithay-client-toolkit.workspace = true
+tiny-skia.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+zbus.workspace = true
