@@ -14,6 +14,7 @@ mod golden;
 mod icons;
 mod repaint;
 mod shapes;
+mod theme;
 
 use std::io;
 use std::path::{Path, PathBuf};

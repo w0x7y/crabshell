@@ -11,6 +11,8 @@ use crabshell_ui::{IconPixels, IconSource};
 use resvg::usvg;
 use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
 
+use crate::theme::Themes;
+
 /// How many rasterized icons stay cached. Past that, icons no draw used
 /// within the last [`RECENT`] draws are dropped.
 const CAPACITY: usize = 128;
@@ -32,8 +34,13 @@ const MAX_PNG_SIDE: u32 = 1024;
 /// The widest and tallest raw tray pixmap drawn.
 const MAX_PIXELS_SIDE: u32 = 512;
 
+/// The theme icon names are looked up in when the config doesn't set one.
+pub const DEFAULT_THEME: &str = "hicolor";
+
 /// Rasterized icons, by source and size in physical pixels.
 pub(crate) struct Icons {
+    theme: String,
+    themes: Themes,
     cache: HashMap<Key, Entry>,
     /// Counts draws, to tell which icons the latest one used.
     frame: u64,
@@ -46,9 +53,12 @@ pub(crate) struct Icons {
 /// What an icon was rasterized from, and at what size.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Key {
-    /// A name. Icon themes, where names are looked up, aren't read yet.
+    /// A name, with the logical size and whole scale it was looked up at.
     Name {
+        theme: String,
         name: String,
+        size: u32,
+        scale: u32,
         side: u32,
     },
     File {
@@ -97,13 +107,25 @@ struct Entry {
 }
 
 impl Icons {
+    /// Icons whose names are looked up in the environment's base
+    /// directories.
     pub(crate) fn new() -> Icons {
+        Icons::with_themes(Themes::from_env())
+    }
+
+    pub(crate) fn with_themes(themes: Themes) -> Icons {
         Icons {
+            theme: DEFAULT_THEME.to_owned(),
+            themes,
             cache: HashMap::new(),
             frame: 0,
             failed: HashSet::new(),
             rasterized: 0,
         }
+    }
+
+    pub(crate) fn set_theme(&mut self, theme: String) {
+        self.theme = theme;
     }
 
     /// The number of rasterized icons held, for tests.
@@ -119,11 +141,21 @@ impl Icons {
     }
 
     /// The icon `source` as a `side` by `side` pixmap, rasterized on first
-    /// use. `None` if it can't be loaded; that is logged once.
-    pub(crate) fn get(&mut self, source: &IconSource, side: u32) -> Option<&Pixmap> {
+    /// use. A name is looked up for `size` logical pixels at `scale`, a whole
+    /// number. `None` if it can't be loaded; that is logged once.
+    pub(crate) fn get(
+        &mut self,
+        source: &IconSource,
+        side: u32,
+        size: u32,
+        scale: u32,
+    ) -> Option<&Pixmap> {
         let key = match source {
             IconSource::Name(name) => Key::Name {
+                theme: self.theme.clone(),
                 name: name.clone(),
+                size,
+                scale,
                 side,
             },
             IconSource::File(path) => Key::File {
@@ -141,7 +173,10 @@ impl Icons {
         if !self.cache.contains_key(&key) {
             self.rasterized += 1;
             let rasterized = match source {
-                IconSource::Name(name) => Err(format!("no icon theme to look {name:?} up in")),
+                IconSource::Name(name) => match self.themes.find(&self.theme, name, size, scale) {
+                    Some(path) => rasterize_file(&path, side),
+                    None => Err(format!("no icon named {name:?} in theme {:?}", self.theme)),
+                },
                 IconSource::File(path) => rasterize_file(path, side),
                 IconSource::Pixels(pixels) => from_argb(pixels).and_then(|image| fit(&image, side)),
             };

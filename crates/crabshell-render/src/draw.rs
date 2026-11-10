@@ -69,7 +69,8 @@ struct Work {
 }
 
 impl Renderer {
-    /// A renderer with empty caches.
+    /// A renderer with empty caches, looking icons up in the `hicolor`
+    /// theme.
     pub fn new() -> Renderer {
         Renderer {
             glyphs: SwashCache::new(),
@@ -90,6 +91,21 @@ impl Renderer {
     #[cfg(test)]
     pub(crate) fn work(&self) -> (u64, u64) {
         (self.work.layer_pixels, self.work.nodes)
+    }
+
+    /// A renderer that looks icon names up in `bases` instead of the
+    /// environment's directories, for tests.
+    #[cfg(test)]
+    pub(crate) fn with_icon_dirs(bases: Vec<std::path::PathBuf>) -> Renderer {
+        Renderer {
+            icons: Icons::with_themes(crate::theme::Themes::new(bases)),
+            ..Renderer::new()
+        }
+    }
+
+    /// Sets the icon theme names are looked up in.
+    pub fn set_icon_theme(&mut self, theme: impl Into<String>) {
+        self.icons.set_theme(theme.into());
     }
 
     /// The number of rasterized icons cached, for tests.
@@ -483,7 +499,10 @@ impl Painter<'_> {
         }
         let x = (icon.rect.x * scale).round() - left;
         let y = (icon.rect.y * scale).round() - top;
-        if let Some(image) = self.icons.get(icon.source, side as u32) {
+        // Theme directories come in whole scales; 1.5 looks for @2 icons.
+        let size = icon.rect.width.round() as u32;
+        let theme_scale = scale.ceil().max(1.0) as u32;
+        if let Some(image) = self.icons.get(icon.source, side as u32, size, theme_scale) {
             pixmap.draw_pixmap(
                 x as i32,
                 y as i32,
