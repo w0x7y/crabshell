@@ -15,3 +15,16 @@ tracing.workspace = true
 # Only to capture log lines in tests (the cycle and panic messages).
 tracing-subscriber.workspace = true
 
+# Plain programs rather than libtest harnesses, so each can check how its
+# process ends: with status 0, not an abort.
+[[test]]
+name = "exit_with_live_owners"
+harness = false
+
+[[test]]
+name = "process_exit_with_live_owners"
+harness = false
+
+[[test]]
+name = "panic_after_dispose_in_a_closure"
+harness = false

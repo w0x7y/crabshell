@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 
 use crate::handle::{Marker, handle_impls};
-use crate::runtime::{self, NodeId};
+use crate::runtime::{self, NodeId, drop_isolated};
 
 /// A value you set. A memo or effect that reads it reruns after it changes.
 ///
@@ -113,14 +113,16 @@ impl<T: 'static> Signal<T> {
     ///
     /// # Panics
     ///
-    /// If the signal's owner was disposed, or if this runs inside a
-    /// [`with`](Self::with) call on the same signal.
+    /// If the signal's owner was disposed, if this runs inside a memo (use an
+    /// effect to write signals), or if it runs inside a [`with`](Self::with)
+    /// call on the same signal.
     #[track_caller]
     pub fn set(&self, value: T) {
-        let old = runtime::write_or_panic(self.id, |slot: &mut Option<T>| slot.replace(value));
-        // Dropped here, after every borrow has ended, in case `T`'s `Drop`
-        // uses signals.
-        drop(old);
+        if let Some(old) =
+            runtime::write_or_panic(self.id, |slot: &mut Option<T>| slot.replace(value))
+        {
+            drop_isolated(old);
+        }
     }
 
     /// Changes the value in place, then notifies like [`set`](Self::set).
@@ -139,7 +141,7 @@ impl<T: 'static> Signal<T> {
     pub fn try_set(&self, value: T) -> bool {
         match runtime::write(self.id, |slot: &mut Option<T>| slot.replace(value)) {
             Ok(old) => {
-                drop(old);
+                drop_isolated(old);
                 true
             }
             Err(_) => false,

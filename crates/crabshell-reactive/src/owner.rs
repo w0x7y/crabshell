@@ -60,6 +60,24 @@ impl Owner {
         Effect::new(self.id, f)
     }
 
+    /// Like [`effect`](Self::effect), for an effect that builds things on
+    /// every run, such as a list's child widgets.
+    ///
+    /// Each run gets a fresh owner, `scope`, to create them under. The scope
+    /// belongs to the effect itself: before the next run, the previous scope
+    /// is disposed with everything in it, and when the effect stops, its
+    /// last scope goes with it. The effect stops when this owner is
+    /// disposed, or when it is disabled after a panic or a dependency cycle.
+    #[track_caller]
+    pub fn effect_scoped(&self, mut f: impl FnMut(Owner) + 'static) -> Effect {
+        self.effect(move || {
+            f(Owner {
+                id: runtime::new_scope(),
+                _not_send: PhantomData,
+            });
+        })
+    }
+
     /// Frees this owner and everything created under it, child owners
     /// included. Their values and closures are dropped and their effects
     /// stop. Afterwards their handles' `get()` panics and `try_get()` returns

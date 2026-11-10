@@ -3,10 +3,11 @@
 use std::any::{Any, type_name};
 use std::cell::RefCell;
 use std::marker::PhantomData;
+use std::panic::Location;
 use std::rc::Rc;
 
 use crate::handle::{Marker, handle_impls};
-use crate::runtime::{self, Computed, NodeId};
+use crate::runtime::{self, Computed, NodeId, drop_isolated};
 
 /// A value derived from signals and other memos.
 ///
@@ -14,6 +15,11 @@ use crate::runtime::{self, Computed, NodeId};
 /// until something reads it. When a value it read changes, it only becomes
 /// stale, and recomputes the next time something reads it. If the new value
 /// equals the old one, the memos and effects that read it don't rerun.
+///
+/// If its closure panics, the memo is logged and disabled. It keeps its last
+/// value, and `try_get()` returns `None` if it never had one. A memo must not
+/// write signals or call [`Runtime::flush`](crate::Runtime::flush): either
+/// panics, which disables it the same way.
 pub struct Memo<T> {
     id: NodeId,
     _marker: Marker<T>,
@@ -24,15 +30,18 @@ handle_impls!(Memo<T>);
 impl<T: PartialEq + 'static> Memo<T> {
     #[track_caller]
     pub(crate) fn new(owner: NodeId, mut f: impl FnMut() -> T + 'static) -> Self {
+        let created = Location::caller();
         let value: Rc<RefCell<Option<T>>> = Rc::new(RefCell::new(None));
         let slot = Rc::clone(&value);
         let compute = move || {
             let new = f();
             let Ok(mut current) = slot.try_borrow_mut() else {
-                panic!(
-                    "Memo<{}> was recomputed while a with() call on it was still running",
+                drop_isolated(new);
+                runtime::borrow_conflict(format!(
+                    "Memo<{}> (created at {created}) was recomputed while a with() call on it \
+                     was still running",
                     type_name::<T>()
-                );
+                ));
             };
             // The value that isn't kept goes back to the runtime, which drops
             // it once the readers have been told.
@@ -67,8 +76,9 @@ impl<T: 'static> Memo<T> {
     ///
     /// # Panics
     ///
-    /// If the memo's owner was disposed, or if the memo reads itself.
-    /// [`try_get`](Self::try_get) returns `None` in the first case.
+    /// If the memo's owner was disposed, if it has no value because its
+    /// closure panicked on the first run, or if the memo reads itself.
+    /// [`try_get`](Self::try_get) returns `None` in the first two cases.
     #[track_caller]
     pub fn get(&self) -> T
     where
@@ -99,7 +109,8 @@ impl<T: 'static> Memo<T> {
         runtime::read_or_panic(self.id, false, "Memo", f)
     }
 
-    /// Like [`get`](Self::get), but returns `None` if the owner was disposed.
+    /// Like [`get`](Self::get), but returns `None` if the owner was disposed
+    /// or the memo has no value.
     #[track_caller]
     pub fn try_get(&self) -> Option<T>
     where
@@ -109,7 +120,7 @@ impl<T: 'static> Memo<T> {
     }
 
     /// Like [`with`](Self::with), but returns `None` if the owner was
-    /// disposed.
+    /// disposed or the memo has no value.
     #[track_caller]
     pub fn try_with<R>(&self, f: impl FnOnce(&T) -> R) -> Option<R> {
         runtime::read(self.id, true, "Memo", f).ok()
