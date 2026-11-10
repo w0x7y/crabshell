@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["spike", "crates/crabshell-reactive"]
+members = ["spike", "crates/crabshell-reactive", "crates/crabshell-ui"]
 
 [workspace.package]
 edition = "2024"

@@ -1,0 +1,254 @@
+//! Colors, fonts and [`Style`]. Everything here is `Copy` and built with
+//! `const fn`s, so a theme is a set of constants.
+
+/// An sRGB color with straight (not premultiplied) alpha.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Color {
+    /// Red, 0 to 255.
+    pub r: u8,
+    /// Green, 0 to 255.
+    pub g: u8,
+    /// Blue, 0 to 255.
+    pub b: u8,
+    /// Alpha: 0 is transparent, 255 is opaque.
+    pub a: u8,
+}
+
+impl Color {
+    /// An opaque color.
+    pub const fn rgb(r: u8, g: u8, b: u8) -> Color {
+        Color { r, g, b, a: 255 }
+    }
+
+    /// A color with alpha: 0 is transparent, 255 is opaque.
+    pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color {
+        Color { r, g, b, a }
+    }
+
+    /// Parses `"#rrggbb"` or `"#rrggbbaa"`, in upper or lower case.
+    ///
+    /// # Panics
+    ///
+    /// If `hex` has any other form. In a `const`, that is a compile error:
+    ///
+    /// ```compile_fail
+    /// const BAD: crabshell_ui::Color = crabshell_ui::Color::hex("#12345");
+    /// ```
+    pub const fn hex(hex: &str) -> Color {
+        let bytes = hex.as_bytes();
+        if bytes.is_empty() || bytes[0] != b'#' || (bytes.len() != 7 && bytes.len() != 9) {
+            panic!("Color::hex takes \"#rrggbb\" or \"#rrggbbaa\"");
+        }
+        let a = if bytes.len() == 9 {
+            hex_byte(bytes[7], bytes[8])
+        } else {
+            255
+        };
+        Color {
+            r: hex_byte(bytes[1], bytes[2]),
+            g: hex_byte(bytes[3], bytes[4]),
+            b: hex_byte(bytes[5], bytes[6]),
+            a,
+        }
+    }
+}
+
+const fn hex_byte(high: u8, low: u8) -> u8 {
+    hex_digit(high) * 16 + hex_digit(low)
+}
+
+const fn hex_digit(digit: u8) -> u8 {
+    match digit {
+        b'0'..=b'9' => digit - b'0',
+        b'a'..=b'f' => digit - b'a' + 10,
+        b'A'..=b'F' => digit - b'A' + 10,
+        _ => panic!("Color::hex found a character that isn't a hex digit"),
+    }
+}
+
+/// A font: family, size and weight.
+///
+/// The family is resolved through fontconfig, so generic names such as
+/// `"sans-serif"` and `"monospace"` work too.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Font {
+    /// The family name, such as `"Inter"` or `"sans-serif"`.
+    pub family: &'static str,
+    /// The size in logical pixels.
+    pub size: f32,
+    /// The weight, from 100 (thin) through 400 (regular) and 700 (bold) to
+    /// 900 (black).
+    pub weight: u16,
+}
+
+impl Font {
+    /// The font text uses when no ancestor sets one.
+    pub const DEFAULT: Font = Font::new("sans-serif", 13.0);
+
+    /// A regular-weight font of `family` at `size` logical pixels.
+    pub const fn new(family: &'static str, size: f32) -> Font {
+        Font {
+            family,
+            size,
+            weight: 400,
+        }
+    }
+
+    /// The same font with another weight, such as 700 for bold.
+    pub const fn weight(self, weight: u16) -> Font {
+        Font { weight, ..self }
+    }
+}
+
+/// A border drawn inside a widget's edge. It takes no layout space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Border {
+    /// The width in logical pixels.
+    pub width: f32,
+    /// The color.
+    pub color: Color,
+}
+
+/// Space between a widget's edge and its content, in logical pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Padding {
+    /// Above and below the content.
+    pub vertical: u32,
+    /// Left and right of the content.
+    pub horizontal: u32,
+}
+
+/// How a widget looks. Every field is optional, and an unset field falls back
+/// to the widget's default: no background, black text in
+/// [`Font::DEFAULT`], no padding, square corners, no border, fully opaque.
+///
+/// `Text` takes `color` and `font` from the nearest widget
+/// that sets them, starting with itself and going up. Nothing else inherits.
+///
+/// `font` and `padding` change the layout; the other fields only change how
+/// the widget is painted.
+///
+/// ```
+/// use crabshell_ui::{Color, Font, Style};
+///
+/// const BAR: Style = Style::new()
+///     .background(Color::rgb(0x1e, 0x1e, 0x2e))
+///     .color(Color::hex("#cdd6f4"))
+///     .font(Font::new("Inter", 13.0));
+/// const WS: Style = Style::new().padding(2, 8).radius(4.0);
+/// const WS_FOCUSED: Style = WS.background(Color::rgb(0x45, 0x47, 0x5a));
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Style {
+    /// Fills the widget's rectangle.
+    pub background: Option<Color>,
+    /// The text color, inherited by `Text`.
+    pub color: Option<Color>,
+    /// The text font, inherited by `Text`.
+    pub font: Option<Font>,
+    /// Space between the edge and the content.
+    pub padding: Option<Padding>,
+    /// The corner radius in logical pixels.
+    pub radius: Option<f32>,
+    /// A border inside the edge.
+    pub border: Option<Border>,
+    /// From 0.0 (invisible) to 1.0 (opaque), applied to the widget and
+    /// everything inside it.
+    pub opacity: Option<f32>,
+}
+
+impl Style {
+    /// A style that sets nothing.
+    pub const fn new() -> Style {
+        Style {
+            background: None,
+            color: None,
+            font: None,
+            padding: None,
+            radius: None,
+            border: None,
+            opacity: None,
+        }
+    }
+
+    /// Sets the background color.
+    pub const fn background(self, color: Color) -> Style {
+        Style {
+            background: Some(color),
+            ..self
+        }
+    }
+
+    /// Sets the text color.
+    pub const fn color(self, color: Color) -> Style {
+        Style {
+            color: Some(color),
+            ..self
+        }
+    }
+
+    /// Sets the text font.
+    pub const fn font(self, font: Font) -> Style {
+        Style {
+            font: Some(font),
+            ..self
+        }
+    }
+
+    /// Sets the padding: `vertical` above and below, `horizontal` left and
+    /// right, in logical pixels.
+    pub const fn padding(self, vertical: u32, horizontal: u32) -> Style {
+        Style {
+            padding: Some(Padding {
+                vertical,
+                horizontal,
+            }),
+            ..self
+        }
+    }
+
+    /// Sets the corner radius in logical pixels.
+    pub const fn radius(self, radius: f32) -> Style {
+        Style {
+            radius: Some(radius),
+            ..self
+        }
+    }
+
+    /// Sets a border of `width` logical pixels.
+    pub const fn border(self, width: f32, color: Color) -> Style {
+        Style {
+            border: Some(Border { width, color }),
+            ..self
+        }
+    }
+
+    /// Sets the opacity, from 0.0 to 1.0.
+    pub const fn opacity(self, opacity: f32) -> Style {
+        Style {
+            opacity: Some(opacity),
+            ..self
+        }
+    }
+
+    /// This style with every field that `over` sets replaced by its value.
+    pub const fn merge(self, over: Style) -> Style {
+        Style {
+            background: or(over.background, self.background),
+            color: or(over.color, self.color),
+            font: or(over.font, self.font),
+            padding: or(over.padding, self.padding),
+            radius: or(over.radius, self.radius),
+            border: or(over.border, self.border),
+            opacity: or(over.opacity, self.opacity),
+        }
+    }
+}
+
+/// `Option::or`, which isn't a `const fn` on stable Rust.
+const fn or<T: Copy>(first: Option<T>, second: Option<T>) -> Option<T> {
+    match first {
+        Some(value) => Some(value),
+        None => second,
+    }
+}

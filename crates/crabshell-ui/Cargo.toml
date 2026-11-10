@@ -1,0 +1,10 @@
+[package]
+name = "crabshell-ui"
+version = "0.0.0"
+description = "Widgets, styles, layout, text layout, hit testing and invalidation for Crabshell"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
