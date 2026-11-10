@@ -1,5 +1,5 @@
 //! [`PanelWindow`], the description of a bar, and [`Window`], the live tree
-//! built from it.
+//! built from it that the platform lays out and draws.
 
 use std::cell::RefCell;
 use std::ops::BitOr;
@@ -8,9 +8,10 @@ use std::rc::Rc;
 use crabshell_reactive::{Owner, untrack};
 
 use crate::cx::Cx;
-use crate::geometry::Size;
+use crate::geometry::{Rect, Size};
 use crate::prop::{IntoProp, Prop};
 use crate::style::Style;
+use crate::text::TextSystem;
 use crate::tree::{Tree, borrow};
 use crate::view::WindowView;
 use crate::widgets::Widget;
@@ -231,8 +232,11 @@ pub struct SurfaceConfig {
 
 /// A live window: the tree of nodes built from a [`PanelWindow`].
 ///
-/// The platform owns one per layer surface, and runs the reactive flush
-/// once per event-loop iteration so bindings update it.
+/// The platform owns one per layer surface. Each event-loop iteration it
+/// runs the reactive flush, then calls [`layout`](Self::layout) if
+/// [`needs_layout`](Self::needs_layout), then draws
+/// [`take_damage`](Self::take_damage) from [`view`](Self::view). When
+/// nothing changed, there is nothing to lay out or draw.
 ///
 /// Dropping the window disposes its owner, which frees every node and
 /// binding in it.
@@ -315,12 +319,30 @@ impl Window {
         }
     }
 
-    /// Whether something changed that needs a layout.
+    /// Whether something changed that needs [`layout`](Self::layout).
     pub fn needs_layout(&self) -> bool {
         self.tree.borrow().needs_layout
     }
 
-    /// A read-only view of the tree. Release it before the next flush.
+    /// Lays the window out at its size, measuring text with `text`, and
+    /// records the areas that moved or changed as damage.
+    pub fn layout(&self, text: &mut TextSystem) {
+        borrow(&self.tree).layout(text);
+    }
+
+    /// Whether any area needs repainting.
+    pub fn has_damage(&self) -> bool {
+        !self.tree.borrow().damage.is_empty()
+    }
+
+    /// Takes the areas to repaint since the last call, in logical pixels.
+    /// They may overlap.
+    pub fn take_damage(&self) -> Vec<Rect> {
+        std::mem::take(&mut borrow(&self.tree).damage)
+    }
+
+    /// A read-only view of the laid-out tree, for drawing. Release it before
+    /// the next flush.
     pub fn view(&self) -> WindowView<'_> {
         WindowView::new(self.tree.borrow())
     }

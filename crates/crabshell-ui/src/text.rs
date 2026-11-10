@@ -25,8 +25,9 @@ use crate::style::Font;
 
 /// The fonts every window measures and draws text with.
 ///
-/// There is one per process. Layout measures text with it, and the renderer
-/// rasterizes glyphs with its [`font_system`](Self::font_system).
+/// There is one per process. The platform passes it to
+/// [`Window::layout`](crate::Window::layout), and the renderer rasterizes
+/// glyphs with its [`font_system`](Self::font_system).
 pub struct TextSystem {
     fonts: FontSystem,
     fontconfig: Lookup,

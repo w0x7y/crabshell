@@ -1,4 +1,4 @@
-//! Crabshell's widgets, styles and windows.
+//! Crabshell's widgets, styles, layout, text layout and invalidation.
 //!
 //! A bar is described with widgets and turned into a live [`Window`]:
 //!
@@ -25,9 +25,13 @@
 //!             .child(Text::new(move || format!("counted {}", count.get()))),
 //!     );
 //!
+//! // The platform does the rest once per event-loop iteration.
 //! let window = Window::new(&cx, bar);
+//! let mut text = TextSystem::new();
+//! window.set_size(Size::new(1920.0, 30.0));
 //! runtime.flush(); // bindings run
-//! assert_eq!(window.surface().height, 30);
+//! window.layout(&mut text);
+//! let _damage = window.take_damage(); // what the renderer repaints
 //! ```
 //!
 //! # How it fits together
@@ -37,7 +41,12 @@
 //!   becomes an effect that writes the node when a signal it read changes.
 //! - Each property is a layout property (text, font, padding, gap, size,
 //!   children) or a paint property (colors, background, border, opacity,
-//!   radius). A layout change marks the window as needing a layout.
+//!   radius). A paint change records the widget's area as damage. A layout
+//!   change marks the window for [`Window::layout`], which records the old
+//!   and new area of every widget that moved or changed.
+//! - [`TextSystem`] loads only the fonts fontconfig matches for the families
+//!   styles name, plus fallbacks for missing characters. Each `Text` keeps
+//!   one cosmic-text buffer that layout measures and the renderer draws.
 //! - Dropping a [`Window`] disposes its owner, freeing every node and
 //!   binding it made.
 
@@ -46,9 +55,9 @@
 
 mod cx;
 mod geometry;
+mod layout;
 mod prop;
 mod style;
-#[allow(dead_code, reason = "only layout, which comes later, measures text")]
 mod text;
 mod tree;
 mod view;

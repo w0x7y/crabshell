@@ -1,10 +1,11 @@
-//! A read-only view of a window's tree.
+//! A read-only view of a laid-out window, for drawing it.
 
 use std::cell::Ref;
 
+use cosmic_text::{Buffer, LayoutRun};
 use taffy::TraversePartialTree;
 
-use crate::geometry::Size;
+use crate::geometry::{Point, Rect, Size};
 use crate::style::{Color, Style};
 use crate::text::TextNode;
 use crate::tree::{Node, NodeId, NodeKind, Tree};
@@ -13,7 +14,7 @@ use crate::widgets::IconSource;
 /// The color text uses when no ancestor sets one.
 const DEFAULT_TEXT_COLOR: Color = Color::rgb(0, 0, 0);
 
-/// A window's tree, borrowed for reading. Get one from
+/// A window's laid-out tree, borrowed for reading. Get one from
 /// [`Window::view`](crate::Window::view).
 pub struct WindowView<'w> {
     tree: Ref<'w, Tree>,
@@ -36,8 +37,8 @@ impl<'w> WindowView<'w> {
     }
 }
 
-/// One node of a window: a widget, or the window itself at the root. Its
-/// children are in drawing order, so later ones are on top.
+/// One node of a laid-out window: a widget, or the window itself at the
+/// root. Draw it, then its children in order, so later ones are on top.
 #[derive(Clone, Copy)]
 pub struct NodeView<'a> {
     tree: &'a Tree,
@@ -59,6 +60,12 @@ impl<'a> NodeView<'a> {
     /// The widget path, such as `PanelWindow[DP-1]/Row/Button[2]`.
     pub fn path(&self) -> &'a str {
         &self.node.path
+    }
+
+    /// The rectangle from the last layout, in window coordinates. Empty
+    /// before the first layout.
+    pub fn rect(&self) -> Rect {
+        self.node.rect.unwrap_or_default()
     }
 
     /// The widget's style. Inherited fields aren't filled in;
@@ -83,7 +90,19 @@ impl<'a> NodeView<'a> {
                 color: self.inherited_color(),
             }),
             NodeKind::Icon(icon) => match &icon.source {
-                Some(source) => Content::Icon(IconView { source }),
+                Some(source) => {
+                    let side = icon.size as f32;
+                    let area = self.node.content;
+                    Content::Icon(IconView {
+                        source,
+                        rect: Rect::new(
+                            area.x + ((area.width - side) / 2.0).round(),
+                            area.y + ((area.height - side) / 2.0).round(),
+                            side,
+                            side,
+                        ),
+                    })
+                }
                 None => Content::None,
             },
             _ => Content::None,
@@ -118,7 +137,9 @@ pub enum Content<'a> {
     Icon(IconView<'a>),
 }
 
-/// A text node's content and color.
+/// Laid-out text, ready to draw. Lines can stick out of the node's
+/// rectangle when it is too small for them; draw them unclipped, as CSS
+/// does. The window's damage covers them.
 pub struct TextView<'a> {
     text: &'a TextNode,
     color: Color,
@@ -130,6 +151,22 @@ impl<'a> TextView<'a> {
         &self.text.content
     }
 
+    /// The cosmic-text buffer layout measured, for drawing glyphs from.
+    pub fn buffer(&self) -> &'a Buffer {
+        &self.text.buffer
+    }
+
+    /// The lines to draw: the buffer's lines, at most `max_lines`. Glyph
+    /// positions are relative to [`origin`](Self::origin).
+    pub fn runs(&self) -> impl Iterator<Item = LayoutRun<'a>> + 'a {
+        self.text.runs()
+    }
+
+    /// The top-left corner of the first line, in window coordinates.
+    pub fn origin(&self) -> Point {
+        self.text.origin
+    }
+
     /// The color to draw in, inherited if the text's own style doesn't set
     /// one.
     pub fn color(&self) -> Color {
@@ -137,8 +174,10 @@ impl<'a> TextView<'a> {
     }
 }
 
-/// An icon node's content.
+/// An icon, ready to draw.
 pub struct IconView<'a> {
     /// What to show.
     pub source: &'a IconSource,
+    /// Where: a square of the icon's size, centered in the node.
+    pub rect: Rect,
 }

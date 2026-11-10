@@ -1,5 +1,5 @@
 //! A window's tree of nodes: turning elements into nodes, applying property
-//! changes, and recording when the window needs a layout.
+//! changes, and recording what needs layout and what needs repainting.
 //!
 //! The nodes live in taffy's tree, each carrying a [`Node`] as its context,
 //! so taffy's parent and child links are the only ones.
@@ -16,7 +16,7 @@ use std::rc::{Rc, Weak};
 use taffy::TaffyTree;
 
 use crate::cx::Cx;
-use crate::geometry::Size;
+use crate::geometry::{Rect, Size};
 use crate::prop::{Prop, PropKind};
 use crate::style::{Padding, Style};
 use crate::text::TextNode;
@@ -35,6 +35,8 @@ pub(crate) struct Tree {
     /// The size the compositor gave the window.
     pub(crate) size: Size,
     pub(crate) needs_layout: bool,
+    /// Areas to repaint, gathered since the renderer last took them.
+    pub(crate) damage: Vec<Rect>,
 }
 
 pub(crate) struct Node {
@@ -53,6 +55,18 @@ pub(crate) struct Node {
     /// column or stack has created so far. Never reused, so no two children
     /// share a path.
     pub(crate) next_child: usize,
+    /// The rectangle from the last layout, in window coordinates. `None`
+    /// until the first.
+    pub(crate) rect: Option<Rect>,
+    /// `rect` without padding.
+    pub(crate) content: Rect,
+    /// What the node draws: `rect`, and for text, lines that overflow it.
+    pub(crate) painted: Rect,
+    /// `painted` together with every descendant's.
+    pub(crate) bounds: Rect,
+    /// A layout property changed, so the node is repainted after the next
+    /// layout even if it doesn't move.
+    pub(crate) changed: bool,
 }
 
 pub(crate) enum NodeKind {
@@ -67,7 +81,6 @@ pub(crate) enum NodeKind {
 }
 
 pub(crate) struct Flex {
-    #[allow(dead_code, reason = "layout, which comes later, reads it")]
     pub(crate) column: bool,
     pub(crate) gap: u32,
     pub(crate) padding_vertical: Option<u32>,
@@ -118,6 +131,11 @@ impl Node {
             kind,
             groups: Vec::new(),
             next_child: 0,
+            rect: None,
+            content: Rect::default(),
+            painted: Rect::default(),
+            bounds: Rect::default(),
+            changed: true,
         }
     }
 
@@ -127,7 +145,6 @@ impl Node {
     }
 
     /// The padding in effect: a row's or column's own wins over its style's.
-    #[allow(dead_code, reason = "layout, which comes later, reads it")]
     pub(crate) fn padding(&self) -> Padding {
         let style = self.effective_style().padding.unwrap_or_default();
         match &self.kind {
@@ -158,6 +175,7 @@ impl Tree {
             surface: Surface::default(),
             size: Size::default(),
             needs_layout: true,
+            damage: Vec::new(),
         }
     }
 
@@ -457,10 +475,26 @@ impl Tree {
         });
     }
 
-    /// Records that the window needs a layout, if the change asks for one.
-    pub(crate) fn invalidate(&mut self, _id: NodeId, change: Change) {
-        if change == Change::Layout {
-            self.needs_layout = true;
+    /// Records that node `id` needs a repaint, or the window a layout.
+    pub(crate) fn invalidate(&mut self, id: NodeId, change: Change) {
+        match change {
+            Change::None => {}
+            Change::Paint => {
+                // A node that was never laid out is painted after its first
+                // layout anyway. Its bounds cover the descendants, which
+                // inherit its color and opacity.
+                if let Some(node) = self.taffy.get_node_context(id)
+                    && node.rect.is_some()
+                {
+                    add_damage(&mut self.damage, node.bounds);
+                }
+            }
+            Change::Layout => {
+                if let Some(node) = self.node_mut(id) {
+                    node.changed = true;
+                }
+                self.needs_layout = true;
+            }
         }
     }
 }
@@ -478,6 +512,13 @@ impl Surface {
 
 fn set_style(tree: &mut Tree, id: NodeId, style: Style) {
     tree.update_style(id, |node| node.style = style);
+}
+
+/// Adds `rect` to the areas to repaint, unless it is empty or already there.
+pub(crate) fn add_damage(damage: &mut Vec<Rect>, rect: Rect) {
+    if !rect.is_empty() && !damage.contains(&rect) {
+        damage.push(rect);
+    }
 }
 
 /// Stores `value` in `slot` and reports a layout change if it differs.

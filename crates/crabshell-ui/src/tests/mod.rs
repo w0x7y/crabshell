@@ -1,6 +1,12 @@
 //! Tests for the widget tree, by area. Each test runs on its own thread, so
 //! each starts with an empty reactive runtime.
+//!
+//! Layout tests that need exact numbers use icons, whose size is exact.
+//! Text tests compare sizes with each other instead, since the font
+//! fontconfig picks depends on the machine.
 
+mod invalidation;
+mod layout;
 mod style;
 mod text;
 mod window;
@@ -12,13 +18,14 @@ use std::sync::{Arc, Mutex};
 
 use crabshell_reactive::Runtime;
 
-use crate::{Cx, NodeView, Output, PanelWindow, Size, Window};
+use crate::{Cx, NodeView, Output, PanelWindow, Rect, Size, TextSystem, Window};
 
-/// A runtime and a root context, with helpers to build windows the way the
-/// platform does.
+/// A runtime, a root context and a text system, with helpers to build and
+/// lay out windows the way the platform does.
 struct Harness {
     runtime: Runtime,
     cx: Cx,
+    text: TextSystem,
 }
 
 impl Harness {
@@ -27,6 +34,7 @@ impl Harness {
         Harness {
             runtime,
             cx: Cx::new(runtime.new_owner()),
+            text: TextSystem::new(),
         }
     }
 
@@ -35,7 +43,8 @@ impl Harness {
         PanelWindow::new(&Output::new("DP-1"))
     }
 
-    /// Builds `panel` at `width` by `height` and runs the bindings.
+    /// Builds `panel` at `width` by `height`, runs the bindings and lays it
+    /// out.
     fn window(&mut self, panel: PanelWindow, width: f32, height: f32) -> Window {
         let window = Window::new(&self.cx, panel);
         window.set_size(Size::new(width, height));
@@ -43,9 +52,12 @@ impl Harness {
         window
     }
 
-    /// One event-loop iteration.
-    fn frame(&mut self, _window: &Window) {
+    /// One event-loop iteration: flush, then layout if needed.
+    fn frame(&mut self, window: &Window) {
         self.runtime.flush();
+        if window.needs_layout() {
+            window.layout(&mut self.text);
+        }
     }
 }
 
@@ -57,6 +69,11 @@ fn node_at<'a>(root: NodeView<'a>, path: &[usize]) -> NodeView<'a> {
             .nth(index)
             .unwrap_or_else(|| panic!("{} has no child {index}", node.path()))
     })
+}
+
+/// The rectangle of the node at `path`.
+fn rect_at(window: &Window, path: &[usize]) -> Rect {
+    node_at(window.view().root(), path).rect()
 }
 
 /// The widget path of every node, depth first.
