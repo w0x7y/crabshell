@@ -2,7 +2,7 @@
 
 Measured 2026-11-10 with the release build on the live SwayFX session.
 
-Every check the spike set out to make passed. The bar starts in about 18 ms and holds about 13 MiB of RSS. It wakes up zero times while idle. One zbus call ran correctly on calloop's futures executor with no tokio. Two things were not tested here: the `closed` event and scales other than 1.0 (see "Not verified").
+Every check the spike set out to make passed. The bar starts in about 18 ms and holds about 13 MiB of RSS. It wakes up zero times while idle. One zbus call ran correctly on calloop's futures executor with no tokio. Two things were not tested here: the `closed` event and scales other than 1.0 (see "Not verified"). Quickshell drawing the identical bar uses 9.5 times the RSS and takes 10 times as long to its first frame (see "Quickshell baseline").
 
 ## Results
 
@@ -16,7 +16,55 @@ Every check the spike set out to make passed. The bar starts in about 18 ms and 
 
 Each run was `timeout 15 target/release/crabshell-spike`, with stderr captured. All three exited through the SIGTERM handler ("event loop stopped, exiting cleanly"). A separate SIGINT test exited with code 0 through the same path.
 
-**Quickshell's running RSS: 230,280 KiB (224.9 MiB), 52 threads.** That is the user's full config, not a like-for-like baseline. It is Quickshell 0.3.2 (`qs -c rime -n`, PID 2728, up 5 h 49 min), read from `/proc/2728/status`. The spike uses 5.9 % of that, but the design doc's real baseline is Quickshell running the same four-module bar, which still needs measuring.
+**Quickshell's running RSS: 230,280 KiB (224.9 MiB), 52 threads.** That is the user's full config, not a like-for-like baseline. It is Quickshell 0.3.2 (`qs -c rime -n`, PID 2728, up 5 h 49 min), read from `/proc/2728/status`. The like-for-like comparison, Quickshell drawing the spike's exact bar, is in the next section.
+
+## Quickshell baseline
+
+**Verdict: GO.** The spike's RSS is 10.5 % of Quickshell's for the same bar (13.2 vs 125.2 MiB). The design's target is at most 25 %.
+
+`baseline/quickshell/shell.qml` draws the spike's bar in Quickshell 0.3.2: one `PanelWindow` on eDP-1, top/left/right anchors, 30 px tall, exclusive zone 30, colour #16181d, and a `Text` "Crabshell" in sans-serif at 15 px, #e6e8ee, 8 px from the left. There are no services and no animations. It ran as a second instance with `qs -p baseline/quickshell`, alongside the user's `qs -c rime -n`, which kept running untouched.
+
+Quickshell draws with Qt's threaded render loop on OpenGL through EGL: GPU dmabuf buffers, its default. I didn't force Qt's software backend.
+
+Median of 3 runs each, interleaved (Quickshell, spike, Quickshell, …), measured by the same script:
+
+| Metric | Quickshell | Spike | Spike ÷ Quickshell |
+|---|---|---|---|
+| **RSS** (headline) | **128,196 KiB (125.2 MiB)** | **13,524 KiB (13.2 MiB)** | **10.5 %** |
+| PSS | 57,899 KiB (56.5 MiB) | 6,359 KiB (6.2 MiB) | 11.0 % |
+| Private_Dirty | 31,036 KiB (30.3 MiB) | 1,364 KiB (1.3 MiB) | 4.4 % |
+| Threads | 20 | 2 | |
+| Idle wakeups over 5 s, all threads | 0 | 0 | |
+| Launch to first frame | 219.35 ms | 21.67 ms | 9.9 % |
+
+Per run, Quickshell then spike:
+- RSS: 128,284 / 128,196 / 128,028 KiB, and 13,524 / 13,520 / 13,608 KiB.
+- PSS: 57,927 / 57,899 / 57,848 KiB, and 6,359 / 6,346 / 6,465 KiB.
+- Private_Dirty: 31,036 / 31,056 / 31,016 KiB, and 1,360 / 1,364 / 1,364 KiB.
+- First frame: 219.35 / 222.03 / 217.96 ms, and 21.67 / 21.74 / 19.72 ms.
+
+PSS splits shared pages among the processes that map them. The second `qs` shares its Qt and Mesa libraries with the user's running `rime` instance, which lowers its PSS. RSS doesn't depend on what else is running, so it is the headline number. Private_Dirty is memory only that process uses.
+
+**How each run was measured.** The same script ran both programs:
+1. Take the wall-clock time just before the fork/exec.
+2. Find the first frame from the program's own log.
+3. Count voluntary context switches over all threads from 4 s to 9 s after the first frame (the method under "Idle wakeups").
+4. At 10 s after the first frame, read `/proc/<pid>/smaps_rollup` (Rss, Pss, Private_Dirty) and the `Threads:` line of `/proc/<pid>/status`.
+5. Send SIGTERM at 15 s after launch, like `timeout 15`.
+
+The wakeup window ends before 10 s so it can't catch the spike's one-shot "VmRSS after 10 s" timer, which is measurement code, not bar behaviour.
+
+**How first frame was measured.** It is the time from launch to the timestamp of a log line each program writes right after committing its first buffer:
+- **Spike:** its "first frame committed" line, microsecond precision.
+- **Quickshell:** run with `--log-times --log-rules 'qt.scenegraph.time.renderloop=true'`; the first "frame rendered … swap=N" line with N ≥ 1, millisecond precision. Qt logs an empty "frame rendered in 0ms … swap=0" pass before the real frame, with no buffer commit behind it. On three trial runs with `WAYLAND_DEBUG=1`, the chosen line matched the first `wl_surface.attach` + `commit` to within 1 ms.
+- **Why not `WAYLAND_DEBUG`:** I first timed both from the protocol log. wayland-rs writes each debug line unbuffered in several pieces, which pushed the spike's own first frame from about 18 to about 41 ms, an overhead the two libraries don't share. So the final runs don't set it.
+- **Comparing with the table at the top:** in the final runs the spike's own "start of `main()` to commit" was 18.35 ms (median). The 21.67 ms here adds about 3 ms of exec, dynamic linking and runtime setup before `main()`. Both columns of the table above include that.
+
+**Screenshot.** `baseline/screenshot.png` holds the same 30 rows (y = 48–77) as `spike/screenshot.png`. They match: same background, font, size, colour and left edge, and the text spans x = 8–72 in both, so the glyph advances are identical. Two differences show up at 8× zoom, both rendering rather than layout:
+- Qt uses subpixel (RGB) antialiasing, following the system's fontconfig setting, where the spike uses grayscale.
+- Qt's baseline sits 1 px higher, with faint antialiasing rows above and below. The glyphs are the same height: 11 strong rows in both.
+
+Quickshell doesn't handle SIGTERM, so each run ended through the default signal action (exit status −15). The spike exited with code 0.
 
 ## Machine and session
 
