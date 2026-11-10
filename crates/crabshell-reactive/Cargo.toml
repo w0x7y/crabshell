@@ -1,0 +1,17 @@
+[package]
+name = "crabshell-reactive"
+version = "0.0.0"
+description = "Single-threaded signals, memos, effects and owners for Crabshell"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+slotmap.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# Only to capture log lines in tests (the cycle and panic messages).
+tracing-subscriber.workspace = true
+

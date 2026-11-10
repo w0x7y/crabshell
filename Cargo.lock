@@ -161,6 +161,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crabshell-reactive"
+version = "0.0.0"
+dependencies = [
+ "slotmap",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "crabshell-spike"
 version = "0.0.0"
 dependencies = [
