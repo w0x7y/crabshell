@@ -2,9 +2,9 @@
 //! window, in a buffer that kept up and in buffers that skipped frames.
 
 use crabshell_reactive::Signal;
-use crabshell_ui::{Align, Color, Row, Stack, Style, Text, Window};
+use crabshell_ui::{Align, Color, Icon, Row, Stack, Style, Text, Window};
 
-use super::{Buffer, Scene};
+use super::{Buffer, Scene, fixture};
 use crate::{BufferAge, Canvas, DamageHistory, PixelFormat, PixelRect};
 
 /// What the changing window's bindings read.
@@ -18,7 +18,7 @@ struct Knobs {
 }
 
 /// A window whose every kind of property can change: a paint change, text
-/// that moves its neighbors, a box's size, opacity and a border. Its
+/// that moves its neighbors, an icon's size, opacity and a border. Its
 /// background is translucent, so cleared areas show if they are wrong.
 fn changing_window(scene: &mut Scene) -> (Window, Knobs) {
     let knobs = Knobs {
@@ -55,12 +55,10 @@ fn changing_window(scene: &mut Scene) -> (Window, Knobs) {
                         .padding(6, 8)
                 }))
                 .child(Text::new(move || label.get()))
-                .child(Row::new().style(move || {
-                    let side = if big.get() { 12 } else { 8 };
-                    Style::new()
-                        .background(Color::hex("#f9e2af"))
-                        .padding(side, side)
-                }))
+                .child(
+                    Icon::new(fixture("shapes.svg").as_path())
+                        .size(move || if big.get() { 24 } else { 16 }),
+                )
                 .child(
                     Stack::new()
                         .style(move || Style::new().opacity(if faded.get() { 0.4 } else { 1.0 }))
@@ -274,6 +272,43 @@ fn stale(drawn: &Buffer, full: &Buffer) -> (usize, Option<(u32, u32, u32, u32)>)
         }
     }
     (count, area)
+}
+
+#[test]
+fn an_icon_bigger_than_its_box_leaves_nothing_behind() {
+    use crabshell_ui::IconSource;
+
+    for scale in [1.0, 1.25, 1.5, 2.0] {
+        let mut scene = Scene::new();
+        let first = scene.cx.signal(true);
+        let (svg, png) = (fixture("shapes.svg"), fixture("disc.png"));
+        // 10 pixels of padding in a 36-pixel bar leave 16 for a 24-pixel
+        // icon, which overflows its box.
+        let panel = scene
+            .panel()
+            .style(Style::new().background(Color::rgb(0, 0, 0)))
+            .child(
+                Row::new().padding(10, 4).child(
+                    Icon::new(move || {
+                        IconSource::File(if first.get() {
+                            svg.clone()
+                        } else {
+                            png.clone()
+                        })
+                    })
+                    .size(24),
+                ),
+            );
+        let window = scene.window(panel, 60.0, 36.0);
+        let mut history = DamageHistory::new();
+        let mut buffer = Buffer::new(&window, scale);
+        scene.draw(&window, &mut history, &mut buffer);
+        first.set(false);
+        scene.frame(&window);
+        scene.draw(&window, &mut history, &mut buffer);
+        let (count, area) = stale(&buffer, &scene.full(&window, scale));
+        assert_eq!(count, 0, "at {scale}: stale pixels in {area:?}");
+    }
 }
 
 #[test]

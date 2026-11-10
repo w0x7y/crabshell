@@ -1,9 +1,14 @@
 //! Whole windows drawn at scales 1, 1.5 and 2 and compared with golden
 //! images.
 
-use crabshell_ui::{Align, Color, Column, Content, Font, Row, Stack, Style, Text, Window};
+use std::rc::Rc;
 
-use super::{Scene, assert_golden};
+use crabshell_ui::{
+    Align, Color, Column, Content, Font, Icon, IconPixels, IconSource, Row, Stack, Style, Text,
+    Window,
+};
+
+use super::{Scene, assert_golden, fixture};
 
 const SCALES: [(f32, &str); 3] = [(1.0, "1x"), (1.5, "1.5x"), (2.0, "2x")];
 
@@ -147,6 +152,32 @@ fn text() {
                             .font(Font::new("sans-serif", 13.0).weight(700)),
                     ),
                 ),
+        )
+    });
+}
+
+#[test]
+fn icons() {
+    let pixels = IconPixels {
+        width: 2,
+        height: 2,
+        // ARGB in network order: red, green, blue and half-transparent white.
+        data: Rc::from(
+            &[
+                255, 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 128, 255, 255, 255,
+            ][..],
+        ),
+    };
+    check("icons", 120.0, 32.0, |scene| {
+        scene.panel().style(BAR).child(
+            Row::new()
+                .padding(4, 4)
+                .gap(4)
+                .align(Align::Center)
+                .child(Icon::new(fixture("shapes.svg").as_path()).size(24))
+                .child(Icon::new(fixture("disc.png").as_path()).size(24))
+                .child(Icon::new(IconSource::Pixels(pixels.clone())).size(16))
+                .child(Icon::new(fixture("shapes.svg").as_path()).size(12)),
         )
     });
 }

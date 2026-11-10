@@ -1,6 +1,6 @@
 //! Draws Crabshell windows on the CPU: backgrounds, rounded corners,
-//! borders and opacity with tiny-skia, and glyphs from cosmic-text. Only
-//! what changed is repainted.
+//! borders and opacity with tiny-skia, glyphs from cosmic-text, and icons
+//! from SVG, PNG or raw pixels. Only what changed is repainted.
 //!
 //! The platform keeps one [`Renderer`], a [`DamageHistory`] per window and
 //! a [`BufferAge`] per buffer. Each frame it hands the renderer the window's
@@ -63,12 +63,15 @@
 //! - Text is drawn from the cosmic-text buffer layout measured, as
 //!   grayscale masks, with the baseline on a whole pixel. It isn't clipped:
 //!   the window's damage covers text that overflows its widget.
+//! - Icons are rasterized at their size in pixels and cached by source and
+//!   that size.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 mod damage;
 mod draw;
+mod icons;
 
 #[cfg(test)]
 mod tests;

@@ -11,11 +11,13 @@
 mod damage;
 mod glyphs;
 mod golden;
+mod icons;
 mod repaint;
 mod shapes;
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use crabshell_reactive::Runtime;
 use crabshell_ui::{Cx, Output, PanelWindow, Size, TextSystem, Window};
@@ -158,6 +160,13 @@ fn node_at<'a>(root: crabshell_ui::NodeView<'a>, path: &[usize]) -> crabshell_ui
     })
 }
 
+/// A file in `tests/fixtures`.
+fn fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name)
+}
+
 /// Checks `buffer` against `tests/golden/<name>.png`, allowing 2/255 per
 /// premultiplied channel, or writes the image when `CRABSHELL_BLESS` is
 /// set. On a mismatch the drawn image is saved under
@@ -275,4 +284,33 @@ fn read_png(path: &Path) -> Option<(Vec<u8>, u32, u32)> {
     );
     pixels.truncate(info.width as usize * info.height as usize * 4);
     Some((pixels, info.width, info.height))
+}
+
+/// Runs `f` and returns everything it logged through `tracing`.
+fn capture_logs(f: impl FnOnce()) -> String {
+    #[derive(Clone, Default)]
+    struct Logs(Arc<Mutex<Vec<u8>>>);
+
+    impl io::Write for Logs {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0
+                .lock()
+                .expect("log buffer lock")
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let logs = Logs::default();
+    let writer = logs.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || writer.clone())
+        .finish();
+    tracing::subscriber::with_default(subscriber, f);
+    let bytes = logs.0.lock().expect("log buffer lock").clone();
+    String::from_utf8(bytes).expect("log output is UTF-8")
 }

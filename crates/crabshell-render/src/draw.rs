@@ -3,13 +3,17 @@
 //! Each area to repaint is drawn from scratch into an RGBA pixmap of its own
 //! size, then copied into the buffer. The pixmap clips the drawing to the
 //! area, and the copy converts the pixels to the buffer's byte order, so
-//! tiny-skia and glyph masks work in the RGBA order they share.
+//! tiny-skia, glyph masks, resvg and PNG decoding all work in the RGBA order
+//! they share.
 
 use cosmic_text::{FontSystem, SwashCache, SwashContent, SwashImage};
-use crabshell_ui::{Color, Content, NodeView, Rect, Size, Style, TextSystem, TextView, WindowView};
+use crabshell_ui::{
+    Color, Content, IconView, NodeView, Rect, Size, Style, TextSystem, TextView, WindowView,
+};
 use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, PixmapMut, PixmapPaint, Transform};
 
 use crate::damage::{BufferAge, DamageHistory, PixelRect};
+use crate::icons::Icons;
 
 /// How many glyph images cosmic-text's cache may hold after a draw before
 /// it is cleared. A bar needs a few hundred; the cache never shrinks itself.
@@ -42,9 +46,11 @@ pub struct Canvas<'a> {
     pub age: &'a mut BufferAge,
 }
 
-/// Draws windows. One serves every window; it holds the glyph cache.
+/// Draws windows. One serves every window; it holds the glyph and icon
+/// caches.
 pub struct Renderer {
     glyphs: SwashCache,
+    icons: Icons,
     /// Where each area is drawn before it is copied into the buffer, kept
     /// between frames.
     scratch: Vec<u8>,
@@ -67,6 +73,7 @@ impl Renderer {
     pub fn new() -> Renderer {
         Renderer {
             glyphs: SwashCache::new(),
+            icons: Icons::new(),
             scratch: Vec::new(),
             work: Work::default(),
         }
@@ -83,6 +90,18 @@ impl Renderer {
     #[cfg(test)]
     pub(crate) fn work(&self) -> (u64, u64) {
         (self.work.layer_pixels, self.work.nodes)
+    }
+
+    /// The number of rasterized icons cached, for tests.
+    #[cfg(test)]
+    pub(crate) fn cached_icons(&self) -> usize {
+        self.icons.cached()
+    }
+
+    /// The number of times an icon was rasterized, for tests.
+    #[cfg(test)]
+    pub(crate) fn rasterized_icons(&self) -> usize {
+        self.icons.rasterized()
     }
 
     /// Draws the laid-out window `view` into `canvas` and returns the areas
@@ -147,12 +166,14 @@ impl Renderer {
                     top: area.y as f32,
                 },
                 glyphs: &mut self.glyphs,
+                icons: &mut self.icons,
                 fonts: text.font_system(),
                 work: &mut self.work,
             };
             painter.node(&mut pixmap, view.root());
             copy(&self.scratch, area, pixels, width, format);
         }
+        self.icons.end_frame();
         if self.glyphs.image_cache.len() > GLYPH_CACHE_LIMIT {
             self.glyphs.image_cache.clear();
             self.glyphs.outline_command_cache.clear();
@@ -296,6 +317,7 @@ impl Grid {
 struct Painter<'a> {
     grid: Grid,
     glyphs: &'a mut SwashCache,
+    icons: &'a mut Icons,
     fonts: &'a mut FontSystem,
     work: &'a mut Work,
 }
@@ -331,6 +353,7 @@ impl Painter<'_> {
             let mut inner = Painter {
                 grid: self.grid.moved(x, y),
                 glyphs: &mut *self.glyphs,
+                icons: &mut *self.icons,
                 fonts: &mut *self.fonts,
                 work: &mut *self.work,
             };
@@ -351,8 +374,8 @@ impl Painter<'_> {
         self.draw_box(pixmap, node.rect(), style);
         match node.content() {
             Content::Text(text) => self.text(pixmap, &text),
-            // Icons aren't drawn yet.
-            Content::Icon(_) | Content::None => {}
+            Content::Icon(icon) => self.icon(pixmap, &icon),
+            Content::None => {}
         }
         for child in node.children() {
             self.node(pixmap, child);
@@ -446,6 +469,29 @@ impl Painter<'_> {
                     SwashContent::SubpixelMask => {}
                 }
             }
+        }
+    }
+
+    /// An icon, rasterized at its size in pixels.
+    fn icon(&mut self, pixmap: &mut PixmapMut<'_>, icon: &IconView<'_>) {
+        let Grid {
+            scale, left, top, ..
+        } = self.grid;
+        let side = (icon.rect.width * scale).round();
+        if side.is_nan() || side < 1.0 {
+            return;
+        }
+        let x = (icon.rect.x * scale).round() - left;
+        let y = (icon.rect.y * scale).round() - top;
+        if let Some(image) = self.icons.get(icon.source, side as u32) {
+            pixmap.draw_pixmap(
+                x as i32,
+                y as i32,
+                image.as_ref(),
+                &PixmapPaint::default(),
+                Transform::identity(),
+                None,
+            );
         }
     }
 }
