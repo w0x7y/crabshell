@@ -1,4 +1,5 @@
-//! Crabshell's widgets, styles, layout, text layout and invalidation.
+//! Crabshell's widgets, styles, layout, text layout, hit testing and
+//! invalidation.
 //!
 //! A bar is described with widgets and turned into a live [`Window`]:
 //!
@@ -19,10 +20,10 @@
 //!     .height(30)
 //!     .style(BAR)
 //!     .child(
-//!         Row::new()
-//!             .gap(8)
-//!             .padding(4, 8)
-//!             .child(Text::new(move || format!("counted {}", count.get()))),
+//!         Row::new().gap(8).padding(4, 8).child(
+//!             Button::new(Text::new(move || format!("clicked {} times", count.get())))
+//!                 .on_click(move |_cx| count.update(|n| *n += 1)),
+//!         ),
 //!     );
 //!
 //! // The platform does the rest once per event-loop iteration.
@@ -47,14 +48,18 @@
 //! - [`TextSystem`] loads only the fonts fontconfig matches for the families
 //!   styles name, plus fallbacks for missing characters. Each `Text` keeps
 //!   one cosmic-text buffer that layout measures and the renderer draws.
-//! - Dropping a [`Window`] disposes its owner, freeing every node and
-//!   binding it made.
+//! - Pointer events go to [`Window::pointer_motion`] and friends. Hit testing
+//!   finds the deepest [`Button`] under the pointer, and its handlers run
+//!   with no borrow held, inside `catch_unwind`.
+//! - Dropping a [`Window`] disposes its owner, freeing every node, binding
+//!   and handler it made.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 mod cx;
 mod geometry;
+mod input;
 mod keyed;
 mod layout;
 mod prop;
@@ -70,6 +75,7 @@ mod tests;
 
 pub use cx::Cx;
 pub use geometry::{Point, Rect, Size};
+pub use input::{CursorShape, PointerButton, ScrollDelta};
 pub use prop::{IntoProp, Prop};
 pub use style::{Border, Color, Font, Padding, Style};
 pub use text::TextSystem;

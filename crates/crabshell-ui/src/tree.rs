@@ -7,16 +7,18 @@
 //! The tree sits in an `Rc<RefCell<..>>` that the [`Window`](crate::Window)
 //! owns. Effects reach it through a `Weak`, so they never keep a dropped
 //! window alive. It is never borrowed while user code runs: closures run
-//! before the borrow, and user closures and values live in the reactive
-//! runtime rather than here, so the runtime drops them.
+//! before the borrow and handlers after it, and user closures and values
+//! live in the reactive runtime rather than here, so the runtime drops them.
 
 use std::cell::{RefCell, RefMut};
 use std::rc::{Rc, Weak};
 
+use crabshell_reactive::Signal;
 use taffy::TaffyTree;
 
 use crate::cx::Cx;
 use crate::geometry::{Rect, Size};
+use crate::input::{Handlers, Pointer};
 use crate::keyed::KeyedSlot;
 use crate::prop::{Prop, PropKind};
 use crate::style::{Padding, Style};
@@ -38,6 +40,7 @@ pub(crate) struct Tree {
     pub(crate) needs_layout: bool,
     /// Areas to repaint, gathered since the renderer last took them.
     pub(crate) damage: Vec<Rect>,
+    pub(crate) pointer: Pointer,
 }
 
 pub(crate) struct Node {
@@ -79,7 +82,7 @@ pub(crate) enum NodeKind {
     Spacer,
     Text(TextNode),
     Icon(IconNode),
-    Button,
+    Button(ButtonNode),
 }
 
 pub(crate) struct Flex {
@@ -95,6 +98,16 @@ pub(crate) struct IconNode {
     /// `None` until the icon's binding first runs.
     pub(crate) source: Option<IconSource>,
     pub(crate) size: u32,
+}
+
+pub(crate) struct ButtonNode {
+    pub(crate) hover_style: Style,
+    pub(crate) pressed_style: Style,
+    /// Kept in the reactive runtime, which drops the user's closures when
+    /// the button's owner goes.
+    pub(crate) handlers: Signal<Handlers>,
+    pub(crate) hovered: bool,
+    pub(crate) pressed: bool,
 }
 
 /// The layer-surface settings of the window.
@@ -117,10 +130,10 @@ pub(crate) enum Change {
     Layout,
 }
 
-/// Borrows the tree for an effect.
+/// Borrows the tree for an effect or a pointer event.
 pub(crate) fn borrow(tree: &RefCell<Tree>) -> RefMut<'_, Tree> {
     tree.try_borrow_mut()
-        .expect("invariant: a window's tree is not borrowed while effects run")
+        .expect("invariant: a window's tree is not borrowed while effects or handlers run")
 }
 
 impl Node {
@@ -141,9 +154,20 @@ impl Node {
         }
     }
 
-    /// The style in effect.
+    /// The style in effect: a button's hover and pressed styles laid over
+    /// its own.
     pub(crate) fn effective_style(&self) -> Style {
-        self.style
+        match &self.kind {
+            NodeKind::Button(button) if button.hovered => {
+                let hovered = self.style.merge(button.hover_style);
+                if button.pressed {
+                    hovered.merge(button.pressed_style)
+                } else {
+                    hovered
+                }
+            }
+            _ => self.style,
+        }
     }
 
     /// The padding in effect: a row's or column's own wins over its style's.
@@ -178,6 +202,7 @@ impl Tree {
             size: Size::default(),
             needs_layout: true,
             damage: Vec::new(),
+            pointer: Pointer::default(),
         }
     }
 
@@ -263,7 +288,13 @@ impl Tree {
                 source: None,
                 size: crate::Icon::DEFAULT_SIZE,
             }),
-            ElementKind::Button => NodeKind::Button,
+            ElementKind::Button(props) => NodeKind::Button(ButtonNode {
+                hover_style: Style::new(),
+                pressed_style: Style::new(),
+                handlers: cx.signal(std::mem::take(&mut props.handlers)),
+                hovered: false,
+                pressed: false,
+            }),
         };
         let id = self
             .taffy
@@ -329,7 +360,20 @@ impl Tree {
                     tree.update_icon(id, |icon| replace(&mut icon.size, value))
                 });
             }
-            ElementKind::Stack | ElementKind::Spacer | ElementKind::Button => {}
+            ElementKind::Button(props) => {
+                self.bind_opt(id, props.hover_style, "hover_style", |tree, id, value| {
+                    tree.update_button_style(id, |button| button.hover_style = value);
+                });
+                self.bind_opt(
+                    id,
+                    props.pressed_style,
+                    "pressed_style",
+                    |tree, id, value| {
+                        tree.update_button_style(id, |button| button.pressed_style = value);
+                    },
+                );
+            }
+            ElementKind::Stack | ElementKind::Spacer => {}
         }
     }
 
@@ -407,6 +451,7 @@ impl Tree {
                 pending.extend(children);
             }
         }
+        self.pointer.forget(&removed);
         for node in removed.into_iter().rev() {
             // `remove` only fails for a node that isn't in the tree.
             let _ = self.taffy.remove(node);
@@ -510,6 +555,18 @@ impl Tree {
             NodeKind::Icon(icon) => f(icon),
             _ => Change::None,
         });
+    }
+
+    pub(crate) fn update_button_style(
+        &mut self,
+        id: NodeId,
+        f: impl FnOnce(&mut ButtonNode),
+    ) -> Change {
+        self.update_style(id, |node| {
+            if let NodeKind::Button(button) = &mut node.kind {
+                f(button);
+            }
+        })
     }
 
     /// Records that node `id` needs a repaint, or the window a layout.

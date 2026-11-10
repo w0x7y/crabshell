@@ -11,6 +11,7 @@ use std::rc::Rc;
 use crabshell_reactive::Memo;
 
 use crate::cx::Cx;
+use crate::input::{Handler, Handlers};
 use crate::keyed::{self, KeyedMount};
 use crate::prop::{IntoProp, Prop};
 use crate::style::Style;
@@ -57,7 +58,7 @@ pub(crate) enum ElementKind {
     Spacer,
     Text(TextProps),
     Icon(IconProps),
-    Button,
+    Button(ButtonProps),
 }
 
 /// One entry of a container's child list: a single widget, or a keyed list
@@ -103,6 +104,12 @@ pub(crate) struct TextProps {
 pub(crate) struct IconProps {
     pub(crate) source: Prop<IconSource>,
     pub(crate) size: Option<Prop<u32>>,
+}
+
+pub(crate) struct ButtonProps {
+    pub(crate) hover_style: Option<Prop<Style>>,
+    pub(crate) pressed_style: Option<Prop<Style>>,
+    pub(crate) handlers: Handlers,
 }
 
 /// How a [`Row`] or [`Column`] places children across its direction: up and
@@ -465,8 +472,14 @@ impl Widget for Icon {
     }
 }
 
-/// A box around one child, which it centers.
+/// A clickable box around one child, which it centers.
+///
+/// While the pointer is over it, `hover_style` is laid over its style, and
+/// while it is also held down, `pressed_style` on top of that. Handlers run
+/// on the main thread and receive the button's [`Cx`]. A handler that panics
+/// is logged and never called again.
 pub struct Button {
+    button: ButtonProps,
     style: Option<Prop<Style>>,
     child: Box<dyn Widget>,
 }
@@ -476,8 +489,50 @@ impl Button {
     pub fn new(child: impl Widget) -> Button {
         Button {
             child: Box::new(child),
+            button: ButtonProps {
+                hover_style: None,
+                pressed_style: None,
+                handlers: Handlers::default(),
+            },
             style: None,
         }
+    }
+
+    /// Sets the style laid over the normal one while the pointer is over the
+    /// button.
+    pub fn hover_style(mut self, style: impl IntoProp<Style>) -> Button {
+        self.button.hover_style = Some(style.into_prop());
+        self
+    }
+
+    /// Sets the style laid over the hover style while the button is held
+    /// down.
+    pub fn pressed_style(mut self, style: impl IntoProp<Style>) -> Button {
+        self.button.pressed_style = Some(style.into_prop());
+        self
+    }
+
+    /// Runs `handler` when the left button is pressed and released over this
+    /// button.
+    pub fn on_click(mut self, handler: impl Fn(&Cx) + 'static) -> Button {
+        self.button.handlers.click = Some(Rc::new(Handler::new(handler)));
+        self
+    }
+
+    /// Runs `handler` when the right button is pressed and released over this
+    /// button.
+    pub fn on_right_click(mut self, handler: impl Fn(&Cx) + 'static) -> Button {
+        self.button.handlers.right_click = Some(Rc::new(Handler::new(handler)));
+        self
+    }
+
+    /// Runs `handler` with whole scroll steps while the pointer is over this
+    /// button: positive for up, negative for down. A mouse wheel gives one
+    /// step per notch; touchpad scrolling gives one step per 15 logical
+    /// pixels.
+    pub fn on_scroll(mut self, handler: impl Fn(&Cx, i32) + 'static) -> Button {
+        self.button.handlers.scroll = Some(Rc::new(Handler::new(handler)));
+        self
     }
 
     style_method!();
@@ -488,7 +543,7 @@ impl Widget for Button {
         Element {
             name: "Button",
             style: self.style,
-            kind: ElementKind::Button,
+            kind: ElementKind::Button(self.button),
             children: vec![ElementChild::One(Box::new(self.child.into_element()))],
         }
     }

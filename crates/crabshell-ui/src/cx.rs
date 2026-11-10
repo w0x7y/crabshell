@@ -1,4 +1,4 @@
-//! [`Cx`], the context that widget code and list views get.
+//! [`Cx`], the context that widget code, event handlers and list views get.
 
 use crabshell_reactive::{Effect, Memo, Owner, Signal};
 
@@ -7,8 +7,9 @@ use crabshell_reactive::{Effect, Memo, Owner, Signal};
 /// A `Cx` wraps the reactive [`Owner`] of one part of the shell: a window,
 /// a widget or one item of a keyed list. Signals, memos and effects created
 /// through it belong to that owner, so they are freed when that part of the
-/// shell goes away. [`children_keyed`](crate::Row::children_keyed) views
-/// receive the `Cx` of their item.
+/// shell goes away. Event handlers receive the `Cx` of their button, and
+/// [`children_keyed`](crate::Row::children_keyed) views receive the `Cx` of
+/// their item.
 #[derive(Clone, Debug)]
 pub struct Cx {
     owner: Owner,

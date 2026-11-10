@@ -5,6 +5,7 @@
 //! Text tests compare sizes with each other instead, since the font
 //! fontconfig picks depends on the machine.
 
+mod input;
 mod invalidation;
 mod keyed;
 mod layout;

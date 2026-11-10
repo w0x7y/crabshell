@@ -75,7 +75,8 @@ fn dropping_a_window_frees_everything_it_created() {
         .gap(move || count.get())
         .child(
             Button::new(Text::new(move || count.get().to_string()))
-                .style(move || Style::new().radius(count.get() as f32)),
+                .style(move || Style::new().radius(count.get() as f32))
+                .on_click(move |_| count.update(|n| *n += 1)),
         )
         .children_keyed(
             move || items.get(),

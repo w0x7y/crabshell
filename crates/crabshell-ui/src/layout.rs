@@ -64,6 +64,7 @@ impl Tree {
 
         self.place(root, Point::default(), fonts);
         self.needs_layout = false;
+        self.pointer_after_layout();
     }
 
     /// The first pass: gives taffy each node's style, and reshapes text.
@@ -230,7 +231,7 @@ fn taffy_style(node: &Node, parent: Parent, size: crate::Size) -> taffy::Style {
         }
         NodeKind::Stack => style.display = Display::Grid,
         NodeKind::Spacer => style.flex_grow = 1.0,
-        NodeKind::Button => {
+        NodeKind::Button(_) => {
             style.align_items = AlignItems::CENTER;
             style.justify_content = JustifyContent::CENTER;
         }

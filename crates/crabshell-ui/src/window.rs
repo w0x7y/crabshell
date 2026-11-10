@@ -1,5 +1,5 @@
 //! [`PanelWindow`], the description of a bar, and [`Window`], the live tree
-//! built from it that the platform lays out and draws.
+//! built from it that the platform lays out, draws and sends input to.
 
 use std::cell::RefCell;
 use std::ops::BitOr;
@@ -238,8 +238,8 @@ pub struct SurfaceConfig {
 /// [`take_damage`](Self::take_damage) from [`view`](Self::view). When
 /// nothing changed, there is nothing to lay out or draw.
 ///
-/// Dropping the window disposes its owner, which frees every node and
-/// binding in it.
+/// Dropping the window disposes its owner, which frees every node,
+/// binding and handler in it.
 pub struct Window {
     pub(crate) tree: Rc<RefCell<Tree>>,
     owner: Owner,
@@ -342,7 +342,7 @@ impl Window {
     }
 
     /// A read-only view of the laid-out tree, for drawing. Release it before
-    /// the next flush.
+    /// the next flush or pointer event.
     pub fn view(&self) -> WindowView<'_> {
         WindowView::new(self.tree.borrow())
     }

@@ -68,7 +68,8 @@ impl<'a> NodeView<'a> {
         self.node.rect.unwrap_or_default()
     }
 
-    /// The widget's style. Inherited fields aren't filled in;
+    /// The style in effect, with a button's hover and pressed styles laid
+    /// over its own. Inherited fields aren't filled in;
     /// [`TextView::color`] has the color text is drawn in.
     pub fn style(&self) -> Style {
         self.node.effective_style()

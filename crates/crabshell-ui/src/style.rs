@@ -232,6 +232,8 @@ impl Style {
     }
 
     /// This style with every field that `over` sets replaced by its value.
+    /// Buttons use it to lay their hover and pressed styles over the normal
+    /// one.
     pub const fn merge(self, over: Style) -> Style {
         Style {
             background: or(over.background, self.background),
