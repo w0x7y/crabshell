@@ -35,7 +35,8 @@
 //! `crabshell-services`, drawing from `crabshell-render` and the Wayland
 //! platform from `crabshell-wayland`; the [`prelude`] has what a bar uses,
 //! including [`ServicesExt`](crabshell_services::ServicesExt) for
-//! `cx.clock(Precision::Minute)` and `cx.sway()`.
+//! `cx.clock(Precision::Minute)` and `cx.sway()`. `examples/bar.rs` is the
+//! v1 bar, with each output's workspaces and the clock.
 //!
 //! # How it works
 //!

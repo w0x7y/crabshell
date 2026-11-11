@@ -1,7 +1,14 @@
 //! Phase 2's exit criteria on headless Sway, one Sway per test: the
 //! counter example matches its goldens at scales 1, 1.5 and 2, before and
 //! after a click; an idle bar wakes nothing, by its own counters and from
-//! outside; unplugging an output drops its bar and frees its nodes.
+//! outside; unplugging an output drops its bar and frees its nodes. And
+//! Phase 3's: the v1 bar example shows the private Sway's workspaces,
+//! switches them on a click, logs each switch's time to the screen and
+//! wakes only on the minute.
+//!
+//! Anything that asks for `cx.sway()` runs as its own process, given the
+//! private Sway's socket: this process's `SWAYSOCK` may name the desktop's
+//! Sway, so a shell in it could switch the desktop's workspaces.
 //!
 //! They need `sway`, `swaymsg` and `grim`, so they are ignored by default.
 //! Goldens are written again, on purpose only, with `CRABSHELL_BLESS=1`.
@@ -21,6 +28,7 @@ mod sway;
 mod counter;
 
 use std::io::{self, BufRead, BufReader};
+use std::ops::Range;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -262,50 +270,58 @@ fn the_counter_bar_matches_its_goldens_before_and_after_a_click() {
     }
 }
 
-/// The counter example as its own program, the way `run` runs it, with
-/// its log lines read as they come.
+/// An example as its own program, the way `run` runs it, with its log
+/// lines read as they come.
 struct ExampleBar {
     child: Child,
     lines: mpsc::Receiver<String>,
 }
 
 impl ExampleBar {
-    /// Builds the example (in release if `release`) and starts it on `sway`.
-    fn start(sway: &Sway, release: bool) -> ExampleBar {
+    /// Builds the example `name` (in release if `release`) and starts it on
+    /// `sway`.
+    fn start(sway: &Sway, name: &str, release: bool) -> ExampleBar {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
         let mut build = Command::new(cargo);
         build
-            .args(["build", "-q", "-p", "crabshell", "--example", "counter"])
+            .args(["build", "-q", "-p", "crabshell", "--example", name])
             .current_dir(&workspace);
         if release {
             build.arg("--release");
         }
         assert!(
             build.status().is_ok_and(|status| status.success()),
-            "the counter example builds"
+            "the {name} example builds"
         );
         let target = std::env::var_os("CARGO_TARGET_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| workspace.join("target"));
         let program = target
             .join(if release { "release" } else { "debug" })
-            .join("examples/counter");
+            .join("examples")
+            .join(name);
         ExampleBar::spawn(sway, Command::new(program), &[])
     }
 
     /// Starts `command` as a shell on `sway`, with `extra` in its otherwise
-    /// cleared environment, and its log read as it comes.
+    /// cleared environment, and its log read as it comes. Its `SWAYSOCK`
+    /// is the private Sway's, never this process's.
     fn spawn(sway: &Sway, mut command: Command, extra: &[(&str, &str)]) -> ExampleBar {
         command.env_clear();
         for (name, value) in extra {
             command.env(name, value);
         }
+        let name = Path::new(command.get_program())
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let mut child = command
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", std::env::var_os("HOME").unwrap_or_default())
             .env("XDG_RUNTIME_DIR", sway.runtime_dir())
             .env("WAYLAND_DISPLAY", sway.display())
+            .env("SWAYSOCK", sway.socket())
             .env("CRABSHELL_LOG", "info")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -316,7 +332,7 @@ impl ExampleBar {
         let (sender, lines) = mpsc::channel();
         std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                eprintln!("counter: {line}");
+                eprintln!("{name}: {line}");
                 if sender.send(line).is_err() {
                     break;
                 }
@@ -333,9 +349,14 @@ impl ExampleBar {
             match self.lines.recv_timeout(left) {
                 Ok(line) if line.contains(needle) => return line,
                 Ok(_) => {}
-                Err(_) => panic!("the counter example never logged {needle:?}"),
+                Err(_) => panic!("the shell never logged {needle:?}"),
             }
         }
+    }
+
+    /// The first frame's time after `run()`, from its log line, in ms.
+    fn first_frame_ms(&self) -> f64 {
+        ms_after(&self.wait_for(FIRST_FRAME), FIRST_FRAME)
     }
 
     /// Its exit status, waiting up to ten seconds; `None` if it is still
@@ -436,7 +457,7 @@ fn an_idle_counter_bar_wakes_nothing() {
     // From outside, for a minute: the example program, sleeping in the
     // loop `run` runs, gets no context switches at all. A timer as slow as
     // one a minute would show.
-    let bar = ExampleBar::start(&sway, false);
+    let bar = ExampleBar::start(&sway, "counter", false);
     bar.wait_for("first frame committed");
     bar.wait_until_quiet();
     let before = bar.context_switches();
@@ -493,14 +514,8 @@ fn measure_the_counter_bar() {
     }
     let sway = Sway::start();
     sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
-    let bar = ExampleBar::start(&sway, true);
-    let line = bar.wait_for("first frame committed");
-    let first_frame_ms: f64 = line
-        .split("first frame committed ")
-        .nth(1)
-        .and_then(|rest| rest.split(" ms").next())
-        .and_then(|ms| ms.parse().ok())
-        .expect("the log line has the time");
+    let bar = ExampleBar::start(&sway, "counter", true);
+    let first_frame_ms = bar.first_frame_ms();
     let started = Instant::now();
     bar.wait_until_quiet();
     let quiet = bar.context_switches();
@@ -517,6 +532,165 @@ fn measure_the_counter_bar() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("headless");
     std::fs::create_dir_all(&dir).expect("create the output directory");
     std::fs::write(dir.join("measurements.txt"), report).expect("write the measurements");
+}
+
+/// What `run` logs once the first frame is committed, before its time.
+const FIRST_FRAME: &str = "first frame committed ";
+
+/// The number of ms in `line` right after `prefix`, as in `... 4.2 ms`.
+fn ms_after(line: &str, prefix: &str) -> f64 {
+    line.split(prefix)
+        .nth(1)
+        .and_then(|rest| rest.split(" ms").next())
+        .and_then(|ms| ms.parse().ok())
+        .unwrap_or_else(|| panic!("no time after {prefix:?} in {line:?}"))
+}
+
+/// The bar's background and the focused workspace's, from examples/bar.rs.
+const BAR_BACKGROUND: [u8; 3] = [0x1e, 0x1e, 0x2e];
+const FOCUSED: [u8; 3] = [0x45, 0x47, 0x5a];
+
+/// The pixel at `x`, `y` of `shot`, without its alpha.
+fn rgb(shot: &Image, x: u32, y: u32) -> [u8; 3] {
+    let at = (y as usize * shot.width as usize + x as usize) * 4;
+    [shot.rgba[at], shot.rgba[at + 1], shot.rgba[at + 2]]
+}
+
+/// The columns of the focused workspace's button in the bar along the top
+/// of `shot`: the longest run of its background on the rows between the
+/// button's top edge and its text. A text edge can blend to that color
+/// too, but never 16 pixels in a row.
+fn focused_button(shot: &Image) -> Option<Range<u32>> {
+    let close = |pixel: [u8; 3]| pixel.iter().zip(FOCUSED).all(|(a, b)| a.abs_diff(b) <= 2);
+    let mut longest = 0..0;
+    for y in 4..9 {
+        let mut start = 0;
+        for x in 0..=shot.width {
+            if x < shot.width && close(rgb(shot, x, y)) {
+                continue;
+            }
+            if x - start > longest.len() as u32 {
+                longest = start..x;
+            }
+            start = x + 1;
+        }
+    }
+    (longest.len() >= 16).then_some(longest)
+}
+
+/// Whether the columns `button` of the bar in `shot` hold a label on the
+/// bar's background: an unfocused workspace's button.
+fn labelled(shot: &Image, button: &Range<u32>) -> bool {
+    let area = button.clone().flat_map(|x| (4..26).map(move |y| (x, y)));
+    let pixels: Vec<[u8; 3]> = area.map(|(x, y)| rgb(shot, x, y)).collect();
+    pixels.contains(&BAR_BACKGROUND) && pixels.iter().any(|pixel| *pixel != BAR_BACKGROUND)
+}
+
+/// Screenshots `output` until `ready` holds for it, failing after ten
+/// seconds.
+fn wait_for_shot(sway: &Sway, output: &str, what: &str, ready: impl Fn(&Image) -> bool) {
+    let deadline = Instant::now() + TIMEOUT;
+    while !ready(&sway.screenshot(output)) {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {what} on {output}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The private Sway's focused workspace, as `swaymsg -t get_workspaces`
+/// says.
+fn focused_in(sway: &Sway) -> Option<String> {
+    let json = sway.msg(&["-t", "get_workspaces", "-r"]);
+    let list: Vec<Workspace> = serde_json::from_str(&json).expect("swaymsg prints the list");
+    list.into_iter().find(|ws| ws.focused).map(|ws| ws.name)
+}
+
+/// The private Sway with two 1920 by 1080 outputs side by side, focused
+/// workspace 1 on HEADLESS-1 and workspace 2 on HEADLESS-2, and the bar
+/// example showing them. Sway removes an empty workspace once it isn't
+/// shown, so one output would never show two. Returns where workspace 1's
+/// button is.
+fn start_bar(release: bool) -> (Sway, ExampleBar, Range<u32>) {
+    let sway = Sway::start();
+    sway.msg(&[
+        "output",
+        "HEADLESS-1",
+        "mode",
+        "1920x1080",
+        "position",
+        "0",
+        "0",
+    ]);
+    sway.msg(&["create_output"]);
+    sway.msg(&[
+        "output",
+        "HEADLESS-2",
+        "mode",
+        "1920x1080",
+        "position",
+        "1920",
+        "0",
+    ]);
+    let bar = ExampleBar::start(&sway, "bar", release);
+    let deadline = Instant::now() + TIMEOUT;
+    let one = loop {
+        if let Some(one) = focused_button(&sway.screenshot("HEADLESS-1")) {
+            break one;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "workspace 1 never showed focused"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    wait_for_shot(&sway, "HEADLESS-2", "workspace 2, not focused", |shot| {
+        focused_button(shot).is_none() && labelled(shot, &one)
+    });
+    assert_eq!(focused_in(&sway).as_deref(), Some("1"));
+    (sway, bar, one)
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn the_bar_shows_each_outputs_workspaces_as_sway_switches() {
+    let (sway, _bar, one) = start_bar(false);
+    sway.msg(&["workspace", "2"]);
+    // Each output's first button starts at the same place.
+    wait_for_shot(&sway, "HEADLESS-2", "workspace 2, focused", |shot| {
+        focused_button(shot).is_some_and(|two| two.start == one.start)
+    });
+    wait_for_shot(&sway, "HEADLESS-1", "workspace 1, not focused", |shot| {
+        focused_button(shot).is_none() && labelled(shot, &one)
+    });
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn clicking_a_workspace_focuses_it_in_the_private_sway() {
+    let (sway, _bar, one) = start_bar(false);
+    sway.msg(&["workspace", "2"]);
+    wait_for_shot(&sway, "HEADLESS-1", "workspace 1, not focused", |shot| {
+        focused_button(shot).is_none()
+    });
+    let mut pointer = VirtualPointer::new(&sway);
+    let x = (one.start + one.end) / 2;
+    // The shell takes the new pointer while its loop runs, in its own
+    // process; a click before that misses, so it clicks until Sway agrees.
+    let deadline = Instant::now() + TIMEOUT;
+    while focused_in(&sway).as_deref() != Some("1") {
+        assert!(
+            Instant::now() < deadline,
+            "the click never focused workspace 1"
+        );
+        pointer.move_to(x, 15, (3840, 1080));
+        pointer.click();
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    wait_for_shot(&sway, "HEADLESS-1", "workspace 1, focused again", |shot| {
+        focused_button(shot) == Some(one.clone())
+    });
 }
 
 /// Log lines captured from this thread, while a guard from

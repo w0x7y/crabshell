@@ -176,6 +176,7 @@ dependencies = [
  "crabshell-wayland",
  "jiff",
  "png",
+ "serde_json",
  "smithay-client-toolkit",
  "tracing",
  "tracing-subscriber",

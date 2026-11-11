@@ -127,6 +127,12 @@ impl Sway {
         &self.display
     }
 
+    /// Sway's IPC socket, which a client's `SWAYSOCK` names.
+    #[allow(dead_code, reason = "crabshell's tests use it; these don't")]
+    pub fn socket(&self) -> PathBuf {
+        self.dir.join("sway.sock")
+    }
+
     /// Sway's log so far.
     pub fn log(&self) -> String {
         std::fs::read_to_string(self.dir.join("sway.log")).unwrap_or_default()
