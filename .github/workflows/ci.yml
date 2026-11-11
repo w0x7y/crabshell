@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install fontconfig and fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev fonts-dejavu-core fonts-noto-color-emoji
+      # Ubuntu's Noto Sans is older than the one the goldens were drawn with and
+      # it has no Znamenny, so both come from the notofonts commit Gentoo packages
+      - name: Install the Noto fonts the goldens were drawn with
+        run: |
+          mkdir -p ~/.local/share/fonts ~/.config/fontconfig
+          cd ~/.local/share/fonts
+          base=https://raw.githubusercontent.com/notofonts/notofonts.github.io/025970232f4f8ff349310d9785431e87d20ed27c/fonts
+          curl -fsSLO "$base/NotoSans/hinted/ttf/NotoSans-Regular.ttf"
+          curl -fsSLO "$base/NotoSans/hinted/ttf/NotoSans-Bold.ttf"
+          curl -fsSLO "$base/NotoZnamennyMusicalNotation/hinted/ttf/NotoZnamennyMusicalNotation-Regular.ttf"
+          sha256sum -c <<'EOF'
+          478c558ea716033cd60c03438f628dfa75694dcf6b5f6d505a2f05fd2b4f3823  NotoSans-Regular.ttf
+          1df075a380fc7cb898acf64c1f7b3b4dd780de3caa860178bf929de35817a913  NotoSans-Bold.ttf
+          b6ed2a11d2a653e14137a35e4c6fdaf5093434ac12964791ee195270828e7508  NotoZnamennyMusicalNotation-Regular.ttf
+          EOF
+          cat > ~/.config/fontconfig/fonts.conf <<'EOF'
+          <?xml version="1.0"?>
+          <!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+          <fontconfig>
+            <alias>
+              <family>sans-serif</family>
+              <prefer><family>Noto Sans</family></prefer>
+            </alias>
+          </fontconfig>
+          EOF
+          fc-cache -f
+          fc-match sans-serif
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
