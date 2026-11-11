@@ -18,5 +18,7 @@ tracing.workspace = true
 wayland-protocols.workspace = true
 
 [dev-dependencies]
+# The headless Sway tests decode grim's screenshots.
+png.workspace = true
 # To capture log lines in tests.
 tracing-subscriber.workspace = true
