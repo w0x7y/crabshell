@@ -8,7 +8,7 @@ the counter example, drawn at scale 2
 
 status: early. bars draw, take clicks, follow monitors as they come and go, and show the clock, sway's workspaces and the volume. the tray comes next, and nothing is on crates.io yet
 
-vibe coded: ai coding agents write the code, and other agents review each step against a design doc
+vibe coded: ai coding agents write the code, and other agents review each step against [a design doc](docs/design.md)
 
 ### try it
 
@@ -26,7 +26,7 @@ a 30 px bar shows up at the top of every monitor. click the button to count
 cargo run --release -p crabshell --example bar
 ```
 
-the v1 bar from the design doc, so far without the tray: each monitor's sway workspaces at the left, the volume and the clock at the right. click a workspace to switch to it, scroll over the volume to change it and click it to mute. [examples/bar.rs](crates/crabshell/examples/bar.rs)
+the v1 bar from [the design doc](docs/design.md#writing-a-config), so far without the tray: each monitor's sway workspaces at the left, the volume and the clock at the right. click a workspace to switch to it, scroll over the volume to change it and click it to mute. [examples/bar.rs](crates/crabshell/examples/bar.rs)
 
 ### a bar
 

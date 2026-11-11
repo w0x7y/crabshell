@@ -2,7 +2,7 @@
 
 Crabshell is a full Rust replacement for Quickshell. A user's whole desktop shell is a Rust crate: bars first, then popups, menus, the tray and the rest. v1 targets Sway and other wlroots compositors.
 
-The spec is the design doc, https://claude.ai/artifact/7HPbf3YkX5dkkwvLTqv5oe, a Claude Docs document; read it through the docs connector and strip the XML to text. Before changing a crate, read the doc's Overview, "Writing a config", and that crate's section with its "Rules settled while building …" list. When the doc and the code disagree, stop and ask.
+The spec is the design doc, [docs/design.md](docs/design.md). Before changing a crate, read the doc's Overview, "Writing a config", and that crate's section with its "Rules settled while building …" list. When the doc and the code disagree, stop and ask.
 
 ## What we never compromise on
 
@@ -86,7 +86,7 @@ The most common defect here is a change that works where you tested it and break
 
 ## Documentation
 
-- The design doc holds the decisions and settled rules. Put proposed doc changes in your report, and edit the doc only when asked.
+- The design doc holds the decisions and settled rules. Put proposed doc changes in your report, and edit `docs/design.md` only when asked.
 - A code comment says why, in one line, when the code can't.
 - `README.md` uses the maintainer's lowercase style. Match it when you edit.
 
