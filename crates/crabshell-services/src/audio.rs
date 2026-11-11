@@ -30,6 +30,10 @@ mod tests;
 /// How long the service waits before each reconnect.
 pub(crate) const RETRY: Duration = Duration::from_secs(2);
 
+/// How long the service keeps trying, from startup and from each drop of
+/// a working connection.
+pub(crate) const RETRY_FOR: Duration = Duration::from_secs(60);
+
 /// How long a command's result stands in for the server's reads.
 pub(crate) const SETTLE: Duration = Duration::from_millis(250);
 
@@ -40,6 +44,8 @@ pub(crate) struct Server {
     pub(crate) address: Option<String>,
     /// How long to wait before each reconnect: [`RETRY`], less in tests.
     pub(crate) retry: Duration,
+    /// How long to keep trying: [`RETRY_FOR`], less in tests.
+    pub(crate) retry_for: Duration,
 }
 
 /// The default sink: where sound goes unless an app picks another.
@@ -162,9 +168,9 @@ impl AudioService {
     /// Starts libpulse's thread and the first connection. Neither waits
     /// for the server.
     fn start(self: &Rc<Self>) {
-        if self.shared.config.audio.is_none() {
+        let Some(server) = &self.shared.config.audio else {
             return tracing::info!("no audio server is set, so there is no sink");
-        }
+        };
         let sink = *self
             .sink
             .get()
@@ -192,6 +198,7 @@ impl AudioService {
             asked: None,
             sink,
             down: false,
+            retry_until: Instant::now() + server.retry_for,
         };
         let service = Rc::clone(self);
         let on_message = Box::new(move |message| service.on_message(message));
@@ -241,16 +248,32 @@ impl AudioService {
         }
     }
 
-    /// Drops the connection, shows no sink and connects again later. Logs
-    /// once per outage, not on every try.
+    /// Drops the connection, shows no sink and tries again every `retry`
+    /// until `retry_for` has passed since startup, or since a working
+    /// connection dropped. Logs once per outage, not on every try, and
+    /// once on giving up.
     fn lost(self: &Rc<Self>, pulse: &mut Pulse, why: &str) {
-        let Some(Server { retry, .. }) = self.shared.config.audio else {
+        let Some(Server {
+            retry, retry_for, ..
+        }) = self.shared.config.audio
+        else {
             return;
         };
+        let now = Instant::now();
+        // It was ready, so the server was there: give it a new while.
+        if pulse.intro.is_some() {
+            pulse.retry_until = now + retry_for;
+        }
         if pulse.disconnect() {
             tracing::warn!(
                 reason = why,
-                "no audio server, trying again every {retry:?}"
+                "no audio server, trying again every {retry:?} for up to {retry_for:?}"
+            );
+        }
+        if now + retry > pulse.retry_until {
+            // No timer from here on, so audio never wakes the shell again.
+            return tracing::info!(
+                "stopped trying to reach the audio server; it is tried again when the shell restarts"
             );
         }
         self.after(retry, AudioService::connect);
@@ -295,6 +318,8 @@ struct Pulse {
     sink: Signal<Option<Sink>>,
     /// Whether the server is gone and that was logged.
     down: bool,
+    /// When the service stops trying to connect, if it can't.
+    retry_until: Instant,
 }
 
 /// The default sink as libpulse reported it.

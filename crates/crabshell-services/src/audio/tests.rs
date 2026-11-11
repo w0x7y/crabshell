@@ -144,15 +144,34 @@ fn one_at_a_time() -> MutexGuard<'static, ()> {
     LIBPULSE.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// The `/proc` directories of this process's libpulse mainloop threads.
+fn libpulse_tasks() -> Vec<PathBuf> {
+    let tasks = std::fs::read_dir("/proc/self/task").expect("procfs");
+    let tasks = tasks.map(|task| task.expect("a task").path());
+    let is_libpulse = |task: &PathBuf| {
+        std::fs::read_to_string(task.join("comm")).is_ok_and(|comm| comm == "threaded-ml\n")
+    };
+    tasks.filter(is_libpulse).collect()
+}
+
 /// How many libpulse mainloop threads this process runs.
 fn libpulse_threads() -> usize {
-    std::fs::read_dir("/proc/self/task")
-        .expect("procfs")
-        .filter(|task| {
-            let comm = task.as_ref().map(|task| task.path().join("comm"));
-            comm.is_ok_and(|comm| std::fs::read_to_string(comm).is_ok_and(|c| c == "threaded-ml\n"))
-        })
-        .count()
+    libpulse_tasks().len()
+}
+
+/// How many times libpulse's threads have been switched out so far.
+fn libpulse_switches() -> u64 {
+    let switches = |task: PathBuf| -> u64 {
+        let status = std::fs::read_to_string(task.join("status")).expect("a task status");
+        let counts = status
+            .lines()
+            .filter(|line| line.contains("ctxt_switches:"));
+        let counts = counts.map(|line| line.split_whitespace().nth(1).expect("a count"));
+        counts
+            .map(|count| count.parse::<u64>().expect("a number"))
+            .sum()
+    };
+    libpulse_tasks().into_iter().map(switches).sum()
 }
 
 /// What a shell gives the services, with no compositor.
@@ -162,19 +181,24 @@ struct Harness {
 }
 
 impl Harness {
-    /// Services that find the audio server at `server` and try again
-    /// every 50 ms.
-    fn new(server: &str) -> Harness {
+    /// Services that find the audio server at `address` and try again
+    /// every 50 ms for a minute.
+    fn new(address: &str) -> Harness {
+        Harness::with(Server {
+            address: Some(address.to_owned()),
+            retry: Duration::from_millis(50),
+            retry_for: Duration::from_secs(60),
+        })
+    }
+
+    fn with(server: Server) -> Harness {
         let event_loop = EventLoop::try_new().expect("an event loop");
         let cx = Cx::new(Runtime::current().new_owner());
         let config = Config {
             localtime: None,
             system_bus: None,
             sway: None,
-            audio: Some(Server {
-                address: Some(server.to_owned()),
-                retry: Duration::from_millis(50),
-            }),
+            audio: Some(server),
         };
         crate::provide_with(&cx, &event_loop.handle(), config);
         Harness { event_loop, cx }
@@ -239,12 +263,27 @@ impl Harness {
 /// sends on Ready taken.
 fn connected(fake: &FakePulse) -> (Harness, Client) {
     let mut shell = Harness::new(&fake.address());
+    let client = connect(&mut shell, fake);
+    (shell, client)
+}
+
+/// Lets `shell` connect to `fake` and waits until it is ready.
+fn connect(shell: &mut Harness, fake: &FakePulse) -> Client {
     shell.cx.audio();
-    shell.run_for(Duration::from_millis(20));
+    shell.run_for(Duration::from_millis(60));
     let mut client = fake.accept();
     shell.run_until_ready();
     assert_eq!(client.command_numbers(), [SUBSCRIBE, GET_SERVER_INFO]);
-    (shell, client)
+    client
+}
+
+/// Tries every 20 ms for 150 ms.
+fn briefly(address: &str) -> Server {
+    Server {
+        address: Some(address.to_owned()),
+        retry: Duration::from_millis(20),
+        retry_for: Duration::from_millis(150),
+    }
 }
 
 /// A two-channel sink at `percent`.
@@ -584,4 +623,57 @@ fn an_echo_another_sink_or_time_ends_the_last_step_standing_in() {
         at("headphones", 15),
     ];
     assert_eq!(volumes, expected);
+}
+
+#[test]
+fn it_stops_trying_after_a_while_and_then_wakes_nothing() {
+    let _one = one_at_a_time();
+    let missing = NoServer::new("gives-up");
+    let logs = logs_of(|| {
+        let mut shell = Harness::with(briefly(&missing.address()));
+        let sink = shell.cx.audio().default_sink();
+        shell.run_for(Duration::from_millis(300));
+        let tries = shell.lost();
+        assert!((2..=9).contains(&tries), "{tries} tries in 150 ms");
+        let switches = libpulse_switches();
+        // One wakeup: the one that ends the run.
+        assert_eq!(shell.run_for(Duration::from_millis(500)), 1);
+        assert_eq!(libpulse_switches(), switches, "libpulse's thread slept");
+        assert_eq!(shell.lost(), tries);
+        assert_eq!(sink.get_untracked(), None);
+    });
+    assert_eq!(logs.matches("no audio server").count(), 1, "{logs}");
+    assert_eq!(logs.matches("stopped trying").count(), 1, "{logs}");
+}
+
+#[test]
+fn each_drop_of_a_working_connection_gets_a_new_while() {
+    let _one = one_at_a_time();
+    let mut fake = FakePulse::new("drops");
+    let logs = logs_of(|| {
+        let mut shell = Harness::with(briefly(&fake.address()));
+        let client = connect(&mut shell, &fake);
+        // Well past the while that began at startup.
+        shell.run_for(Duration::from_millis(200));
+        fake.close();
+        drop(client);
+        shell.run_for(Duration::from_millis(60));
+        assert!(shell.lost() >= 2, "{} tries after the drop", shell.lost());
+        fake.listen();
+        let client = connect(&mut shell, &fake);
+        shell.run_for(Duration::from_millis(200));
+        fake.close();
+        drop(client);
+        shell.run_for(Duration::from_millis(300));
+        let tries = shell.lost();
+        assert_eq!(shell.run_for(Duration::from_millis(300)), 1);
+        assert_eq!(shell.lost(), tries);
+    });
+    assert_eq!(logs.matches("no audio server").count(), 2, "{logs}");
+    assert_eq!(
+        logs.matches("the audio server is back").count(),
+        1,
+        "{logs}"
+    );
+    assert_eq!(logs.matches("stopped trying").count(), 1, "{logs}");
 }

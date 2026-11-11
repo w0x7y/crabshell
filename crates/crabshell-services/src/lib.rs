@@ -79,8 +79,12 @@ pub trait ServicesExt {
     /// The audio server's default sink, with its volume and mute. Every
     /// caller shares one connection, which starts on the loop's next turn
     /// and never waits for the server. It wakes the shell only when the
-    /// server reports a change. With no server, the sink is `None` and the
-    /// service tries again every 2 s.
+    /// server reports a change.
+    ///
+    /// With no server, the sink is `None` and the service tries again
+    /// every 2 s, for up to a minute after startup and after each drop of
+    /// a working connection. Then it stops, logs that once and never wakes
+    /// the shell again; a restart tries again.
     fn audio(&self) -> Audio;
 }
 
@@ -275,6 +279,7 @@ impl Config {
             audio: Some(audio::Server {
                 address: None,
                 retry: audio::RETRY,
+                retry_for: audio::RETRY_FOR,
             }),
         }
     }

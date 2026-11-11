@@ -28,15 +28,27 @@ pub(super) struct FakePulse {
 
 impl FakePulse {
     pub(super) fn new(name: &str) -> FakePulse {
-        let dir = NoServer::new(name);
-        let listener = UnixListener::bind(dir.socket()).expect("a test socket");
+        let mut fake = FakePulse {
+            dir: NoServer::new(name),
+            listener: None,
+        };
+        fake.listen();
+        fake
+    }
+
+    /// Starts taking connections, as when the server starts.
+    pub(super) fn listen(&mut self) {
+        let listener = UnixListener::bind(self.dir.socket()).expect("a test socket");
         listener
             .set_nonblocking(true)
             .expect("a non-blocking socket");
-        FakePulse {
-            dir,
-            listener: Some(listener),
-        }
+        self.listener = Some(listener);
+    }
+
+    /// Stops taking connections, as when the server is gone.
+    pub(super) fn close(&mut self) {
+        self.listener = None;
+        std::fs::remove_file(self.dir.socket()).expect("the socket file");
     }
 
     pub(super) fn address(&self) -> String {
