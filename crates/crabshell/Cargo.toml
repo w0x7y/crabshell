@@ -1,7 +1,7 @@
 [package]
 name = "crabshell"
 version = "0.0.0"
-description = "Wayland bars and panels in Rust: run(), per_output and the prelude"
+description = "A full Rust replacement for Quickshell, where your whole shell is a Rust crate"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
