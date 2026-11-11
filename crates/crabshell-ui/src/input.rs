@@ -144,6 +144,13 @@ impl Window {
         }
     }
 
+    /// A touchpad scroll gesture ended (`wl_pointer.axis_stop`): scrolling
+    /// that hasn't added up to a whole step is dropped, so it doesn't carry
+    /// into the next gesture. A wheel's partial notch is kept.
+    pub fn pointer_scroll_end(&self) {
+        borrow(&self.tree).pointer.pixels = 0.0;
+    }
+
     /// The cursor to show.
     pub fn cursor(&self) -> CursorShape {
         self.tree.borrow().cursor()

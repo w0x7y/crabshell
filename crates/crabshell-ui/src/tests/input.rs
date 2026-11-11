@@ -272,6 +272,31 @@ fn scrolling_sums_into_whole_steps_up_positive() {
 }
 
 #[test]
+fn a_touchpad_scroll_that_ends_forgets_its_partial_step() {
+    let mut h = Harness::new();
+    let steps = Rc::new(RefCell::new(Vec::new()));
+    let log = Rc::clone(&steps);
+    let window = two_buttons(
+        &mut h,
+        Button::new(square()).on_scroll(move |_, n| log.borrow_mut().push(n)),
+        Button::new(square()),
+    );
+    window.pointer_motion(center(&window, &[0, 0]));
+    window.pointer_scroll(ScrollDelta::Pixels(10.0));
+    // The fingers lift: the 10 pixels don't carry into the next gesture.
+    window.pointer_scroll_end();
+    window.pointer_scroll(ScrollDelta::Pixels(10.0));
+    assert!(steps.borrow().is_empty());
+    window.pointer_scroll(ScrollDelta::Pixels(5.0));
+    assert_eq!(*steps.borrow(), [-1]);
+    // A wheel's partial notch isn't part of a gesture and stays.
+    window.pointer_scroll(ScrollDelta::Wheel(60));
+    window.pointer_scroll_end();
+    window.pointer_scroll(ScrollDelta::Wheel(60));
+    assert_eq!(*steps.borrow(), [-1, -1]);
+}
+
+#[test]
 fn a_panicking_handler_is_logged_and_disabled() {
     let mut h = Harness::new();
     let calls = Counter::default();
