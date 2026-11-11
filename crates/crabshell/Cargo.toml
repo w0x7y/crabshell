@@ -1,0 +1,17 @@
+[package]
+name = "crabshell"
+version = "0.0.0"
+description = "Wayland bars and panels in Rust: run(), per_output and the prelude"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+crabshell-reactive.workspace = true
+crabshell-ui.workspace = true
+crabshell-wayland.workspace = true
+tracing.workspace = true
+# Writes the shell's logs to stderr.
+tracing-subscriber.workspace = true
+
