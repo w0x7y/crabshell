@@ -1,6 +1,6 @@
 # crabshell
 
-a wayland bar toolkit, like quickshell, except your bar is a rust crate. the first release targets sway and other wlroots compositors
+a full rust replacement for quickshell. your whole desktop shell is a rust crate: bars now, then popups, menus, the tray and the rest. the first release targets sway and other wlroots compositors
 
 ![the counter example bar at scale 2](crates/crabshell/tests/golden/counter@2x.png)
 
@@ -47,7 +47,7 @@ fn bar(cx: &Cx, output: &Output) -> PanelWindow {
 }
 ```
 
-every widget property takes a value or a closure. a closure runs again when a signal it reads changes, and only what changed is redrawn. `per_output` builds a bar for every monitor, now and later, and drops it when the monitor goes. the full example, with styles and hover, is [examples/counter.rs](crates/crabshell/examples/counter.rs)
+every widget property takes a value or a closure. a closure runs again when a signal it reads changes, and only what changed is redrawn. `per_output` builds windows for every monitor, now and later, and drops them when the monitor goes. the full example, with styles and hover, is [examples/counter.rs](crates/crabshell/examples/counter.rs)
 
 ### numbers
 
