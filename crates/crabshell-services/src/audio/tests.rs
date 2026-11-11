@@ -18,6 +18,7 @@ use fake::{
 };
 
 mod fake;
+mod pipewire;
 
 const NORM: u32 = Volume::NORMAL.0;
 
@@ -222,21 +223,20 @@ impl Harness {
         wakeups
     }
 
-    /// Runs the loop until libpulse's context is ready and the service
-    /// has acted on it, for up to 2 s.
-    fn run_until_ready(&mut self) {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let ready = |shell: &Harness| {
-            let pulse = shell
-                .service()
-                .pulse
-                .borrow()
-                .as_ref()
-                .map(|p| p.intro.is_some());
-            pulse == Some(true)
-        };
-        while !ready(self) {
-            assert!(Instant::now() < deadline, "never ready");
+    /// One turn of the loop, as the shell runs it, for whatever comes
+    /// first. Waits up to 100 ms for it.
+    fn turn(&mut self) {
+        self.event_loop
+            .dispatch(Some(Duration::from_millis(100)), &mut ())
+            .expect("the loop runs");
+        Runtime::current().flush();
+    }
+
+    /// Runs the loop until `done`, for up to 5 s.
+    fn run_until(&mut self, done: impl Fn(&Harness) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done(self) {
+            assert!(Instant::now() < deadline, "timed out");
             self.run_for(Duration::from_millis(10));
         }
     }
@@ -272,7 +272,15 @@ fn connect(shell: &mut Harness, fake: &FakePulse) -> Client {
     shell.cx.audio();
     shell.run_for(Duration::from_millis(60));
     let mut client = fake.accept();
-    shell.run_until_ready();
+    shell.run_until(|shell| {
+        let pulse = shell
+            .service()
+            .pulse
+            .borrow()
+            .as_ref()
+            .map(|p| p.intro.is_some());
+        pulse == Some(true)
+    });
     assert_eq!(client.command_numbers(), [SUBSCRIBE, GET_SERVER_INFO]);
     client
 }
