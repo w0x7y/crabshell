@@ -118,7 +118,9 @@ pub struct Shell {
 
 impl Shell {
     /// Sets up the shell on `event_loop` and calls `root` with the root
-    /// context. Nothing is shown before the first [`dispatch`](Self::dispatch).
+    /// context, which hands out the services through
+    /// [`ServicesExt`](crabshell_services::ServicesExt). Nothing is shown
+    /// before the first [`dispatch`](Self::dispatch).
     ///
     /// # Errors
     ///
@@ -126,6 +128,8 @@ impl Shell {
     pub fn new(mut event_loop: EventLoop, root: impl FnOnce(&Cx)) -> Result<Shell, Error> {
         let runtime = Runtime::current();
         let cx = Cx::new(runtime.new_owner().named("root"));
+        // Nothing starts here: each service connects when root first asks.
+        crabshell_services::provide(&cx, &event_loop.handle());
         let state = Rc::new(RefCell::new(PerOutput::new()));
         cx.provide(Service {
             per_output: Rc::clone(&state),

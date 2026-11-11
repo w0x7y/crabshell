@@ -31,9 +31,11 @@
 //! ```
 //!
 //! Widgets, styles and layout come from `crabshell-ui`, signals and effects
-//! from `crabshell-reactive`, drawing from `crabshell-render` and the
-//! Wayland platform from `crabshell-wayland`; the [`prelude`] has what a
-//! bar uses.
+//! from `crabshell-reactive`, the clock and Sway's workspaces from
+//! `crabshell-services`, drawing from `crabshell-render` and the Wayland
+//! platform from `crabshell-wayland`; the [`prelude`] has what a bar uses,
+//! including [`ServicesExt`](crabshell_services::ServicesExt) for
+//! `cx.clock(Precision::Minute)` and `cx.sway()`.
 //!
 //! # How it works
 //!
@@ -43,6 +45,8 @@
 //!   [`EXIT_ROOT_PANICKED`] (1) if the root closure panics, or with
 //!   [`EXIT_NO_COMPOSITOR`] (2) if there is no compositor, it lacks a
 //!   protocol the shell needs, or the connection is lost.
+//! - Each service starts the first time a config asks for it, so a bar
+//!   that shows no workspaces never connects to Sway.
 //! - `per_output` runs its closure for each output under a child owner of
 //!   the context it was called with. The owner is disposed when the output
 //!   goes, or when the compositor closes one of its windows.
@@ -58,6 +62,9 @@ mod shell;
 #[cfg(test)]
 mod tests;
 
+/// The time library behind [`cx.clock()`](crabshell_services::ServicesExt::clock),
+/// so a config can name `jiff::Zoned` without its own copy.
+pub use jiff;
 pub use per_output::IntoPanels;
 pub use shell::{EXIT_NO_COMPOSITOR, EXIT_ROOT_PANICKED, Error, Shell, ShellExt, run};
 
@@ -65,6 +72,7 @@ pub use shell::{EXIT_NO_COMPOSITOR, EXIT_ROOT_PANICKED, Error, Shell, ShellExt, 
 pub mod prelude {
     pub use crate::{IntoPanels, ShellExt};
     pub use crabshell_reactive::{Effect, Memo, ReadSignal, Signal};
+    pub use crabshell_services::{Precision, ServicesExt, Workspace};
     pub use crabshell_ui::{
         Align, Anchors, Border, Button, Color, Column, Cx, Edge, Font, Icon, IconPixels,
         IconSource, Justify, Layer, Output, Padding, PanelWindow, Row, Size, Spacer, Stack, Style,

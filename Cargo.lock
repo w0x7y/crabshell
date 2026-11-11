@@ -171,8 +171,10 @@ name = "crabshell"
 version = "0.0.0"
 dependencies = [
  "crabshell-reactive",
+ "crabshell-services",
  "crabshell-ui",
  "crabshell-wayland",
+ "jiff",
  "png",
  "smithay-client-toolkit",
  "tracing",

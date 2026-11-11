@@ -695,6 +695,23 @@ fn dropping_a_shell_frees_its_nodes() {
     );
 }
 
+#[test]
+#[ignore = "needs headless Sway"]
+fn the_root_context_hands_out_running_services() {
+    let sway = Sway::start();
+    let mut clock = None;
+    let mut shell = Shell::new(sway.connect(), |cx| {
+        clock = Some(cx.clock(Precision::Second));
+    })
+    .expect("the root closure runs");
+    let clock = clock.expect("the root closure ran");
+    // Without the services, cx.clock() hands out a clock that stands still.
+    let first = clock.get_untracked();
+    run_until(&mut shell, "a second clock to tick", |_| {
+        clock.get_untracked() != first
+    });
+}
+
 /// Set when this test binary runs again as a shell; the value says which.
 const CHILD: &str = "CRABSHELL_HEADLESS_CHILD";
 
