@@ -13,14 +13,18 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Once;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use calloop::timer::TimeoutAction;
 use calloop::{Interest, RegistrationToken};
 use crabshell_reactive::{ReadSignal, Signal};
 use crabshell_ui::Cx;
 use serde::Deserialize;
 
 use crate::Shared;
+
+/// How long the service waits before each reconnect.
+pub(crate) const RETRY: Duration = Duration::from_secs(2);
 
 /// One of Sway's workspaces, as `GET_WORKSPACES` describes it.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -43,6 +47,8 @@ pub struct Workspace {
 /// Where Sway listens.
 pub(crate) struct Socket {
     pub(crate) path: PathBuf,
+    /// How long to wait before each reconnect: [`RETRY`], less in tests.
+    pub(crate) retry: Duration,
 }
 
 /// The Sway service, from `cx.sway()`. A clone is cheap and shares the
@@ -101,6 +107,8 @@ struct State {
     workspaces: Signal<Vec<Workspace>>,
     changed_at: Option<Instant>,
     connection: Option<Connection>,
+    /// Whether the current outage was logged, so retries stay quiet.
+    outage_logged: bool,
 }
 
 struct Connection {
@@ -145,21 +153,22 @@ impl Service {
             workspaces,
             changed_at: None,
             connection: None,
+            outage_logged: false,
         });
         if self.shared.config.sway.is_none() {
             tracing::info!("SWAYSOCK is unset, so the bar shows no workspaces");
-        } else {
-            self.connect();
+        } else if !self.connect() {
+            self.retry_later();
         }
         workspaces.read_only()
     }
 
-    /// Connects and asks for the list and its changes. A failure is
-    /// logged.
-    fn connect(self: &Rc<Self>) {
+    /// Connects and asks for the list and its changes. `false` if Sway
+    /// isn't there, logged once per outage.
+    fn connect(self: &Rc<Self>) -> bool {
         let (Some(socket), Some(event_loop)) = (&self.shared.config.sway, self.shared.event_loop())
         else {
-            return;
+            return false;
         };
         let opened = UnixStream::connect(&socket.path).and_then(|stream| {
             stream.set_nonblocking(true)?;
@@ -173,16 +182,22 @@ impl Service {
         let (stream, fd) = match opened {
             Ok(opened) => opened,
             Err(error) => {
-                let path = socket.path.display();
-                tracing::warn!(%path, %error, "can't connect to Sway");
-                return;
+                if !std::mem::replace(&mut state.outage_logged, true) {
+                    let path = socket.path.display();
+                    let retry = socket.retry;
+                    tracing::warn!(%path, %error, ?retry, "can't connect to Sway; retrying");
+                }
+                return false;
             }
         };
         let service = Rc::clone(self);
         let read = Box::new(move || service.on_readable());
         let Some(reader) = event_loop.insert_fd(fd, Interest::READ, read) else {
-            return;
+            return false;
         };
+        if std::mem::take(&mut state.outage_logged) {
+            tracing::info!("connected to Sway again");
+        }
         let mut connection = Connection {
             stream,
             reader,
@@ -195,6 +210,27 @@ impl Service {
         ipc::encode(ipc::SUBSCRIBE, br#"["workspace"]"#, &mut connection.outbox);
         state.connection = Some(connection);
         self.flush_with(&mut *state);
+        true
+    }
+
+    /// Tries to connect every `retry` until it works or the list is gone.
+    fn retry_later(self: &Rc<Self>) {
+        let (Some(socket), Some(event_loop)) = (&self.shared.config.sway, self.shared.event_loop())
+        else {
+            return;
+        };
+        let retry = socket.retry;
+        let service = Rc::clone(self);
+        event_loop.insert_timer(
+            Instant::now() + retry,
+            Box::new(move || {
+                if !service.alive() || service.connect() {
+                    TimeoutAction::Drop
+                } else {
+                    TimeoutAction::ToDuration(retry)
+                }
+            }),
+        );
     }
 
     /// Whether the list is still there: its owner, the root, isn't disposed.
@@ -279,14 +315,16 @@ impl Service {
         }
     }
 
-    /// Drops the connection and empties the list.
+    /// Drops the connection, empties the list and reconnects later.
     fn disconnect(self: &Rc<Self>, state: &mut State, why: &dyn Display) {
-        tracing::warn!(%why, "lost the connection to Sway");
+        tracing::warn!(%why, "lost the connection to Sway; reconnecting");
+        state.outage_logged = true;
         self.drop_connection(state);
         state.changed_at = None;
         if state.workspaces.try_with(Vec::is_empty) == Some(false) {
             state.workspaces.set(Vec::new());
         }
+        self.retry_later();
     }
 
     /// Closes the connection for good, once the list is gone.

@@ -13,6 +13,9 @@ use super::ipc::{self, GET_WORKSPACES, SUBSCRIBE, WORKSPACE_EVENT};
 use super::{Socket, Workspace};
 use crate::{Config, ServicesExt};
 
+/// The reconnect delay in these tests.
+const RETRY: Duration = Duration::from_millis(100);
+
 /// A stand-in for Sway: a socket in a short temporary directory, since
 /// socket paths are capped at 108 bytes. The directory goes on drop.
 struct FakeSway {
@@ -40,6 +43,7 @@ impl FakeSway {
     fn socket(&self) -> Socket {
         Socket {
             path: self.dir.join("ipc"),
+            retry: RETRY,
         }
     }
 
@@ -50,6 +54,12 @@ impl FakeSway {
             .set_nonblocking(true)
             .expect("a non-blocking socket");
         self.listener = Some(listener);
+    }
+
+    /// Stops taking connections, as when Sway is gone.
+    fn close(&mut self) {
+        self.listener = None;
+        std::fs::remove_file(self.socket().path).expect("the socket file");
     }
 
     /// The client waiting to be accepted, if one is. The service connects
@@ -355,6 +365,8 @@ fn disposing_the_root_frees_the_list_and_closes_the_socket() {
     peer.send(WORKSPACE_EVENT, "{}");
     shell.turn();
     peer.read_end();
+    shell.run_for(RETRY * 2);
+    assert!(fake.try_accept().is_none());
 }
 
 #[test]
@@ -387,6 +399,41 @@ fn bad_json_is_logged_and_skipped() {
 }
 
 #[test]
+fn a_closed_socket_empties_the_list_until_it_reconnects() {
+    let fake = FakeSway::new();
+    let (mut shell, mut peer) = Harness::connect(&fake);
+    let sway = shell.cx.sway();
+    peer.send(WORKSPACE_EVENT, "{}");
+    shell.turn();
+    assert_eq!(peer.read(), (GET_WORKSPACES, String::new()));
+    peer.send(GET_WORKSPACES, &two().0);
+    shell.turn();
+    assert!(sway.changed_at().is_some());
+
+    // A clean close: everything sent was read.
+    drop(peer);
+    shell.turn();
+    assert_eq!(sway.workspaces().get_untracked(), []);
+    assert_eq!(sway.changed_at(), None);
+    shell.run_for(RETRY / 2);
+    assert!(fake.try_accept().is_none(), "no reconnect before the delay");
+
+    shell.run_for(RETRY);
+    let mut peer = fake.accept();
+    let (list, expected) = two();
+    peer.greet(&list);
+    shell.turn();
+    assert_eq!(sway.workspaces().get_untracked(), expected);
+
+    // A reset: Sway goes with a request unread.
+    peer.send(WORKSPACE_EVENT, "{}");
+    shell.turn();
+    drop(peer);
+    shell.turn();
+    assert_eq!(sway.workspaces().get_untracked(), []);
+}
+
+#[test]
 fn an_oversize_message_drops_the_connection() {
     let logs = capture_logs(|| {
         let fake = FakeSway::new();
@@ -400,4 +447,24 @@ fn an_oversize_message_drops_the_connection() {
         peer.read_end();
     });
     assert!(logs.contains("-byte cap"), "{logs}");
+}
+
+#[test]
+fn a_failed_connect_is_logged_once_per_outage() {
+    let logs = capture_logs(|| {
+        let mut fake = FakeSway::new();
+        fake.close();
+        let mut shell = Harness::new(Some(fake.socket()));
+        let workspaces = shell.cx.sway().workspaces();
+        shell.run_for(RETRY * 3 + RETRY / 2);
+        fake.listen();
+        shell.run_for(RETRY);
+        let mut peer = fake.accept();
+        let (list, expected) = one();
+        peer.greet(&list);
+        shell.turn();
+        assert_eq!(workspaces.get_untracked(), expected);
+    });
+    assert_eq!(logs.matches("can't connect to Sway").count(), 1, "{logs}");
+    assert_eq!(logs.matches("connected to Sway again").count(), 1, "{logs}");
 }

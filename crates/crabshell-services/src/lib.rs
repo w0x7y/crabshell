@@ -66,8 +66,8 @@ pub trait ServicesExt {
     /// shares one connection, made on the first call.
     ///
     /// The list is empty while Sway isn't there: when `SWAYSOCK` is unset,
-    /// and after the socket closes. It wakes the shell only when Sway sends
-    /// something.
+    /// and after the socket closes, until a reconnect every 2 s works. It
+    /// wakes the shell only when Sway sends something.
     fn sway(&self) -> Sway;
 }
 
@@ -226,7 +226,10 @@ impl Config {
                 .ok(),
             sway: std::env::var_os("SWAYSOCK")
                 .filter(|path| !path.is_empty())
-                .map(|path| sway::Socket { path: path.into() }),
+                .map(|path| sway::Socket {
+                    path: path.into(),
+                    retry: sway::RETRY,
+                }),
         }
     }
 }
