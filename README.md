@@ -8,6 +8,8 @@ the counter example, drawn at scale 2
 
 status: early. bars draw, take clicks and follow monitors as they come and go. the clock, workspaces, audio and the tray come next, and nothing is on crates.io yet
 
+vibe coded: ai coding agents write the code, and other agents review each step against a design doc
+
 ### try it
 
 needs rust 1.99 or newer, fontconfig, and sway or another wlroots compositor
