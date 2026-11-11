@@ -5,6 +5,7 @@ mod events;
 mod outputs;
 mod pacing;
 mod platform;
+mod pointer;
 mod scale;
 mod surface;
 mod windows;

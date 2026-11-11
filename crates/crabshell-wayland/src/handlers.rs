@@ -8,10 +8,16 @@ use smithay_client_toolkit::compositor::CompositorHandler;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::client::protocol::{
     wl_output::{self, WlOutput},
+    wl_pointer::WlPointer,
+    wl_seat::WlSeat,
     wl_surface::WlSurface,
 };
-use smithay_client_toolkit::reexports::client::{Connection, Dispatch, QueueHandle, delegate_noop};
+use smithay_client_toolkit::reexports::client::{
+    Connection, Dispatch, Proxy, QueueHandle, delegate_noop,
+};
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
+use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
+use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{
     LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
@@ -27,7 +33,8 @@ use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
 use crate::events::Event;
 use crate::outputs::describe;
-use crate::platform::Platform;
+use crate::platform::{Platform, SeatPointer};
+use crate::pointer::{self, Cursor};
 use crate::scale::Scale;
 use crate::surface::Surface;
 use crate::windows::Entry;
@@ -52,6 +59,21 @@ impl Platform {
                 .as_ref()
                 .is_some_and(|ours| &ours.layer == layer)
         })
+    }
+
+    /// Lets go of a seat's pointer, unhovering the window it was over.
+    fn drop_pointer(&mut self, index: usize) {
+        let pointer = self.pointers.remove(index);
+        if let Some(entry) = pointer.cursor.focus().and_then(|id| self.windows.get(id)) {
+            entry.window.pointer_leave();
+        }
+        if let Some(shapes) = pointer.shapes {
+            shapes.destroy();
+        }
+        // `release` came in version 3; older pointers just stop being used.
+        if pointer.pointer.version() >= 3 {
+            pointer.pointer.release();
+        }
     }
 }
 
@@ -206,6 +228,105 @@ impl OutputHandler for Platform {
     }
 }
 
+impl SeatHandler for Platform {
+    fn seat_state(&mut self) -> &mut SeatState {
+        &mut self.seats
+    }
+
+    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat) {}
+
+    fn new_capability(
+        &mut self,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+        seat: WlSeat,
+        capability: Capability,
+    ) {
+        if capability != Capability::Pointer || self.pointers.iter().any(|ours| ours.seat == seat) {
+            return;
+        }
+        let pointer = match self.seats.get_pointer(qh, &seat) {
+            Ok(pointer) => pointer,
+            Err(error) => {
+                tracing::warn!(%error, "couldn't get the seat's pointer");
+                return;
+            }
+        };
+        let shapes = self
+            .cursor_shapes
+            .as_ref()
+            .map(|manager| manager.get_shape_device(&pointer, qh));
+        self.pointers.push(SeatPointer {
+            seat,
+            pointer,
+            shapes,
+            cursor: Cursor::default(),
+        });
+    }
+
+    fn remove_capability(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        seat: WlSeat,
+        capability: Capability,
+    ) {
+        if capability != Capability::Pointer {
+            return;
+        }
+        while let Some(index) = self.pointers.iter().position(|ours| ours.seat == seat) {
+            self.drop_pointer(index);
+        }
+    }
+
+    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: WlSeat) {
+        while let Some(index) = self.pointers.iter().position(|ours| ours.seat == seat) {
+            self.drop_pointer(index);
+        }
+    }
+}
+
+impl PointerHandler for Platform {
+    fn pointer_frame(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        pointer: &WlPointer,
+        events: &[PointerEvent],
+    ) {
+        let Some(ours) = self
+            .pointers
+            .iter_mut()
+            .find(|ours| &ours.pointer == pointer)
+        else {
+            return;
+        };
+        for event in events {
+            let Some(entry) = self.windows.entries.iter().find(|entry| {
+                entry
+                    .surface
+                    .as_ref()
+                    .is_some_and(|surface| surface.layer.wl_surface() == &event.surface)
+            }) else {
+                continue;
+            };
+            match event.kind {
+                PointerEventKind::Enter { serial } => ours.cursor.enter(serial, entry.id),
+                PointerEventKind::Leave { .. } => ours.cursor.leave(),
+                _ => {}
+            }
+            let mut cursor = None;
+            for input in pointer::inputs(&event.kind, event.position) {
+                cursor = Some(pointer::apply(&entry.window, input));
+            }
+            // Nothing is sent after a leave: the cursor has no window.
+            if let Some(cursor) = cursor {
+                ours.show(cursor);
+            }
+        }
+    }
+}
+
 impl ShmHandler for Platform {
     fn shm_state(&mut self) -> &mut Shm {
         &mut self.shm
@@ -217,7 +338,7 @@ impl ProvidesRegistryState for Platform {
         &mut self.registry
     }
 
-    registry_handlers![OutputState];
+    registry_handlers![OutputState, SeatState];
 }
 
 impl Dispatch<WpFractionalScaleV1, ()> for Platform {

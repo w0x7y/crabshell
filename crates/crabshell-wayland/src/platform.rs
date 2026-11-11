@@ -5,23 +5,31 @@ use std::time::Duration;
 use calloop::{LoopHandle, LoopSignal};
 use crabshell_reactive::Runtime;
 use crabshell_render::{BufferAge, Canvas, DamageHistory, PixelFormat, PixelRect, Renderer};
-use crabshell_ui::{TextSystem, Window};
+use crabshell_ui::{CursorShape, TextSystem, Window};
 use smithay_client_toolkit::compositor::CompositorState;
 use smithay_client_toolkit::output::OutputState;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::reexports::client::globals::{GlobalList, registry_queue_init};
-use smithay_client_toolkit::reexports::client::protocol::wl_output::WlOutput;
+use smithay_client_toolkit::reexports::client::protocol::{
+    wl_output::WlOutput, wl_pointer::WlPointer, wl_seat::WlSeat,
+};
 use smithay_client_toolkit::reexports::client::{Connection, Proxy, QueueHandle};
 use smithay_client_toolkit::registry::RegistryState;
+use smithay_client_toolkit::seat::SeatState;
+use smithay_client_toolkit::seat::pointer::cursor_shape::CursorShapeManager;
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{KeyboardInteractivity, LayerShell};
 use smithay_client_toolkit::shm::Shm;
 use smithay_client_toolkit::shm::slot::SlotPool;
+use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::{
+    Shape, WpCursorShapeDeviceV1,
+};
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
 use crate::events::{self, Event, Listener};
 use crate::outputs::OutputInfo;
+use crate::pointer::Cursor;
 use crate::scale::Scale;
 use crate::surface::{self, NAMESPACE, Surface};
 use crate::windows::{Entry, WindowId, Windows};
@@ -233,8 +241,35 @@ pub struct Snapshot {
     pub height: u32,
 }
 
+/// A seat's pointer.
+pub(crate) struct SeatPointer {
+    pub(crate) seat: WlSeat,
+    pub(crate) pointer: WlPointer,
+    /// For setting cursor shapes, when the compositor offers them.
+    pub(crate) shapes: Option<WpCursorShapeDeviceV1>,
+    pub(crate) cursor: Cursor,
+}
+
+impl SeatPointer {
+    /// Shows `wanted` if the pointer is over a window that shows something
+    /// else. Without `wp_cursor_shape_v1` the compositor's default stays.
+    pub(crate) fn show(&mut self, wanted: CursorShape) {
+        if let Some((serial, shape)) = self.cursor.update(wanted)
+            && let Some(shapes) = &self.shapes
+        {
+            shapes.set_shape(
+                serial,
+                match shape {
+                    CursorShape::Default => Shape::Default,
+                    CursorShape::Pointer => Shape::Pointer,
+                },
+            );
+        }
+    }
+}
+
 /// Everything the event loop's callbacks reach: the compositor's globals,
-/// outputs and windows, and the renderer and text system they
+/// outputs, pointers and windows, and the renderer and text system they
 /// draw with.
 pub struct Platform {
     pub(crate) connection: Connection,
@@ -247,11 +282,14 @@ pub struct Platform {
     layer_shell: LayerShell,
     pub(crate) shm: Shm,
     pub(crate) outputs: OutputState,
+    pub(crate) seats: SeatState,
     fractional: Option<(WpFractionalScaleManagerV1, WpViewporter)>,
+    pub(crate) cursor_shapes: Option<CursorShapeManager>,
     /// Outputs with names, in the order they came.
     pub(crate) known: Vec<(WlOutput, OutputInfo)>,
     listener: Option<Listener<Platform>>,
     pub(crate) windows: Windows<Surface, WlOutput>,
+    pub(crate) pointers: Vec<SeatPointer>,
     renderer: Renderer,
     text: TextSystem,
     pub(crate) stats: Stats,
@@ -297,6 +335,8 @@ impl Platform {
         Ok(Platform {
             registry: RegistryState::new(globals),
             outputs: OutputState::new(globals, &qh),
+            seats: SeatState::new(globals, &qh),
+            cursor_shapes: CursorShapeManager::bind(globals, &qh).ok(),
             connection,
             qh,
             handle,
@@ -309,6 +349,7 @@ impl Platform {
             known: Vec::new(),
             listener: None,
             windows: Windows::new(),
+            pointers: Vec::new(),
             renderer: Renderer::new(),
             text: TextSystem::new(),
             stats: Stats::default(),
@@ -431,6 +472,7 @@ impl Platform {
         self.create_surfaces();
         let Platform {
             windows,
+            pointers,
             renderer,
             text,
             qh,
@@ -456,6 +498,14 @@ impl Platform {
             }
             if entry.window.needs_layout() {
                 entry.window.layout(text);
+                // A layout can move a button out from under a still
+                // pointer, or under it.
+                for pointer in pointers
+                    .iter_mut()
+                    .filter(|pointer| pointer.cursor.focus() == Some(entry.id))
+                {
+                    pointer.show(entry.window.cursor());
+                }
             }
             if surface.frames.pacing.should_draw(entry.window.has_damage())
                 && surface.draw(&entry.window, renderer, text, qh)
