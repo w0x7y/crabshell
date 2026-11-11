@@ -1,0 +1,15 @@
+[package]
+name = "crabshell-services"
+version = "0.0.0"
+description = "The clock, Sway workspaces, audio and tray services for Crabshell"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+calloop.workspace = true
+crabshell-reactive.workspace = true
+crabshell-ui.workspace = true
+jiff.workspace = true
+tracing.workspace = true
