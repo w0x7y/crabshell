@@ -64,6 +64,7 @@ impl Sway {
     /// The service if a config has started it with `cx.sway()`, without
     /// starting it, so the shell can read [`changed_at`](Self::changed_at)
     /// and a bar that shows no workspaces never connects.
+    #[doc(hidden)]
     pub fn started(cx: &Cx) -> Option<Sway> {
         let service = cx.service::<Service>()?;
         let workspaces = service.state.borrow().as_ref()?.workspaces.read_only();

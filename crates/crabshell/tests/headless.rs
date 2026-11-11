@@ -871,13 +871,18 @@ fn each_workspace_switch_logs_its_time_to_the_screen() {
     // Release, as a config's template builds its dependencies optimized.
     // Each switch repaints both outputs' bars.
     let (sway, bar, _) = start_bar(true);
-    let times = switch_workspaces(&sway, &bar, 10);
+    let mut times = switch_workspaces(&sway, &bar, 10);
+    // A bar that never finishes its frame, on an output that is off, doesn't
+    // keep the other output's commit from showing the switch.
+    sway.msg(&["output", "HEADLESS-2", "power", "off"]);
+    times.extend(switch_workspaces(&sway, &bar, 4));
     let median = median(&times);
+    let slowest = times.iter().copied().fold(0.0, f64::max);
     eprintln!("workspace switch to screen: median {median:.1} ms, each {times:.1?} ms");
     let frame = 1000.0 / 60.0;
     assert!(
-        median <= frame,
-        "the median switch took {median:.1} ms, more than a frame at 60 Hz: {times:?}"
+        slowest <= frame,
+        "a switch took {slowest:.1} ms, more than a frame at 60 Hz: {times:?}"
     );
 }
 

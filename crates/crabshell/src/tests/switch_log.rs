@@ -13,13 +13,30 @@ fn a_switch_drawn_in_the_dispatch_that_brought_it_is_logged_once() {
 }
 
 #[test]
-fn with_several_windows_the_last_ones_commit_shows_it() {
+fn the_first_commit_shows_it_though_another_window_still_draws() {
     let mut log = SwitchLog::default();
     let event = Instant::now();
-    // One window drew at once; another waits for its frame callback.
+    // The other window may never finish, as on an output that is off.
+    assert_eq!(log.after_dispatch(Some(event), 5, 6, || true), Some(event));
+}
+
+#[test]
+fn a_frame_still_to_come_is_waited_for() {
+    let mut log = SwitchLog::default();
+    let event = Instant::now();
+    assert_eq!(log.after_dispatch(Some(event), 5, 5, || true), None);
+    assert_eq!(log.after_dispatch(Some(event), 5, 6, || true), Some(event));
+}
+
+#[test]
+fn a_switch_not_shown_within_a_second_is_dropped() {
+    let mut log = SwitchLog::default();
+    let event = Instant::now()
+        .checked_sub(Duration::from_secs(2))
+        .expect("the monotonic clock runs past 2 s");
+    // A later commit, such as the clock's, isn't taken for it.
+    assert_eq!(log.after_dispatch(Some(event), 5, 5, || true), None);
     assert_eq!(log.after_dispatch(Some(event), 5, 6, || true), None);
-    assert_eq!(log.after_dispatch(Some(event), 6, 6, || true), None);
-    assert_eq!(log.after_dispatch(Some(event), 6, 7, || false), Some(event));
 }
 
 #[test]

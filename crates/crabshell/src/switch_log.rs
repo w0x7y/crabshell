@@ -1,7 +1,11 @@
 //! Which commit shows a new workspace list, for the log line Phase 3's exit
 //! check reads: "workspace switch on screen in 4.2 ms".
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// A switch not shown by then is dropped, so a later commit, such as the
+/// clock's, isn't taken for it.
+const STALE: Duration = Duration::from_secs(1);
 
 /// Follows a workspace change from Sway's event until a commit shows it.
 #[derive(Default)]
@@ -17,10 +21,11 @@ impl SwitchLog {
     /// Called after each dispatch with the event behind the current list
     /// (`None` for a list no event led to), the commit counts before and
     /// after the dispatch, and whether a shown window has damage left to
-    /// draw. Returns the event of the change this dispatch finished
-    /// showing: a frame was committed since it came and no shown window has
-    /// more to draw, so with several windows it is the last one's commit.
-    /// A change that drew nothing is dropped unlogged.
+    /// draw. Returns the event of the change this dispatch first showed:
+    /// the first commit since it came, from any window, since one that
+    /// never finishes a frame, as on an output that is off, would hold the
+    /// log back for good. A change that drew nothing, or that no commit
+    /// showed within [`STALE`], is dropped unlogged.
     pub(crate) fn after_dispatch(
         &mut self,
         changed_at: Option<Instant>,
@@ -35,10 +40,11 @@ impl SwitchLog {
             self.waiting = Some((event, before));
         }
         let (event, commits) = self.waiting?;
-        if drawing() {
-            return None;
+        let (shown, stale) = (after > commits, event.elapsed() >= STALE);
+        if shown || stale || !drawing() {
+            self.waiting = None;
+            return (shown && !stale).then_some(event);
         }
-        self.waiting = None;
-        (after > commits).then_some(event)
+        None
     }
 }
