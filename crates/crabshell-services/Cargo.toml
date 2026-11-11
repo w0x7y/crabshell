@@ -12,6 +12,7 @@ calloop.workspace = true
 crabshell-reactive.workspace = true
 crabshell-ui.workspace = true
 jiff.workspace = true
+libpulse-binding.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

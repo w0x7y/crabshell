@@ -199,6 +199,7 @@ impl Harness {
             localtime: None,
             system_bus: None,
             sway,
+            audio: None,
         };
         crate::provide_with(&cx, &event_loop.handle(), config);
         Harness { event_loop, cx }

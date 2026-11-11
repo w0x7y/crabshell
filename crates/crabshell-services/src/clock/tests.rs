@@ -199,6 +199,7 @@ fn offline() -> Config {
         localtime: None,
         system_bus: None,
         sway: None,
+        audio: None,
     }
 }
 
@@ -307,6 +308,7 @@ fn one_system_bus_watcher_serves_every_clock() {
                 .expect("an address"),
         ),
         sway: None,
+        audio: None,
     });
     let clocks = shell.cx.service::<Clocks>().expect("provided");
     let held = Rc::strong_count(&clocks);
@@ -326,6 +328,7 @@ fn a_tick_reads_the_zone_again() {
         localtime: Some(localtime.path()),
         system_bus: None,
         sway: None,
+        audio: None,
     });
     let clock = shell.cx.clock(Precision::Second);
     assert_eq!(
@@ -350,6 +353,7 @@ fn without_a_system_bus_the_clock_keeps_ticking() {
                 .expect("an address"),
         ),
         sway: None,
+        audio: None,
     });
     let clock = shell.cx.clock(Precision::Second);
     let first = clock.get_untracked().timestamp();
@@ -432,6 +436,7 @@ fn logind_and_timedated_resync_the_clock() {
         localtime: Some(localtime.path()),
         system_bus: Some(bus.address.parse().expect("dbus-daemon's address")),
         sway: None,
+        audio: None,
     });
     let clock = shell.cx.clock(Precision::Minute);
     let zone = || {

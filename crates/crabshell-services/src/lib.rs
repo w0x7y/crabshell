@@ -1,5 +1,5 @@
-//! The services a Crabshell bar reads: the clock and Sway's workspaces, and
-//! later audio and the tray.
+//! The services a Crabshell bar reads: the clock, Sway's workspaces and
+//! audio, and later the tray.
 //!
 //! The shell calls [`provide`] once, with its root context and event loop.
 //! After that, any context hands out services through [`ServicesExt`],
@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod audio;
 mod clock;
 mod sway;
 
@@ -23,6 +24,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Instant;
 
+use calloop::channel::Channel;
 use calloop::futures::{Executor, Scheduler};
 use calloop::generic::Generic;
 use calloop::timer::{TimeoutAction, Timer};
@@ -30,6 +32,7 @@ use calloop::{Interest, LoopHandle, Mode, PostAction, RegistrationToken};
 use crabshell_reactive::{Owner, ReadSignal};
 use crabshell_ui::Cx;
 
+pub use audio::{Audio, Sink};
 pub use clock::Precision;
 pub use sway::{Sway, Workspace};
 
@@ -48,6 +51,7 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
     let shared = Rc::new(Shared::new(cx.owner(), handle, config));
     cx.provide(clock::Clocks::new(Rc::clone(&shared)));
     cx.provide(sway::Service::new(Rc::clone(&shared)));
+    cx.provide(audio::AudioService::new(Rc::clone(&shared)));
 }
 
 /// The services a context hands out.
@@ -71,6 +75,13 @@ pub trait ServicesExt {
     /// empty until a reconnect, tried every 2 s, works. While connected,
     /// it wakes the shell only when Sway sends something.
     fn sway(&self) -> Sway;
+
+    /// The audio server's default sink, with its volume and mute. Every
+    /// caller shares one connection, which starts on the loop's next turn
+    /// and never waits for the server. It wakes the shell only when the
+    /// server reports a change. With no server, the sink is `None` and the
+    /// service tries again every 2 s.
+    fn audio(&self) -> Audio;
 }
 
 impl ServicesExt for Cx {
@@ -80,6 +91,10 @@ impl ServicesExt for Cx {
 
     fn sway(&self) -> Sway {
         sway::sway(self)
+    }
+
+    fn audio(&self) -> Audio {
+        audio::audio(self)
     }
 }
 
@@ -164,6 +179,14 @@ trait EventLoop {
 
     /// Adds the services' executor. `false`, logged, if the loop refused it.
     fn insert_executor(&self, executor: Executor<()>) -> bool;
+
+    /// Calls `on_message` with each message libpulse's thread sends on
+    /// `channel`. `false`, logged, if the loop refused it.
+    fn insert_audio_channel(
+        &self,
+        channel: Channel<audio::Message>,
+        on_message: Box<dyn FnMut(audio::Message)>,
+    ) -> bool;
 }
 
 impl<D: 'static> EventLoop for LoopHandle<'static, D> {
@@ -203,6 +226,20 @@ impl<D: 'static> EventLoop for LoopHandle<'static, D> {
             )
             .is_ok()
     }
+
+    fn insert_audio_channel(
+        &self,
+        channel: Channel<audio::Message>,
+        mut on_message: Box<dyn FnMut(audio::Message)>,
+    ) -> bool {
+        self.insert_source(channel, move |event, _, _| {
+            if let calloop::channel::Event::Msg(message) = event {
+                on_message(message);
+            }
+        })
+        .inspect_err(|error| tracing::error!(%error, "the audio channel couldn't be added"))
+        .is_ok()
+    }
 }
 
 /// Where the services find the system. Tests point it at their own files
@@ -215,6 +252,9 @@ struct Config {
     system_bus: Option<zbus::Address>,
     /// Sway's IPC socket, from `SWAYSOCK`. `None` when that is unset.
     sway: Option<sway::Socket>,
+    /// The audio server. `None` for none, so a test never reaches the
+    /// user's.
+    audio: Option<audio::Server>,
 }
 
 impl Config {
@@ -232,6 +272,10 @@ impl Config {
                     path: path.into(),
                     retry: sway::RETRY,
                 }),
+            audio: Some(audio::Server {
+                address: None,
+                retry: audio::RETRY,
+            }),
         }
     }
 }
