@@ -216,6 +216,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "crabshell-wayland"
+version = "0.0.0"
+dependencies = [
+ "crabshell-render",
+ "smithay-client-toolkit",
+]
+
+[[package]]
 name = "crc32fast"
 version = "1.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

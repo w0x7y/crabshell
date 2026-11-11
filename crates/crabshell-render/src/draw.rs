@@ -34,7 +34,8 @@ pub struct Canvas<'a> {
     /// The buffer's memory: `width * height` pixels of 4 bytes, row by row.
     pub pixels: &'a mut [u8],
     /// The width in pixels: the window's logical width times `scale`,
-    /// rounded up.
+    /// rounded halfway away from zero, as `wp_fractional_scale_v1` says.
+    /// The window's edge is drawn at the buffer's edge either way.
     pub width: u32,
     /// The height in pixels, likewise.
     pub height: u32,

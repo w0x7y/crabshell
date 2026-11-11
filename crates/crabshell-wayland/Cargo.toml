@@ -1,0 +1,12 @@
+[package]
+name = "crabshell-wayland"
+version = "0.0.0"
+description = "Crabshell's Wayland platform: the event loop, layer-shell windows, outputs and pointer input"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+crabshell-render.workspace = true
+smithay-client-toolkit.workspace = true

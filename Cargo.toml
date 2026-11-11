@@ -5,6 +5,7 @@ members = [
     "crates/crabshell-reactive",
     "crates/crabshell-ui",
     "crates/crabshell-render",
+    "crates/crabshell-wayland",
 ]
 
 [workspace.package]
@@ -30,4 +31,5 @@ zbus = { version = "=6.2.1", default-features = false, features = ["default-rt",
 
 # The workspace's own crates.
 crabshell-reactive = { path = "crates/crabshell-reactive" }
+crabshell-render = { path = "crates/crabshell-render" }
 crabshell-ui = { path = "crates/crabshell-ui" }
