@@ -1,5 +1,5 @@
-//! The services a Crabshell bar reads: the clock, and later Sway's
-//! workspaces, audio and the tray.
+//! The services a Crabshell bar reads: the clock and Sway's workspaces, and
+//! later audio and the tray.
 //!
 //! The shell calls [`provide`] once, with its root context and event loop.
 //! After that, any context hands out services through [`ServicesExt`],
@@ -18,17 +18,20 @@ mod clock;
 mod sway;
 
 use std::cell::OnceCell;
+use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Instant;
 
 use calloop::futures::{Executor, Scheduler};
+use calloop::generic::Generic;
 use calloop::timer::{TimeoutAction, Timer};
-use calloop::{LoopHandle, RegistrationToken};
+use calloop::{Interest, LoopHandle, Mode, PostAction, RegistrationToken};
 use crabshell_reactive::{Owner, ReadSignal};
 use crabshell_ui::Cx;
 
 pub use clock::Precision;
+pub use sway::{Sway, Workspace};
 
 /// Makes the services reachable from `cx` and every context made from it.
 /// The shell calls this once, with its root context and its event loop.
@@ -44,6 +47,7 @@ pub fn provide<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>) {
 fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Config) {
     let shared = Rc::new(Shared::new(cx.owner(), handle, config));
     cx.provide(clock::Clocks::new(Rc::clone(&shared)));
+    cx.provide(sway::Service::new(Rc::clone(&shared)));
 }
 
 /// The services a context hands out.
@@ -57,11 +61,23 @@ pub trait ServicesExt {
     /// right again at once. A zone changed any other way shows from the
     /// next tick.
     fn clock(&self, precision: Precision) -> ReadSignal<jiff::Zoned>;
+
+    /// Sway's workspaces, over the IPC socket at `$SWAYSOCK`. Every caller
+    /// shares one connection, made on the first call.
+    ///
+    /// The list is empty until Sway answers, and stays empty when
+    /// `SWAYSOCK` is unset. It wakes the shell only when Sway sends
+    /// something.
+    fn sway(&self) -> Sway;
 }
 
 impl ServicesExt for Cx {
     fn clock(&self, precision: Precision) -> ReadSignal<jiff::Zoned> {
         clock::clock(self, precision)
+    }
+
+    fn sway(&self) -> Sway {
+        sway::sway(self)
     }
 }
 
@@ -131,6 +147,16 @@ trait EventLoop {
         tick: Box<dyn FnMut() -> TimeoutAction>,
     ) -> Option<RegistrationToken>;
 
+    /// Calls `ready` whenever `fd` is ready for `interest`. The loop owns
+    /// `fd` and closes it when the source is removed. `None`, logged, if
+    /// the loop refused it.
+    fn insert_fd(
+        &self,
+        fd: OwnedFd,
+        interest: Interest,
+        ready: Box<dyn FnMut()>,
+    ) -> Option<RegistrationToken>;
+
     /// Removes a source. One that is already gone is ignored.
     fn remove(&self, token: RegistrationToken);
 
@@ -147,6 +173,21 @@ impl<D: 'static> EventLoop for LoopHandle<'static, D> {
         self.insert_source(Timer::from_deadline(deadline), move |_, _, _| tick())
             .inspect_err(|error| tracing::error!(%error, "a service's timer couldn't be added"))
             .ok()
+    }
+
+    fn insert_fd(
+        &self,
+        fd: OwnedFd,
+        interest: Interest,
+        mut ready: Box<dyn FnMut()>,
+    ) -> Option<RegistrationToken> {
+        let source = Generic::new(fd, interest, Mode::Level);
+        self.insert_source(source, move |_, _, _| {
+            ready();
+            Ok(PostAction::Continue)
+        })
+        .inspect_err(|error| tracing::error!(%error, "a service's socket couldn't be added"))
+        .ok()
     }
 
     fn remove(&self, token: RegistrationToken) {
@@ -170,6 +211,8 @@ struct Config {
     localtime: Option<PathBuf>,
     /// The system bus, where logind and timedated are. `None` for none.
     system_bus: Option<zbus::Address>,
+    /// Sway's IPC socket, from `SWAYSOCK`. `None` when that is unset.
+    sway: Option<sway::Socket>,
 }
 
 impl Config {
@@ -181,6 +224,9 @@ impl Config {
             system_bus: zbus::Address::system()
                 .inspect_err(|error| tracing::warn!(%error, "no system bus address"))
                 .ok(),
+            sway: std::env::var_os("SWAYSOCK")
+                .filter(|path| !path.is_empty())
+                .map(|path| sway::Socket { path: path.into() }),
         }
     }
 }
