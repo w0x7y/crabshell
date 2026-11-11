@@ -1,5 +1,10 @@
 //! [`Cx`], the context that widget code, event handlers and list views get.
 
+use std::any::{Any, TypeId};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use crabshell_reactive::{Effect, Memo, Owner, Signal};
 
 /// The context widget code runs in.
@@ -10,15 +15,39 @@ use crabshell_reactive::{Effect, Memo, Owner, Signal};
 /// shell goes away. Event handlers receive the `Cx` of their button, and
 /// [`children_keyed`](crate::Row::children_keyed) views receive the `Cx` of
 /// their item.
-#[derive(Clone, Debug)]
+///
+/// A context also carries the shell's services, keyed by type: the
+/// platform, and later the clock, Sway, audio and the tray. Every context
+/// made from it shares the same map, so a service provided once at the
+/// root reaches every widget and handler.
+#[derive(Clone)]
 pub struct Cx {
     owner: Owner,
+    services: Rc<Services>,
+}
+
+/// The services of one shell, by type.
+#[derive(Default)]
+struct Services(RefCell<HashMap<TypeId, Rc<dyn Any>>>);
+
+impl std::fmt::Debug for Cx {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let services = self.services.0.borrow().len();
+        f.debug_struct("Cx")
+            .field("owner", &self.owner)
+            .field("services", &services)
+            .finish()
+    }
 }
 
 impl Cx {
-    /// A context that creates everything under `owner`.
+    /// A context that creates everything under `owner`, with no services
+    /// yet.
     pub fn new(owner: Owner) -> Cx {
-        Cx { owner }
+        Cx {
+            owner,
+            services: Rc::default(),
+        }
     }
 
     /// The owner that signals, memos and effects created through this
@@ -28,11 +57,12 @@ impl Cx {
     }
 
     /// A context for a part of the shell inside this one: what it creates
-    /// is freed when this context's owner is. Everything else a context
-    /// carries is shared with the child.
-    pub(crate) fn child(&self) -> Cx {
+    /// is freed when this context's owner is. The services are shared with
+    /// the child.
+    pub fn child(&self) -> Cx {
         Cx {
             owner: self.owner.child(),
+            services: Rc::clone(&self.services),
         }
     }
 
@@ -40,7 +70,30 @@ impl Cx {
     pub(crate) fn named(self, name: impl Into<String>) -> Cx {
         Cx {
             owner: self.owner.named(name),
+            services: self.services,
         }
+    }
+
+    /// Makes `service` reachable from every context of this shell, through
+    /// [`service`](Self::service), and returns it shared. A service of the
+    /// same type provided before is replaced; whoever holds it keeps it.
+    pub fn provide<T: 'static>(&self, service: T) -> Rc<T> {
+        let service = Rc::new(service);
+        let shared: Rc<dyn Any> = Rc::clone(&service) as Rc<dyn Any>;
+        let replaced = self
+            .services
+            .0
+            .borrow_mut()
+            .insert(TypeId::of::<T>(), shared);
+        // Dropped after the map is released: its `Drop` may use a context.
+        drop(replaced);
+        service
+    }
+
+    /// The service of type `T`, if one was provided.
+    pub fn service<T: 'static>(&self) -> Option<Rc<T>> {
+        let service = self.services.0.borrow().get(&TypeId::of::<T>()).cloned()?;
+        service.downcast::<T>().ok()
     }
 
     /// Creates a [`Signal`] holding `value`. See [`Owner::signal`].
