@@ -173,6 +173,8 @@ dependencies = [
  "crabshell-reactive",
  "crabshell-ui",
  "crabshell-wayland",
+ "png",
+ "smithay-client-toolkit",
  "tracing",
  "tracing-subscriber",
 ]

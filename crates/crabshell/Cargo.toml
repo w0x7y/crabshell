@@ -15,3 +15,8 @@ tracing.workspace = true
 # Writes the shell's logs to stderr.
 tracing-subscriber.workspace = true
 
+[dev-dependencies]
+# The headless Sway tests decode grim's screenshots and write goldens.
+png.workspace = true
+# The headless Sway tests' virtual pointer.
+smithay-client-toolkit.workspace = true

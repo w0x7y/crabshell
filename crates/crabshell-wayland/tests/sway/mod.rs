@@ -1,4 +1,5 @@
 //! A private headless Sway for one test, and helpers to drive the loop.
+//! `crabshell`'s headless tests include this file too.
 
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
@@ -107,6 +108,18 @@ impl Sway {
             .stderr(Stdio::null())
             .status()
             .is_ok_and(|status| status.success())
+    }
+
+    /// The runtime directory, which a client's `XDG_RUNTIME_DIR` names.
+    #[allow(dead_code, reason = "crabshell's tests use it; these don't")]
+    pub fn runtime_dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// The Wayland socket's name, which a client's `WAYLAND_DISPLAY` names.
+    #[allow(dead_code, reason = "crabshell's tests use it; these don't")]
+    pub fn display(&self) -> &str {
+        &self.display
     }
 
     /// Sway's log so far.
