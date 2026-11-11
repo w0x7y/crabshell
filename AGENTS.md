@@ -78,6 +78,15 @@ The most common defect here is a change that works where you tested it and break
 
   Afterwards `pgrep -a sway` shows only the desktop Sway, the oldest.
 
+## Formatting
+
+Everything is indented with 2 spaces, the maintainer's editor settings. Format every file you touch before you commit:
+
+- Rust: `cargo fmt --all`. `rustfmt.toml` sets `tab_spaces = 2`, and the 2024 edition sets the rest, import order included.
+- Python: `ruff format --config indent-width=2 baseline/`.
+- Markdown and YAML: `prettier --tab-width 2 --write $(git ls-files '*.md' '*.yml')`.
+- TOML and QML have no formatter. Keep each file's existing indentation.
+
 ## Commits and pushes
 
 - Commit and push to `main` when the maintainer asks. Pull requests are welcome too.

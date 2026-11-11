@@ -15,31 +15,31 @@ static DROPS: AtomicUsize = AtomicUsize::new(0);
 /// an unexpected panic fail the test even where the runtime would catch and
 /// only log it, as it does for a value's `Drop` at thread exit.
 pub fn fail_on_unexpected_panics() {
-    let default_hook = panic::take_hook();
-    panic::set_hook(Box::new(move |info| {
-        if info.payload_as_str() != Some(DELIBERATE_PANIC) {
-            default_hook(info);
-            std::process::abort();
-        }
-    }));
+  let default_hook = panic::take_hook();
+  panic::set_hook(Box::new(move |info| {
+    if info.payload_as_str() != Some(DELIBERATE_PANIC) {
+      default_hook(info);
+      std::process::abort();
+    }
+  }));
 }
 
 /// Aborts the process unless `ok`. Some checks run inside a `Drop` during
 /// thread exit, where returning an error is not possible.
 pub fn must_hold(ok: bool) {
-    if !ok {
-        std::process::abort();
-    }
+  if !ok {
+    std::process::abort();
+  }
 }
 
 /// Records that a probe value was dropped.
 pub fn count_drop() {
-    DROPS.fetch_add(1, Ordering::SeqCst);
+  DROPS.fetch_add(1, Ordering::SeqCst);
 }
 
 /// Aborts unless exactly `expected` probe values have been dropped.
 pub fn expect_drops(expected: usize) {
-    must_hold(DROPS.load(Ordering::SeqCst) == expected);
+  must_hold(DROPS.load(Ordering::SeqCst) == expected);
 }
 
 /// A probe value that panics when dropped. The runtime must catch and log
@@ -47,8 +47,8 @@ pub fn expect_drops(expected: usize) {
 pub struct PanicsOnDrop;
 
 impl Drop for PanicsOnDrop {
-    fn drop(&mut self) {
-        count_drop();
-        panic!("{DELIBERATE_PANIC}");
-    }
+  fn drop(&mut self) {
+    count_drop();
+    panic!("{DELIBERATE_PANIC}");
+  }
 }

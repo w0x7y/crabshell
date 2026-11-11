@@ -14,12 +14,12 @@ use crate::per_output::{Build, PerOutput};
 /// Registers a builder as `cx.per_output` does, at the caller's line, with
 /// nothing to do when its context goes.
 trait Register {
-    fn add(&mut self, cx: Cx, build: Build) -> usize;
+  fn add(&mut self, cx: Cx, build: Build) -> usize;
 }
 
 impl<Id> Register for PerOutput<Id> {
-    #[track_caller]
-    fn add(&mut self, cx: Cx, build: Build) -> usize {
-        self.register(cx, build, Location::caller(), Box::new(|| {}))
-    }
+  #[track_caller]
+  fn add(&mut self, cx: Cx, build: Build) -> usize {
+    self.register(cx, build, Location::caller(), Box::new(|| {}))
+  }
 }

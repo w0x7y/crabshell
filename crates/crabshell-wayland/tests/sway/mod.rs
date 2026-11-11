@@ -12,11 +12,11 @@ use crabshell_wayland::{EventLoop, Platform};
 use smithay_client_toolkit::reexports::client::globals::{GlobalListContents, registry_queue_init};
 use smithay_client_toolkit::reexports::client::protocol::{wl_pointer, wl_registry};
 use smithay_client_toolkit::reexports::client::{
-    Connection, Dispatch, EventQueue, QueueHandle, delegate_noop,
+  Connection, Dispatch, EventQueue, QueueHandle, delegate_noop,
 };
 use smithay_client_toolkit::reexports::protocols_wlr::virtual_pointer::v1::client::{
-    zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
-    zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+  zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+  zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
 };
 
 /// No wallpaper program (an `output bg` line would start swaybg), no
@@ -32,356 +32,360 @@ static RUNS: AtomicU32 = AtomicU32::new(0);
 /// once don't meet. It is stopped and its directory removed on drop; if
 /// the test failed, its log is printed first.
 pub struct Sway {
-    dir: PathBuf,
-    child: Child,
-    /// The Wayland socket's name in `dir`.
-    display: String,
+  dir: PathBuf,
+  child: Child,
+  /// The Wayland socket's name in `dir`.
+  display: String,
 }
 
 impl Sway {
-    /// Starts Sway with one output, HEADLESS-1. Refuses when this process
-    /// has `SWAYSOCK` set, since an in-process shell would hand it to its
-    /// services, and it may name the desktop's Sway.
-    pub fn start() -> Sway {
-        if let Some(socket) = std::env::var_os("SWAYSOCK") {
-            panic!(
-                "this test process has SWAYSOCK={socket:?}, maybe the desktop's Sway, so no \
+  /// Starts Sway with one output, HEADLESS-1. Refuses when this process
+  /// has `SWAYSOCK` set, since an in-process shell would hand it to its
+  /// services, and it may name the desktop's Sway.
+  pub fn start() -> Sway {
+    if let Some(socket) = std::env::var_os("SWAYSOCK") {
+      panic!(
+        "this test process has SWAYSOCK={socket:?}, maybe the desktop's Sway, so no \
                  private Sway starts. Run the suite as\n  env -u SWAYSOCK cargo test -p {} \
                  --test headless -- --ignored --test-threads=1",
-                env!("CARGO_PKG_NAME")
-            );
-        }
-        // Unix socket paths may be only 108 bytes long, so the directory
-        // is short and under /tmp rather than in the target directory.
-        let run = RUNS.fetch_add(1, Ordering::Relaxed);
-        let dir = PathBuf::from(format!("/tmp/csw-{}-{run}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create the runtime directory");
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
-            .expect("make the runtime directory private");
-        std::fs::write(dir.join("config"), CONFIG).expect("write the Sway config");
-        let log = std::fs::File::create(dir.join("sway.log")).expect("create the Sway log");
-        // A copy drops SwayFX's `cap_sys_nice`, so it never goes realtime
-        // and a realtime CPU limit of 0 (as under T3 Code) can't kill it.
-        let installed = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-            .map(|bin| bin.join("sway"))
-            .find(|sway| sway.is_file())
-            .expect("sway is installed");
-        let sway = dir.join("sway");
-        std::fs::copy(&installed, &sway)
-            .unwrap_or_else(|error| panic!("copy {installed:?} to {sway:?}: {error}"));
-        let child = Command::new(&sway)
-            .arg("-c")
-            .arg(dir.join("config"))
-            .env_clear()
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("HOME", &dir)
-            .env("XDG_RUNTIME_DIR", &dir)
-            .env("WLR_BACKENDS", "headless")
-            .env("WLR_LIBINPUT_NO_DEVICES", "1")
-            .env("WLR_RENDERER", "pixman")
-            .env("SWAYSOCK", dir.join("sway.sock"))
-            .stdin(Stdio::null())
-            .stdout(log.try_clone().expect("share the log file"))
-            .stderr(log)
-            .spawn()
-            .expect("sway is installed");
-        let mut sway = Sway {
-            dir,
-            child,
-            display: String::new(),
-        };
-        let deadline = Instant::now() + TIMEOUT;
-        loop {
-            if let Ok(Some(status)) = sway.child.try_wait() {
-                panic!("sway exited with {status}:\n{}", sway.log());
-            }
-            // Ready once both sockets exist and Sway answers on its IPC one.
-            if sway.dir.join("sway.sock").exists()
-                && let Some(display) = wayland_socket(&sway.dir)
-                && sway.answers()
-            {
-                sway.display = display;
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "sway didn't start:\n{}",
-                sway.log()
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        sway
+        env!("CARGO_PKG_NAME")
+      );
     }
+    // Unix socket paths may be only 108 bytes long, so the directory
+    // is short and under /tmp rather than in the target directory.
+    let run = RUNS.fetch_add(1, Ordering::Relaxed);
+    let dir = PathBuf::from(format!("/tmp/csw-{}-{run}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create the runtime directory");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+      .expect("make the runtime directory private");
+    std::fs::write(dir.join("config"), CONFIG).expect("write the Sway config");
+    let log = std::fs::File::create(dir.join("sway.log")).expect("create the Sway log");
+    // A copy drops SwayFX's `cap_sys_nice`, so it never goes realtime
+    // and a realtime CPU limit of 0 (as under T3 Code) can't kill it.
+    let installed = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+      .map(|bin| bin.join("sway"))
+      .find(|sway| sway.is_file())
+      .expect("sway is installed");
+    let sway = dir.join("sway");
+    std::fs::copy(&installed, &sway)
+      .unwrap_or_else(|error| panic!("copy {installed:?} to {sway:?}: {error}"));
+    let child = Command::new(&sway)
+      .arg("-c")
+      .arg(dir.join("config"))
+      .env_clear()
+      .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+      .env("HOME", &dir)
+      .env("XDG_RUNTIME_DIR", &dir)
+      .env("WLR_BACKENDS", "headless")
+      .env("WLR_LIBINPUT_NO_DEVICES", "1")
+      .env("WLR_RENDERER", "pixman")
+      .env("SWAYSOCK", dir.join("sway.sock"))
+      .stdin(Stdio::null())
+      .stdout(log.try_clone().expect("share the log file"))
+      .stderr(log)
+      .spawn()
+      .expect("sway is installed");
+    let mut sway = Sway {
+      dir,
+      child,
+      display: String::new(),
+    };
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+      if let Ok(Some(status)) = sway.child.try_wait() {
+        panic!("sway exited with {status}:\n{}", sway.log());
+      }
+      // Ready once both sockets exist and Sway answers on its IPC one.
+      if sway.dir.join("sway.sock").exists()
+        && let Some(display) = wayland_socket(&sway.dir)
+        && sway.answers()
+      {
+        sway.display = display;
+        break;
+      }
+      assert!(
+        Instant::now() < deadline,
+        "sway didn't start:\n{}",
+        sway.log()
+      );
+      std::thread::sleep(Duration::from_millis(20));
+    }
+    sway
+  }
 
-    /// Whether Sway answers `swaymsg -t get_version`.
-    fn answers(&self) -> bool {
-        Command::new("swaymsg")
-            .args(["-t", "get_version"])
-            .env("SWAYSOCK", self.dir.join("sway.sock"))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
-    }
+  /// Whether Sway answers `swaymsg -t get_version`.
+  fn answers(&self) -> bool {
+    Command::new("swaymsg")
+      .args(["-t", "get_version"])
+      .env("SWAYSOCK", self.dir.join("sway.sock"))
+      .stdout(Stdio::null())
+      .stderr(Stdio::null())
+      .status()
+      .is_ok_and(|status| status.success())
+  }
 
-    /// The runtime directory, which a client's `XDG_RUNTIME_DIR` names.
-    #[allow(dead_code, reason = "crabshell's tests use it; these don't")]
-    pub fn runtime_dir(&self) -> &Path {
-        &self.dir
-    }
+  /// The runtime directory, which a client's `XDG_RUNTIME_DIR` names.
+  #[allow(dead_code, reason = "crabshell's tests use it; these don't")]
+  pub fn runtime_dir(&self) -> &Path {
+    &self.dir
+  }
 
-    /// The Wayland socket's name, which a client's `WAYLAND_DISPLAY` names.
-    #[allow(dead_code, reason = "crabshell's tests use it; these don't")]
-    pub fn display(&self) -> &str {
-        &self.display
-    }
+  /// The Wayland socket's name, which a client's `WAYLAND_DISPLAY` names.
+  #[allow(dead_code, reason = "crabshell's tests use it; these don't")]
+  pub fn display(&self) -> &str {
+    &self.display
+  }
 
-    /// Sway's IPC socket, which a client's `SWAYSOCK` names.
-    #[allow(dead_code, reason = "crabshell's tests use it; these don't")]
-    pub fn socket(&self) -> PathBuf {
-        self.dir.join("sway.sock")
-    }
+  /// Sway's IPC socket, which a client's `SWAYSOCK` names.
+  #[allow(dead_code, reason = "crabshell's tests use it; these don't")]
+  pub fn socket(&self) -> PathBuf {
+    self.dir.join("sway.sock")
+  }
 
-    /// Sway's log so far.
-    pub fn log(&self) -> String {
-        std::fs::read_to_string(self.dir.join("sway.log")).unwrap_or_default()
-    }
+  /// Sway's log so far.
+  pub fn log(&self) -> String {
+    std::fs::read_to_string(self.dir.join("sway.log")).unwrap_or_default()
+  }
 
-    /// Runs `swaymsg` with `args` and returns what it printed.
-    pub fn msg(&self, args: &[&str]) -> String {
-        let output = Command::new("swaymsg")
-            .args(args)
-            .env("SWAYSOCK", self.dir.join("sway.sock"))
-            .output()
-            .expect("swaymsg is installed");
-        let printed = String::from_utf8_lossy(&output.stdout).into_owned();
-        assert!(
-            output.status.success(),
-            "swaymsg {args:?} failed: {printed}{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        printed
-    }
+  /// Runs `swaymsg` with `args` and returns what it printed.
+  pub fn msg(&self, args: &[&str]) -> String {
+    let output = Command::new("swaymsg")
+      .args(args)
+      .env("SWAYSOCK", self.dir.join("sway.sock"))
+      .output()
+      .expect("swaymsg is installed");
+    let printed = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+      output.status.success(),
+      "swaymsg {args:?} failed: {printed}{}",
+      String::from_utf8_lossy(&output.stderr)
+    );
+    printed
+  }
 
-    /// A new connection to this Sway.
-    pub fn connection(&self) -> Connection {
-        let stream =
-            UnixStream::connect(self.dir.join(&self.display)).expect("connect to sway's socket");
-        Connection::from_socket(stream).expect("a Wayland connection")
-    }
+  /// A new connection to this Sway.
+  pub fn connection(&self) -> Connection {
+    let stream =
+      UnixStream::connect(self.dir.join(&self.display)).expect("connect to sway's socket");
+    Connection::from_socket(stream).expect("a Wayland connection")
+  }
 
-    /// An event loop connected to this Sway.
-    pub fn connect(&self) -> EventLoop {
-        EventLoop::with_connection(self.connection()).expect("sway offers what Crabshell needs")
-    }
+  /// An event loop connected to this Sway.
+  pub fn connect(&self) -> EventLoop {
+    EventLoop::with_connection(self.connection()).expect("sway offers what Crabshell needs")
+  }
 
-    /// A screenshot of `output` from grim, as RGBA.
-    pub fn screenshot(&self, output: &str) -> Image {
-        let shot = Command::new("grim")
-            .args(["-o", output, "-"])
-            .env_clear()
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("XDG_RUNTIME_DIR", &self.dir)
-            .env("WAYLAND_DISPLAY", &self.display)
-            .output()
-            .expect("grim is installed");
-        assert!(
-            shot.status.success(),
-            "grim failed: {}",
-            String::from_utf8_lossy(&shot.stderr)
-        );
-        Image::decode(&shot.stdout)
-    }
+  /// A screenshot of `output` from grim, as RGBA.
+  pub fn screenshot(&self, output: &str) -> Image {
+    let shot = Command::new("grim")
+      .args(["-o", output, "-"])
+      .env_clear()
+      .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+      .env("XDG_RUNTIME_DIR", &self.dir)
+      .env("WAYLAND_DISPLAY", &self.display)
+      .output()
+      .expect("grim is installed");
+    assert!(
+      shot.status.success(),
+      "grim failed: {}",
+      String::from_utf8_lossy(&shot.stderr)
+    );
+    Image::decode(&shot.stdout)
+  }
 }
 
 impl Drop for Sway {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            // Sway may have died first; how is the first clue.
-            let status = match self.child.try_wait() {
-                Ok(Some(status)) => format!("sway had exited with {status}"),
-                _ => String::from("sway was still running"),
-            };
-            eprintln!(
-                "{status}; its log, from {}:\n{}",
-                self.dir.display(),
-                self.log()
-            );
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.dir);
+  fn drop(&mut self) {
+    if std::thread::panicking() {
+      // Sway may have died first; how is the first clue.
+      let status = match self.child.try_wait() {
+        Ok(Some(status)) => format!("sway had exited with {status}"),
+        _ => String::from("sway was still running"),
+      };
+      eprintln!(
+        "{status}; its log, from {}:\n{}",
+        self.dir.display(),
+        self.log()
+      );
     }
+    let _ = self.child.kill();
+    let _ = self.child.wait();
+    let _ = std::fs::remove_dir_all(&self.dir);
+  }
 }
 
 /// The `wayland-N` socket Sway made in `dir`.
 fn wayland_socket(dir: &Path) -> Option<String> {
-    std::fs::read_dir(dir)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .find(|name| name.starts_with("wayland-") && !name.ends_with(".lock"))
+  std::fs::read_dir(dir)
+    .ok()?
+    .filter_map(Result::ok)
+    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+    .find(|name| name.starts_with("wayland-") && !name.ends_with(".lock"))
 }
 
 /// An RGBA image.
 pub struct Image {
-    pub rgba: Vec<u8>,
-    pub width: u32,
-    pub height: u32,
+  pub rgba: Vec<u8>,
+  pub width: u32,
+  pub height: u32,
 }
 
 impl Image {
-    /// Decodes an 8-bit RGB or RGBA PNG.
-    pub fn decode(png_bytes: &[u8]) -> Image {
-        let mut decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
-        decoder.set_transformations(png::Transformations::EXPAND);
-        let mut reader = decoder.read_info().expect("grim writes a PNG");
-        let mut pixels = vec![0; reader.output_buffer_size().expect("a screenshot's size")];
-        let info = reader.next_frame(&mut pixels).expect("the PNG decodes");
-        pixels.truncate(info.buffer_size());
-        let rgba = match info.color_type {
-            png::ColorType::Rgba => pixels,
-            png::ColorType::Rgb => pixels
-                .as_chunks::<3>()
-                .0
-                .iter()
-                .flat_map(|&[red, green, blue]| [red, green, blue, 255])
-                .collect(),
-            other => panic!("unexpected screenshot color type {other:?}"),
-        };
-        Image {
-            rgba,
-            width: info.width,
-            height: info.height,
-        }
+  /// Decodes an 8-bit RGB or RGBA PNG.
+  pub fn decode(png_bytes: &[u8]) -> Image {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
+    decoder.set_transformations(png::Transformations::EXPAND);
+    let mut reader = decoder.read_info().expect("grim writes a PNG");
+    let mut pixels = vec![0; reader.output_buffer_size().expect("a screenshot's size")];
+    let info = reader.next_frame(&mut pixels).expect("the PNG decodes");
+    pixels.truncate(info.buffer_size());
+    let rgba = match info.color_type {
+      png::ColorType::Rgba => pixels,
+      png::ColorType::Rgb => pixels
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .flat_map(|&[red, green, blue]| [red, green, blue, 255])
+        .collect(),
+      other => panic!("unexpected screenshot color type {other:?}"),
+    };
+    Image {
+      rgba,
+      width: info.width,
+      height: info.height,
     }
+  }
 
-    /// Writes the image as a PNG, for looking at after a failure.
-    pub fn save(&self, path: &Path) {
-        let file = std::fs::File::create(path).expect("create the image file");
-        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), self.width, self.height);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header().expect("write the PNG header");
-        writer
-            .write_image_data(&self.rgba)
-            .expect("write the PNG pixels");
-    }
+  /// Writes the image as a PNG, for looking at after a failure.
+  pub fn save(&self, path: &Path) {
+    let file = std::fs::File::create(path).expect("create the image file");
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), self.width, self.height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().expect("write the PNG header");
+    writer
+      .write_image_data(&self.rgba)
+      .expect("write the PNG pixels");
+  }
 }
 
 /// Dispatches until `done` holds, failing the test after ten seconds.
 pub fn run_until(
-    event_loop: &mut EventLoop,
-    what: &str,
-    mut done: impl FnMut(&mut Platform) -> bool,
+  event_loop: &mut EventLoop,
+  what: &str,
+  mut done: impl FnMut(&mut Platform) -> bool,
 ) {
-    let deadline = Instant::now() + TIMEOUT;
-    while !done(event_loop.platform()) {
-        assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        event_loop
-            .dispatch(Some(Duration::from_millis(20)))
-            .expect("the connection works");
-    }
+  let deadline = Instant::now() + TIMEOUT;
+  while !done(event_loop.platform()) {
+    assert!(Instant::now() < deadline, "timed out waiting for {what}");
+    event_loop
+      .dispatch(Some(Duration::from_millis(20)))
+      .expect("the connection works");
+  }
 }
 
 /// Dispatches until no frame has been committed for half a second.
 pub fn settle(event_loop: &mut EventLoop) {
-    let deadline = Instant::now() + TIMEOUT;
-    let mut commits = event_loop.platform().stats().commits;
-    let mut quiet_since = Instant::now();
-    while quiet_since.elapsed() < Duration::from_millis(500) {
-        assert!(
-            Instant::now() < deadline,
-            "the windows never stopped drawing"
-        );
-        event_loop
-            .dispatch(Some(Duration::from_millis(20)))
-            .expect("the connection works");
-        let now = event_loop.platform().stats().commits;
-        if now != commits {
-            commits = now;
-            quiet_since = Instant::now();
-        }
+  let deadline = Instant::now() + TIMEOUT;
+  let mut commits = event_loop.platform().stats().commits;
+  let mut quiet_since = Instant::now();
+  while quiet_since.elapsed() < Duration::from_millis(500) {
+    assert!(
+      Instant::now() < deadline,
+      "the windows never stopped drawing"
+    );
+    event_loop
+      .dispatch(Some(Duration::from_millis(20)))
+      .expect("the connection works");
+    let now = event_loop.platform().stats().commits;
+    if now != commits {
+      commits = now;
+      quiet_since = Instant::now();
     }
+  }
 }
 
 /// A second client with a virtual pointer, so the seat has a pointer: a
 /// headless Sway with no input devices has none.
 pub struct VirtualPointer {
-    queue: EventQueue<Helper>,
-    pointer: ZwlrVirtualPointerV1,
+  queue: EventQueue<Helper>,
+  pointer: ZwlrVirtualPointerV1,
 }
 
 pub struct Helper;
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Helper {
-    fn event(
-        _: &mut Helper,
-        _: &wl_registry::WlRegistry,
-        _: wl_registry::Event,
-        _: &GlobalListContents,
-        _: &Connection,
-        _: &QueueHandle<Helper>,
-    ) {
-    }
+  fn event(
+    _: &mut Helper,
+    _: &wl_registry::WlRegistry,
+    _: wl_registry::Event,
+    _: &GlobalListContents,
+    _: &Connection,
+    _: &QueueHandle<Helper>,
+  ) {
+  }
 }
 
 delegate_noop!(Helper: ZwlrVirtualPointerManagerV1);
 delegate_noop!(Helper: ZwlrVirtualPointerV1);
 
 impl VirtualPointer {
-    pub fn new(sway: &Sway) -> VirtualPointer {
-        let connection = sway.connection();
-        let (globals, mut queue) =
-            registry_queue_init::<Helper>(&connection).expect("the helper's registry");
-        let manager: ZwlrVirtualPointerManagerV1 = globals
-            .bind(&queue.handle(), 1..=1, ())
-            .expect("sway offers zwlr_virtual_pointer_manager_v1");
-        let pointer = manager.create_virtual_pointer(None, &queue.handle(), ());
-        queue
-            .roundtrip(&mut Helper)
-            .expect("the helper's roundtrip");
-        VirtualPointer { queue, pointer }
-    }
+  pub fn new(sway: &Sway) -> VirtualPointer {
+    let connection = sway.connection();
+    let (globals, mut queue) =
+      registry_queue_init::<Helper>(&connection).expect("the helper's registry");
+    let manager: ZwlrVirtualPointerManagerV1 = globals
+      .bind(&queue.handle(), 1..=1, ())
+      .expect("sway offers zwlr_virtual_pointer_manager_v1");
+    let pointer = manager.create_virtual_pointer(None, &queue.handle(), ());
+    queue
+      .roundtrip(&mut Helper)
+      .expect("the helper's roundtrip");
+    VirtualPointer { queue, pointer }
+  }
 
-    /// Moves to `x`, `y` on a layout `width` by `height` logical pixels:
-    /// the outputs' combined logical size.
-    pub fn move_to(&mut self, x: u32, y: u32, (width, height): (u32, u32)) {
-        self.pointer.motion_absolute(0, x, y, width, height);
-        self.pointer.frame();
-        self.queue
-            .roundtrip(&mut Helper)
-            .expect("the helper's roundtrip");
-    }
+  /// Moves to `x`, `y` on a layout `width` by `height` logical pixels:
+  /// the outputs' combined logical size.
+  pub fn move_to(&mut self, x: u32, y: u32, (width, height): (u32, u32)) {
+    self.pointer.motion_absolute(0, x, y, width, height);
+    self.pointer.frame();
+    self
+      .queue
+      .roundtrip(&mut Helper)
+      .expect("the helper's roundtrip");
+  }
 
-    /// Turns a mouse wheel by `notches`, down when positive as Wayland
-    /// counts. wlroots turns each notch into 120 `axis_value120` units.
-    #[allow(dead_code, reason = "crabshell's tests use it; these don't")]
-    pub fn scroll(&mut self, notches: i32) {
-        self.pointer.axis_source(wl_pointer::AxisSource::Wheel);
-        let axis = wl_pointer::Axis::VerticalScroll;
-        // 15 is libinput's length of one notch.
-        self.pointer
-            .axis_discrete(0, axis, 15.0 * f64::from(notches), notches);
-        self.pointer.frame();
-        self.queue
-            .roundtrip(&mut Helper)
-            .expect("the helper's roundtrip");
-    }
+  /// Turns a mouse wheel by `notches`, down when positive as Wayland
+  /// counts. wlroots turns each notch into 120 `axis_value120` units.
+  #[allow(dead_code, reason = "crabshell's tests use it; these don't")]
+  pub fn scroll(&mut self, notches: i32) {
+    self.pointer.axis_source(wl_pointer::AxisSource::Wheel);
+    let axis = wl_pointer::Axis::VerticalScroll;
+    // 15 is libinput's length of one notch.
+    self
+      .pointer
+      .axis_discrete(0, axis, 15.0 * f64::from(notches), notches);
+    self.pointer.frame();
+    self
+      .queue
+      .roundtrip(&mut Helper)
+      .expect("the helper's roundtrip");
+  }
 
-    /// Presses and releases the left button.
-    pub fn click(&mut self) {
-        const BTN_LEFT: u32 = 0x110;
-        for state in [
-            wl_pointer::ButtonState::Pressed,
-            wl_pointer::ButtonState::Released,
-        ] {
-            self.pointer.button(0, BTN_LEFT, state);
-            self.pointer.frame();
-        }
-        self.queue
-            .roundtrip(&mut Helper)
-            .expect("the helper's roundtrip");
+  /// Presses and releases the left button.
+  pub fn click(&mut self) {
+    const BTN_LEFT: u32 = 0x110;
+    for state in [
+      wl_pointer::ButtonState::Pressed,
+      wl_pointer::ButtonState::Released,
+    ] {
+      self.pointer.button(0, BTN_LEFT, state);
+      self.pointer.frame();
     }
+    self
+      .queue
+      .roundtrip(&mut Helper)
+      .expect("the helper's roundtrip");
+  }
 }

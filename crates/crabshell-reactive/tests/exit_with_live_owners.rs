@@ -9,14 +9,14 @@ mod window;
 use window::PROBES_PER_WINDOW;
 
 fn main() {
-    common::fail_on_unexpected_panics();
-    std::thread::spawn(window::build_window_and_leave)
-        .join()
-        .expect("the thread exits without panicking");
-    common::expect_drops(PROBES_PER_WINDOW);
+  common::fail_on_unexpected_panics();
+  std::thread::spawn(window::build_window_and_leave)
+    .join()
+    .expect("the thread exits without panicking");
+  common::expect_drops(PROBES_PER_WINDOW);
 
-    // This runtime is torn down after `main` returns.
-    window::expect_drops_at_thread_exit(2 * PROBES_PER_WINDOW);
-    window::build_window_and_leave();
-    println!("exit with live owners: ok");
+  // This runtime is torn down after `main` returns.
+  window::expect_drops_at_thread_exit(2 * PROBES_PER_WINDOW);
+  window::build_window_and_leave();
+  println!("exit with live owners: ok");
 }

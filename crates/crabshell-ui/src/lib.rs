@@ -81,15 +81,15 @@ pub use style::{Border, Color, Font, Padding, Style};
 pub use text::TextSystem;
 pub use view::{Content, IconView, NodeView, TextView, WindowView};
 pub use widgets::{
-    Align, Button, Column, Element, Icon, IconPixels, IconSource, Justify, Row, Spacer, Stack,
-    Text, Widget,
+  Align, Button, Column, Element, Icon, IconPixels, IconSource, Justify, Row, Spacer, Stack, Text,
+  Widget,
 };
 pub use window::{Anchors, Edge, Layer, Output, PanelWindow, SurfaceConfig, Window};
 
 /// What a bar's code needs, in one `use`.
 pub mod prelude {
-    pub use crate::{
-        Align, Button, Color, Column, Cx, Edge, Font, Icon, IconSource, Justify, Layer, Output,
-        PanelWindow, Row, Size, Spacer, Stack, Style, Text, TextSystem, Widget, Window,
-    };
+  pub use crate::{
+    Align, Button, Color, Column, Cx, Edge, Font, Icon, IconSource, Justify, Layer, Output,
+    PanelWindow, Row, Size, Spacer, Stack, Style, Text, TextSystem, Widget, Window,
+  };
 }

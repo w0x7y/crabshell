@@ -14,8 +14,8 @@ use crate::window::{Anchors, Edge, Layer};
 pub struct Prop<T>(pub(crate) PropKind<T>);
 
 pub(crate) enum PropKind<T> {
-    Value(T),
-    Binding(Box<dyn FnMut() -> T>),
+  Value(T),
+  Binding(Box<dyn FnMut() -> T>),
 }
 
 /// Anything a widget property accepts: a value of type `T`, or a closure
@@ -26,19 +26,19 @@ pub(crate) enum PropKind<T> {
 /// works too: it runs in an effect, so it reruns when a signal it read
 /// changes.
 pub trait IntoProp<T> {
-    /// Wraps the value or closure.
-    fn into_prop(self) -> Prop<T>;
+  /// Wraps the value or closure.
+  fn into_prop(self) -> Prop<T>;
 }
 
 // A closure is a binding. This impl can sit next to the value impls below
 // because Rust knows that no plain type like `u32` implements `FnMut`.
 impl<T, F> IntoProp<T> for F
 where
-    F: FnMut() -> T + 'static,
+  F: FnMut() -> T + 'static,
 {
-    fn into_prop(self) -> Prop<T> {
-        Prop(PropKind::Binding(Box::new(self)))
-    }
+  fn into_prop(self) -> Prop<T> {
+    Prop(PropKind::Binding(Box::new(self)))
+  }
 }
 
 /// Lets each listed type be passed as a plain value.
@@ -55,45 +55,45 @@ macro_rules! value_props {
 }
 
 value_props!(
-    bool, u32, i32, String, Style, Align, Justify, Anchors, Layer, IconSource
+  bool, u32, i32, String, Style, Align, Justify, Anchors, Layer, IconSource
 );
 
 impl IntoProp<String> for &str {
-    fn into_prop(self) -> Prop<String> {
-        Prop(PropKind::Value(self.to_owned()))
-    }
+  fn into_prop(self) -> Prop<String> {
+    Prop(PropKind::Value(self.to_owned()))
+  }
 }
 
 impl IntoProp<Anchors> for Edge {
-    fn into_prop(self) -> Prop<Anchors> {
-        Prop(PropKind::Value(Anchors::from(self)))
-    }
+  fn into_prop(self) -> Prop<Anchors> {
+    Prop(PropKind::Value(Anchors::from(self)))
+  }
 }
 
 /// An icon name, such as `"audio-volume-high"`.
 impl IntoProp<IconSource> for &str {
-    fn into_prop(self) -> Prop<IconSource> {
-        Prop(PropKind::Value(IconSource::Name(self.to_owned())))
-    }
+  fn into_prop(self) -> Prop<IconSource> {
+    Prop(PropKind::Value(IconSource::Name(self.to_owned())))
+  }
 }
 
 /// An icon name, as tray items send them.
 impl IntoProp<IconSource> for String {
-    fn into_prop(self) -> Prop<IconSource> {
-        Prop(PropKind::Value(IconSource::Name(self)))
-    }
+  fn into_prop(self) -> Prop<IconSource> {
+    Prop(PropKind::Value(IconSource::Name(self)))
+  }
 }
 
 /// An SVG or PNG file.
 impl IntoProp<IconSource> for &Path {
-    fn into_prop(self) -> Prop<IconSource> {
-        Prop(PropKind::Value(IconSource::File(self.to_owned())))
-    }
+  fn into_prop(self) -> Prop<IconSource> {
+    Prop(PropKind::Value(IconSource::File(self.to_owned())))
+  }
 }
 
 /// An SVG or PNG file.
 impl IntoProp<IconSource> for PathBuf {
-    fn into_prop(self) -> Prop<IconSource> {
-        Prop(PropKind::Value(IconSource::File(self)))
-    }
+  fn into_prop(self) -> Prop<IconSource> {
+    Prop(PropKind::Value(IconSource::File(self)))
+  }
 }

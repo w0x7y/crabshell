@@ -13,26 +13,26 @@ use common::{DELIBERATE_PANIC, PanicsOnDrop};
 use crabshell_reactive::Runtime;
 
 fn main() {
-    common::fail_on_unexpected_panics();
-    let rt = Runtime::current();
-    for write in [false, true] {
-        let owner = rt.new_owner();
-        let held = owner.signal(PanicsOnDrop);
-        let caught = panic::catch_unwind(AssertUnwindSafe(|| {
-            if write {
-                held.update(|_| {
-                    owner.dispose();
-                    panic!("{DELIBERATE_PANIC}");
-                });
-            } else {
-                held.with(|_| {
-                    owner.dispose();
-                    panic!("{DELIBERATE_PANIC}");
-                });
-            }
-        }));
-        common::must_hold(caught.is_err());
-    }
-    common::expect_drops(2);
-    println!("panic after dispose in a closure: ok");
+  common::fail_on_unexpected_panics();
+  let rt = Runtime::current();
+  for write in [false, true] {
+    let owner = rt.new_owner();
+    let held = owner.signal(PanicsOnDrop);
+    let caught = panic::catch_unwind(AssertUnwindSafe(|| {
+      if write {
+        held.update(|_| {
+          owner.dispose();
+          panic!("{DELIBERATE_PANIC}");
+        });
+      } else {
+        held.with(|_| {
+          owner.dispose();
+          panic!("{DELIBERATE_PANIC}");
+        });
+      }
+    }));
+    common::must_hold(caught.is_err());
+  }
+  common::expect_drops(2);
+  println!("panic after dispose in a closure: ok");
 }

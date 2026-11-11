@@ -7,26 +7,26 @@ use crabshell_ui::Size;
 use smithay_client_toolkit::compositor::CompositorHandler;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::client::protocol::{
-    wl_output::{self, WlOutput},
-    wl_pointer::WlPointer,
-    wl_seat::WlSeat,
-    wl_surface::WlSurface,
+  wl_output::{self, WlOutput},
+  wl_pointer::WlPointer,
+  wl_seat::WlSeat,
+  wl_surface::WlSurface,
 };
 use smithay_client_toolkit::reexports::client::{
-    Connection, Dispatch, Proxy, QueueHandle, delegate_noop,
+  Connection, Dispatch, Proxy, QueueHandle, delegate_noop,
 };
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{
-    LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
+  LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
 };
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_dispatch2, delegate_registry, registry_handlers};
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1;
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1::{
-    self, WpFractionalScaleV1,
+  self, WpFractionalScaleV1,
 };
 use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
@@ -43,331 +43,315 @@ use crate::windows::Entry;
 type Held = Entry<Surface, WlOutput>;
 
 impl Platform {
-    fn by_surface(&mut self, surface: &WlSurface) -> Option<&mut Held> {
-        self.windows.entries.iter_mut().find(|entry| {
-            entry
-                .surface
-                .as_ref()
-                .is_some_and(|ours| ours.layer.wl_surface() == surface)
-        })
-    }
+  fn by_surface(&mut self, surface: &WlSurface) -> Option<&mut Held> {
+    self.windows.entries.iter_mut().find(|entry| {
+      entry
+        .surface
+        .as_ref()
+        .is_some_and(|ours| ours.layer.wl_surface() == surface)
+    })
+  }
 
-    fn by_layer(&mut self, layer: &LayerSurface) -> Option<&mut Held> {
-        self.windows.entries.iter_mut().find(|entry| {
-            entry
-                .surface
-                .as_ref()
-                .is_some_and(|ours| &ours.layer == layer)
-        })
-    }
+  fn by_layer(&mut self, layer: &LayerSurface) -> Option<&mut Held> {
+    self.windows.entries.iter_mut().find(|entry| {
+      entry
+        .surface
+        .as_ref()
+        .is_some_and(|ours| &ours.layer == layer)
+    })
+  }
 
-    /// Lets go of a seat's pointer, unhovering the window it was over.
-    fn drop_pointer(&mut self, index: usize) {
-        let pointer = self.pointers.remove(index);
-        if let Some(entry) = pointer.cursor.focus().and_then(|id| self.windows.get(id)) {
-            entry.window.pointer_leave();
-        }
-        if let Some(shapes) = pointer.shapes {
-            shapes.destroy();
-        }
-        // `release` came in version 3; older pointers just stop being used.
-        if pointer.pointer.version() >= 3 {
-            pointer.pointer.release();
-        }
+  /// Lets go of a seat's pointer, unhovering the window it was over.
+  fn drop_pointer(&mut self, index: usize) {
+    let pointer = self.pointers.remove(index);
+    if let Some(entry) = pointer.cursor.focus().and_then(|id| self.windows.get(id)) {
+      entry.window.pointer_leave();
     }
+    if let Some(shapes) = pointer.shapes {
+      shapes.destroy();
+    }
+    // `release` came in version 3; older pointers just stop being used.
+    if pointer.pointer.version() >= 3 {
+      pointer.pointer.release();
+    }
+  }
 }
 
 impl CompositorHandler for Platform {
-    /// A whole scale, from `wl_surface.preferred_buffer_scale` or the
-    /// outputs the surface is on. Only used without fractional scaling.
-    fn scale_factor_changed(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        surface: &WlSurface,
-        new_factor: i32,
-    ) {
-        let Some(Entry {
-            surface: Some(ours),
-            ..
-        }) = self.by_surface(surface)
-        else {
-            return;
-        };
-        if ours.fractional.is_some() {
-            return;
-        }
-        match Scale::integer(new_factor) {
-            Some(scale) => ours.frames.set_scale(scale),
-            None => tracing::warn!(new_factor, "ignoring a scale out of range"),
-        }
+  /// A whole scale, from `wl_surface.preferred_buffer_scale` or the
+  /// outputs the surface is on. Only used without fractional scaling.
+  fn scale_factor_changed(
+    &mut self,
+    _: &Connection,
+    _: &QueueHandle<Self>,
+    surface: &WlSurface,
+    new_factor: i32,
+  ) {
+    let Some(Entry {
+      surface: Some(ours),
+      ..
+    }) = self.by_surface(surface)
+    else {
+      return;
+    };
+    if ours.fractional.is_some() {
+      return;
     }
+    match Scale::integer(new_factor) {
+      Some(scale) => ours.frames.set_scale(scale),
+      None => tracing::warn!(new_factor, "ignoring a scale out of range"),
+    }
+  }
 
-    fn transform_changed(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &WlSurface,
-        _: wl_output::Transform,
-    ) {
-    }
+  fn transform_changed(
+    &mut self,
+    _: &Connection,
+    _: &QueueHandle<Self>,
+    _: &WlSurface,
+    _: wl_output::Transform,
+  ) {
+  }
 
-    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, surface: &WlSurface, _: u32) {
-        if let Some(Entry {
-            surface: Some(ours),
-            ..
-        }) = self.by_surface(surface)
-        {
-            ours.frames.pacing.frame_done();
-        }
+  fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, surface: &WlSurface, _: u32) {
+    if let Some(Entry {
+      surface: Some(ours),
+      ..
+    }) = self.by_surface(surface)
+    {
+      ours.frames.pacing.frame_done();
     }
+  }
 
-    fn surface_enter(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &WlSurface,
-        _: &WlOutput,
-    ) {
-    }
+  fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: &WlOutput) {}
 
-    fn surface_leave(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &WlSurface,
-        _: &WlOutput,
-    ) {
-    }
+  fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: &WlOutput) {}
 }
 
 impl LayerShellHandler for Platform {
-    /// The compositor won't show the surface again, as when its output is
-    /// unplugged. The window is dropped with its owner, then the listener
-    /// hears of it.
-    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
-        let Some(id) = self.by_layer(layer).map(|entry| entry.id) else {
-            return;
-        };
-        tracing::info!(?id, "the compositor closed a window");
-        self.remove_window(id);
-        self.notify(Event::WindowClosed(id));
-    }
+  /// The compositor won't show the surface again, as when its output is
+  /// unplugged. The window is dropped with its owner, then the listener
+  /// hears of it.
+  fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
+    let Some(id) = self.by_layer(layer).map(|entry| entry.id) else {
+      return;
+    };
+    tracing::info!(?id, "the compositor closed a window");
+    self.remove_window(id);
+    self.notify(Event::WindowClosed(id));
+  }
 
-    /// sctk has acknowledged the configure; the next commit applies it.
-    fn configure(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        layer: &LayerSurface,
-        configure: LayerSurfaceConfigure,
-        _: u32,
-    ) {
-        let Some(Entry {
-            window,
-            surface: Some(ours),
-            ..
-        }) = self.by_layer(layer)
-        else {
-            return;
-        };
-        match ours.configure(configure.new_size, &window.surface()) {
-            Some((width, height)) => window.set_size(Size::new(width as f32, height as f32)),
-            None => tracing::warn!(
-                size = ?configure.new_size,
-                "ignoring a configure with a size that can't be drawn"
-            ),
-        }
+  /// sctk has acknowledged the configure; the next commit applies it.
+  fn configure(
+    &mut self,
+    _: &Connection,
+    _: &QueueHandle<Self>,
+    layer: &LayerSurface,
+    configure: LayerSurfaceConfigure,
+    _: u32,
+  ) {
+    let Some(Entry {
+      window,
+      surface: Some(ours),
+      ..
+    }) = self.by_layer(layer)
+    else {
+      return;
+    };
+    match ours.configure(configure.new_size, &window.surface()) {
+      Some((width, height)) => window.set_size(Size::new(width as f32, height as f32)),
+      None => tracing::warn!(
+          size = ?configure.new_size,
+          "ignoring a configure with a size that can't be drawn"
+      ),
     }
+  }
 }
 
 impl OutputHandler for Platform {
-    fn output_state(&mut self) -> &mut OutputState {
-        &mut self.outputs
-    }
+  fn output_state(&mut self) -> &mut OutputState {
+    &mut self.outputs
+  }
 
-    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, output: WlOutput) {
-        let Some(info) = self.outputs.info(&output).as_ref().and_then(describe) else {
-            tracing::warn!(
-                "an output without a name can't hold windows; it needs wl_output version 4"
-            );
-            return;
-        };
-        tracing::info!(name = info.name, mode = ?info.mode, scale = info.scale, "output added");
+  fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, output: WlOutput) {
+    let Some(info) = self.outputs.info(&output).as_ref().and_then(describe) else {
+      tracing::warn!("an output without a name can't hold windows; it needs wl_output version 4");
+      return;
+    };
+    tracing::info!(name = info.name, mode = ?info.mode, scale = info.scale, "output added");
+    self.known.push((output, info.clone()));
+    self.notify(Event::OutputAdded(info));
+  }
+
+  /// A new mode or scale. A mode change reaches the windows as a
+  /// configure, and a scale change as a preferred scale, so this only
+  /// keeps the information current.
+  fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, output: WlOutput) {
+    let Some(info) = self.outputs.info(&output).as_ref().and_then(describe) else {
+      return;
+    };
+    match self.known.iter_mut().find(|(known, _)| *known == output) {
+      Some((_, known)) => *known = info,
+      // It has a name only now.
+      None => {
         self.known.push((output, info.clone()));
         self.notify(Event::OutputAdded(info));
+      }
     }
+  }
 
-    /// A new mode or scale. A mode change reaches the windows as a
-    /// configure, and a scale change as a preferred scale, so this only
-    /// keeps the information current.
-    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, output: WlOutput) {
-        let Some(info) = self.outputs.info(&output).as_ref().and_then(describe) else {
-            return;
-        };
-        match self.known.iter_mut().find(|(known, _)| *known == output) {
-            Some((_, known)) => *known = info,
-            // It has a name only now.
-            None => {
-                self.known.push((output, info.clone()));
-                self.notify(Event::OutputAdded(info));
-            }
-        }
-    }
-
-    /// The output is gone: the windows on it are dropped, with their
-    /// owners, before the listener hears of it.
-    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, output: WlOutput) {
-        let Some(index) = self.known.iter().position(|(known, _)| *known == output) else {
-            return;
-        };
-        let (_, info) = self.known.remove(index);
-        let dropped = self.windows.drop_output(&output, &info.name);
-        tracing::info!(name = info.name, windows = dropped, "output removed");
-        self.notify(Event::OutputRemoved(info));
-    }
+  /// The output is gone: the windows on it are dropped, with their
+  /// owners, before the listener hears of it.
+  fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, output: WlOutput) {
+    let Some(index) = self.known.iter().position(|(known, _)| *known == output) else {
+      return;
+    };
+    let (_, info) = self.known.remove(index);
+    let dropped = self.windows.drop_output(&output, &info.name);
+    tracing::info!(name = info.name, windows = dropped, "output removed");
+    self.notify(Event::OutputRemoved(info));
+  }
 }
 
 impl SeatHandler for Platform {
-    fn seat_state(&mut self) -> &mut SeatState {
-        &mut self.seats
-    }
+  fn seat_state(&mut self) -> &mut SeatState {
+    &mut self.seats
+  }
 
-    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat) {}
+  fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat) {}
 
-    fn new_capability(
-        &mut self,
-        _: &Connection,
-        qh: &QueueHandle<Self>,
-        seat: WlSeat,
-        capability: Capability,
-    ) {
-        if capability != Capability::Pointer || self.pointers.iter().any(|ours| ours.seat == seat) {
-            return;
-        }
-        let pointer = match self.seats.get_pointer(qh, &seat) {
-            Ok(pointer) => pointer,
-            Err(error) => {
-                tracing::warn!(%error, "couldn't get the seat's pointer");
-                return;
-            }
-        };
-        let shapes = self
-            .cursor_shapes
-            .as_ref()
-            .map(|manager| manager.get_shape_device(&pointer, qh));
-        self.pointers.push(SeatPointer {
-            seat,
-            pointer,
-            shapes,
-            cursor: Cursor::default(),
-        });
+  fn new_capability(
+    &mut self,
+    _: &Connection,
+    qh: &QueueHandle<Self>,
+    seat: WlSeat,
+    capability: Capability,
+  ) {
+    if capability != Capability::Pointer || self.pointers.iter().any(|ours| ours.seat == seat) {
+      return;
     }
+    let pointer = match self.seats.get_pointer(qh, &seat) {
+      Ok(pointer) => pointer,
+      Err(error) => {
+        tracing::warn!(%error, "couldn't get the seat's pointer");
+        return;
+      }
+    };
+    let shapes = self
+      .cursor_shapes
+      .as_ref()
+      .map(|manager| manager.get_shape_device(&pointer, qh));
+    self.pointers.push(SeatPointer {
+      seat,
+      pointer,
+      shapes,
+      cursor: Cursor::default(),
+    });
+  }
 
-    fn remove_capability(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        seat: WlSeat,
-        capability: Capability,
-    ) {
-        if capability != Capability::Pointer {
-            return;
-        }
-        while let Some(index) = self.pointers.iter().position(|ours| ours.seat == seat) {
-            self.drop_pointer(index);
-        }
+  fn remove_capability(
+    &mut self,
+    _: &Connection,
+    _: &QueueHandle<Self>,
+    seat: WlSeat,
+    capability: Capability,
+  ) {
+    if capability != Capability::Pointer {
+      return;
     }
+    while let Some(index) = self.pointers.iter().position(|ours| ours.seat == seat) {
+      self.drop_pointer(index);
+    }
+  }
 
-    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: WlSeat) {
-        while let Some(index) = self.pointers.iter().position(|ours| ours.seat == seat) {
-            self.drop_pointer(index);
-        }
+  fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: WlSeat) {
+    while let Some(index) = self.pointers.iter().position(|ours| ours.seat == seat) {
+      self.drop_pointer(index);
     }
+  }
 }
 
 impl PointerHandler for Platform {
-    fn pointer_frame(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        pointer: &WlPointer,
-        events: &[PointerEvent],
-    ) {
-        let Some(ours) = self
-            .pointers
-            .iter_mut()
-            .find(|ours| &ours.pointer == pointer)
-        else {
-            return;
-        };
-        for event in events {
-            let Some(entry) = self.windows.entries.iter().find(|entry| {
-                entry
-                    .surface
-                    .as_ref()
-                    .is_some_and(|surface| surface.layer.wl_surface() == &event.surface)
-            }) else {
-                continue;
-            };
-            match event.kind {
-                PointerEventKind::Enter { serial } => ours.cursor.enter(serial, entry.id),
-                PointerEventKind::Leave { .. } => ours.cursor.leave(),
-                _ => {}
-            }
-            let mut cursor = None;
-            for input in pointer::inputs(&event.kind, event.position) {
-                cursor = Some(pointer::apply(&entry.window, input));
-            }
-            // Nothing is sent after a leave: the cursor has no window.
-            if let Some(cursor) = cursor {
-                ours.show(cursor);
-            }
-        }
+  fn pointer_frame(
+    &mut self,
+    _: &Connection,
+    _: &QueueHandle<Self>,
+    pointer: &WlPointer,
+    events: &[PointerEvent],
+  ) {
+    let Some(ours) = self
+      .pointers
+      .iter_mut()
+      .find(|ours| &ours.pointer == pointer)
+    else {
+      return;
+    };
+    for event in events {
+      let Some(entry) = self.windows.entries.iter().find(|entry| {
+        entry
+          .surface
+          .as_ref()
+          .is_some_and(|surface| surface.layer.wl_surface() == &event.surface)
+      }) else {
+        continue;
+      };
+      match event.kind {
+        PointerEventKind::Enter { serial } => ours.cursor.enter(serial, entry.id),
+        PointerEventKind::Leave { .. } => ours.cursor.leave(),
+        _ => {}
+      }
+      let mut cursor = None;
+      for input in pointer::inputs(&event.kind, event.position) {
+        cursor = Some(pointer::apply(&entry.window, input));
+      }
+      // Nothing is sent after a leave: the cursor has no window.
+      if let Some(cursor) = cursor {
+        ours.show(cursor);
+      }
     }
+  }
 }
 
 impl ShmHandler for Platform {
-    fn shm_state(&mut self) -> &mut Shm {
-        &mut self.shm
-    }
+  fn shm_state(&mut self) -> &mut Shm {
+    &mut self.shm
+  }
 }
 
 impl ProvidesRegistryState for Platform {
-    fn registry(&mut self) -> &mut RegistryState {
-        &mut self.registry
-    }
+  fn registry(&mut self) -> &mut RegistryState {
+    &mut self.registry
+  }
 
-    registry_handlers![OutputState, SeatState];
+  registry_handlers![OutputState, SeatState];
 }
 
 impl Dispatch<WpFractionalScaleV1, ()> for Platform {
-    fn event(
-        platform: &mut Platform,
-        proxy: &WpFractionalScaleV1,
-        event: wp_fractional_scale_v1::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Platform>,
-    ) {
-        let wp_fractional_scale_v1::Event::PreferredScale { scale } = event else {
-            return;
-        };
-        let Some(ours) = platform.windows.entries.iter_mut().find_map(|entry| {
-            entry.surface.as_mut().filter(|surface| {
-                surface
-                    .fractional
-                    .as_ref()
-                    .is_some_and(|(ours, _)| ours == proxy)
-            })
-        }) else {
-            return;
-        };
-        match Scale::fractional(scale) {
-            Some(scale) => ours.frames.set_scale(scale),
-            None => tracing::warn!(scale, "ignoring a fractional scale out of range"),
-        }
+  fn event(
+    platform: &mut Platform,
+    proxy: &WpFractionalScaleV1,
+    event: wp_fractional_scale_v1::Event,
+    _: &(),
+    _: &Connection,
+    _: &QueueHandle<Platform>,
+  ) {
+    let wp_fractional_scale_v1::Event::PreferredScale { scale } = event else {
+      return;
+    };
+    let Some(ours) = platform.windows.entries.iter_mut().find_map(|entry| {
+      entry.surface.as_mut().filter(|surface| {
+        surface
+          .fractional
+          .as_ref()
+          .is_some_and(|(ours, _)| ours == proxy)
+      })
+    }) else {
+      return;
+    };
+    match Scale::fractional(scale) {
+      Some(scale) => ours.frames.set_scale(scale),
+      None => tracing::warn!(scale, "ignoring a fractional scale out of range"),
     }
+  }
 }
 
 // These have no events.

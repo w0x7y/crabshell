@@ -94,4 +94,13 @@ env -u SWAYSOCK cargo test -p crabshell --test headless -- --ignored --test-thre
 
 they need `sway`, `swaymsg` and `grim`, plus `pipewire` and `pactl` for the audio ones. each test runs its own private sway from a copy of `sway`. the copy drops swayfx's `cap_sys_nice`, so it never goes realtime and a realtime cpu limit of 0 can't kill it. the audio ones also run their own pipewire-pulse, so your volume never moves. `CRABSHELL_BLESS=1` rewrites the golden images, which expect noto sans as your `sans-serif`
 
+### formatting
+
+2 spaces everywhere. `cargo fmt --all` reads it from [rustfmt.toml](rustfmt.toml), and the python, markdown and yaml get
+
+```sh
+ruff format --config indent-width=2 baseline/
+prettier --tab-width 2 --write $(git ls-files '*.md' '*.yml')
+```
+
 _license: [mit](./LICENSE-MIT) or [apache-2.0](./LICENSE-APACHE), your choice_

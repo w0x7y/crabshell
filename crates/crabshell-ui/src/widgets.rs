@@ -36,318 +36,319 @@ use crate::style::Style;
 /// }
 /// ```
 pub trait Widget: 'static {
-    /// Turns the description, and everything inside it, into the element
-    /// the window builds nodes from. It runs when the window is created or a
-    /// list item first appears, before the window's tree is touched and
-    /// without recording what it reads, so it only describes.
-    fn into_element(self: Box<Self>) -> Element;
+  /// Turns the description, and everything inside it, into the element
+  /// the window builds nodes from. It runs when the window is created or a
+  /// list item first appears, before the window's tree is touched and
+  /// without recording what it reads, so it only describes.
+  fn into_element(self: Box<Self>) -> Element;
 }
 
 /// What a [`Widget`] turns into: plain data, with every child already turned
 /// into its element. Only this crate's widgets create one.
 pub struct Element {
-    pub(crate) name: &'static str,
-    pub(crate) style: Option<Prop<Style>>,
-    pub(crate) kind: ElementKind,
-    pub(crate) children: Vec<ElementChild>,
+  pub(crate) name: &'static str,
+  pub(crate) style: Option<Prop<Style>>,
+  pub(crate) kind: ElementKind,
+  pub(crate) children: Vec<ElementChild>,
 }
 
 pub(crate) enum ElementKind {
-    Flex(FlexProps),
-    Stack,
-    Spacer,
-    Text(TextProps),
-    Icon(IconProps),
-    Button(ButtonProps),
+  Flex(FlexProps),
+  Stack,
+  Spacer,
+  Text(TextProps),
+  Icon(IconProps),
+  Button(ButtonProps),
 }
 
 /// One entry of a container's child list: a single widget, or a keyed list
 /// that grows and shrinks.
 pub(crate) enum Child {
-    One(Box<dyn Widget>),
-    Keyed(KeyedMount),
+  One(Box<dyn Widget>),
+  Keyed(KeyedMount),
 }
 
 /// A [`Child`] with its widget turned into an element.
 pub(crate) enum ElementChild {
-    One(Box<Element>),
-    Keyed(KeyedMount),
+  One(Box<Element>),
+  Keyed(KeyedMount),
 }
 
 /// Turns every child widget into its element, which does the same for its
 /// own children.
 fn describe(children: Vec<Child>) -> Vec<ElementChild> {
-    children
-        .into_iter()
-        .map(|child| match child {
-            Child::One(widget) => ElementChild::One(Box::new(widget.into_element())),
-            Child::Keyed(mount) => ElementChild::Keyed(mount),
-        })
-        .collect()
+  children
+    .into_iter()
+    .map(|child| match child {
+      Child::One(widget) => ElementChild::One(Box::new(widget.into_element())),
+      Child::Keyed(mount) => ElementChild::Keyed(mount),
+    })
+    .collect()
 }
 
 pub(crate) struct FlexProps {
-    pub(crate) column: bool,
-    pub(crate) gap: Option<Prop<u32>>,
-    pub(crate) padding_vertical: Option<Prop<u32>>,
-    pub(crate) padding_horizontal: Option<Prop<u32>>,
-    pub(crate) align: Option<Prop<Align>>,
-    pub(crate) justify: Option<Prop<Justify>>,
+  pub(crate) column: bool,
+  pub(crate) gap: Option<Prop<u32>>,
+  pub(crate) padding_vertical: Option<Prop<u32>>,
+  pub(crate) padding_horizontal: Option<Prop<u32>>,
+  pub(crate) align: Option<Prop<Align>>,
+  pub(crate) justify: Option<Prop<Justify>>,
 }
 
 pub(crate) struct TextProps {
-    pub(crate) text: Prop<String>,
-    pub(crate) ellipsis: Option<Prop<bool>>,
-    pub(crate) max_lines: Option<Prop<u32>>,
+  pub(crate) text: Prop<String>,
+  pub(crate) ellipsis: Option<Prop<bool>>,
+  pub(crate) max_lines: Option<Prop<u32>>,
 }
 
 pub(crate) struct IconProps {
-    pub(crate) source: Prop<IconSource>,
-    pub(crate) size: Option<Prop<u32>>,
+  pub(crate) source: Prop<IconSource>,
+  pub(crate) size: Option<Prop<u32>>,
 }
 
 pub(crate) struct ButtonProps {
-    pub(crate) hover_style: Option<Prop<Style>>,
-    pub(crate) pressed_style: Option<Prop<Style>>,
-    pub(crate) handlers: Handlers,
+  pub(crate) hover_style: Option<Prop<Style>>,
+  pub(crate) pressed_style: Option<Prop<Style>>,
+  pub(crate) handlers: Handlers,
 }
 
 /// How a [`Row`] or [`Column`] places children across its direction: up and
 /// down in a row, left and right in a column.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Align {
-    /// At the start: the top of a row, the left of a column.
-    Start,
-    /// In the middle.
-    Center,
-    /// At the end: the bottom of a row, the right of a column.
-    End,
-    /// Stretched to fill. The default, as in CSS.
-    #[default]
-    Stretch,
+  /// At the start: the top of a row, the left of a column.
+  Start,
+  /// In the middle.
+  Center,
+  /// At the end: the bottom of a row, the right of a column.
+  End,
+  /// Stretched to fill. The default, as in CSS.
+  #[default]
+  Stretch,
 }
 
 /// How a [`Row`] or [`Column`] places children along its direction when
 /// they don't fill it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Justify {
-    /// Packed at the start. The default.
-    #[default]
-    Start,
-    /// Packed in the middle.
-    Center,
-    /// Packed at the end.
-    End,
-    /// The first child at the start, the last at the end, equal space between.
-    SpaceBetween,
-    /// Equal space around each child.
-    SpaceAround,
-    /// Equal space between children and at both ends.
-    SpaceEvenly,
+  /// Packed at the start. The default.
+  #[default]
+  Start,
+  /// Packed in the middle.
+  Center,
+  /// Packed at the end.
+  End,
+  /// The first child at the start, the last at the end, equal space between.
+  SpaceBetween,
+  /// Equal space around each child.
+  SpaceAround,
+  /// Equal space between children and at both ends.
+  SpaceEvenly,
 }
 
 /// What an [`Icon`] shows.
 #[derive(Clone, Debug, PartialEq)]
 pub enum IconSource {
-    /// A freedesktop icon name such as `"audio-volume-high"`, looked up in
-    /// the icon theme.
-    Name(String),
-    /// An SVG or PNG file.
-    File(PathBuf),
-    /// Raw pixels, as a tray item sends them.
-    Pixels(IconPixels),
+  /// A freedesktop icon name such as `"audio-volume-high"`, looked up in
+  /// the icon theme.
+  Name(String),
+  /// An SVG or PNG file.
+  File(PathBuf),
+  /// Raw pixels, as a tray item sends them.
+  Pixels(IconPixels),
 }
 
 /// Raw icon pixels: ARGB32 in network byte order (A, R, G, B bytes), row
 /// by row, as the StatusNotifierItem spec sends them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct IconPixels {
-    /// Width in pixels.
-    pub width: u32,
-    /// Height in pixels.
-    pub height: u32,
-    /// `width * height * 4` bytes. Shared, so the same icon isn't copied.
-    pub data: Rc<[u8]>,
+  /// Width in pixels.
+  pub width: u32,
+  /// Height in pixels.
+  pub height: u32,
+  /// `width * height * 4` bytes. Shared, so the same icon isn't copied.
+  pub data: Rc<[u8]>,
 }
 
 /// The methods every container has: `child` and `children_keyed`.
 macro_rules! container_methods {
-    () => {
-        /// Adds `child` after the children added so far.
-        pub fn child(mut self, child: impl Widget) -> Self {
-            self.children.push(Child::One(Box::new(child)));
-            self
-        }
+  () => {
+    /// Adds `child` after the children added so far.
+    pub fn child(mut self, child: impl Widget) -> Self {
+      self.children.push(Child::One(Box::new(child)));
+      self
+    }
 
-        /// Adds one child per item, after the children added so far.
-        ///
-        /// `items` runs in an effect, so the list updates when a signal it
-        /// read changes. `key` names each item. `view` builds the child for
-        /// a key the first time it appears, and that child is kept while
-        /// its key stays in the list, even if it moves. `view` receives the
-        /// item's [`Cx`] and a [`Memo`] that updates when that item's value
-        /// changes. When a key leaves the list, its child and everything
-        /// created in `view` are freed. If two items share a key, only the
-        /// first is shown and the duplicate is logged.
-        pub fn children_keyed<T, K, W>(
-            mut self,
-            items: impl FnMut() -> Vec<T> + 'static,
-            key: impl FnMut(&T) -> K + 'static,
-            view: impl FnMut(&Cx, Memo<T>) -> W + 'static,
-        ) -> Self
-        where
-            T: Clone + PartialEq + 'static,
-            K: Eq + Hash + 'static,
-            W: Widget,
-        {
-            self.children
-                .push(Child::Keyed(keyed::mount(items, key, view)));
-            self
-        }
-    };
+    /// Adds one child per item, after the children added so far.
+    ///
+    /// `items` runs in an effect, so the list updates when a signal it
+    /// read changes. `key` names each item. `view` builds the child for
+    /// a key the first time it appears, and that child is kept while
+    /// its key stays in the list, even if it moves. `view` receives the
+    /// item's [`Cx`] and a [`Memo`] that updates when that item's value
+    /// changes. When a key leaves the list, its child and everything
+    /// created in `view` are freed. If two items share a key, only the
+    /// first is shown and the duplicate is logged.
+    pub fn children_keyed<T, K, W>(
+      mut self,
+      items: impl FnMut() -> Vec<T> + 'static,
+      key: impl FnMut(&T) -> K + 'static,
+      view: impl FnMut(&Cx, Memo<T>) -> W + 'static,
+    ) -> Self
+    where
+      T: Clone + PartialEq + 'static,
+      K: Eq + Hash + 'static,
+      W: Widget,
+    {
+      self
+        .children
+        .push(Child::Keyed(keyed::mount(items, key, view)));
+      self
+    }
+  };
 }
 
 /// The `style` method every widget has.
 macro_rules! style_method {
-    () => {
-        /// Sets the widget's [`Style`].
-        pub fn style(mut self, style: impl IntoProp<Style>) -> Self {
-            self.style = Some(style.into_prop());
-            self
-        }
-    };
+  () => {
+    /// Sets the widget's [`Style`].
+    pub fn style(mut self, style: impl IntoProp<Style>) -> Self {
+      self.style = Some(style.into_prop());
+      self
+    }
+  };
 }
 
 /// Defines `Row` and `Column`, which differ only in direction.
 macro_rules! flex_widget {
-    ($name:ident, $column:literal, $doc:literal) => {
-        #[doc = $doc]
-        ///
-        /// `gap`, `padding`, `align` and `justify` change the layout. Each
-        /// takes a value or a closure.
-        pub struct $name {
-            flex: FlexProps,
-            style: Option<Prop<Style>>,
-            children: Vec<Child>,
+  ($name:ident, $column:literal, $doc:literal) => {
+    #[doc = $doc]
+    ///
+    /// `gap`, `padding`, `align` and `justify` change the layout. Each
+    /// takes a value or a closure.
+    pub struct $name {
+      flex: FlexProps,
+      style: Option<Prop<Style>>,
+      children: Vec<Child>,
+    }
+
+    impl $name {
+      /// An empty container.
+      pub fn new() -> Self {
+        $name {
+          flex: FlexProps {
+            column: $column,
+            gap: None,
+            padding_vertical: None,
+            padding_horizontal: None,
+            align: None,
+            justify: None,
+          },
+          style: None,
+          children: Vec::new(),
         }
+      }
 
-        impl $name {
-            /// An empty container.
-            pub fn new() -> Self {
-                $name {
-                    flex: FlexProps {
-                        column: $column,
-                        gap: None,
-                        padding_vertical: None,
-                        padding_horizontal: None,
-                        align: None,
-                        justify: None,
-                    },
-                    style: None,
-                    children: Vec::new(),
-                }
-            }
+      /// Sets the space between children in logical pixels.
+      pub fn gap(mut self, gap: impl IntoProp<u32>) -> Self {
+        self.flex.gap = Some(gap.into_prop());
+        self
+      }
 
-            /// Sets the space between children in logical pixels.
-            pub fn gap(mut self, gap: impl IntoProp<u32>) -> Self {
-                self.flex.gap = Some(gap.into_prop());
-                self
-            }
+      /// Sets the padding: `vertical` above and below, `horizontal`
+      /// left and right, in logical pixels. It wins over the padding
+      /// of the container's [`Style`].
+      pub fn padding(
+        mut self,
+        vertical: impl IntoProp<u32>,
+        horizontal: impl IntoProp<u32>,
+      ) -> Self {
+        self.flex.padding_vertical = Some(vertical.into_prop());
+        self.flex.padding_horizontal = Some(horizontal.into_prop());
+        self
+      }
 
-            /// Sets the padding: `vertical` above and below, `horizontal`
-            /// left and right, in logical pixels. It wins over the padding
-            /// of the container's [`Style`].
-            pub fn padding(
-                mut self,
-                vertical: impl IntoProp<u32>,
-                horizontal: impl IntoProp<u32>,
-            ) -> Self {
-                self.flex.padding_vertical = Some(vertical.into_prop());
-                self.flex.padding_horizontal = Some(horizontal.into_prop());
-                self
-            }
+      /// Sets how children are placed across the direction.
+      pub fn align(mut self, align: impl IntoProp<Align>) -> Self {
+        self.flex.align = Some(align.into_prop());
+        self
+      }
 
-            /// Sets how children are placed across the direction.
-            pub fn align(mut self, align: impl IntoProp<Align>) -> Self {
-                self.flex.align = Some(align.into_prop());
-                self
-            }
+      /// Sets how children are placed along the direction.
+      pub fn justify(mut self, justify: impl IntoProp<Justify>) -> Self {
+        self.flex.justify = Some(justify.into_prop());
+        self
+      }
 
-            /// Sets how children are placed along the direction.
-            pub fn justify(mut self, justify: impl IntoProp<Justify>) -> Self {
-                self.flex.justify = Some(justify.into_prop());
-                self
-            }
+      container_methods!();
+      style_method!();
+    }
 
-            container_methods!();
-            style_method!();
+    impl Default for $name {
+      fn default() -> Self {
+        Self::new()
+      }
+    }
+
+    impl Widget for $name {
+      fn into_element(self: Box<Self>) -> Element {
+        Element {
+          name: stringify!($name),
+          style: self.style,
+          kind: ElementKind::Flex(self.flex),
+          children: describe(self.children),
         }
-
-        impl Default for $name {
-            fn default() -> Self {
-                Self::new()
-            }
-        }
-
-        impl Widget for $name {
-            fn into_element(self: Box<Self>) -> Element {
-                Element {
-                    name: stringify!($name),
-                    style: self.style,
-                    kind: ElementKind::Flex(self.flex),
-                    children: describe(self.children),
-                }
-            }
-        }
-    };
+      }
+    }
+  };
 }
 
 flex_widget!(
-    Row,
-    false,
-    "Lays its children out left to right, like a CSS flexbox row."
+  Row,
+  false,
+  "Lays its children out left to right, like a CSS flexbox row."
 );
 flex_widget!(
-    Column,
-    true,
-    "Lays its children out top to bottom, like a CSS flexbox column."
+  Column,
+  true,
+  "Lays its children out top to bottom, like a CSS flexbox column."
 );
 
 /// Draws its children on top of each other in one cell, each stretched to
 /// the size of the largest. Later children are on top.
 pub struct Stack {
-    style: Option<Prop<Style>>,
-    children: Vec<Child>,
+  style: Option<Prop<Style>>,
+  children: Vec<Child>,
 }
 
 impl Stack {
-    /// An empty stack.
-    pub fn new() -> Stack {
-        Stack {
-            style: None,
-            children: Vec::new(),
-        }
+  /// An empty stack.
+  pub fn new() -> Stack {
+    Stack {
+      style: None,
+      children: Vec::new(),
     }
+  }
 
-    container_methods!();
-    style_method!();
+  container_methods!();
+  style_method!();
 }
 
 impl Default for Stack {
-    fn default() -> Self {
-        Self::new()
-    }
+  fn default() -> Self {
+    Self::new()
+  }
 }
 
 impl Widget for Stack {
-    fn into_element(self: Box<Self>) -> Element {
-        Element {
-            name: "Stack",
-            style: self.style,
-            kind: ElementKind::Stack,
-            children: describe(self.children),
-        }
+  fn into_element(self: Box<Self>) -> Element {
+    Element {
+      name: "Stack",
+      style: self.style,
+      kind: ElementKind::Stack,
+      children: describe(self.children),
     }
+  }
 }
 
 /// Takes the space left over in a [`Row`] or [`Column`]. Several spacers
@@ -355,27 +356,27 @@ impl Widget for Stack {
 pub struct Spacer;
 
 impl Spacer {
-    /// A spacer.
-    pub fn new() -> Spacer {
-        Spacer
-    }
+  /// A spacer.
+  pub fn new() -> Spacer {
+    Spacer
+  }
 }
 
 impl Default for Spacer {
-    fn default() -> Self {
-        Self::new()
-    }
+  fn default() -> Self {
+    Self::new()
+  }
 }
 
 impl Widget for Spacer {
-    fn into_element(self: Box<Self>) -> Element {
-        Element {
-            name: "Spacer",
-            style: None,
-            kind: ElementKind::Spacer,
-            children: Vec::new(),
-        }
+  fn into_element(self: Box<Self>) -> Element {
+    Element {
+      name: "Spacer",
+      style: None,
+      kind: ElementKind::Spacer,
+      children: Vec::new(),
     }
+  }
 }
 
 /// A line of text.
@@ -384,92 +385,92 @@ impl Widget for Spacer {
 /// come from the nearest widget whose [`Style`] sets them, starting with the
 /// text's own.
 pub struct Text {
-    text: TextProps,
-    style: Option<Prop<Style>>,
+  text: TextProps,
+  style: Option<Prop<Style>>,
 }
 
 impl Text {
-    /// Text showing `text`: a string, or a closure that returns a `String`.
-    pub fn new(text: impl IntoProp<String>) -> Text {
-        Text {
-            text: TextProps {
-                text: text.into_prop(),
-                ellipsis: None,
-                max_lines: None,
-            },
-            style: None,
-        }
+  /// Text showing `text`: a string, or a closure that returns a `String`.
+  pub fn new(text: impl IntoProp<String>) -> Text {
+    Text {
+      text: TextProps {
+        text: text.into_prop(),
+        ellipsis: None,
+        max_lines: None,
+      },
+      style: None,
     }
+  }
 
-    /// When on, text that doesn't fit ends in "…" instead of being cut off.
-    /// Off by default.
-    pub fn ellipsis(mut self, ellipsis: impl IntoProp<bool>) -> Text {
-        self.text.ellipsis = Some(ellipsis.into_prop());
-        self
-    }
+  /// When on, text that doesn't fit ends in "…" instead of being cut off.
+  /// Off by default.
+  pub fn ellipsis(mut self, ellipsis: impl IntoProp<bool>) -> Text {
+    self.text.ellipsis = Some(ellipsis.into_prop());
+    self
+  }
 
-    /// Lets the text wrap onto at most this many lines, at word boundaries,
-    /// or inside a word too long for a line. The default is 1, which never
-    /// wraps. 0 counts as 1.
-    pub fn max_lines(mut self, max_lines: impl IntoProp<u32>) -> Text {
-        self.text.max_lines = Some(max_lines.into_prop());
-        self
-    }
+  /// Lets the text wrap onto at most this many lines, at word boundaries,
+  /// or inside a word too long for a line. The default is 1, which never
+  /// wraps. 0 counts as 1.
+  pub fn max_lines(mut self, max_lines: impl IntoProp<u32>) -> Text {
+    self.text.max_lines = Some(max_lines.into_prop());
+    self
+  }
 
-    style_method!();
+  style_method!();
 }
 
 impl Widget for Text {
-    fn into_element(self: Box<Self>) -> Element {
-        Element {
-            name: "Text",
-            style: self.style,
-            kind: ElementKind::Text(self.text),
-            children: Vec::new(),
-        }
+  fn into_element(self: Box<Self>) -> Element {
+    Element {
+      name: "Text",
+      style: self.style,
+      kind: ElementKind::Text(self.text),
+      children: Vec::new(),
     }
+  }
 }
 
 /// An icon, drawn as a square.
 pub struct Icon {
-    icon: IconProps,
-    style: Option<Prop<Style>>,
+  icon: IconProps,
+  style: Option<Prop<Style>>,
 }
 
 impl Icon {
-    /// The default size in logical pixels.
-    pub const DEFAULT_SIZE: u32 = 16;
+  /// The default size in logical pixels.
+  pub const DEFAULT_SIZE: u32 = 16;
 
-    /// An icon showing `source`: an icon name (`&str`), a file (`&Path` or
-    /// `PathBuf`), an [`IconSource`], or a closure that returns one.
-    pub fn new(source: impl IntoProp<IconSource>) -> Icon {
-        Icon {
-            icon: IconProps {
-                source: source.into_prop(),
-                size: None,
-            },
-            style: None,
-        }
+  /// An icon showing `source`: an icon name (`&str`), a file (`&Path` or
+  /// `PathBuf`), an [`IconSource`], or a closure that returns one.
+  pub fn new(source: impl IntoProp<IconSource>) -> Icon {
+    Icon {
+      icon: IconProps {
+        source: source.into_prop(),
+        size: None,
+      },
+      style: None,
     }
+  }
 
-    /// Sets the width and height in logical pixels.
-    pub fn size(mut self, size: impl IntoProp<u32>) -> Icon {
-        self.icon.size = Some(size.into_prop());
-        self
-    }
+  /// Sets the width and height in logical pixels.
+  pub fn size(mut self, size: impl IntoProp<u32>) -> Icon {
+    self.icon.size = Some(size.into_prop());
+    self
+  }
 
-    style_method!();
+  style_method!();
 }
 
 impl Widget for Icon {
-    fn into_element(self: Box<Self>) -> Element {
-        Element {
-            name: "Icon",
-            style: self.style,
-            kind: ElementKind::Icon(self.icon),
-            children: Vec::new(),
-        }
+  fn into_element(self: Box<Self>) -> Element {
+    Element {
+      name: "Icon",
+      style: self.style,
+      kind: ElementKind::Icon(self.icon),
+      children: Vec::new(),
     }
+  }
 }
 
 /// A clickable box around one child, which it centers.
@@ -479,72 +480,72 @@ impl Widget for Icon {
 /// on the main thread and receive the button's [`Cx`]. A handler that panics
 /// is logged and never called again.
 pub struct Button {
-    button: ButtonProps,
-    style: Option<Prop<Style>>,
-    child: Box<dyn Widget>,
+  button: ButtonProps,
+  style: Option<Prop<Style>>,
+  child: Box<dyn Widget>,
 }
 
 impl Button {
-    /// A button around `child`.
-    pub fn new(child: impl Widget) -> Button {
-        Button {
-            child: Box::new(child),
-            button: ButtonProps {
-                hover_style: None,
-                pressed_style: None,
-                handlers: Handlers::default(),
-            },
-            style: None,
-        }
+  /// A button around `child`.
+  pub fn new(child: impl Widget) -> Button {
+    Button {
+      child: Box::new(child),
+      button: ButtonProps {
+        hover_style: None,
+        pressed_style: None,
+        handlers: Handlers::default(),
+      },
+      style: None,
     }
+  }
 
-    /// Sets the style laid over the normal one while the pointer is over the
-    /// button.
-    pub fn hover_style(mut self, style: impl IntoProp<Style>) -> Button {
-        self.button.hover_style = Some(style.into_prop());
-        self
-    }
+  /// Sets the style laid over the normal one while the pointer is over the
+  /// button.
+  pub fn hover_style(mut self, style: impl IntoProp<Style>) -> Button {
+    self.button.hover_style = Some(style.into_prop());
+    self
+  }
 
-    /// Sets the style laid over the hover style while the button is held
-    /// down.
-    pub fn pressed_style(mut self, style: impl IntoProp<Style>) -> Button {
-        self.button.pressed_style = Some(style.into_prop());
-        self
-    }
+  /// Sets the style laid over the hover style while the button is held
+  /// down.
+  pub fn pressed_style(mut self, style: impl IntoProp<Style>) -> Button {
+    self.button.pressed_style = Some(style.into_prop());
+    self
+  }
 
-    /// Runs `handler` when the left button is pressed and released over this
-    /// button.
-    pub fn on_click(mut self, handler: impl Fn(&Cx) + 'static) -> Button {
-        self.button.handlers.click = Some(Rc::new(Handler::new(handler)));
-        self
-    }
+  /// Runs `handler` when the left button is pressed and released over this
+  /// button.
+  pub fn on_click(mut self, handler: impl Fn(&Cx) + 'static) -> Button {
+    self.button.handlers.click = Some(Rc::new(Handler::new(handler)));
+    self
+  }
 
-    /// Runs `handler` when the right button is pressed and released over this
-    /// button.
-    pub fn on_right_click(mut self, handler: impl Fn(&Cx) + 'static) -> Button {
-        self.button.handlers.right_click = Some(Rc::new(Handler::new(handler)));
-        self
-    }
+  /// Runs `handler` when the right button is pressed and released over this
+  /// button.
+  pub fn on_right_click(mut self, handler: impl Fn(&Cx) + 'static) -> Button {
+    self.button.handlers.right_click = Some(Rc::new(Handler::new(handler)));
+    self
+  }
 
-    /// Runs `handler` with whole scroll steps while the pointer is over this
-    /// button: positive for up, negative for down. A mouse wheel gives one
-    /// step per notch; touchpad scrolling gives one step per 15 logical
-    /// pixels.
-    pub fn on_scroll(mut self, handler: impl Fn(&Cx, i32) + 'static) -> Button {
-        self.button.handlers.scroll = Some(Rc::new(Handler::new(handler)));
-        self
-    }
+  /// Runs `handler` with whole scroll steps while the pointer is over this
+  /// button: positive for up, negative for down. A mouse wheel gives one
+  /// step per notch; touchpad scrolling gives one step per 15 logical
+  /// pixels.
+  pub fn on_scroll(mut self, handler: impl Fn(&Cx, i32) + 'static) -> Button {
+    self.button.handlers.scroll = Some(Rc::new(Handler::new(handler)));
+    self
+  }
 
-    style_method!();
+  style_method!();
 }
 
 impl Widget for Button {
-    fn into_element(self: Box<Self>) -> Element {
-        Element {
-            name: "Button",
-            style: self.style,
-            kind: ElementKind::Button(self.button),
-            children: vec![ElementChild::One(Box::new(self.child.into_element()))],
-        }
+  fn into_element(self: Box<Self>) -> Element {
+    Element {
+      name: "Button",
+      style: self.style,
+      kind: ElementKind::Button(self.button),
+      children: vec![ElementChild::One(Box::new(self.child.into_element()))],
     }
+  }
 }

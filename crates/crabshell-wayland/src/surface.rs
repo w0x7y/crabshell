@@ -24,282 +24,281 @@ pub(crate) const NAMESPACE: &str = "crabshell";
 
 /// An sctk buffer and its size, which sctk doesn't keep.
 pub(crate) struct ShmSlot {
-    shm: Buffer,
-    width: u32,
-    height: u32,
+  shm: Buffer,
+  width: u32,
+  height: u32,
 }
 
 impl ShmBuffer for ShmSlot {
-    fn size(&self) -> (u32, u32) {
-        (self.width, self.height)
-    }
+  fn size(&self) -> (u32, u32) {
+    (self.width, self.height)
+  }
 
-    fn busy(&self) -> bool {
-        self.shm.slot().has_active_buffers()
-    }
+  fn busy(&self) -> bool {
+    self.shm.slot().has_active_buffers()
+  }
 }
 
 /// A window's frames: what its buffers hold (the damage history), when it
 /// draws next (pacing) and at what scale. Apart from the protocol objects,
 /// so it can be tested without a compositor.
 pub(crate) struct Frames {
-    pub(crate) history: DamageHistory,
-    pub(crate) pacing: Pacing,
-    pub(crate) scale: Scale,
+  pub(crate) history: DamageHistory,
+  pub(crate) pacing: Pacing,
+  pub(crate) scale: Scale,
 }
 
 impl Frames {
-    pub(crate) fn new(scale: Scale) -> Frames {
-        Frames {
-            history: DamageHistory::new(),
-            pacing: Pacing::default(),
-            scale,
-        }
+  pub(crate) fn new(scale: Scale) -> Frames {
+    Frames {
+      history: DamageHistory::new(),
+      pacing: Pacing::default(),
+      scale,
     }
+  }
 
-    /// A new scale from the compositor. Every pixel changes, so the next
-    /// frame repaints the whole buffer, which the damage history sees for
-    /// itself.
-    pub(crate) fn set_scale(&mut self, scale: Scale) {
-        if scale != self.scale {
-            self.scale = scale;
-            self.pacing.redraw();
-        }
+  /// A new scale from the compositor. Every pixel changes, so the next
+  /// frame repaints the whole buffer, which the damage history sees for
+  /// itself.
+  pub(crate) fn set_scale(&mut self, scale: Scale) {
+    if scale != self.scale {
+      self.scale = scale;
+      self.pacing.redraw();
     }
+  }
 
-    /// Draws `window`'s damage into a `width` by `height` buffer holding
-    /// `pixels`, whose last frame `age` records. `None` if the renderer
-    /// refused the buffer: the damage taken is lost then, so the history
-    /// starts over, which repaints everything, and another frame is asked
-    /// for.
-    pub(crate) fn draw(
-        &mut self,
-        window: &Window,
-        renderer: &mut Renderer,
-        text: &mut TextSystem,
-        (pixels, width, height): (&mut [u8], u32, u32),
-        age: &mut BufferAge,
-    ) -> Option<Vec<PixelRect>> {
-        let damage = window.take_damage();
-        let drawn = renderer.draw(
-            &window.view(),
-            &damage,
-            text,
-            &mut self.history,
-            Canvas {
-                pixels,
-                width,
-                height,
-                scale: self.scale.factor(),
-                format: PixelFormat::Argb8888,
-                age,
-            },
-        );
-        match drawn {
-            Ok(report) => Some(report),
-            Err(error) => {
-                tracing::warn!(%error, "couldn't draw a window");
-                self.lost();
-                None
-            }
-        }
+  /// Draws `window`'s damage into a `width` by `height` buffer holding
+  /// `pixels`, whose last frame `age` records. `None` if the renderer
+  /// refused the buffer: the damage taken is lost then, so the history
+  /// starts over, which repaints everything, and another frame is asked
+  /// for.
+  pub(crate) fn draw(
+    &mut self,
+    window: &Window,
+    renderer: &mut Renderer,
+    text: &mut TextSystem,
+    (pixels, width, height): (&mut [u8], u32, u32),
+    age: &mut BufferAge,
+  ) -> Option<Vec<PixelRect>> {
+    let damage = window.take_damage();
+    let drawn = renderer.draw(
+      &window.view(),
+      &damage,
+      text,
+      &mut self.history,
+      Canvas {
+        pixels,
+        width,
+        height,
+        scale: self.scale.factor(),
+        format: PixelFormat::Argb8888,
+        age,
+      },
+    );
+    match drawn {
+      Ok(report) => Some(report),
+      Err(error) => {
+        tracing::warn!(%error, "couldn't draw a window");
+        self.lost();
+        None
+      }
     }
+  }
 
-    /// A frame was drawn but won't be shown, as when its buffer couldn't be
-    /// attached: the history counted it, so it starts over, and another
-    /// frame is asked for.
-    pub(crate) fn lost(&mut self) {
-        self.repaint_whole();
-    }
+  /// A frame was drawn but won't be shown, as when its buffer couldn't be
+  /// attached: the history counted it, so it starts over, and another
+  /// frame is asked for.
+  pub(crate) fn lost(&mut self) {
+    self.repaint_whole();
+  }
 
-    /// Every pixel may change, as when the icon theme does: the history
-    /// starts over, so the next frame, asked for now, repaints everything.
-    pub(crate) fn repaint_whole(&mut self) {
-        self.history = DamageHistory::new();
-        self.pacing.redraw();
-    }
+  /// Every pixel may change, as when the icon theme does: the history
+  /// starts over, so the next frame, asked for now, repaints everything.
+  pub(crate) fn repaint_whole(&mut self) {
+    self.history = DamageHistory::new();
+    self.pacing.redraw();
+  }
 }
 
 /// A window's layer surface and everything needed to draw into it.
 pub(crate) struct Surface {
-    pub(crate) layer: LayerSurface,
-    /// Present when the compositor scales fractionally.
-    pub(crate) fractional: Option<(WpFractionalScaleV1, WpViewport)>,
-    pool: SlotPool,
-    buffers: Buffers<ShmSlot>,
-    pub(crate) frames: Frames,
-    /// The logical size from the last configure.
-    pub(crate) size: Option<(u32, u32)>,
-    /// The logical size and scale the surface was last told, so they are
-    /// only sent when they change.
-    told: Option<((u32, u32), Scale)>,
-    /// Frames committed.
-    pub(crate) commits: u64,
-    /// What the last frame reported with `damage_buffer`.
-    pub(crate) last_damage: Vec<PixelRect>,
-    /// The size of the last buffer committed.
-    pub(crate) buffer_size: Option<(u32, u32)>,
+  pub(crate) layer: LayerSurface,
+  /// Present when the compositor scales fractionally.
+  pub(crate) fractional: Option<(WpFractionalScaleV1, WpViewport)>,
+  pool: SlotPool,
+  buffers: Buffers<ShmSlot>,
+  pub(crate) frames: Frames,
+  /// The logical size from the last configure.
+  pub(crate) size: Option<(u32, u32)>,
+  /// The logical size and scale the surface was last told, so they are
+  /// only sent when they change.
+  told: Option<((u32, u32), Scale)>,
+  /// Frames committed.
+  pub(crate) commits: u64,
+  /// What the last frame reported with `damage_buffer`.
+  pub(crate) last_damage: Vec<PixelRect>,
+  /// The size of the last buffer committed.
+  pub(crate) buffer_size: Option<(u32, u32)>,
 }
 
 impl Surface {
-    pub(crate) fn new(
-        layer: LayerSurface,
-        fractional: Option<(WpFractionalScaleV1, WpViewport)>,
-        pool: SlotPool,
-        scale: Scale,
-    ) -> Surface {
-        Surface {
-            layer,
-            fractional,
-            pool,
-            buffers: Buffers::new(),
-            frames: Frames::new(scale),
-            size: None,
-            told: None,
-            commits: 0,
-            last_damage: Vec::new(),
-            buffer_size: None,
-        }
+  pub(crate) fn new(
+    layer: LayerSurface,
+    fractional: Option<(WpFractionalScaleV1, WpViewport)>,
+    pool: SlotPool,
+    scale: Scale,
+  ) -> Surface {
+    Surface {
+      layer,
+      fractional,
+      pool,
+      buffers: Buffers::new(),
+      frames: Frames::new(scale),
+      size: None,
+      told: None,
+      commits: 0,
+      last_damage: Vec::new(),
+      buffer_size: None,
     }
+  }
 
-    /// Takes a configure's size. Returns the size, or `None` if it can't be
-    /// drawn at.
-    pub(crate) fn configure(
-        &mut self,
-        new_size: (u32, u32),
-        config: &SurfaceConfig,
-    ) -> Option<(u32, u32)> {
-        let size = configured_size(new_size, (config.width, config.height))?;
-        self.size = Some(size);
-        self.frames.pacing.configure();
-        Some(size)
-    }
+  /// Takes a configure's size. Returns the size, or `None` if it can't be
+  /// drawn at.
+  pub(crate) fn configure(
+    &mut self,
+    new_size: (u32, u32),
+    config: &SurfaceConfig,
+  ) -> Option<(u32, u32)> {
+    let size = configured_size(new_size, (config.width, config.height))?;
+    self.size = Some(size);
+    self.frames.pacing.configure();
+    Some(size)
+  }
 
-    /// Sends new settings from the window's description, which must have
-    /// passed [`size_problem`]. The compositor answers with a configure.
-    pub(crate) fn reconfigure(&self, config: &SurfaceConfig) {
-        apply(&self.layer, config);
-        if let SurfaceKind::Wlr(wlr) = self.layer.kind() {
-            // Changing the layer later needs version 2.
-            if wlr.version() >= 2 {
-                self.layer.set_layer(layer(config.layer));
-            }
-        }
-        self.layer.commit();
+  /// Sends new settings from the window's description, which must have
+  /// passed [`size_problem`]. The compositor answers with a configure.
+  pub(crate) fn reconfigure(&self, config: &SurfaceConfig) {
+    apply(&self.layer, config);
+    if let SurfaceKind::Wlr(wlr) = self.layer.kind() {
+      // Changing the layer later needs version 2.
+      if wlr.version() >= 2 {
+        self.layer.set_layer(layer(config.layer));
+      }
     }
+    self.layer.commit();
+  }
 
-    /// Draws `window`'s damage into a free buffer and commits it, with a
-    /// frame callback. Returns whether it committed: not if every buffer is
-    /// busy, which a release will end, or if something failed, which is
-    /// logged and asks for another frame.
-    ///
-    /// `D` is the event loop's state, which hears the frame callback.
-    pub(crate) fn draw<D>(
-        &mut self,
-        window: &Window,
-        renderer: &mut Renderer,
-        text: &mut TextSystem,
-        qh: &QueueHandle<D>,
-    ) -> bool
-    where
-        D: Dispatch<WlCallback, FrameCallbackData> + 'static,
-    {
-        let Some((width, height)) = self.size else {
-            return false;
-        };
-        let Some((buffer_width, buffer_height)) = self.frames.scale.buffer_size(width, height)
-        else {
-            tracing::warn!(
-                width,
-                height,
-                scale = self.frames.scale.factor(),
-                "a window too large to draw"
-            );
-            return false;
-        };
-        // Split the borrows: the pool hands out the canvas while a slot is
-        // borrowed from the buffers.
-        let Surface {
-            pool,
-            buffers,
-            frames,
-            ..
-        } = self;
-        let slot = buffers.next((buffer_width, buffer_height), || {
-            let stride = buffer_width.checked_mul(4)?;
-            match pool.create_buffer(
-                i32::try_from(buffer_width).ok()?,
-                i32::try_from(buffer_height).ok()?,
-                i32::try_from(stride).ok()?,
-                wl_shm::Format::Argb8888,
-            ) {
-                Ok((shm, _)) => Some(ShmSlot {
-                    shm,
-                    width: buffer_width,
-                    height: buffer_height,
-                }),
-                Err(error) => {
-                    tracing::warn!(%error, buffer_width, buffer_height, "couldn't allocate a buffer");
-                    None
-                }
-            }
-        });
-        let Some(slot) = slot else {
-            return false;
-        };
-        let Some(pixels) = slot.buffer.shm.canvas(pool) else {
-            return false;
-        };
-        let canvas = (pixels, buffer_width, buffer_height);
-        let Some(report) = frames.draw(window, renderer, text, canvas, &mut slot.age) else {
-            return false;
-        };
-        let surface = self.layer.wl_surface();
-        if let Err(error) = slot.buffer.shm.attach_to(surface) {
-            tracing::warn!(%error, "couldn't attach a buffer");
-            frames.lost();
-            return false;
+  /// Draws `window`'s damage into a free buffer and commits it, with a
+  /// frame callback. Returns whether it committed: not if every buffer is
+  /// busy, which a release will end, or if something failed, which is
+  /// logged and asks for another frame.
+  ///
+  /// `D` is the event loop's state, which hears the frame callback.
+  pub(crate) fn draw<D>(
+    &mut self,
+    window: &Window,
+    renderer: &mut Renderer,
+    text: &mut TextSystem,
+    qh: &QueueHandle<D>,
+  ) -> bool
+  where
+    D: Dispatch<WlCallback, FrameCallbackData> + 'static,
+  {
+    let Some((width, height)) = self.size else {
+      return false;
+    };
+    let Some((buffer_width, buffer_height)) = self.frames.scale.buffer_size(width, height) else {
+      tracing::warn!(
+        width,
+        height,
+        scale = self.frames.scale.factor(),
+        "a window too large to draw"
+      );
+      return false;
+    };
+    // Split the borrows: the pool hands out the canvas while a slot is
+    // borrowed from the buffers.
+    let Surface {
+      pool,
+      buffers,
+      frames,
+      ..
+    } = self;
+    let slot = buffers.next((buffer_width, buffer_height), || {
+      let stride = buffer_width.checked_mul(4)?;
+      match pool.create_buffer(
+        i32::try_from(buffer_width).ok()?,
+        i32::try_from(buffer_height).ok()?,
+        i32::try_from(stride).ok()?,
+        wl_shm::Format::Argb8888,
+      ) {
+        Ok((shm, _)) => Some(ShmSlot {
+          shm,
+          width: buffer_width,
+          height: buffer_height,
+        }),
+        Err(error) => {
+          tracing::warn!(%error, buffer_width, buffer_height, "couldn't allocate a buffer");
+          None
         }
-        for rect in &report {
-            let [x, y, width, height] = [rect.x, rect.y, rect.width, rect.height]
-                .map(|value| i32::try_from(value).unwrap_or(i32::MAX));
-            surface.damage_buffer(x, y, width, height);
-        }
-        let told = ((width, height), frames.scale);
-        if self.told != Some(told) {
-            match (&self.fractional, frames.scale) {
-                (Some((_, viewport)), _) => {
-                    let [width, height] =
-                        [width, height].map(|value| i32::try_from(value).unwrap_or(i32::MAX));
-                    viewport.set_destination(width, height);
-                }
-                (None, Scale::Integer(factor)) => {
-                    surface.set_buffer_scale(i32::try_from(factor).unwrap_or(1));
-                }
-                // Fractional scales come only with the viewport.
-                (None, Scale::Fractional(_)) => {}
-            }
-            self.told = Some(told);
-        }
-        surface.frame(qh, FrameCallbackData(surface.clone()));
-        surface.commit();
-        frames.pacing.committed();
-        self.commits += 1;
-        self.last_damage = report;
-        self.buffer_size = Some((buffer_width, buffer_height));
-        true
+      }
+    });
+    let Some(slot) = slot else {
+      return false;
+    };
+    let Some(pixels) = slot.buffer.shm.canvas(pool) else {
+      return false;
+    };
+    let canvas = (pixels, buffer_width, buffer_height);
+    let Some(report) = frames.draw(window, renderer, text, canvas, &mut slot.age) else {
+      return false;
+    };
+    let surface = self.layer.wl_surface();
+    if let Err(error) = slot.buffer.shm.attach_to(surface) {
+      tracing::warn!(%error, "couldn't attach a buffer");
+      frames.lost();
+      return false;
     }
+    for rect in &report {
+      let [x, y, width, height] = [rect.x, rect.y, rect.width, rect.height]
+        .map(|value| i32::try_from(value).unwrap_or(i32::MAX));
+      surface.damage_buffer(x, y, width, height);
+    }
+    let told = ((width, height), frames.scale);
+    if self.told != Some(told) {
+      match (&self.fractional, frames.scale) {
+        (Some((_, viewport)), _) => {
+          let [width, height] =
+            [width, height].map(|value| i32::try_from(value).unwrap_or(i32::MAX));
+          viewport.set_destination(width, height);
+        }
+        (None, Scale::Integer(factor)) => {
+          surface.set_buffer_scale(i32::try_from(factor).unwrap_or(1));
+        }
+        // Fractional scales come only with the viewport.
+        (None, Scale::Fractional(_)) => {}
+      }
+      self.told = Some(told);
+    }
+    surface.frame(qh, FrameCallbackData(surface.clone()));
+    surface.commit();
+    frames.pacing.committed();
+    self.commits += 1;
+    self.last_damage = report;
+    self.buffer_size = Some((buffer_width, buffer_height));
+    true
+  }
 }
 
 impl Drop for Surface {
-    fn drop(&mut self) {
-        // The layer surface and its wl_surface go when `layer` drops; these
-        // two are ours to destroy.
-        if let Some((fractional, viewport)) = self.fractional.take() {
-            fractional.destroy();
-            viewport.destroy();
-        }
+  fn drop(&mut self) {
+    // The layer surface and its wl_surface go when `layer` drops; these
+    // two are ours to destroy.
+    if let Some((fractional, viewport)) = self.fractional.take() {
+      fractional.destroy();
+      viewport.destroy();
     }
+  }
 }
 
 /// Why layer-shell would refuse `config`'s size, if it would. A side of 0
@@ -307,56 +306,56 @@ impl Drop for Surface {
 /// anchored to both edges across that side; anything else is a protocol
 /// error that ends the connection, and every window with it.
 pub(crate) fn size_problem(config: &SurfaceConfig) -> Option<&'static str> {
-    let anchored = |one, other| config.anchors.contains(one) && config.anchors.contains(other);
-    if config.width == 0 && !anchored(Edge::Left, Edge::Right) {
-        Some("a width of 0 needs anchors on both the left and right edges")
-    } else if config.height == 0 && !anchored(Edge::Top, Edge::Bottom) {
-        Some("a height of 0 needs anchors on both the top and bottom edges")
-    } else {
-        None
-    }
+  let anchored = |one, other| config.anchors.contains(one) && config.anchors.contains(other);
+  if config.width == 0 && !anchored(Edge::Left, Edge::Right) {
+    Some("a width of 0 needs anchors on both the left and right edges")
+  } else if config.height == 0 && !anchored(Edge::Top, Edge::Bottom) {
+    Some("a height of 0 needs anchors on both the top and bottom edges")
+  } else {
+    None
+  }
 }
 
 /// The size to draw at after a configure: the compositor's, or the
 /// requested one where the compositor sent 0 to leave the choice to the
 /// client. `None` if a side is still 0 or larger than 16384.
 pub(crate) fn configured_size(new_size: (u32, u32), requested: (u32, u32)) -> Option<(u32, u32)> {
-    let side = |given: u32, requested: u32| {
-        let side = if given == 0 { requested } else { given };
-        (1..=MAX_LOGICAL_SIDE).contains(&side).then_some(side)
-    };
-    Some((
-        side(new_size.0, requested.0)?,
-        side(new_size.1, requested.1)?,
-    ))
+  let side = |given: u32, requested: u32| {
+    let side = if given == 0 { requested } else { given };
+    (1..=MAX_LOGICAL_SIDE).contains(&side).then_some(side)
+  };
+  Some((
+    side(new_size.0, requested.0)?,
+    side(new_size.1, requested.1)?,
+  ))
 }
 
 /// Sends the settings a commit applies, all but the layer.
 pub(crate) fn apply(surface: &LayerSurface, config: &SurfaceConfig) {
-    surface.set_anchor(anchor(config.anchors));
-    surface.set_size(config.width, config.height);
-    surface.set_exclusive_zone(config.exclusive_zone);
+  surface.set_anchor(anchor(config.anchors));
+  surface.set_size(config.width, config.height);
+  surface.set_exclusive_zone(config.exclusive_zone);
 }
 
 /// The layer-shell anchors for `anchors`.
 pub(crate) fn anchor(anchors: Anchors) -> Anchor {
-    [
-        (Edge::Top, Anchor::TOP),
-        (Edge::Bottom, Anchor::BOTTOM),
-        (Edge::Left, Anchor::LEFT),
-        (Edge::Right, Anchor::RIGHT),
-    ]
-    .into_iter()
-    .filter(|(edge, _)| anchors.contains(*edge))
-    .fold(Anchor::empty(), |all, (_, anchor)| all | anchor)
+  [
+    (Edge::Top, Anchor::TOP),
+    (Edge::Bottom, Anchor::BOTTOM),
+    (Edge::Left, Anchor::LEFT),
+    (Edge::Right, Anchor::RIGHT),
+  ]
+  .into_iter()
+  .filter(|(edge, _)| anchors.contains(*edge))
+  .fold(Anchor::empty(), |all, (_, anchor)| all | anchor)
 }
 
 /// The layer-shell layer for `layer`.
 pub(crate) fn layer(layer: Layer) -> wlr_layer::Layer {
-    match layer {
-        Layer::Background => wlr_layer::Layer::Background,
-        Layer::Bottom => wlr_layer::Layer::Bottom,
-        Layer::Top => wlr_layer::Layer::Top,
-        Layer::Overlay => wlr_layer::Layer::Overlay,
-    }
+  match layer {
+    Layer::Background => wlr_layer::Layer::Background,
+    Layer::Bottom => wlr_layer::Layer::Bottom,
+    Layer::Top => wlr_layer::Layer::Top,
+    Layer::Overlay => wlr_layer::Layer::Overlay,
+  }
 }

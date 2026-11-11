@@ -6,13 +6,13 @@ Every check the spike set out to make passed. The bar starts in about 18 ms and 
 
 ## Results
 
-| Metric | Run 1 | Run 2 | Run 3 | Median | Design target |
-|---|---|---|---|---|---|
-| `main()` to first commit with a buffer | 17.71 ms | 17.50 ms | 18.99 ms | **17.71 ms** | ≤ 100 ms |
-| VmRSS 10 s after the first frame | 13,580 KiB | 13,420 KiB | 13,608 KiB | **13.3 MiB** (13,580 KiB) | ≤ 30 MB, ≤ ¼ of Quickshell |
-| Idle wakeups over 5 s, all threads | 0 | 0 | 0 | **0** | 0 with no clock |
-| `fonts ready` (part of startup) | 15.51 ms | 15.30 ms | 16.52 ms | 15.51 ms | |
-| D-Bus `ListNames` on calloop's executor | 2.20 ms, 46 names | 2.11 ms, 46 names | 2.41 ms, 46 names | 2.20 ms | works |
+| Metric                                  | Run 1             | Run 2             | Run 3             | Median                    | Design target              |
+| --------------------------------------- | ----------------- | ----------------- | ----------------- | ------------------------- | -------------------------- |
+| `main()` to first commit with a buffer  | 17.71 ms          | 17.50 ms          | 18.99 ms          | **17.71 ms**              | ≤ 100 ms                   |
+| VmRSS 10 s after the first frame        | 13,580 KiB        | 13,420 KiB        | 13,608 KiB        | **13.3 MiB** (13,580 KiB) | ≤ 30 MB, ≤ ¼ of Quickshell |
+| Idle wakeups over 5 s, all threads      | 0                 | 0                 | 0                 | **0**                     | 0 with no clock            |
+| `fonts ready` (part of startup)         | 15.51 ms          | 15.30 ms          | 16.52 ms          | 15.51 ms                  |                            |
+| D-Bus `ListNames` on calloop's executor | 2.20 ms, 46 names | 2.11 ms, 46 names | 2.41 ms, 46 names | 2.20 ms                   | works                      |
 
 Each run was `timeout 15 target/release/crabshell-spike`, with stderr captured. All three exited through the SIGTERM handler ("event loop stopped, exiting cleanly"). A separate SIGINT test exited with code 0 through the same path.
 
@@ -28,16 +28,17 @@ Quickshell draws with Qt's threaded render loop on OpenGL through EGL: GPU dmabu
 
 Median of 3 runs each, interleaved (Quickshell, spike, Quickshell, …), measured by the same script:
 
-| Metric | Quickshell | Spike | Spike ÷ Quickshell |
-|---|---|---|---|
-| **RSS** (headline) | **128,196 KiB (125.2 MiB)** | **13,524 KiB (13.2 MiB)** | **10.5 %** |
-| PSS | 57,899 KiB (56.5 MiB) | 6,359 KiB (6.2 MiB) | 11.0 % |
-| Private_Dirty | 31,036 KiB (30.3 MiB) | 1,364 KiB (1.3 MiB) | 4.4 % |
-| Threads | 20 | 2 | |
-| Idle wakeups over 5 s, all threads | 0 | 0 | |
-| Launch to first frame | 219.35 ms | 21.67 ms | 9.9 % |
+| Metric                             | Quickshell                  | Spike                     | Spike ÷ Quickshell |
+| ---------------------------------- | --------------------------- | ------------------------- | ------------------ |
+| **RSS** (headline)                 | **128,196 KiB (125.2 MiB)** | **13,524 KiB (13.2 MiB)** | **10.5 %**         |
+| PSS                                | 57,899 KiB (56.5 MiB)       | 6,359 KiB (6.2 MiB)       | 11.0 %             |
+| Private_Dirty                      | 31,036 KiB (30.3 MiB)       | 1,364 KiB (1.3 MiB)       | 4.4 %              |
+| Threads                            | 20                          | 2                         |                    |
+| Idle wakeups over 5 s, all threads | 0                           | 0                         |                    |
+| Launch to first frame              | 219.35 ms                   | 21.67 ms                  | 9.9 %              |
 
 Per run, Quickshell then spike:
+
 - RSS: 128,284 / 128,196 / 128,028 KiB, and 13,524 / 13,520 / 13,608 KiB.
 - PSS: 57,927 / 57,899 / 57,848 KiB, and 6,359 / 6,346 / 6,465 KiB.
 - Private_Dirty: 31,036 / 31,056 / 31,016 KiB, and 1,360 / 1,364 / 1,364 KiB.
@@ -46,6 +47,7 @@ Per run, Quickshell then spike:
 PSS splits shared pages among the processes that map them. The second `qs` shares its Qt and Mesa libraries with the user's running `rime` instance, which lowers its PSS. RSS doesn't depend on what else is running, so it is the headline number. Private_Dirty is memory only that process uses.
 
 **How each run was measured.** The same script, `baseline/harness.py`, ran both programs (see "How to rerun"):
+
 1. Take the wall-clock time just before the fork/exec.
 2. Find the first frame from the program's own log.
 3. Count voluntary context switches over all threads from 4 s to 9 s after the first frame (the method under "Idle wakeups").
@@ -55,12 +57,14 @@ PSS splits shared pages among the processes that map them. The second `qs` share
 The wakeup window ends before 10 s so it can't catch the spike's one-shot "VmRSS after 10 s" timer, which is measurement code, not bar behaviour.
 
 **How first frame was measured.** It is the time from launch to the timestamp of a log line each program writes right after committing its first buffer:
+
 - **Spike:** its "first frame committed" line, microsecond precision.
 - **Quickshell:** run with `--log-times --log-rules 'qt.scenegraph.time.renderloop=true'`; the first "frame rendered … swap=N" line with N ≥ 1, millisecond precision. Qt logs an empty "frame rendered in 0ms … swap=0" pass before the real frame, with no buffer commit behind it. On three trial runs with `WAYLAND_DEBUG=1`, the chosen line matched the first `wl_surface.attach` + `commit` to within 1 ms.
 - **Why not `WAYLAND_DEBUG`:** I first timed both from the protocol log. wayland-rs writes each debug line unbuffered in several pieces, which pushed the spike's own first frame from about 18 to about 41 ms, an overhead the two libraries don't share. So the final runs don't set it.
 - **Comparing with the table at the top:** in the final runs the spike's own "start of `main()` to commit" was 18.35 ms (median). The 21.67 ms here adds about 3 ms of exec, dynamic linking and runtime setup before `main()`. Both columns of the table above include that.
 
 **Screenshot.** `baseline/screenshot.png` holds the same 30 rows (y = 48–77) as `spike/screenshot.png`. They match: same background, font, size, colour and left edge, and the text spans x = 8–72 in both, so the glyph advances are identical. Two differences show up at 8× zoom, both rendering rather than layout:
+
 - Qt uses subpixel (RGB) antialiasing, following the system's fontconfig setting, where the spike uses grayscale.
 - Qt's baseline sits 1 px higher, with faint antialiasing rows above and below. The glyphs are the same height: 11 strong rows in both.
 
@@ -68,33 +72,33 @@ Quickshell doesn't handle SIGTERM, so each run ended through the default signal 
 
 ## Machine and session
 
-| | |
-|---|---|
-| Machine | AMD Ryzen 5 7535U (6 cores, 12 threads), 14.8 GiB RAM, CPU governor `powersave` |
-| OS | Gentoo Base System 2.18, kernel 6.18.60-gentoo-dist-bin |
-| Compositor | SwayFX 0.6, based on sway 1.12.0 |
-| Output | eDP-1, 1920×1080 at 60 Hz, **scale 1.0** |
-| Scaling path taken | fractional: wp_fractional_scale_v1 and wp_viewporter were both offered; preferred scale 120/120 |
-| Configure received | 1920×30 logical, buffer 1920×30 |
-| Rust | rustc 1.99.1 (latest stable, checked with `rustup check`), edition 2024 |
-| System libraries (pkg-config) | wayland-client 1.26.0, fontconfig 2.18.3, libpulse 17.0, xkbcommon 1.13.2 |
-| Linked at runtime (`ldd`) | libfontconfig (+ freetype, expat, png16, z, bz2), libc, libm, libgcc_s. Not libwayland-client, not xkbcommon, not libpulse. |
-| Fonts | 2,340 font files installed; `sans-serif` resolves to Noto Sans, `/usr/share/fonts/noto/NotoSans-Regular.ttf` |
+|                               |                                                                                                                             |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Machine                       | AMD Ryzen 5 7535U (6 cores, 12 threads), 14.8 GiB RAM, CPU governor `powersave`                                             |
+| OS                            | Gentoo Base System 2.18, kernel 6.18.60-gentoo-dist-bin                                                                     |
+| Compositor                    | SwayFX 0.6, based on sway 1.12.0                                                                                            |
+| Output                        | eDP-1, 1920×1080 at 60 Hz, **scale 1.0**                                                                                    |
+| Scaling path taken            | fractional: wp_fractional_scale_v1 and wp_viewporter were both offered; preferred scale 120/120                             |
+| Configure received            | 1920×30 logical, buffer 1920×30                                                                                             |
+| Rust                          | rustc 1.99.1 (latest stable, checked with `rustup check`), edition 2024                                                     |
+| System libraries (pkg-config) | wayland-client 1.26.0, fontconfig 2.18.3, libpulse 17.0, xkbcommon 1.13.2                                                   |
+| Linked at runtime (`ldd`)     | libfontconfig (+ freetype, expat, png16, z, bz2), libc, libm, libgcc_s. Not libwayland-client, not xkbcommon, not libpulse. |
+| Fonts                         | 2,340 font files installed; `sans-serif` resolves to Noto Sans, `/usr/share/fonts/noto/NotoSans-Regular.ttf`                |
 
 ## Crate versions
 
 Pinned with `=` in `[workspace.dependencies]`. `Cargo.lock` pins the rest.
 
-| Crate | Version | Features |
-|---|---|---|
-| smithay-client-toolkit | 0.21.1 | `calloop` only (defaults off, so no xkbcommon) |
-| calloop | 0.14.5 | `executor`, `signals` |
-| tiny-skia | 0.12.0 | `std`, `simd` (no `png-format`) |
-| cosmic-text | 0.19.0 | `std`, `swash` (no `fontconfig`, which is fontdb's own config-file parser) |
-| fontconfig | 0.11.0 | default (links libfontconfig through yeslogic-fontconfig-sys 6.0.1) |
-| zbus | 6.2.1 | `default-rt`, `proxy` |
-| tracing | 0.1.44 | default |
-| tracing-subscriber | 0.3.23 | `fmt`, `std` (no ANSI colours, since logs go to files) |
+| Crate                  | Version | Features                                                                   |
+| ---------------------- | ------- | -------------------------------------------------------------------------- |
+| smithay-client-toolkit | 0.21.1  | `calloop` only (defaults off, so no xkbcommon)                             |
+| calloop                | 0.14.5  | `executor`, `signals`                                                      |
+| tiny-skia              | 0.12.0  | `std`, `simd` (no `png-format`)                                            |
+| cosmic-text            | 0.19.0  | `std`, `swash` (no `fontconfig`, which is fontdb's own config-file parser) |
+| fontconfig             | 0.11.0  | default (links libfontconfig through yeslogic-fontconfig-sys 6.0.1)        |
+| zbus                   | 6.2.1   | `default-rt`, `proxy`                                                      |
+| tracing                | 0.1.44  | default                                                                    |
+| tracing-subscriber     | 0.3.23  | `fmt`, `std` (no ANSI colours, since logs go to files)                     |
 
 Notable transitive versions: wayland-client 0.31.15, wayland-backend 0.3.17, wayland-protocols 0.32.13, calloop-wayland-source 0.4.1, fontdb 0.23.0 (cosmic-text's version; 0.24.0 exists), swash 0.2.10, harfrust 0.5.2, zruntime 0.2.2. The normal dependency graph has 104 crates, the spike included. cosmic-text pulls two versions each of skrifa, read-fonts and font-types.
 
@@ -105,6 +109,7 @@ Notable transitive versions: wayland-client 0.31.15, wayland-backend 0.3.17, way
 The bar sits at y = 48–77, not y = 0. Quickshell's bar is also a top-layer surface with an exclusive zone, so Sway placed the spike below the 48 px it reserves. I found the rows by scanning a capture for the bar's background colour.
 
 What the pixels show:
+
 - The background reads back as exactly #16181d. That proves the red/blue swap described below gives the right byte order.
 - The text starts at x = 8, matching the padding, and spans y = 10–20, centred in the 30 px bar.
 - Horizontal edges (baseline, x-height, the tops of b, h and l) fall on single crisp rows.
@@ -126,16 +131,16 @@ The governor is `powersave`. One run made straight after a build, with the CPU s
 
 **RSS.** From `/proc/<pid>/smaps` of a run at 13,560 KiB: PSS was 6,381 KiB and Private_Dirty only 1,368 KiB. Most RSS is clean, shareable file pages:
 
-| Mapping | RSS |
-|---|---|
-| spike binary (7.5 MB file, unstripped) | 4,432 KiB |
-| fontconfig cache files (`*.cache-12`) | 4,364 KiB |
-| libc, libm, ld.so, libgcc_s | 2,240 KiB |
+| Mapping                                                      | RSS       |
+| ------------------------------------------------------------ | --------- |
+| spike binary (7.5 MB file, unstripped)                       | 4,432 KiB |
+| fontconfig cache files (`*.cache-12`)                        | 4,364 KiB |
+| libc, libm, ld.so, libgcc_s                                  | 2,240 KiB |
 | libfontconfig, libexpat, libfreetype, libpng16, libz, libbz2 | 1,060 KiB |
-| heap | 764 KiB |
-| NotoSans-Regular.ttf (mmapped by fontdb) | 288 KiB |
-| shm buffer (memfd) | 228 KiB |
-| stack, other anonymous memory, vdso | 184 KiB |
+| heap                                                         | 764 KiB   |
+| NotoSans-Regular.ttf (mmapped by fontdb)                     | 288 KiB   |
+| shm buffer (memfd)                                           | 228 KiB   |
+| stack, other anonymous memory, vdso                          | 184 KiB   |
 
 The fontconfig caches stay mapped because the fontconfig crate never calls `FcFini`. Its source says older fontconfig versions crash when it is called more than once. Releasing them would need FFI, which means `unsafe`.
 

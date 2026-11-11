@@ -16,32 +16,32 @@ use crate::runtime::{self, Computed, NodeId};
 /// its owner is disposed, when its closure panics, or when it is caught in a
 /// dependency cycle. The last two are logged with its debug name.
 pub struct Effect {
-    id: NodeId,
-    _not_send: NotSend,
+  id: NodeId,
+  _not_send: NotSend,
 }
 
 handle_impls!(Effect);
 
 impl Effect {
-    #[track_caller]
-    pub(crate) fn new(owner: NodeId, mut f: impl FnMut() + 'static) -> Self {
-        let compute = move || {
-            f();
-            Computed {
-                changed: true,
-                leftover: None,
-            }
-        };
-        Effect {
-            id: runtime::create_effect(owner, Box::new(compute)),
-            _not_send: PhantomData,
-        }
+  #[track_caller]
+  pub(crate) fn new(owner: NodeId, mut f: impl FnMut() + 'static) -> Self {
+    let compute = move || {
+      f();
+      Computed {
+        changed: true,
+        leftover: None,
+      }
+    };
+    Effect {
+      id: runtime::create_effect(owner, Box::new(compute)),
+      _not_send: PhantomData,
     }
+  }
 
-    /// Gives the effect a debug name, such as the widget path of the binding
-    /// it implements. Panic and cycle log lines show it.
-    pub fn named(self, name: impl Into<String>) -> Self {
-        runtime::set_name(self.id, name.into());
-        self
-    }
+  /// Gives the effect a debug name, such as the widget path of the binding
+  /// it implements. Panic and cycle log lines show it.
+  pub fn named(self, name: impl Into<String>) -> Self {
+    runtime::set_name(self.id, name.into());
+    self
+  }
 }

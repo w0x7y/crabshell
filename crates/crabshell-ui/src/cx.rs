@@ -22,8 +22,8 @@ use crabshell_reactive::{Effect, Memo, Owner, Signal};
 /// root reaches every widget and handler.
 #[derive(Clone)]
 pub struct Cx {
-    owner: Owner,
-    services: Rc<Services>,
+  owner: Owner,
+  services: Rc<Services>,
 }
 
 /// The services of one shell, by type.
@@ -31,88 +31,88 @@ pub struct Cx {
 struct Services(RefCell<HashMap<TypeId, Rc<dyn Any>>>);
 
 impl std::fmt::Debug for Cx {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let services = self.services.0.borrow().len();
-        f.debug_struct("Cx")
-            .field("owner", &self.owner)
-            .field("services", &services)
-            .finish()
-    }
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let services = self.services.0.borrow().len();
+    f.debug_struct("Cx")
+      .field("owner", &self.owner)
+      .field("services", &services)
+      .finish()
+  }
 }
 
 impl Cx {
-    /// A context that creates everything under `owner`, with no services
-    /// yet.
-    pub fn new(owner: Owner) -> Cx {
-        Cx {
-            owner,
-            services: Rc::default(),
-        }
+  /// A context that creates everything under `owner`, with no services
+  /// yet.
+  pub fn new(owner: Owner) -> Cx {
+    Cx {
+      owner,
+      services: Rc::default(),
     }
+  }
 
-    /// The owner that signals, memos and effects created through this
-    /// context belong to.
-    pub fn owner(&self) -> Owner {
-        self.owner
-    }
+  /// The owner that signals, memos and effects created through this
+  /// context belong to.
+  pub fn owner(&self) -> Owner {
+    self.owner
+  }
 
-    /// A context for a part of the shell inside this one: what it creates
-    /// is freed when this context's owner is. The services are shared with
-    /// the child.
-    pub fn child(&self) -> Cx {
-        Cx {
-            owner: self.owner.child(),
-            services: Rc::clone(&self.services),
-        }
+  /// A context for a part of the shell inside this one: what it creates
+  /// is freed when this context's owner is. The services are shared with
+  /// the child.
+  pub fn child(&self) -> Cx {
+    Cx {
+      owner: self.owner.child(),
+      services: Rc::clone(&self.services),
     }
+  }
 
-    /// Gives the context's owner a debug name, such as a widget path.
-    pub(crate) fn named(self, name: impl Into<String>) -> Cx {
-        Cx {
-            owner: self.owner.named(name),
-            services: self.services,
-        }
+  /// Gives the context's owner a debug name, such as a widget path.
+  pub(crate) fn named(self, name: impl Into<String>) -> Cx {
+    Cx {
+      owner: self.owner.named(name),
+      services: self.services,
     }
+  }
 
-    /// Makes `service` reachable from every context of this shell, through
-    /// [`service`](Self::service), and returns it shared. A service of the
-    /// same type provided before is replaced; whoever holds it keeps it.
-    pub fn provide<T: 'static>(&self, service: T) -> Rc<T> {
-        let service = Rc::new(service);
-        let shared: Rc<dyn Any> = Rc::clone(&service) as Rc<dyn Any>;
-        let replaced = self
-            .services
-            .0
-            .borrow_mut()
-            .insert(TypeId::of::<T>(), shared);
-        // Dropped after the map is released: its `Drop` may use a context.
-        drop(replaced);
-        service
-    }
+  /// Makes `service` reachable from every context of this shell, through
+  /// [`service`](Self::service), and returns it shared. A service of the
+  /// same type provided before is replaced; whoever holds it keeps it.
+  pub fn provide<T: 'static>(&self, service: T) -> Rc<T> {
+    let service = Rc::new(service);
+    let shared: Rc<dyn Any> = Rc::clone(&service) as Rc<dyn Any>;
+    let replaced = self
+      .services
+      .0
+      .borrow_mut()
+      .insert(TypeId::of::<T>(), shared);
+    // Dropped after the map is released: its `Drop` may use a context.
+    drop(replaced);
+    service
+  }
 
-    /// The service of type `T`, if one was provided.
-    pub fn service<T: 'static>(&self) -> Option<Rc<T>> {
-        let service = self.services.0.borrow().get(&TypeId::of::<T>()).cloned()?;
-        service.downcast::<T>().ok()
-    }
+  /// The service of type `T`, if one was provided.
+  pub fn service<T: 'static>(&self) -> Option<Rc<T>> {
+    let service = self.services.0.borrow().get(&TypeId::of::<T>()).cloned()?;
+    service.downcast::<T>().ok()
+  }
 
-    /// Creates a [`Signal`] holding `value`. See [`Owner::signal`].
-    #[track_caller]
-    pub fn signal<T: 'static>(&self, value: T) -> Signal<T> {
-        self.owner.signal(value)
-    }
+  /// Creates a [`Signal`] holding `value`. See [`Owner::signal`].
+  #[track_caller]
+  pub fn signal<T: 'static>(&self, value: T) -> Signal<T> {
+    self.owner.signal(value)
+  }
 
-    /// Creates a [`Memo`] that derives its value with `f`. See
-    /// [`Owner::memo`].
-    #[track_caller]
-    pub fn memo<T: PartialEq + 'static>(&self, f: impl FnMut() -> T + 'static) -> Memo<T> {
-        self.owner.memo(f)
-    }
+  /// Creates a [`Memo`] that derives its value with `f`. See
+  /// [`Owner::memo`].
+  #[track_caller]
+  pub fn memo<T: PartialEq + 'static>(&self, f: impl FnMut() -> T + 'static) -> Memo<T> {
+    self.owner.memo(f)
+  }
 
-    /// Creates an [`Effect`] that reruns `f` when something it read changes.
-    /// See [`Owner::effect`].
-    #[track_caller]
-    pub fn effect(&self, f: impl FnMut() + 'static) -> Effect {
-        self.owner.effect(f)
-    }
+  /// Creates an [`Effect`] that reruns `f` when something it read changes.
+  /// See [`Owner::effect`].
+  #[track_caller]
+  pub fn effect(&self, f: impl FnMut() + 'static) -> Effect {
+    self.owner.effect(f)
+  }
 }

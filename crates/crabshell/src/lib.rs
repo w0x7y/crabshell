@@ -75,12 +75,11 @@ pub use shell::{EXIT_NO_COMPOSITOR, EXIT_ROOT_PANICKED, Error, Shell, ShellExt, 
 
 /// What a bar uses, in one `use crabshell::prelude::*`.
 pub mod prelude {
-    pub use crate::{IntoPanels, ShellExt};
-    pub use crabshell_reactive::{Effect, Memo, ReadSignal, Signal};
-    pub use crabshell_services::{Precision, ServicesExt, Sink, Workspace};
-    pub use crabshell_ui::{
-        Align, Anchors, Border, Button, Color, Column, Cx, Edge, Font, Icon, IconPixels,
-        IconSource, Justify, Layer, Output, Padding, PanelWindow, Row, Size, Spacer, Stack, Style,
-        Text, Widget,
-    };
+  pub use crate::{IntoPanels, ShellExt};
+  pub use crabshell_reactive::{Effect, Memo, ReadSignal, Signal};
+  pub use crabshell_services::{Precision, ServicesExt, Sink, Workspace};
+  pub use crabshell_ui::{
+    Align, Anchors, Border, Button, Color, Column, Cx, Edge, Font, Icon, IconPixels, IconSource,
+    Justify, Layer, Output, Padding, PanelWindow, Row, Size, Spacer, Stack, Style, Text, Widget,
+  };
 }
