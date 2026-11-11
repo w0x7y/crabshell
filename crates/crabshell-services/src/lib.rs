@@ -45,15 +45,16 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
     cx.provide(clock::Clocks::new(Rc::clone(&shared)));
 }
 
-/// The services a context hands out. The prelude brings it in.
+/// The services a context hands out.
 pub trait ServicesExt {
     /// The time, truncated to `precision`: it changes on each whole second
     /// or minute and holds the one just passed, in the system time zone.
     /// Every caller asking for the same precision gets the same signal.
     ///
     /// A minute clock wakes the shell once a minute and at no other time.
-    /// After a suspend, and when the time zone changes, it is right again
-    /// at once.
+    /// After a suspend, and when timedated changes the time zone, it is
+    /// right again at once. A zone changed any other way shows from the
+    /// next tick.
     fn clock(&self, precision: Precision) -> ReadSignal<jiff::Zoned>;
 }
 

@@ -48,8 +48,6 @@ const EARLY: SignedDuration = SignedDuration::from_millis(50);
 /// The clocks of one shell: one per precision, each started on first use.
 pub(crate) struct Clocks {
     shared: Rc<Shared>,
-    /// The system time zone, read when the first clock starts.
-    zone: RefCell<Option<TimeZone>>,
     started: RefCell<Vec<Clock>>,
 }
 
@@ -77,7 +75,6 @@ impl Clocks {
     pub(crate) fn new(shared: Rc<Shared>) -> Clocks {
         Clocks {
             shared,
-            zone: RefCell::new(None),
             started: RefCell::new(Vec::new()),
         }
     }
@@ -136,9 +133,7 @@ impl Clocks {
                         if changed.contains_key("Timezone")
                             || invalidated.contains(&"Timezone") =>
                     {
-                        let zone = system_zone(self.shared.config.localtime.as_deref());
-                        tracing::info!(zone = zone.iana_name(), "the time zone changed");
-                        *self.zone.borrow_mut() = Some(zone);
+                        tracing::info!(zone = self.zone().iana_name(), "the time zone changed");
                         self.resync();
                     }
                     Ok(_) => {}
@@ -174,10 +169,10 @@ impl Clocks {
         }
     }
 
+    /// Read on every tick, since `/etc/localtime` can change with no
+    /// timedated to say so, as under OpenRC.
     fn zone(&self) -> TimeZone {
-        let localtime = self.shared.config.localtime.as_deref();
-        let mut zone = self.zone.borrow_mut();
-        zone.get_or_insert_with(|| system_zone(localtime)).clone()
+        system_zone(self.shared.config.localtime.as_deref())
     }
 }
 

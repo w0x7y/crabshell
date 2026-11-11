@@ -267,11 +267,74 @@ fn disposing_the_root_frees_every_clock() {
     let mut shell = Harness::new(offline());
     let second = shell.cx.clock(Precision::Second);
     shell.cx.child().clock(Precision::Minute);
+    let clocks = shell.cx.service::<Clocks>().expect("provided");
+    let held = Rc::strong_count(&clocks);
     shell.cx.owner().dispose();
     assert_eq!(runtime.node_count(), before);
-    // The second's timer fires, finds its signal gone and stops.
+    // The second's timer fires, finds its signal gone and drops itself,
+    // with the hold it had on the clocks.
     shell.run_until(Instant::now() + Duration::from_millis(1100));
     assert_eq!(second.try_get(), None);
+    assert!(
+        Rc::strong_count(&clocks) < held,
+        "the second's timer still runs"
+    );
+}
+
+#[test]
+fn a_resync_replaces_each_timer() {
+    let shell = Harness::new(offline());
+    shell.cx.clock(Precision::Second);
+    shell.cx.clock(Precision::Minute);
+    let clocks = shell.cx.service::<Clocks>().expect("provided");
+    // Each timer holds the clocks, so a timer left behind shows here. It
+    // would tick in the same dispatch as its replacement, unseen otherwise.
+    let held = Rc::strong_count(&clocks);
+    for _ in 0..3 {
+        clocks.resync();
+    }
+    assert_eq!(Rc::strong_count(&clocks), held);
+}
+
+#[test]
+fn one_system_bus_watcher_serves_every_clock() {
+    let shell = Harness::new(Config {
+        localtime: None,
+        system_bus: Some(
+            "unix:path=/nonexistent/crabshell-test-bus"
+                .parse()
+                .expect("an address"),
+        ),
+    });
+    let clocks = shell.cx.service::<Clocks>().expect("provided");
+    let held = Rc::strong_count(&clocks);
+    shell.cx.clock(Precision::Minute);
+    // The first clock adds its timer and the watcher, which waits on the
+    // executor until the loop runs; the second only its timer.
+    assert_eq!(Rc::strong_count(&clocks), held + 2);
+    shell.cx.clock(Precision::Second);
+    assert_eq!(Rc::strong_count(&clocks), held + 3);
+}
+
+#[test]
+fn a_tick_reads_the_zone_again() {
+    // Under OpenRC no timedated says the zone changed: the link is all.
+    let localtime = Localtime::new("Europe/Paris");
+    let mut shell = Harness::new(Config {
+        localtime: Some(localtime.path()),
+        system_bus: None,
+    });
+    let clock = shell.cx.clock(Precision::Second);
+    assert_eq!(
+        clock.get_untracked().time_zone().iana_name(),
+        Some("Europe/Paris")
+    );
+    localtime.point_at("Asia/Tokyo");
+    shell.run_until(Instant::now() + Duration::from_millis(1100));
+    assert_eq!(
+        clock.get_untracked().time_zone().iana_name(),
+        Some("Asia/Tokyo")
+    );
 }
 
 #[test]
@@ -384,7 +447,6 @@ fn logind_and_timedated_resync_the_clock() {
     let system =
         shell.block_on(bus.connect(&["org.freedesktop.login1", "org.freedesktop.timedate1"]));
     let stranger = shell.block_on(bus.connect(&[]));
-    localtime.point_at("Asia/Tokyo");
 
     // A resume re-syncs, until the watcher's match rules are in.
     let armed = timer();
@@ -393,7 +455,6 @@ fn logind_and_timedated_resync_the_clock() {
         || timer() != armed,
         |shell| shell.block_on(prepare_for_sleep(system.clone(), false)),
     );
-    assert_eq!(zone(), paris, "a resume doesn't read the zone");
 
     // Going to sleep, other timedated properties and other senders change
     // nothing.
@@ -407,6 +468,7 @@ fn logind_and_timedated_resync_the_clock() {
     assert_eq!(zone(), paris);
 
     // timedated's new zone is read and shown at once.
+    localtime.point_at("Asia/Tokyo");
     shell.retry_until(
         "new zone after PropertiesChanged",
         || zone() == tokyo,
