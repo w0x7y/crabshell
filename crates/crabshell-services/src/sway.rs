@@ -173,14 +173,16 @@ impl Service {
         });
         if self.shared.config.sway.is_none() {
             tracing::info!("SWAYSOCK is unset, so the bar shows no workspaces");
-        } else if !self.connect() {
-            self.retry_later();
+        } else {
+            // A failed first connect isn't retried: SWAYSOCK is stale, or
+            // another compositor runs, and retries would wake the shell.
+            self.connect();
         }
         workspaces.read_only()
     }
 
     /// Connects and asks for the list and its changes. `false` if Sway
-    /// isn't there, logged once per outage.
+    /// isn't there, logged unless a drop already was.
     fn connect(self: &Rc<Self>) -> bool {
         let (Some(socket), Some(event_loop)) = (&self.shared.config.sway, self.shared.event_loop())
         else {
@@ -198,10 +200,13 @@ impl Service {
         let (stream, fd) = match opened {
             Ok(opened) => opened,
             Err(error) => {
-                if !std::mem::replace(&mut state.outage_logged, true) {
+                if !state.outage_logged {
                     let path = socket.path.display();
-                    let retry = socket.retry;
-                    tracing::warn!(%path, %error, ?retry, "can't connect to Sway; retrying");
+                    tracing::warn!(
+                        %path,
+                        %error,
+                        "can't connect to Sway, so the bar shows no workspaces"
+                    );
                 }
                 return false;
             }

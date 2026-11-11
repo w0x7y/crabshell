@@ -549,12 +549,33 @@ fn an_oversize_message_drops_the_connection() {
 }
 
 #[test]
-fn a_failed_connect_is_logged_once_per_outage() {
+fn a_dead_socket_is_logged_once_and_never_retried() {
     let logs = capture_logs(|| {
         let mut fake = FakeSway::new();
         fake.close();
         let mut shell = Harness::new(Some(fake.socket()));
         let workspaces = shell.cx.sway().workspaces();
+        shell.cx.child().sway();
+        // One wakeup: the one that ends the run.
+        assert_eq!(shell.run_for(RETRY * 3 + RETRY / 2), 1);
+        fake.listen();
+        shell.run_for(RETRY * 2);
+        assert!(fake.try_accept().is_none(), "no retry");
+        assert_eq!(workspaces.get_untracked(), []);
+    });
+    assert_eq!(logs.matches("can't connect to Sway").count(), 1, "{logs}");
+}
+
+#[test]
+fn a_drop_is_logged_once_and_retried_quietly_until_sway_is_back() {
+    let logs = capture_logs(|| {
+        let mut fake = FakeSway::new();
+        let (mut shell, peer) = Harness::connect(&fake);
+        let workspaces = shell.cx.sway().workspaces();
+        fake.close();
+        drop(peer);
+        shell.turn();
+        assert_eq!(workspaces.get_untracked(), []);
         shell.run_for(RETRY * 3 + RETRY / 2);
         fake.listen();
         shell.run_for(RETRY);
@@ -564,8 +585,25 @@ fn a_failed_connect_is_logged_once_per_outage() {
         shell.turn();
         assert_eq!(workspaces.get_untracked(), expected);
     });
-    assert_eq!(logs.matches("can't connect to Sway").count(), 1, "{logs}");
+    assert_eq!(logs.matches("lost the connection").count(), 1, "{logs}");
+    assert_eq!(logs.matches("can't connect").count(), 0, "{logs}");
     assert_eq!(logs.matches("connected to Sway again").count(), 1, "{logs}");
+}
+
+#[test]
+fn disposing_the_root_during_an_outage_stops_the_retries() {
+    let fake = FakeSway::new();
+    let (mut shell, peer) = Harness::connect(&fake);
+    drop(peer);
+    shell.turn();
+    shell.cx.owner().dispose();
+    shell.run_for(RETRY * 2);
+    assert!(
+        fake.try_accept().is_none(),
+        "no connect once the root is gone"
+    );
+    // The retry timer went too.
+    assert_eq!(shell.run_for(RETRY * 3), 1);
 }
 
 #[test]

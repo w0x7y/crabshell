@@ -65,9 +65,11 @@ pub trait ServicesExt {
     /// Sway's workspaces, over the IPC socket at `$SWAYSOCK`. Every caller
     /// shares one connection, made on the first call.
     ///
-    /// The list is empty while Sway isn't there: when `SWAYSOCK` is unset,
-    /// and after the socket closes, until a reconnect every 2 s works. It
-    /// wakes the shell only when Sway sends something.
+    /// The list is empty while Sway isn't there. When `SWAYSOCK` is unset
+    /// or the first connect fails, it stays empty and the service never
+    /// wakes the shell. When a working connection closes, the list is
+    /// empty until a reconnect, tried every 2 s, works. While connected,
+    /// it wakes the shell only when Sway sends something.
     fn sway(&self) -> Sway;
 }
 
