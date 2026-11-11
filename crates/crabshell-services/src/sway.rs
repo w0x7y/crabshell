@@ -146,8 +146,9 @@ struct Connection {
 #[derive(Deserialize)]
 struct Outcome {
     success: bool,
+    /// Why not, when `success` is false.
     #[serde(default)]
-    error: Option<String>,
+    error: String,
 }
 
 impl Service {
@@ -221,8 +222,9 @@ impl Service {
             outbox: Vec::new(),
             fetches: VecDeque::from([None]),
         };
-        ipc::encode(ipc::GET_WORKSPACES, b"", &mut connection.outbox);
+        // Subscribe first, so no change between the two goes unseen.
         ipc::encode(ipc::SUBSCRIBE, br#"["workspace"]"#, &mut connection.outbox);
+        ipc::encode(ipc::GET_WORKSPACES, b"", &mut connection.outbox);
         state.connection = Some(connection);
         self.flush_with(&mut *state);
         true
@@ -307,6 +309,11 @@ impl Service {
                 Err(error) if error.kind() == ErrorKind::WouldBlock => break,
                 Err(error) => return self.disconnect(state, &error),
             }
+        }
+        if connection.outbox.len() > ipc::MAX_PAYLOAD {
+            // Each event queues a fetch, so a Sway that never reads would
+            // grow the outbox and `fetches` without end.
+            return self.disconnect(state, &"Sway reads nothing the bar sends");
         }
         if connection.outbox.is_empty() {
             if let Some(writer) = connection.writer.take() {
@@ -404,7 +411,7 @@ impl Connection {
                     Ok(Outcome { success: true, .. }) => {}
                     Ok(Outcome { error, .. }) => {
                         tracing::warn!(
-                            ?error,
+                            %error,
                             "Sway refused the subscription; the list won't update"
                         );
                     }
@@ -415,7 +422,7 @@ impl Connection {
                         for Outcome { error, .. } in
                             outcomes.into_iter().filter(|outcome| !outcome.success)
                         {
-                            tracing::warn!(?error, "Sway refused to switch workspaces");
+                            tracing::warn!(%error, "Sway refused to switch workspaces");
                         }
                     }
                     Err(error) => tracing::warn!(%error, "a bad command reply from Sway"),

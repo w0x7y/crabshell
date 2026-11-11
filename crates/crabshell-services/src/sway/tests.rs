@@ -1,6 +1,8 @@
+use std::cell::Cell;
 use std::io::{self, ErrorKind, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -131,10 +133,23 @@ impl Peer {
 
     /// Takes the service's opening messages and answers with `list`.
     fn greet(&mut self, list: &str) {
-        assert_eq!(self.read(), (GET_WORKSPACES, String::new()));
-        assert_eq!(self.read(), (SUBSCRIBE, r#"["workspace"]"#.to_owned()));
-        self.send(GET_WORKSPACES, list);
+        self.read_opening();
         self.send(SUBSCRIBE, r#"{"success":true}"#);
+        self.send(GET_WORKSPACES, list);
+    }
+
+    /// Takes the service's opening messages: the subscription first, so no
+    /// change between the list and the subscription goes unseen.
+    fn read_opening(&mut self) {
+        assert_eq!(self.read(), (SUBSCRIBE, r#"["workspace"]"#.to_owned()));
+        assert_eq!(self.read(), (GET_WORKSPACES, String::new()));
+    }
+
+    /// Sends a workspace event and takes the fetch it causes.
+    fn send_event(&mut self, shell: &mut Harness) {
+        self.send(WORKSPACE_EVENT, "{}");
+        shell.turn();
+        assert_eq!(self.read(), (GET_WORKSPACES, String::new()));
     }
 }
 
@@ -277,12 +292,93 @@ fn the_list_arrives_and_each_event_fetches_it_again() {
     shell.turn();
     assert_eq!(peer.read(), (GET_WORKSPACES, String::new()));
     let (list, expected) = two();
+    let replied = Instant::now();
     peer.send(GET_WORKSPACES, &list);
     shell.turn();
     assert_eq!(workspaces.get_untracked(), expected);
     let changed_at = sway.changed_at().expect("a list fetched for an event");
-    assert!(changed_at >= sent && changed_at <= Instant::now());
+    assert!(
+        sent <= changed_at && changed_at < replied,
+        "the event's time"
+    );
     peer.read_nothing();
+}
+
+#[test]
+fn events_before_the_first_list_are_answered_in_order() {
+    let fake = FakeSway::new();
+    let mut shell = Harness::new(Some(fake.socket()));
+    let sway = shell.cx.sway();
+    let mut peer = fake.accept();
+    peer.read_opening();
+    peer.send(SUBSCRIBE, r#"{"success":true}"#);
+    peer.send_event(&mut shell);
+    let between = Instant::now();
+    peer.send_event(&mut shell);
+
+    // Sway answers in the order asked: the first list, then one per event.
+    let lists = [one(), two(), reply(&[(9, "3", true)])];
+    let mut changed = Vec::new();
+    for (list, expected) in lists {
+        peer.send(GET_WORKSPACES, &list);
+        shell.turn();
+        assert_eq!(sway.workspaces().get_untracked(), expected);
+        changed.push(sway.changed_at());
+    }
+    assert_eq!(changed[0], None, "the first list follows no event");
+    assert!(changed[1].is_some_and(|at| at < between), "the first event");
+    assert!(
+        changed[2].is_some_and(|at| at > between),
+        "the second event"
+    );
+    peer.read_nothing();
+}
+
+#[test]
+fn an_unchanged_list_is_not_set_again() {
+    let fake = FakeSway::new();
+    let (mut shell, mut peer) = Harness::connect(&fake);
+    let sway = shell.cx.sway();
+    let workspaces = sway.workspaces();
+    let runs = Rc::new(Cell::new(0));
+    let counted = Rc::clone(&runs);
+    shell.cx.effect(move || {
+        workspaces.with(|_| ());
+        counted.set(counted.get() + 1);
+    });
+    peer.send_event(&mut shell);
+    peer.send(GET_WORKSPACES, &two().0);
+    shell.turn();
+    let (changed_at, ran) = (sway.changed_at(), runs.get());
+    assert!(changed_at.is_some());
+
+    peer.send_event(&mut shell);
+    peer.send(GET_WORKSPACES, &two().0);
+    shell.turn();
+    assert_eq!(sway.changed_at(), changed_at);
+    assert_eq!(runs.get(), ran, "the effect didn't run again");
+}
+
+#[test]
+fn a_sway_that_reads_nothing_is_dropped() {
+    let logs = capture_logs(|| {
+        let fake = FakeSway::new();
+        let (mut shell, mut peer) = Harness::connect(&fake);
+        let workspaces = shell.cx.sway().workspaces();
+        // Each event queues a fetch Sway never reads.
+        let mut events = Vec::new();
+        for _ in 0..4096 {
+            ipc::encode(WORKSPACE_EVENT, b"{}", &mut events);
+        }
+        let mut turns = 0;
+        while !workspaces.get_untracked().is_empty() {
+            assert!(turns < 200, "still connected after {turns} turns");
+            peer.0.write_all(&events).expect("a write to the service");
+            shell.turn();
+            turns += 1;
+        }
+    });
+    assert!(logs.contains("Sway reads nothing"), "{logs}");
 }
 
 #[test]
@@ -291,8 +387,8 @@ fn messages_split_byte_by_byte_or_joined_are_read_whole() {
     let mut shell = Harness::new(Some(fake.socket()));
     let workspaces = shell.cx.sway().workspaces();
     let mut peer = fake.accept();
-    peer.read();
-    peer.read();
+    peer.read_opening();
+    peer.send(SUBSCRIBE, r#"{"success":true}"#);
 
     let (list, expected) = one();
     let mut bytes = Vec::new();
@@ -304,11 +400,11 @@ fn messages_split_byte_by_byte_or_joined_are_read_whole() {
     }
     assert_eq!(workspaces.get_untracked(), expected);
 
-    // A subscribe reply, an event and a list, in one read.
+    // An event, a command reply and a list, in one read.
     let (list, expected) = two();
     let mut bytes = Vec::new();
-    ipc::encode(SUBSCRIBE, br#"{"success":true}"#, &mut bytes);
     ipc::encode(WORKSPACE_EVENT, b"{}", &mut bytes);
+    ipc::encode(RUN_COMMAND, br#"[{"success":true}]"#, &mut bytes);
     ipc::encode(GET_WORKSPACES, list.as_bytes(), &mut bytes);
     peer.0.write_all(&bytes).expect("a write to the service");
     shell.turn();
@@ -391,12 +487,14 @@ fn bad_json_is_logged_and_skipped() {
             shell.turn();
             assert_eq!(workspaces.get_untracked(), expected, "kept after {bad}");
         }
+        peer.send(SUBSCRIBE, r#"{"success":false,"error":"no such event"}"#);
         let (list, expected) = two();
         peer.send(GET_WORKSPACES, &list);
         shell.turn();
         assert_eq!(workspaces.get_untracked(), expected, "still connected");
     });
     assert_eq!(logs.matches("a bad workspace list").count(), 3, "{logs}");
+    assert!(logs.contains("error=no such event"), "{logs}");
 }
 
 #[test]
@@ -495,7 +593,7 @@ fn focus_workspace_sends_the_quoted_name_or_nothing() {
         shell.turn();
         peer.read_nothing();
     });
-    assert!(logs.contains("No workspace"), "{logs}");
+    assert!(logs.contains("error=No workspace"), "{logs}");
     assert!(
         logs.contains("can't switch to this workspace by name"),
         "{logs}"
