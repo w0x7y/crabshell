@@ -7,9 +7,66 @@ use std::time::{Duration, Instant};
 use calloop::EventLoop;
 use crabshell_reactive::Runtime;
 use crabshell_ui::Cx;
+use libpulse_binding::volume::{ChannelVolumes, Volume};
 
-use super::{AudioService, Server};
+use super::{AudioService, Info, Server, percent};
 use crate::{Config, ServicesExt};
+
+const NORM: u32 = Volume::NORMAL.0;
+
+/// The volume `pactl set-sink-volume` sets for `percent`.
+fn level(percent: u32) -> u32 {
+    (percent * NORM + 50) / 100
+}
+
+fn channels(volumes: &[u32]) -> ChannelVolumes {
+    let mut channels = ChannelVolumes::default();
+    channels.set_len(u8::try_from(volumes.len()).expect("a few channels"));
+    for (channel, &volume) in channels.get_mut().iter_mut().zip(volumes) {
+        *channel = Volume(volume);
+    }
+    channels
+}
+
+/// What `pactl get-sink-volume` prints for one channel at `volume`.
+fn pactl_percent(volume: Volume) -> String {
+    let printed = volume.print_verbose(false);
+    let (_, percent) = printed
+        .split_once(" / ")
+        .expect("libpulse prints raw / percent");
+    percent.trim().to_owned()
+}
+
+#[test]
+fn percent_rounds_as_pactl_prints() {
+    // libpulse's own printer, which pactl uses, for every volume to 150%.
+    for raw in 0..=NORM * 3 / 2 {
+        let volume = Volume(raw);
+        assert_eq!(
+            format!("{}%", percent(volume)),
+            pactl_percent(volume),
+            "{raw}"
+        );
+    }
+    // 8192 is 12.5% exactly, and a half rounds up.
+    assert_eq!(percent(Volume(8192)), 13);
+}
+
+#[test]
+fn the_percent_is_the_average_of_the_channels() {
+    let percent_of = |volumes: &[u32]| {
+        let info = Info {
+            index: 0,
+            name: "sink".to_owned(),
+            volumes: channels(volumes),
+            muted: false,
+        };
+        info.sink().volume_percent
+    };
+    assert_eq!(percent_of(&[NORM, NORM / 2]), 75);
+    assert_eq!(percent_of(&[NORM, 0, 0]), 33);
+    assert_eq!(percent_of(&[level(40); 2]), 40);
+}
 
 /// The tests that start libpulse run one at a time, so the one that counts
 /// libpulse's threads sees only its own.

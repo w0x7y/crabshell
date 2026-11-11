@@ -15,8 +15,12 @@ use calloop::channel::Sender;
 use calloop::timer::TimeoutAction;
 use crabshell_reactive::{ReadSignal, Signal};
 use crabshell_ui::Cx;
+use libpulse_binding::callbacks::ListResult;
+use libpulse_binding::context::introspect::{Introspector, ServerInfo, SinkInfo};
+use libpulse_binding::context::subscribe::{Facility, InterestMaskSet};
 use libpulse_binding::context::{Context, FlagSet, State};
 use libpulse_binding::mainloop::threaded::Mainloop;
+use libpulse_binding::volume::{ChannelVolumes, Volume};
 
 use crate::Shared;
 
@@ -93,6 +97,14 @@ pub(crate) type Message = (u32, Event);
 pub(crate) enum Event {
     /// The context's state changed.
     State,
+    /// The server changed, maybe its default sink.
+    Server,
+    /// The sink with this index changed.
+    Sink(u32),
+    /// The server's default sink name.
+    Default(Option<String>),
+    /// The sink asked for by name, or `None` for no such sink.
+    Info(Option<Info>),
 }
 
 impl AudioService {
@@ -139,10 +151,12 @@ impl AudioService {
         let (sender, channel) = calloop::channel::channel();
         // From here on, dropping `pulse` stops libpulse's thread.
         let pulse = Pulse {
+            intro: None,
             context: None,
             mainloop,
             sender,
             generation: 0,
+            shown: None,
             sink,
             down: false,
         };
@@ -184,6 +198,13 @@ impl AudioService {
                     self.lost(pulse, &why);
                 }
             }
+            Event::Server => pulse.read_default(),
+            Event::Sink(index) if pulse.shown.as_ref().is_some_and(|s| s.index == index) => {
+                pulse.read_default();
+            }
+            Event::Sink(_) => {}
+            Event::Default(name) => pulse.read_sink(name),
+            Event::Info(info) => pulse.show(info),
         }
     }
 
@@ -220,16 +241,27 @@ impl AudioService {
 /// the main thread: `Mainloop` holds an `Rc`, so the compiler won't let it
 /// go to another.
 struct Pulse {
-    // Declared before `mainloop`, so it drops before it.
+    // Declared before `mainloop`, so they drop before it.
+    intro: Option<Introspector>,
     context: Option<Context>,
     mainloop: Mainloop,
     sender: Sender<Message>,
     /// Bumped when a context goes, so the messages it left behind are
     /// dropped.
     generation: u32,
+    /// The default sink as last read.
+    shown: Option<Info>,
     sink: Signal<Option<Sink>>,
     /// Whether the server is gone and that was logged.
     down: bool,
+}
+
+/// The default sink as libpulse reported it.
+pub(crate) struct Info {
+    index: u32,
+    name: String,
+    volumes: ChannelVolumes,
+    muted: bool,
 }
 
 impl Pulse {
@@ -248,19 +280,37 @@ impl Pulse {
         connected.map_err(|error| format!("{error}"))
     }
 
-    /// Acts on the context's new state. `Err` when the connection failed
-    /// or ended.
+    /// Acts on the context's new state. Once it is ready, subscribes to
+    /// sink and server events and reads the default sink. `Err` when the
+    /// connection failed or ended.
     fn on_state(&mut self) -> Result<(), String> {
         let lock = Locked::new(&mut self.mainloop);
         let Some(context) = self.context.as_mut() else {
             return Ok(());
         };
         match context.get_state() {
-            State::Ready => {
+            // Several queued messages can each find it ready.
+            State::Ready if self.intro.is_none() => {
+                let (sender, generation) = (self.sender.clone(), self.generation);
+                let on_event = move |facility, _, index| {
+                    let event = match facility {
+                        Some(Facility::Server) => Event::Server,
+                        Some(Facility::Sink) => Event::Sink(index),
+                        _ => return,
+                    };
+                    let _ = sender.send((generation, event));
+                };
+                context.set_subscribe_callback(Some(Box::new(on_pa_thread(on_event))));
+                let interest = InterestMaskSet::SINK | InterestMaskSet::SERVER;
+                context.subscribe(interest, on_pa_thread(|_| {}));
+                self.intro = Some(context.introspect());
                 drop(lock);
                 if std::mem::take(&mut self.down) {
                     tracing::info!("the audio server is back");
+                } else {
+                    tracing::debug!("connected to the audio server");
                 }
+                self.read_default();
                 Ok(())
             }
             State::Failed | State::Terminated => Err(format!("{}", context.errno())),
@@ -268,16 +318,76 @@ impl Pulse {
         }
     }
 
-    /// Drops the context. `true` when this starts an outage.
+    /// Runs `call` under the lock if the context is ready, and says
+    /// whether it ran. libpulse returns no operation from a context that
+    /// isn't, and the binding panics on that.
+    fn when_ready(&mut self, call: impl FnOnce(&mut Introspector)) -> bool {
+        let _lock = Locked::new(&mut self.mainloop);
+        match (&self.context, &mut self.intro) {
+            (Some(context), Some(intro)) if context.get_state() == State::Ready => {
+                call(intro);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Asks the server for its default sink's name.
+    fn read_default(&mut self) {
+        let (sender, generation) = (self.sender.clone(), self.generation);
+        self.when_ready(|intro| {
+            intro.get_server_info(on_pa_thread(move |info: &ServerInfo| {
+                let name = info
+                    .default_sink_name
+                    .as_deref()
+                    .filter(|name| !name.is_empty());
+                let _ = sender.send((generation, Event::Default(name.map(str::to_owned))));
+            }));
+        });
+    }
+
+    /// Asks for the sink called `name`, or shows none.
+    fn read_sink(&mut self, name: Option<String>) {
+        let Some(name) = name else {
+            return self.show(None);
+        };
+        let (sender, generation) = (self.sender.clone(), self.generation);
+        self.when_ready(|intro| {
+            let mut found = None;
+            let on_result = move |result: ListResult<&SinkInfo>| match result {
+                ListResult::Item(info) => found = Info::read(info),
+                ListResult::End | ListResult::Error => {
+                    let _ = sender.send((generation, Event::Info(found.take())));
+                }
+            };
+            intro.get_sink_info_by_name(&name, on_pa_thread(on_result));
+        });
+    }
+
+    /// Shows `info`, or no sink. The signal is set only when that changes
+    /// what the bar shows, since every set repaints.
+    fn show(&mut self, info: Option<Info>) {
+        let sink = info.as_ref().map(Info::sink);
+        self.shown = info;
+        if self.sink.try_with(|shown| *shown != sink) == Some(true) {
+            self.sink.set(sink);
+        }
+    }
+
+    /// Drops the context and shows no sink. `true` when this starts an
+    /// outage.
     fn disconnect(&mut self) -> bool {
         let lock = Locked::new(&mut self.mainloop);
+        self.intro = None;
         if let Some(mut context) = self.context.take() {
             // Cleared first: disconnecting calls the state callback.
             context.set_state_callback(None);
+            context.set_subscribe_callback(None);
             context.disconnect();
         }
         drop(lock);
         self.generation += 1;
+        self.show(None);
         !std::mem::replace(&mut self.down, true)
     }
 }
@@ -285,8 +395,36 @@ impl Pulse {
 impl Drop for Pulse {
     fn drop(&mut self) {
         // Unlocked, as libpulse asks. Once its thread is gone, the context
-        // drops with nothing running beside it.
+        // and introspector drop with nothing running beside them.
         self.mainloop.stop();
+    }
+}
+
+impl Info {
+    /// Copies what we need out of libpulse's `info`, which lives only for
+    /// the callback. A sink with no name or a bad volume is skipped.
+    fn read(info: &SinkInfo) -> Option<Info> {
+        let (Some(name), true) = (info.name.as_deref(), info.volume.is_valid()) else {
+            tracing::warn!(
+                index = info.index,
+                "skipped a sink with no name or a bad volume"
+            );
+            return None;
+        };
+        Some(Info {
+            index: info.index,
+            name: name.to_owned(),
+            volumes: info.volume,
+            muted: info.mute,
+        })
+    }
+
+    fn sink(&self) -> Sink {
+        Sink {
+            name: self.name.clone(),
+            volume_percent: percent(self.volumes.avg()),
+            muted: self.muted,
+        }
     }
 }
 
@@ -311,4 +449,12 @@ impl Drop for Locked<'_> {
 /// `Send`. Wrapping each one in this makes the compiler check it.
 fn on_pa_thread<F: Send + 'static>(callback: F) -> F {
     callback
+}
+
+/// The percent `pactl get-sink-volume` shows for `volume`: 100 is
+/// `PA_VOLUME_NORM`, and halves round up.
+fn percent(volume: Volume) -> u32 {
+    let norm = u64::from(Volume::NORMAL.0);
+    // At most u32::MAX * 100 / norm, which fits.
+    ((u64::from(volume.0) * 100 + norm / 2) / norm) as u32
 }
