@@ -1,13 +1,32 @@
 //! Crabshell: Wayland bars and panels written in Rust.
 //!
-//! A shell is a program whose `main` calls [`run`] with a root closure,
-//! which sets the shell up through the context it is given:
+//! A shell is a program whose `main` calls [`run`] with a root closure.
+//! The closure usually builds a bar for every output with
+//! [`per_output`](ShellExt::per_output):
 //!
 //! ```no_run
 //! use crabshell::prelude::*;
 //!
+//! const BAR: Style = Style::new()
+//!     .background(Color::rgb(0x1e, 0x1e, 0x2e))
+//!     .color(Color::rgb(0xcd, 0xd6, 0xf4));
+//!
 //! fn main() {
-//!     crabshell::run(|cx| cx.set_icon_theme("Adwaita"));
+//!     crabshell::run(|cx| cx.per_output(bar));
+//! }
+//!
+//! fn bar(cx: &Cx, output: &Output) -> PanelWindow {
+//!     let count = cx.signal(0);
+//!     PanelWindow::new(output)
+//!         .anchors(Edge::Top | Edge::Left | Edge::Right)
+//!         .height(30)
+//!         .style(BAR)
+//!         .child(
+//!             Row::new().padding(4, 8).child(
+//!                 Button::new(Text::new(move || format!("clicked {} times", count.get())))
+//!                     .on_click(move |_| count.update(|count| *count += 1)),
+//!             ),
+//!         )
 //! }
 //! ```
 //!
@@ -20,24 +39,28 @@
 //!
 //! - [`run`] connects to the compositor, gives the root closure a context
 //!   that carries the shell's services, and runs the event loop. It never
-//!   returns: it exits with status 1 if the root closure panics, and 2 if
-//!   the compositor can't be reached or the connection is lost.
+//!   returns: a fatal error is logged and the process exits with status 1.
+//! - `per_output` runs its closure for each output under a child owner of
+//!   the context it was called with. The owner is disposed when the output
+//!   goes, or when the compositor closes one of its windows.
 //! - Logs go to stderr through `tracing`, including the time from [`run`]
 //!   to the first committed frame.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod per_output;
 mod shell;
 
 #[cfg(test)]
 mod tests;
 
+pub use per_output::IntoPanels;
 pub use shell::{EXIT_NO_COMPOSITOR, EXIT_ROOT_PANICKED, Error, Shell, ShellExt, run};
 
 /// What a bar uses, in one `use crabshell::prelude::*`.
 pub mod prelude {
-    pub use crate::ShellExt;
+    pub use crate::{IntoPanels, ShellExt};
     pub use crabshell_reactive::{Effect, Memo, ReadSignal, Signal};
     pub use crabshell_ui::{
         Align, Anchors, Border, Button, Color, Column, Cx, Edge, Font, Icon, IconPixels,

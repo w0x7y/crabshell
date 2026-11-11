@@ -1,14 +1,17 @@
 //! The shell: the platform's event loop, the root context and its
 //! services, and what `cx` can ask of the shell.
 
-use std::panic::{self, AssertUnwindSafe};
+use std::cell::RefCell;
+use std::panic::{self, AssertUnwindSafe, Location};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crabshell_reactive::Runtime;
-use crabshell_ui::Cx;
-use crabshell_wayland::{EventLoop, LoopSignal, Platform};
+use crabshell_ui::{Cx, Output, Window};
+use crabshell_wayland::{Event, EventLoop, LoopSignal, Platform, WindowId};
 use tracing::level_filters::LevelFilter;
+
+use crate::per_output::{self, Host, IntoPanels, PerOutput};
 
 /// The exit status when the root closure panicked: the config is broken.
 pub const EXIT_ROOT_PANICKED: i32 = 1;
@@ -20,7 +23,8 @@ pub const EXIT_NO_COMPOSITOR: i32 = 2;
 /// Starts the shell: connects to the compositor, calls `root` with the
 /// root context, and runs the event loop. It never returns.
 ///
-/// `root` sets the shell up. Errors are logged, and the process exits with:
+/// `root` sets the shell up, usually with [`ShellExt::per_output`]. Errors
+/// are logged, and the process exits with:
 ///
 /// - [`EXIT_ROOT_PANICKED`] (1) if `root` panics: the config is broken;
 /// - [`EXIT_NO_COMPOSITOR`] (2) if there is no compositor to connect to,
@@ -119,13 +123,34 @@ impl Shell {
     /// # Errors
     ///
     /// If `root` panics. The panic is logged too.
-    pub fn new(event_loop: EventLoop, root: impl FnOnce(&Cx)) -> Result<Shell, Error> {
+    pub fn new(mut event_loop: EventLoop, root: impl FnOnce(&Cx)) -> Result<Shell, Error> {
         let runtime = Runtime::current();
         let cx = Cx::new(runtime.new_owner().named("root"));
+        let state = Rc::new(RefCell::new(PerOutput::new()));
         cx.provide(Service {
+            per_output: Rc::clone(&state),
             idle: idle_inserter(&event_loop),
             signal: event_loop.signal(),
         });
+        event_loop
+            .platform()
+            .on_event(move |platform, event| match event {
+                Event::OutputAdded(output) => {
+                    per_output::added(&state, &mut Shown(platform), &output.name);
+                }
+                Event::OutputRemoved(output) => {
+                    // Another output of the same name may be announced
+                    // already, before this one's removal arrived.
+                    let announced: Vec<String> = platform
+                        .outputs()
+                        .map(|output| output.name.clone())
+                        .collect();
+                    per_output::removed(&state, &mut Shown(platform), &output.name, &announced);
+                }
+                Event::WindowClosed(window) => {
+                    per_output::closed(&state, &mut Shown(platform), *window);
+                }
+            });
         let mut shell = Shell {
             event_loop,
             started: Instant::now(),
@@ -174,7 +199,9 @@ impl Shell {
         }
     }
 
-    /// The platform: its outputs, windows and counters.
+    /// The platform: its outputs, windows and counters. Its
+    /// [`on_event`](Platform::on_event) listener is `per_output`'s: setting
+    /// another replaces it, and `per_output` stops hearing of outputs.
     pub fn platform(&mut self) -> &mut Platform {
         self.event_loop.platform()
     }
@@ -187,7 +214,14 @@ impl Shell {
 
 impl Drop for Shell {
     fn drop(&mut self) {
-        // Everything under the root context goes.
+        // The services map holds per_output's state, whose builders hold
+        // contexts, which hold the services map: clearing the builders
+        // breaks that loop. Then everything under the root context goes.
+        if let Some(service) = self.cx.service::<Service>() {
+            let cleared =
+                std::mem::replace(&mut *service.per_output.borrow_mut(), PerOutput::new());
+            drop(cleared);
+        }
         self.cx.owner().dispose();
     }
 }
@@ -195,6 +229,7 @@ impl Drop for Shell {
 /// What the shell keeps in the root context's services, so `cx` can reach
 /// the platform from anywhere.
 struct Service {
+    per_output: Rc<RefCell<PerOutput<WindowId>>>,
     /// Puts a request in an idle callback, which gets the platform, while
     /// the loop is there. It holds the loop weakly, so a context kept
     /// somewhere doesn't keep the loop and its connection.
@@ -242,15 +277,86 @@ fn schedule(
     signal.wakeup();
 }
 
-/// What a context can ask of the shell. In the prelude, so its methods
-/// work with no other import.
+/// The platform as `per_output` uses it.
+struct Shown<'a>(&'a mut Platform);
+
+impl Host for Shown<'_> {
+    type Id = WindowId;
+
+    fn add_window(&mut self, window: Window) -> WindowId {
+        self.0.add_window(window)
+    }
+
+    fn remove_window(&mut self, id: WindowId) {
+        self.0.remove_window(id);
+    }
+}
+
+/// What a context can ask of the shell. In the prelude, so `cx.per_output`
+/// works with no other import.
 pub trait ShellExt {
+    /// Calls `f` for every output there is now and every one that appears
+    /// later, and shows the windows it returns on it.
+    ///
+    /// Each output's call runs under a child owner of this context: when
+    /// the output goes, that owner is disposed, so its windows and
+    /// everything `f` created are dropped. If the compositor closes one of
+    /// them, the rest go too, and nothing is built for that output until it
+    /// is announced again. When this context's own owner is disposed, the
+    /// call ends and every window it built goes. A panic in `f` is logged
+    /// with its path, such as `per_output[DP-1] (called at src/main.rs:4)`,
+    /// and the other outputs carry on.
+    ///
+    /// Call it from the root closure, or from inside another `per_output`'s
+    /// `f`. Called from an effect, it would start another set of windows
+    /// each time the effect runs.
+    #[track_caller]
+    fn per_output<W: IntoPanels>(&self, f: impl Fn(&Cx, &Output) -> W + 'static);
+
     /// Looks icon names up in `theme`, such as `"Adwaita"`, instead of
     /// `hicolor`. Every window is repainted.
     fn set_icon_theme(&self, theme: impl Into<String>);
 }
 
 impl ShellExt for Cx {
+    #[track_caller]
+    fn per_output<W: IntoPanels>(&self, f: impl Fn(&Cx, &Output) -> W + 'static) {
+        let at = Location::caller();
+        let Some(service) = self.service::<Service>() else {
+            tracing::error!(
+                "cx.per_output at {at} needs the shell crabshell::run starts; nothing is built"
+            );
+            return;
+        };
+        // When this context's owner goes, the builder's windows are removed
+        // soon after, without waiting for an output to come or go.
+        let on_dead = {
+            let state = Rc::clone(&service.per_output);
+            let (idle, signal) = (Rc::clone(&service.idle), service.signal.clone());
+            Box::new(move || {
+                schedule(&idle, &signal, "per_output's cleanup", move |platform| {
+                    per_output::sweep(&state, &mut Shown(platform));
+                });
+            })
+        };
+        let builder = service.per_output.borrow_mut().register(
+            self.clone(),
+            Rc::new(move |cx: &Cx, output: &Output| f(cx, output).into_panels()),
+            at,
+            on_dead,
+        );
+        // The outputs there already are built for once the loop runs; the
+        // ones announced later, when they are.
+        let state = Rc::clone(&service.per_output);
+        service.with_platform("per_output", move |platform| {
+            let outputs: Vec<String> = platform
+                .outputs()
+                .map(|output| output.name.clone())
+                .collect();
+            per_output::existing(&state, &mut Shown(platform), builder, &outputs);
+        });
+    }
+
     fn set_icon_theme(&self, theme: impl Into<String>) {
         let theme = theme.into();
         let Some(service) = self.service::<Service>() else {
