@@ -8,6 +8,9 @@ license.workspace = true
 publish = false
 
 [dependencies]
+calloop.workspace = true
+# For the runtime the loop flushes.
+crabshell-reactive.workspace = true
 crabshell-render.workspace = true
 crabshell-ui.workspace = true
 smithay-client-toolkit.workspace = true
@@ -15,5 +18,5 @@ tracing.workspace = true
 wayland-protocols.workspace = true
 
 [dev-dependencies]
-# Tests build windows to draw.
-crabshell-reactive.workspace = true
+# To capture log lines in tests.
+tracing-subscriber.workspace = true
