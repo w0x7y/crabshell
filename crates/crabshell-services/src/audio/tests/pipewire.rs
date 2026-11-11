@@ -5,124 +5,18 @@
 //! cargo test -p crabshell-services --lib audio::tests::pipewire -- --ignored --test-threads=1
 //! ```
 //!
-//! Each test starts a PipeWire daemon and pipewire-pulse from the configs
-//! in the crate's `tests/pipewire`, in a private runtime directory with no
-//! D-Bus, and talks to them only through that directory's socket. It
-//! stops only the two processes it started.
+//! Each test starts its own private server, from the crate's
+//! `tests/pipewire`, which crabshell's headless tests share.
 
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::{Harness, libpulse_switches, logs_of, one_at_a_time};
 use crate::ServicesExt;
 
-/// A PipeWire daemon and pipewire-pulse, both stopped on drop.
-struct PrivateServer {
-    runtime: PathBuf,
-    daemon: Child,
-    pulse: Option<Child>,
-}
+#[path = "../../../tests/pipewire/mod.rs"]
+mod server;
 
-impl PrivateServer {
-    fn start(name: &str) -> PrivateServer {
-        // Short, since socket paths are capped at 108 bytes.
-        let runtime =
-            std::env::temp_dir().join(format!("crabshell-pw-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&runtime);
-        std::fs::create_dir_all(runtime.join("pulse")).expect("a runtime directory");
-        std::fs::create_dir_all(runtime.join("config")).expect("a config directory");
-        let private = std::fs::Permissions::from_mode(0o700);
-        std::fs::set_permissions(&runtime, private).expect("a private runtime directory");
-        let daemon = pipewire(&runtime, "daemon.conf");
-        wait_for(&runtime.join("pipewire-0"));
-        let mut server = PrivateServer {
-            runtime,
-            daemon,
-            pulse: None,
-        };
-        server.start_pulse();
-        server
-    }
-
-    fn socket(&self) -> PathBuf {
-        self.runtime.join("pulse/native")
-    }
-
-    fn address(&self) -> String {
-        format!("unix:{}", self.socket().display())
-    }
-
-    fn start_pulse(&mut self) {
-        self.pulse = Some(pipewire(&self.runtime, "pulse.conf"));
-        wait_for(&self.socket());
-    }
-
-    /// Kills pipewire-pulse at once, as a crash would.
-    fn kill_pulse(&mut self) {
-        let mut pulse = self.pulse.take().expect("pipewire-pulse runs");
-        pulse.kill().expect("pipewire-pulse killed");
-        pulse.wait().expect("pipewire-pulse reaped");
-        // So the next start is seen by its new socket.
-        std::fs::remove_file(self.socket()).expect("the old socket");
-    }
-
-    /// Runs `pactl` against this server only, and returns what it printed.
-    fn pactl(&self, args: &[&str]) -> String {
-        let output = Command::new("pactl")
-            .arg(format!("--server={}", self.address()))
-            .args(args)
-            .env_clear()
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("XDG_RUNTIME_DIR", &self.runtime)
-            .output()
-            .expect("pactl runs");
-        assert!(output.status.success(), "pactl {args:?}: {output:?}");
-        String::from_utf8(output.stdout).expect("UTF-8 from pactl")
-    }
-
-    fn volume(&self) -> String {
-        self.pactl(&["get-sink-volume", "test-sink"])
-    }
-}
-
-impl Drop for PrivateServer {
-    fn drop(&mut self) {
-        for child in self.pulse.iter_mut().chain([&mut self.daemon]) {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        let _ = std::fs::remove_dir_all(&self.runtime);
-    }
-}
-
-/// Starts `pipewire` with `config` from `tests/pipewire`, seeing only the
-/// private runtime directory.
-fn pipewire(runtime: &Path, config: &str) -> Child {
-    let configs = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pipewire");
-    Command::new("pipewire")
-        .arg("-c")
-        .arg(configs.join(config))
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .env("XDG_RUNTIME_DIR", runtime)
-        .env("PIPEWIRE_RUNTIME_DIR", runtime)
-        .env("PULSE_RUNTIME_PATH", runtime.join("pulse"))
-        .env("XDG_CONFIG_HOME", runtime.join("config"))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("pipewire starts")
-}
-
-fn wait_for(socket: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !socket.exists() {
-        assert!(Instant::now() < deadline, "no {}", socket.display());
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
+use server::PrivateServer;
 
 #[test]
 #[ignore = "needs pipewire; run by hand"]

@@ -313,9 +313,13 @@ impl ExampleBar {
 
     /// Starts `command` as a shell on `sway`, with `extra` in its otherwise
     /// cleared environment, and its log read as it comes. Its `SWAYSOCK`
-    /// is the private Sway's, never this process's.
+    /// is the private Sway's, never this process's. Its `PULSE_SERVER` is
+    /// a socket that doesn't exist, unless `extra` names a private server:
+    /// unset, libpulse could find the desktop's through HOME's client.conf.
     fn spawn(sway: &Sway, mut command: Command, extra: &[(&str, &str)]) -> ExampleBar {
         command.env_clear();
+        let nowhere = sway.runtime_dir().join("no-pulse-server");
+        command.env("PULSE_SERVER", format!("unix:{}", nowhere.display()));
         for (name, value) in extra {
             command.env(name, value);
         }
@@ -456,6 +460,27 @@ impl Drop for ExampleBar {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_shell_never_looks_for_the_desktops_audio_server() {
+    let sway = Sway::start();
+    let mut sleep = Command::new("sleep");
+    sleep.arg("10");
+    let shell = ExampleBar::spawn(&sway, sleep, &[]);
+    let environ = std::fs::read(format!("/proc/{}/environ", shell.child.id()))
+        .expect("the shell's environment");
+    let server = environ
+        .split(|byte| *byte == 0)
+        .find_map(|entry| entry.strip_prefix(b"PULSE_SERVER="))
+        .map(|server| String::from_utf8_lossy(server).into_owned())
+        .expect("PULSE_SERVER is set, so libpulse never looks elsewhere");
+    let socket = server.strip_prefix("unix:").expect("a unix socket");
+    assert!(
+        Path::new(socket).starts_with(sway.runtime_dir()) && !Path::new(socket).exists(),
+        "{server} is a socket in the private Sway's directory that doesn't exist"
+    );
 }
 
 #[test]
