@@ -509,3 +509,15 @@ fn a_second_step_before_any_reply_builds_on_the_first() {
     let mutes: Vec<_> = mutes.map(|(_, rest)| fake::mute_set(rest).1).collect();
     assert_eq!(mutes, [true, false]);
 }
+#[test]
+fn a_disconnect_leaves_no_message_behind() {
+    let _one = one_at_a_time();
+    let fake = FakePulse::new("disconnect");
+    let (mut shell, _client) = connected(&fake);
+    let service = shell.service();
+    let mut started = service.pulse.borrow_mut();
+    started.as_mut().expect("started").disconnect();
+    drop(started);
+    // One wakeup: the one that ends the run.
+    assert_eq!(shell.run_for(Duration::from_millis(100)), 1);
+}

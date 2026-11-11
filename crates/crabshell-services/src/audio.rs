@@ -8,7 +8,7 @@
 
 use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
-use std::sync::Once;
+use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
 
 use calloop::channel::Sender;
@@ -183,7 +183,7 @@ impl AudioService {
             intro: None,
             context: None,
             mainloop,
-            sender,
+            sender: Arc::new(sender),
             generation: 0,
             shown: None,
             sink,
@@ -274,7 +274,10 @@ struct Pulse {
     intro: Option<Introspector>,
     context: Option<Context>,
     mainloop: Mainloop,
-    sender: Sender<Message>,
+    /// Shared by every callback. Each `Sender` wakes the loop when it
+    /// drops, so a callback that holds its own would wake the shell when
+    /// libpulse drops it, with nothing to read.
+    sender: Arc<Sender<Message>>,
     /// Bumped when a context goes, so the messages it left behind are
     /// dropped.
     generation: u32,
@@ -299,7 +302,7 @@ impl Pulse {
     fn connect(&mut self, server: Option<&str>) -> Result<(), String> {
         let lock = Locked::new(&mut self.mainloop);
         let mut context = Context::new(&*lock.0, "crabshell").ok_or("libpulse made no context")?;
-        let (sender, generation) = (self.sender.clone(), self.generation);
+        let (sender, generation) = (Arc::clone(&self.sender), self.generation);
         context.set_state_callback(Some(Box::new(on_pa_thread(move || {
             let _ = sender.send((generation, Event::State));
         }))));
@@ -320,7 +323,7 @@ impl Pulse {
         match context.get_state() {
             // Several queued messages can each find it ready.
             State::Ready if self.intro.is_none() => {
-                let (sender, generation) = (self.sender.clone(), self.generation);
+                let (sender, generation) = (Arc::clone(&self.sender), self.generation);
                 let on_event = move |facility, _, index| {
                     let event = match facility {
                         Some(Facility::Server) => Event::Server,
@@ -363,7 +366,7 @@ impl Pulse {
 
     /// Asks the server for its default sink's name.
     fn read_default(&mut self) {
-        let (sender, generation) = (self.sender.clone(), self.generation);
+        let (sender, generation) = (Arc::clone(&self.sender), self.generation);
         self.when_ready(|intro| {
             intro.get_server_info(on_pa_thread(move |info: &ServerInfo| {
                 let name = info
@@ -380,7 +383,7 @@ impl Pulse {
         let Some(name) = name else {
             return self.show(None);
         };
-        let (sender, generation) = (self.sender.clone(), self.generation);
+        let (sender, generation) = (Arc::clone(&self.sender), self.generation);
         self.when_ready(|intro| {
             let mut found = None;
             let on_result = move |result: ListResult<&SinkInfo>| match result {
