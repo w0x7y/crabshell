@@ -119,6 +119,14 @@ struct Connection {
     fetches: VecDeque<Option<Instant>>,
 }
 
+/// Sway's answer to a `SUBSCRIBE`.
+#[derive(Deserialize)]
+struct Outcome {
+    success: bool,
+    #[serde(default)]
+    error: Option<String>,
+}
+
 impl Service {
     pub(crate) fn new(shared: Rc<Shared>) -> Service {
         Service {
@@ -138,7 +146,11 @@ impl Service {
             changed_at: None,
             connection: None,
         });
-        self.connect();
+        if self.shared.config.sway.is_none() {
+            tracing::info!("SWAYSOCK is unset, so the bar shows no workspaces");
+        } else {
+            self.connect();
+        }
         workspaces.read_only()
     }
 
@@ -185,8 +197,20 @@ impl Service {
         self.flush_with(&mut *state);
     }
 
+    /// Whether the list is still there: its owner, the root, isn't disposed.
+    fn alive(&self) -> bool {
+        let state = self.state.borrow();
+        let alive = state
+            .as_ref()
+            .and_then(|state| state.workspaces.try_with(|_| ()));
+        alive.is_some()
+    }
+
     /// Reads what Sway sent and acts on each whole message.
     fn on_readable(self: &Rc<Self>) {
+        if !self.alive() {
+            return self.close();
+        }
         let mut chunk = [0; 64 * 1024];
         let mut state = self.state.borrow_mut();
         let state = state
@@ -255,10 +279,21 @@ impl Service {
         }
     }
 
-    /// Drops the connection.
+    /// Drops the connection and empties the list.
     fn disconnect(self: &Rc<Self>, state: &mut State, why: &dyn Display) {
         tracing::warn!(%why, "lost the connection to Sway");
         self.drop_connection(state);
+        state.changed_at = None;
+        if state.workspaces.try_with(Vec::is_empty) == Some(false) {
+            state.workspaces.set(Vec::new());
+        }
+    }
+
+    /// Closes the connection for good, once the list is gone.
+    fn close(&self) {
+        if let Some(state) = self.state.borrow_mut().as_mut() {
+            self.drop_connection(state);
+        }
     }
 
     fn drop_connection(&self, state: &mut State) {
@@ -285,17 +320,29 @@ impl Connection {
             match kind {
                 ipc::GET_WORKSPACES => {
                     let event = self.fetches.pop_front().flatten();
-                    if let Ok(list) = serde_json::from_slice::<Vec<Workspace>>(&payload)
-                        && workspaces.with_untracked(|old| *old != list)
-                    {
-                        workspaces.set(list);
-                        *changed_at = event;
+                    match serde_json::from_slice::<Vec<Workspace>>(&payload) {
+                        Ok(list) if workspaces.with_untracked(|old| *old != list) => {
+                            workspaces.set(list);
+                            *changed_at = event;
+                        }
+                        Ok(_) => {}
+                        Err(error) => tracing::warn!(%error, "a bad workspace list from Sway"),
                     }
                 }
                 ipc::WORKSPACE_EVENT => {
                     self.fetches.push_back(Some(now));
                     ipc::encode(ipc::GET_WORKSPACES, b"", &mut self.outbox);
                 }
+                ipc::SUBSCRIBE => match serde_json::from_slice::<Outcome>(&payload) {
+                    Ok(Outcome { success: true, .. }) => {}
+                    Ok(Outcome { error, .. }) => {
+                        tracing::warn!(
+                            ?error,
+                            "Sway refused the subscription; the list won't update"
+                        );
+                    }
+                    Err(error) => tracing::warn!(%error, "a bad subscribe reply from Sway"),
+                },
                 kind => tracing::debug!(kind, "an unexpected message from Sway"),
             }
         }

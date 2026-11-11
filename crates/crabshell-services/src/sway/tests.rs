@@ -1,7 +1,8 @@
-use std::io::{ErrorKind, Read, Write};
+use std::io::{self, ErrorKind, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use calloop::EventLoop;
@@ -100,6 +101,16 @@ impl Peer {
         let read = self.0.read(&mut [0; 1]).map_err(|error| error.kind());
         assert_eq!(read, Err(ErrorKind::WouldBlock));
         self.0.set_nonblocking(false).expect("a blocking stream");
+    }
+
+    /// Asserts the service closed the connection. A close with bytes left
+    /// unread is a reset.
+    fn read_end(&mut self) {
+        match self.0.read(&mut [0; 1]) {
+            Ok(0) => {}
+            Err(error) if error.kind() == ErrorKind::ConnectionReset => {}
+            other => panic!("still connected: {other:?}"),
+        }
     }
 
     fn send(&mut self, kind: u32, json: &str) {
@@ -207,6 +218,32 @@ impl Harness {
     }
 }
 
+/// Runs `f` and returns everything it logged through `tracing`.
+fn capture_logs(f: impl FnOnce()) -> String {
+    #[derive(Clone, Default)]
+    struct Buffer(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Buffer {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().expect("log lock").extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let buffer = Buffer::default();
+    let writer = buffer.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || writer.clone())
+        .finish();
+    tracing::subscriber::with_default(subscriber, f);
+    let bytes = buffer.0.lock().expect("log lock").clone();
+    String::from_utf8(bytes).expect("UTF-8 logs")
+}
+
 #[test]
 fn the_list_arrives_and_each_event_fetches_it_again() {
     let fake = FakeSway::new();
@@ -294,10 +331,73 @@ fn without_provide_the_service_is_inert() {
 }
 
 #[test]
+fn without_swaysock_the_list_stays_empty_with_no_retries() {
+    let logs = capture_logs(|| {
+        let mut shell = Harness::new(None);
+        let workspaces = shell.cx.sway().workspaces();
+        shell.cx.child().sway();
+        assert_eq!(shell.run_for(Duration::from_millis(300)), 1);
+        assert_eq!(workspaces.get_untracked(), []);
+    });
+    assert_eq!(logs.matches("SWAYSOCK is unset").count(), 1, "{logs}");
+}
+
+#[test]
+fn disposing_the_root_frees_the_list_and_closes_the_socket() {
+    let runtime = Runtime::current();
+    let before = runtime.node_count();
+    let fake = FakeSway::new();
+    let (mut shell, mut peer) = Harness::connect(&fake);
+    shell.cx.child().sway();
+    shell.cx.owner().dispose();
+    assert_eq!(runtime.node_count(), before);
+    // The next message finds the list gone and closes the socket for good.
+    peer.send(WORKSPACE_EVENT, "{}");
+    shell.turn();
+    peer.read_end();
+}
+
+#[test]
 fn a_silent_sway_never_wakes_the_shell() {
     let fake = FakeSway::new();
     let (mut shell, _peer) = Harness::connect(&fake);
     shell.run_for(Duration::from_millis(50));
     // One wakeup: the one that ends the run.
     assert_eq!(shell.run_for(Duration::from_millis(500)), 1);
+}
+
+#[test]
+fn bad_json_is_logged_and_skipped() {
+    let logs = capture_logs(|| {
+        let fake = FakeSway::new();
+        let (mut shell, mut peer) = Harness::connect(&fake);
+        let workspaces = shell.cx.sway().workspaces();
+        let (_, expected) = one();
+        for bad in ["[{not json", r#"[{"id":"seven"}]"#, r#"{"id":7}"#] {
+            peer.send(GET_WORKSPACES, bad);
+            shell.turn();
+            assert_eq!(workspaces.get_untracked(), expected, "kept after {bad}");
+        }
+        let (list, expected) = two();
+        peer.send(GET_WORKSPACES, &list);
+        shell.turn();
+        assert_eq!(workspaces.get_untracked(), expected, "still connected");
+    });
+    assert_eq!(logs.matches("a bad workspace list").count(), 3, "{logs}");
+}
+
+#[test]
+fn an_oversize_message_drops_the_connection() {
+    let logs = capture_logs(|| {
+        let fake = FakeSway::new();
+        let (mut shell, mut peer) = Harness::connect(&fake);
+        let mut header = b"i3-ipc".to_vec();
+        header.extend_from_slice(&(ipc::MAX_PAYLOAD as u32 + 1).to_ne_bytes());
+        header.extend_from_slice(&GET_WORKSPACES.to_ne_bytes());
+        peer.0.write_all(&header).expect("a write to the service");
+        shell.turn();
+        assert_eq!(shell.cx.sway().workspaces().get_untracked(), []);
+        peer.read_end();
+    });
+    assert!(logs.contains("-byte cap"), "{logs}");
 }
