@@ -74,6 +74,21 @@ impl Sway {
         let state = self.service.as_ref()?.state.borrow();
         state.as_ref()?.changed_at
     }
+
+    /// Switches to the workspace called `name`, as clicking it in swaybar
+    /// does. A name Sway reads as a keyword, such as `next`, is logged and
+    /// not sent, and so is a call while Sway isn't connected. Sway's
+    /// refusal is logged too.
+    pub fn focus_workspace(&self, name: &str) {
+        let Some(command) = ipc::workspace_command(name) else {
+            tracing::warn!(name, "Sway can't switch to this workspace by name");
+            return;
+        };
+        let service = self.service.as_ref();
+        if !service.is_some_and(|service| service.send(ipc::RUN_COMMAND, command.as_bytes())) {
+            tracing::warn!(name, "can't switch workspaces while Sway isn't connected");
+        }
+    }
 }
 
 /// `cx.sway()`.
@@ -127,7 +142,7 @@ struct Connection {
     fetches: VecDeque<Option<Instant>>,
 }
 
-/// Sway's answer to a `SUBSCRIBE`.
+/// Sway's answer to a `SUBSCRIBE` or to one command.
 #[derive(Deserialize)]
 struct Outcome {
     success: bool,
@@ -308,6 +323,20 @@ impl Service {
         }
     }
 
+    /// Sends one message. `false` while Sway isn't connected.
+    fn send(self: &Rc<Self>, kind: u32, payload: &[u8]) -> bool {
+        let mut state = self.state.borrow_mut();
+        let Some(state) = state.as_mut() else {
+            return false;
+        };
+        let Some(connection) = state.connection.as_mut() else {
+            return false;
+        };
+        ipc::encode(kind, payload, &mut connection.outbox);
+        self.flush_with(state);
+        true
+    }
+
     fn flush(self: &Rc<Self>) {
         let mut state = self.state.borrow_mut();
         if let Some(state) = state.as_mut() {
@@ -380,6 +409,16 @@ impl Connection {
                         );
                     }
                     Err(error) => tracing::warn!(%error, "a bad subscribe reply from Sway"),
+                },
+                ipc::RUN_COMMAND => match serde_json::from_slice::<Vec<Outcome>>(&payload) {
+                    Ok(outcomes) => {
+                        for Outcome { error, .. } in
+                            outcomes.into_iter().filter(|outcome| !outcome.success)
+                        {
+                            tracing::warn!(?error, "Sway refused to switch workspaces");
+                        }
+                    }
+                    Err(error) => tracing::warn!(%error, "a bad command reply from Sway"),
                 },
                 kind => tracing::debug!(kind, "an unexpected message from Sway"),
             }

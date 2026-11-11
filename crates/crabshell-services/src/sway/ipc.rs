@@ -2,6 +2,8 @@
 //! payload's length and the message type as u32s in native byte order,
 //! then the JSON payload.
 
+/// Runs the payload as Sway commands.
+pub(super) const RUN_COMMAND: u32 = 0;
 /// Asks for the workspaces.
 pub(super) const GET_WORKSPACES: u32 = 1;
 /// Subscribes the connection to the events named in the payload.
@@ -57,16 +59,92 @@ pub(super) fn decode(inbox: &mut Vec<u8>) -> Result<Option<(u32, Vec<u8>)>, Stri
     Ok(Some((kind, payload)))
 }
 
+/// Names Sway's `workspace` command reads as keywords even when quoted,
+/// in any case (sway/commands/workspace.c).
+const RESERVED: [&str; 10] = [
+    "next",
+    "prev",
+    "next_on_output",
+    "prev_on_output",
+    "current",
+    "back_and_forth",
+    "number",
+    "output",
+    "gaps",
+    "--no-auto-back-and-forth",
+];
+
+/// The `RUN_COMMAND` payload that switches to the workspace called `name`,
+/// to send alone. `None` for a name Sway can't switch to by name.
+///
+/// Sway's IPC path strips quotes but never backslashes, so a `"` is
+/// written `"'"'"` and a `$` that would expand is written `$$`.
+pub(super) fn workspace_command(name: &str) -> Option<String> {
+    if name.is_empty()
+        || name.contains(['\n', '\0'])
+        || RESERVED.iter().any(|word| word.eq_ignore_ascii_case(name))
+    {
+        return None;
+    }
+    let body = name.trim_end_matches('\\');
+    let tail = &name[body.len()..];
+    // An odd run would escape the closing quote; an even run is inert.
+    let (body, tail) = if tail.len() % 2 == 1 {
+        (body, tail)
+    } else {
+        (name, "")
+    };
+    let mut out = String::from("workspace \"");
+    let mut run = 0; // backslashes right before this char
+    for c in body.chars() {
+        // Sway's argsep keeps a backslash's escape alive across the next
+        // special char, so a later `;` could split the command.
+        if run % 2 == 1 && matches!(c, '"' | '\'' | ';' | ',') {
+            return None;
+        }
+        match c {
+            '"' => out.push_str("\"'\"'\""),
+            // do_var_replacement skips only a `$` after exactly one `\`.
+            '$' if run != 1 => out.push_str("$$"),
+            _ => out.push(c),
+        }
+        run = if c == '\\' { run + 1 } else { 0 };
+    }
+    out.push('"');
+    out.push_str(tail);
+    (out.len() <= MAX_PAYLOAD).then_some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn workspace_command_quotes_the_name_or_refuses_it() {
+        let command = |name| workspace_command(name).expect("a name Sway takes");
+        assert_eq!(command("1: web"), r#"workspace "1: web""#);
+        assert_eq!(command("a;b,c"), r#"workspace "a;b,c""#);
+        assert_eq!(command(r#"say "hi""#), r#"workspace "say "'"'"hi"'"'"""#);
+        assert_eq!(command("$mod"), r#"workspace "$$mod""#);
+        assert_eq!(command(r"\$x"), r#"workspace "\$x""#);
+        assert_eq!(command(r"a\"), r#"workspace "a"\"#);
+        assert_eq!(command(r"a\\"), r#"workspace "a\\""#);
+        assert_eq!(command("number 3"), r#"workspace "number 3""#);
+        let long = "x".repeat(MAX_PAYLOAD);
+        for bad in [
+            "next", "Number", "OUTPUT", "gaps", "", "a\nb", "a\0b", r#"a\"b"#, r"a\;b", r"a\'b",
+            &long,
+        ] {
+            assert_eq!(workspace_command(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
     #[cfg(target_endian = "little")]
     fn encode_matches_the_man_page() {
-        // sway-ipc(7)'s hexdump of the `exit` command, a RUN_COMMAND (type 0).
+        // sway-ipc(7)'s hexdump of the `exit` command.
         let mut out = Vec::new();
-        encode(0, b"exit", &mut out);
+        encode(RUN_COMMAND, b"exit", &mut out);
         assert_eq!(
             out,
             [

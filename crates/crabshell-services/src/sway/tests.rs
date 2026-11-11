@@ -9,8 +9,8 @@ use calloop::EventLoop;
 use crabshell_reactive::Runtime;
 use crabshell_ui::Cx;
 
-use super::ipc::{self, GET_WORKSPACES, SUBSCRIBE, WORKSPACE_EVENT};
-use super::{Socket, Workspace};
+use super::ipc::{self, GET_WORKSPACES, RUN_COMMAND, SUBSCRIBE, WORKSPACE_EVENT};
+use super::{Service, Socket, Workspace};
 use crate::{Config, ServicesExt};
 
 /// The reconnect delay in these tests.
@@ -336,6 +336,7 @@ fn without_provide_the_service_is_inert() {
     let sway = cx.sway();
     assert_eq!(sway.workspaces().get_untracked(), []);
     assert_eq!(sway.changed_at(), None);
+    sway.focus_workspace("1");
     cx.owner().dispose();
     assert_eq!(sway.workspaces().try_get(), None);
 }
@@ -467,4 +468,69 @@ fn a_failed_connect_is_logged_once_per_outage() {
     });
     assert_eq!(logs.matches("can't connect to Sway").count(), 1, "{logs}");
     assert_eq!(logs.matches("connected to Sway again").count(), 1, "{logs}");
+}
+
+#[test]
+fn focus_workspace_sends_the_quoted_name_or_nothing() {
+    let logs = capture_logs(|| {
+        let fake = FakeSway::new();
+        let (mut shell, mut peer) = Harness::connect(&fake);
+        let sway = shell.cx.sway();
+        sway.focus_workspace(r#"say "hi""#);
+        let quoted = r#"workspace "say "'"'"hi"'"'"""#;
+        assert_eq!(peer.read(), (RUN_COMMAND, quoted.to_owned()));
+        let refused = r#"[{"success":false,"parse_error":false,"error":"No workspace"}]"#;
+        peer.send(RUN_COMMAND, refused);
+        shell.turn();
+        sway.focus_workspace("next");
+        peer.read_nothing();
+
+        // A click while Sway is away is dropped, not sent on reconnect.
+        drop(peer);
+        shell.turn();
+        sway.focus_workspace("1");
+        shell.run_for(RETRY + RETRY / 2);
+        let mut peer = fake.accept();
+        peer.greet(&one().0);
+        shell.turn();
+        peer.read_nothing();
+    });
+    assert!(logs.contains("No workspace"), "{logs}");
+    assert!(
+        logs.contains("can't switch to this workspace by name"),
+        "{logs}"
+    );
+    assert!(logs.contains("while Sway isn't connected"), "{logs}");
+}
+
+#[test]
+fn a_full_socket_sends_the_rest_as_sway_reads() {
+    let fake = FakeSway::new();
+    let (mut shell, mut peer) = Harness::connect(&fake);
+    let name = "x".repeat(64 * 1024);
+    // Far more than the socket holds while Sway reads nothing.
+    for _ in 0..20 {
+        shell.cx.sway().focus_workspace(&name);
+    }
+    let service = shell.cx.service::<Service>().expect("provided");
+    let queued = |service: &Service| {
+        let state = service.state.borrow();
+        let connection = state.as_ref().and_then(|state| state.connection.as_ref());
+        connection.map(|connection| connection.outbox.len())
+    };
+    assert!(queued(&service) > Some(0), "the socket filled up");
+
+    let sway = std::thread::spawn(move || {
+        let read: Vec<_> = (0..20).map(|_| peer.read()).collect();
+        (read, peer)
+    });
+    while !sway.is_finished() {
+        shell.run_for(Duration::from_millis(10));
+    }
+    let (read, _peer) = sway.join().expect("every message, whole");
+    let command = (RUN_COMMAND, format!(r#"workspace "{name}""#));
+    assert!(read.iter().all(|message| *message == command));
+    assert_eq!(queued(&service), Some(0));
+    // With nothing left to write, nothing wakes the shell.
+    assert_eq!(shell.run_for(Duration::from_millis(200)), 1);
 }
