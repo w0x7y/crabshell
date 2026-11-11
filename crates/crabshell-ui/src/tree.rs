@@ -69,6 +69,11 @@ pub(crate) struct Node {
     pub(crate) painted: Rect,
     /// `painted` together with every descendant's.
     pub(crate) bounds: Rect,
+    /// What the node drew itself at the last layout: `painted` if it has a
+    /// background, a border, text or an icon, and nothing otherwise. Moving
+    /// or resizing it repaints only this, since its children report their
+    /// own; a spacer that grows repaints nothing.
+    pub(crate) drawn: Rect,
     /// A layout property changed, so the node is repainted after the next
     /// layout even if it doesn't move.
     pub(crate) changed: bool,
@@ -150,6 +155,7 @@ impl Node {
             content: Rect::default(),
             painted: Rect::default(),
             bounds: Rect::default(),
+            drawn: Rect::default(),
             changed: true,
         }
     }
@@ -168,6 +174,17 @@ impl Node {
             }
             _ => self.style,
         }
+    }
+
+    /// Whether the node draws anything itself, in its style in effect. The
+    /// window always does: its area is what a repaint clears.
+    pub(crate) fn draws(&self) -> bool {
+        let style = self.effective_style();
+        matches!(
+            self.kind,
+            NodeKind::Root | NodeKind::Text(_) | NodeKind::Icon(_)
+        ) || style.background.is_some()
+            || style.border.is_some()
     }
 
     /// The padding in effect: a row's or column's own wins over its style's.
@@ -577,10 +594,13 @@ impl Tree {
                 // A node that was never laid out is painted after its first
                 // layout anyway. Its bounds cover the descendants, which
                 // inherit its color and opacity.
-                if let Some(node) = self.taffy.get_node_context(id)
+                if let Some(node) = self.taffy.get_node_context_mut(id)
                     && node.rect.is_some()
                 {
                     add_damage(&mut self.damage, node.bounds);
+                    // It may draw now, as when a background was added, so a
+                    // later move repaints where it was.
+                    node.drawn = node.painted;
                 }
             }
             Change::Layout => {

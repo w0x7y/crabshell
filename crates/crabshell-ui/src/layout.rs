@@ -140,15 +140,23 @@ impl Tree {
             NodeKind::Icon(icon) => painted = painted.union(icon_rect(content, icon.size)),
             _ => {}
         }
-        // Repaint where the node was and where it is now.
+        // Repaint what the node drew where it was and draws where it is
+        // now. A node that draws nothing itself, like a spacer, adds no
+        // damage; its children report their own.
+        let drawn = if node.draws() {
+            painted
+        } else {
+            Rect::default()
+        };
         match node.rect {
-            None => add_damage(&mut self.damage, painted),
+            None => add_damage(&mut self.damage, drawn),
             Some(_) if node.painted != painted || node.changed => {
-                add_damage(&mut self.damage, node.painted);
-                add_damage(&mut self.damage, painted);
+                add_damage(&mut self.damage, node.drawn);
+                add_damage(&mut self.damage, drawn);
             }
             Some(_) => {}
         }
+        node.drawn = drawn;
         let bounds = painted.union(children);
         node.rect = Some(rect);
         node.content = content;

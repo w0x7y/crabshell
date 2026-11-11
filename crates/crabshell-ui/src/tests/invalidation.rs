@@ -421,3 +421,129 @@ fn glyph_ink_outside_the_line_box_is_repainted() {
         }
     }
 }
+
+/// The bounds of the node at `path`: what it and its descendants painted.
+fn bounds_at(window: &crate::Window, path: &[usize]) -> Rect {
+    super::node_at(window.view().root(), path).bounds()
+}
+
+#[test]
+fn a_spacer_that_resizes_adds_no_damage() {
+    let mut h = Harness::new();
+    let label = h.cx.signal(String::from("12:34"));
+    let row = Row::new()
+        .child(Spacer::new())
+        .child(Text::new(move || label.get()));
+    let window = h.window(h.panel().child(row), 300.0, 30.0);
+    window.take_damage();
+    let old_spacer = rect_at(&window, &[0, 0]);
+    let old_label = bounds_at(&window, &[0, 1]);
+
+    // A clock going from 12:34 to 1:05 gets narrower, and the spacer wider.
+    label.set(String::from("1:05"));
+    h.frame(&window);
+    assert_ne!(rect_at(&window, &[0, 0]), old_spacer, "the spacer resized");
+    let new_label = bounds_at(&window, &[0, 1]);
+    let mut damage = window.take_damage();
+    damage.sort_by(|a, b| a.x.total_cmp(&b.x));
+    let mut expected = vec![old_label, new_label];
+    expected.sort_by(|a, b| a.x.total_cmp(&b.x));
+    // The spacer paints nothing, so only the label is repainted.
+    assert_eq!(damage, expected);
+}
+
+#[test]
+fn a_background_added_without_a_layout_is_repainted_when_the_widget_moves() {
+    let mut h = Harness::new();
+    let label = h.cx.signal(String::from("ab"));
+    let shaded = h.cx.signal(false);
+    let row = Row::new()
+        .align(Align::Start)
+        .child(Text::new(move || label.get()))
+        .child(
+            Row::new()
+                .style(move || {
+                    let style = Style::new();
+                    if shaded.get() {
+                        style.background(Color::rgb(9, 9, 9))
+                    } else {
+                        style
+                    }
+                })
+                .padding(6, 6)
+                .child(Icon::new("x").size(8)),
+        );
+    let window = h.window(h.panel().child(row), 300.0, 30.0);
+    window.take_damage();
+
+    // A paint change: the row now draws a background, with no layout.
+    shaded.set(true);
+    h.runtime.flush();
+    assert!(!window.needs_layout());
+    let old = rect_at(&window, &[0, 1]);
+    assert!(window.take_damage().contains(&old));
+
+    // Then it moves: where its background was must be repainted.
+    label.set(String::from("a much longer label"));
+    h.frame(&window);
+    let new = rect_at(&window, &[0, 1]);
+    assert!(new.x > old.x + 20.0, "{old:?} {new:?}");
+    let damage = window.take_damage();
+    for rect in [old, new] {
+        assert!(damage.contains(&rect), "{rect:?} missing from {damage:?}");
+    }
+}
+
+#[test]
+fn a_widget_that_stops_drawing_is_repainted_where_it_was() {
+    let mut h = Harness::new();
+    let plain = h.cx.signal(false);
+    let row = Row::new().align(Align::Start).child(
+        Row::new()
+            .style(move || {
+                if plain.get() {
+                    // No background, and padding, so a layout follows.
+                    Style::new().padding(2, 2)
+                } else {
+                    Style::new().background(Color::rgb(9, 9, 9)).padding(6, 6)
+                }
+            })
+            .child(Icon::new("x").size(8)),
+    );
+    let window = h.window(h.panel().child(row), 300.0, 30.0);
+    window.take_damage();
+    let old = rect_at(&window, &[0, 0]);
+
+    plain.set(true);
+    h.frame(&window);
+    let damage = window.take_damage();
+    assert!(damage.contains(&old), "{old:?} missing from {damage:?}");
+    // It draws nothing now, so its new, smaller rectangle isn't repainted;
+    // the icon inside reports its own.
+    assert!(!damage.contains(&rect_at(&window, &[0, 0])), "{damage:?}");
+}
+
+#[test]
+fn a_bordered_widget_that_moves_is_repainted_at_both_places() {
+    let mut h = Harness::new();
+    let label = h.cx.signal(String::from("ab"));
+    let row = Row::new()
+        .align(Align::Start)
+        .child(Text::new(move || label.get()))
+        .child(
+            Row::new()
+                .style(Style::new().border(1.0, Color::rgb(9, 9, 9)))
+                .padding(6, 6)
+                .child(Icon::new("x").size(8)),
+        );
+    let window = h.window(h.panel().child(row), 300.0, 30.0);
+    window.take_damage();
+    let old = rect_at(&window, &[0, 1]);
+
+    label.set(String::from("a much longer label"));
+    h.frame(&window);
+    let damage = window.take_damage();
+    for rect in [old, rect_at(&window, &[0, 1])] {
+        assert!(damage.contains(&rect), "{rect:?} missing from {damage:?}");
+    }
+}
