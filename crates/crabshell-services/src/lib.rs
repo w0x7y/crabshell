@@ -15,6 +15,7 @@
 #![warn(missing_docs)]
 
 mod clock;
+mod sway;
 
 use std::cell::OnceCell;
 use std::path::PathBuf;
