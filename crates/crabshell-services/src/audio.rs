@@ -77,9 +77,10 @@ impl Audio {
     }
 
     /// Changes the default sink's volume by `percent`, louder when
-    /// positive, and keeps it within 0-100%. Every channel moves by the
-    /// same amount, so their balance stays. With no sink or no server it
-    /// does nothing.
+    /// positive, and keeps it within 0-100%, so a step from above 100%
+    /// lands on 100%. Every channel moves by the same amount, keeping their
+    /// balance, except that one reaching 0% or 100% stops there. With no
+    /// sink or no server it does nothing.
     pub fn change_volume(&self, percent: i32) {
         self.command(|pulse| pulse.change_volume(percent));
     }
@@ -155,7 +156,7 @@ impl AudioService {
 
     fn audio(self: &Rc<Self>) -> Audio {
         let sink = *self.sink.get_or_init(|| {
-            // On the loop's next turn, after the windows' first commit.
+            // On the loop's next turn, so `cx.audio()` never waits on libpulse.
             self.after(Duration::ZERO, AudioService::start);
             self.shared.root.signal(None)
         });
@@ -403,6 +404,8 @@ impl Pulse {
     fn read_default(&mut self) {
         let (sender, generation) = (Arc::clone(&self.sender), self.generation);
         self.when_ready(|intro| {
+            // shortcut: on an error reply libpulse-binding panics on its thread instead of calling
+            // this, and the panic hook prints it raw; logging it needs the C API, so `unsafe`.
             intro.get_server_info(on_pa_thread(move |info: &ServerInfo| {
                 let name = info
                     .default_sink_name
@@ -573,9 +576,10 @@ fn percent(volume: Volume) -> u32 {
     ((u64::from(volume.0) * 100 + norm / 2) / norm) as u32
 }
 
-/// `volumes` changed by `delta` percent. Every channel moves by the same
-/// amount, so their balance stays, and the average lands on the whole
-/// percent the bar shows next. Every channel stays within 0-100%.
+/// `volumes` changed by `delta` percent. Every channel moves by the amount
+/// that puts their average on the shown percent plus `delta`, kept within
+/// 0-100%. A channel that would pass 0% or 100% stops there, and then the
+/// average falls short of that.
 fn changed(mut volumes: ChannelVolumes, delta: i32) -> ChannelVolumes {
     let norm = i64::from(Volume::NORMAL.0);
     let average = volumes.avg();
