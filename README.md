@@ -24,24 +24,24 @@ a 30 px bar shows up at the top of every monitor. click the button to count
 use crabshell::prelude::*;
 
 fn main() {
-    crabshell::run(|cx| cx.per_output(bar));
+  crabshell::run(|cx| cx.per_output(bar));
 }
 
 fn bar(cx: &Cx, output: &Output) -> PanelWindow {
-    let count = cx.signal(0_u32);
-    PanelWindow::new(output)
-        .anchors(Edge::Top | Edge::Left | Edge::Right)
-        .height(30)
+  let count = cx.signal(0_u32);
+  PanelWindow::new(output)
+    .anchors(Edge::Top | Edge::Left | Edge::Right)
+    .height(30)
+    .child(
+      Row::new()
+        .padding(4, 8)
         .child(
-            Row::new()
-                .padding(4, 8)
-                .child(
-                    Button::new(Text::new(move || format!("clicked {} times", count.get())))
-                        .on_click(move |_| count.update(|n| *n += 1)),
-                )
-                .child(Spacer::new())
-                .child(Text::new(output.name())),
+          Button::new(Text::new(move || format!("clicked {} times", count.get())))
+            .on_click(move |_| count.update(|n| *n += 1)),
         )
+        .child(Spacer::new())
+        .child(Text::new(output.name())),
+    )
 }
 ```
 
