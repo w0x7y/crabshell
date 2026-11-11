@@ -6,9 +6,10 @@
 //! switches them on a click, logs each switch's time to the screen and
 //! wakes only on the minute.
 //!
-//! Anything that asks for `cx.sway()` runs as its own process, given the
-//! private Sway's socket: this process's `SWAYSOCK` may name the desktop's
-//! Sway, so a shell in it could switch the desktop's workspaces.
+//! Anything that asks for `cx.sway()` or `cx.audio()` runs as its own
+//! process, given the private Sway's socket and a `PULSE_SERVER` that is
+//! private or names nothing: in this process, libpulse would look for the
+//! desktop's audio server.
 //!
 //! They need `sway`, `swaymsg` and `grim`, so they are ignored by default.
 //! Run them without the session's `SWAYSOCK`, which `Sway::start()`
@@ -34,6 +35,10 @@ mod sway;
 #[path = "../examples/counter.rs"]
 mod counter;
 
+#[allow(dead_code, reason = "the services' own tests use the rest")]
+#[path = "../../crabshell-services/tests/pipewire/mod.rs"]
+mod pipewire;
+
 use std::io::{self, BufRead, BufReader};
 use std::ops::Range;
 use std::panic::{self, AssertUnwindSafe};
@@ -48,6 +53,7 @@ use crabshell::prelude::*;
 use crabshell_reactive::Runtime;
 use crabshell_ui::{Content, NodeView, Rect};
 use crabshell_wayland::{Platform, WindowId};
+use pipewire::PrivateServer;
 use sway::{Image, Sway, VirtualPointer};
 
 /// How long any wait may take before the test fails.
@@ -286,8 +292,8 @@ struct ExampleBar {
 
 impl ExampleBar {
     /// Builds the example `name` (in release if `release`) and starts it on
-    /// `sway`.
-    fn start(sway: &Sway, name: &str, release: bool) -> ExampleBar {
+    /// `sway`, with `extra` in its environment.
+    fn start(sway: &Sway, name: &str, release: bool, extra: &[(&str, &str)]) -> ExampleBar {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
         let mut build = Command::new(cargo);
@@ -308,7 +314,7 @@ impl ExampleBar {
             .join(if release { "release" } else { "debug" })
             .join("examples")
             .join(name);
-        ExampleBar::spawn(sway, Command::new(program), &[])
+        ExampleBar::spawn(sway, Command::new(program), extra)
     }
 
     /// Starts `command` as a shell on `sway`, with `extra` in its otherwise
@@ -442,6 +448,23 @@ impl ExampleBar {
         seen
     }
 
+    /// Waits until `server` lists it as a client.
+    fn wait_until_connected(&self, server: &PrivateServer) {
+        let deadline = Instant::now() + TIMEOUT;
+        let me = format!("application.process.id = \"{}\"", self.child.id());
+        loop {
+            let clients = server.pactl(&["list", "clients"]);
+            if clients.contains(&me) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "it never connected to the private audio server: {clients}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     /// Its resident memory in KiB, from `ps -o rss=`.
     fn rss_kib(&self) -> u64 {
         let output = Command::new("ps")
@@ -517,7 +540,7 @@ fn an_idle_counter_bar_wakes_nothing() {
     // From outside, for a minute: the example program, sleeping in the
     // loop `run` runs, gets no context switches at all. A timer as slow as
     // one a minute would show.
-    let bar = ExampleBar::start(&sway, "counter", false);
+    let bar = ExampleBar::start(&sway, "counter", false, &[]);
     bar.wait_for("first frame committed");
     bar.wait_until_quiet();
     let before = bar.context_switches();
@@ -574,16 +597,18 @@ fn measure_the_counter_bar() {
     }
     let sway = Sway::start();
     sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
-    let counter = ExampleBar::start(&sway, "counter", true);
+    let counter = ExampleBar::start(&sway, "counter", true, &[]);
     let mut report = format!("counter example, {}\n", measure(&counter));
     drop(counter);
     // Then the v1 bar, on workspace 1, then switching between 1 and 2.
-    let bar = ExampleBar::start(&sway, "bar", true);
+    let server = PrivateServer::start("measure");
+    let bar = ExampleBar::start(&sway, "bar", true, &[("PULSE_SERVER", &server.address())]);
+    bar.wait_until_connected(&server);
     let idle = measure(&bar);
     let times = switch_workspaces(&sway, &bar, 10);
     let slowest = times.iter().copied().fold(0.0, f64::max);
     report += &format!(
-        "bar example, {idle}; workspace switch to screen: median {:.1} ms, slowest {slowest:.1} ms \
+        "bar example with audio on a private pipewire-pulse, {idle}; workspace switch to screen: median {:.1} ms, slowest {slowest:.1} ms \
          over {} switches, each {times:.1?} ms\n",
         median(&times),
         times.len()
@@ -745,7 +770,7 @@ fn start_bar(release: bool) -> (Sway, ExampleBar, Range<u32>) {
         "1920",
         "0",
     ]);
-    let bar = ExampleBar::start(&sway, "bar", release);
+    let bar = ExampleBar::start(&sway, "bar", release, &[]);
     let deadline = Instant::now() + TIMEOUT;
     let one = loop {
         if let Some(one) = focused_button(&sway.screenshot("HEADLESS-1")) {
@@ -825,8 +850,11 @@ fn each_workspace_switch_logs_its_time_to_the_screen() {
 #[ignore = "needs headless Sway"]
 fn an_idle_bar_wakes_only_on_the_minute() {
     let sway = Sway::start();
-    let bar = ExampleBar::start(&sway, "bar", false);
+    // Connected, so libpulse's thread and socket are watched too.
+    let server = PrivateServer::start("idle");
+    let bar = ExampleBar::start(&sway, "bar", false, &[("PULSE_SERVER", &server.address())]);
     bar.wait_for(FIRST_FRAME);
+    bar.wait_until_connected(&server);
     bar.wait_until_quiet();
     // 65 s holds a minute boundary or two, and the minute clock's tick on
     // each, early by up to 50 ms or late by the sampling.

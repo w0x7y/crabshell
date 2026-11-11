@@ -31,12 +31,13 @@
 //! ```
 //!
 //! Widgets, styles and layout come from `crabshell-ui`, signals and effects
-//! from `crabshell-reactive`, the clock and Sway's workspaces from
+//! from `crabshell-reactive`, the clock, Sway's workspaces and audio from
 //! `crabshell-services`, drawing from `crabshell-render` and the Wayland
 //! platform from `crabshell-wayland`; the [`prelude`] has what a bar uses,
 //! including [`ServicesExt`](crabshell_services::ServicesExt) for
-//! `cx.clock(Precision::Minute)` and `cx.sway()`. `examples/bar.rs` is the
-//! v1 bar, with each output's workspaces and the clock.
+//! `cx.clock(Precision::Minute)`, `cx.sway()` and `cx.audio()`.
+//! `examples/bar.rs` is the v1 bar, with each output's workspaces, the
+//! volume and the clock.
 //!
 //! # How it works
 //!
@@ -47,7 +48,8 @@
 //!   [`EXIT_NO_COMPOSITOR`] (2) if there is no compositor, it lacks a
 //!   protocol the shell needs, or the connection is lost.
 //! - Each service starts the first time a config asks for it, so a bar
-//!   that shows no workspaces never connects to Sway.
+//!   that shows no workspaces never connects to Sway, and one with no
+//!   volume never connects to the audio server.
 //! - `per_output` runs its closure for each output under a child owner of
 //!   the context it was called with. The owner is disposed when the output
 //!   goes, or when the compositor closes one of its windows.
@@ -76,7 +78,7 @@ pub use shell::{EXIT_NO_COMPOSITOR, EXIT_ROOT_PANICKED, Error, Shell, ShellExt, 
 pub mod prelude {
     pub use crate::{IntoPanels, ShellExt};
     pub use crabshell_reactive::{Effect, Memo, ReadSignal, Signal};
-    pub use crabshell_services::{Precision, ServicesExt, Workspace};
+    pub use crabshell_services::{Precision, ServicesExt, Sink, Workspace};
     pub use crabshell_ui::{
         Align, Anchors, Border, Button, Color, Column, Cx, Edge, Font, Icon, IconPixels,
         IconSource, Justify, Layer, Output, Padding, PanelWindow, Row, Size, Spacer, Stack, Style,

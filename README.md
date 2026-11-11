@@ -6,7 +6,7 @@ a full rust replacement for quickshell. your whole desktop shell is a rust crate
 
 the counter example, drawn at scale 2
 
-status: early. bars draw, take clicks, follow monitors as they come and go, and show the clock and sway's workspaces. audio and the tray come next, and nothing is on crates.io yet
+status: early. bars draw, take clicks, follow monitors as they come and go, and show the clock, sway's workspaces and the volume. the tray comes next, and nothing is on crates.io yet
 
 vibe coded: ai coding agents write the code, and other agents review each step against a design doc
 
@@ -26,7 +26,7 @@ a 30 px bar shows up at the top of every monitor. click the button to count
 cargo run --release -p crabshell --example bar
 ```
 
-the v1 bar from the design doc, so far without the tray and volume: each monitor's sway workspaces at the left, the clock at the right. click a workspace to switch to it. [examples/bar.rs](crates/crabshell/examples/bar.rs)
+the v1 bar from the design doc, so far without the tray: each monitor's sway workspaces at the left, the volume and the clock at the right. click a workspace to switch to it, scroll over the volume to change it and click it to mute. [examples/bar.rs](crates/crabshell/examples/bar.rs)
 
 ### a bar
 
@@ -74,7 +74,7 @@ for comparison, quickshell drawing the [phase 0 test bar](spike/RESULTS.md) uses
 ~ [crabshell-ui](crates/crabshell-ui/), widgets, styles, layout, text and hit testing\
 ~ [crabshell-render](crates/crabshell-render/), drawing on the cpu with tiny-skia, damage tracking, glyphs and icons\
 ~ [crabshell-wayland](crates/crabshell-wayland/), the event loop, layer-shell windows, buffers, scaling, the pointer and monitors\
-~ [crabshell-services](crates/crabshell-services/), the clock and sway's workspaces\
+~ [crabshell-services](crates/crabshell-services/), the clock, sway's workspaces and audio\
 ~ [spike](spike/) and [baseline](baseline/), the phase 0 prototype and the quickshell bar it was measured against
 
 ### tests

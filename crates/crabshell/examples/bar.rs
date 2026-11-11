@@ -1,6 +1,7 @@
 //! The v1 bar from the design doc's "Writing a config": Sway's workspaces
-//! for each output at the left, the clock at the right. The tray and the
-//! volume button come later.
+//! for each output at the left, the volume and the clock at the right.
+//! Scroll over the volume to change it by 5% a notch, and click it to mute.
+//! The tray comes in Phase 4.
 //!
 //! Run it inside Sway with `cargo run -p crabshell --example bar`.
 
@@ -17,9 +18,11 @@ fn main() {
     crabshell::run(|cx| cx.per_output(bar));
 }
 
-fn bar(cx: &Cx, output: &Output) -> PanelWindow {
+/// The bar for one output.
+pub fn bar(cx: &Cx, output: &Output) -> PanelWindow {
     let clock = cx.clock(Precision::Minute);
     let workspaces = cx.sway().workspaces();
+    let sink = cx.audio().default_sink();
     let output_name = output.name();
 
     PanelWindow::new(output)
@@ -47,6 +50,15 @@ fn bar(cx: &Cx, output: &Output) -> PanelWindow {
                     },
                 ))
                 .child(Spacer::new())
+                .child(
+                    Button::new(Text::new(move || match sink.get() {
+                        Some(s) if s.muted => "muted".to_string(),
+                        Some(s) => format!("vol {}%", s.volume_percent),
+                        None => "no audio".to_string(),
+                    }))
+                    .on_click(|cx| cx.audio().toggle_mute())
+                    .on_scroll(|cx, steps| cx.audio().change_volume(steps * 5)),
+                )
                 .child(Text::new(move || {
                     clock.get().strftime("%a %d %b  %H:%M").to_string()
                 })),
