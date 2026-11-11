@@ -8,7 +8,15 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use crabshell_wayland::{EventLoop, Platform};
-use smithay_client_toolkit::reexports::client::Connection;
+use smithay_client_toolkit::reexports::client::globals::{GlobalListContents, registry_queue_init};
+use smithay_client_toolkit::reexports::client::protocol::{wl_pointer, wl_registry};
+use smithay_client_toolkit::reexports::client::{
+    Connection, Dispatch, EventQueue, QueueHandle, delegate_noop,
+};
+use smithay_client_toolkit::reexports::protocols_wlr::virtual_pointer::v1::client::{
+    zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+    zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+};
 
 /// No wallpaper program (an `output bg` line would start swaybg), no
 /// Xwayland, no borders.
@@ -194,11 +202,13 @@ pub fn realtime_problem(limits: &str) -> Option<String> {
          (RLIMIT_RTTIME) is {soft} µs (hard limit {hard}), as under T3 Code, and Sway makes \
          itself realtime. Run the suite through the desktop Sway, which has no such \
          limit:\n\n  SWAYSOCK=/run/user/$(id -u)/sway-ipc.$(id -u).$(pgrep -xo sway).sock \
-         swaymsg exec 'cd {} && ~/.cargo/bin/cargo test -p crabshell-wayland --test headless \
+         swaymsg exec 'cd {} && ~/.cargo/bin/cargo test -p {} --test headless \
          -- --ignored --test-threads=1 > target/headless.log 2>&1 && echo passed > \
          target/headless.status || echo failed > target/headless.status'\n\n(No `;` in it: \
          Sway would take what follows one as a second command.)",
-        workspace.display()
+        workspace.display(),
+        // The crate whose tests include this file.
+        env!("CARGO_PKG_NAME"),
     ))
 }
 
@@ -290,5 +300,70 @@ pub fn settle(event_loop: &mut EventLoop) {
             commits = now;
             quiet_since = Instant::now();
         }
+    }
+}
+
+/// A second client with a virtual pointer, so the seat has a pointer: a
+/// headless Sway with no input devices has none.
+pub struct VirtualPointer {
+    queue: EventQueue<Helper>,
+    pointer: ZwlrVirtualPointerV1,
+}
+
+pub struct Helper;
+
+impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Helper {
+    fn event(
+        _: &mut Helper,
+        _: &wl_registry::WlRegistry,
+        _: wl_registry::Event,
+        _: &GlobalListContents,
+        _: &Connection,
+        _: &QueueHandle<Helper>,
+    ) {
+    }
+}
+
+delegate_noop!(Helper: ZwlrVirtualPointerManagerV1);
+delegate_noop!(Helper: ZwlrVirtualPointerV1);
+
+impl VirtualPointer {
+    pub fn new(sway: &Sway) -> VirtualPointer {
+        let connection = sway.connection();
+        let (globals, mut queue) =
+            registry_queue_init::<Helper>(&connection).expect("the helper's registry");
+        let manager: ZwlrVirtualPointerManagerV1 = globals
+            .bind(&queue.handle(), 1..=1, ())
+            .expect("sway offers zwlr_virtual_pointer_manager_v1");
+        let pointer = manager.create_virtual_pointer(None, &queue.handle(), ());
+        queue
+            .roundtrip(&mut Helper)
+            .expect("the helper's roundtrip");
+        VirtualPointer { queue, pointer }
+    }
+
+    /// Moves to `x`, `y` on a layout `width` by `height` logical pixels:
+    /// the outputs' combined logical size.
+    pub fn move_to(&mut self, x: u32, y: u32, (width, height): (u32, u32)) {
+        self.pointer.motion_absolute(0, x, y, width, height);
+        self.pointer.frame();
+        self.queue
+            .roundtrip(&mut Helper)
+            .expect("the helper's roundtrip");
+    }
+
+    /// Presses and releases the left button.
+    pub fn click(&mut self) {
+        const BTN_LEFT: u32 = 0x110;
+        for state in [
+            wl_pointer::ButtonState::Pressed,
+            wl_pointer::ButtonState::Released,
+        ] {
+            self.pointer.button(0, BTN_LEFT, state);
+            self.pointer.frame();
+        }
+        self.queue
+            .roundtrip(&mut Helper)
+            .expect("the helper's roundtrip");
     }
 }

@@ -15,8 +15,10 @@ pub enum Event {
     /// An output went away. Its windows were dropped first, with their
     /// owners.
     OutputRemoved(OutputInfo),
-    /// The compositor closed a window whose output is still there. The
-    /// window was dropped first, with its owner.
+    /// The compositor closed a window, and it was dropped first, with its
+    /// owner. Sway closes every layer surface on an output before it
+    /// removes the output, so an unplug usually brings this, for each
+    /// window there, before [`OutputRemoved`](Event::OutputRemoved).
     WindowClosed(WindowId),
 }
 

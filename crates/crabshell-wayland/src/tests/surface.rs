@@ -219,3 +219,16 @@ fn a_new_scale_draws_without_damage() {
     assert!(shown.frames.pacing.should_draw(false));
     assert_eq!(shown.frames.scale, Scale::Fractional(180));
 }
+
+#[test]
+fn a_new_icon_theme_repaints_the_whole_window() {
+    let mut shown = Shown::new();
+    assert!(!shown.frames.pacing.should_draw(false), "idle");
+    // Any icon may look different, and nothing in the window changed.
+    shown.frames.repaint_whole();
+    assert!(shown.frames.pacing.should_draw(false));
+    assert_eq!(
+        shown.draw(),
+        Some(vec![crabshell_render::PixelRect::new(0, 0, 200, 30)])
+    );
+}

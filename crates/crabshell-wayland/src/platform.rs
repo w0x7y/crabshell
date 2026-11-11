@@ -291,6 +291,8 @@ pub struct Platform {
     pub(crate) windows: Windows<Surface, WlOutput>,
     pub(crate) pointers: Vec<SeatPointer>,
     renderer: Renderer,
+    /// The icon theme set, for snapshots' renderers.
+    icon_theme: Option<String>,
     text: TextSystem,
     pub(crate) stats: Stats,
 }
@@ -351,6 +353,7 @@ impl Platform {
             windows: Windows::new(),
             pointers: Vec::new(),
             renderer: Renderer::new(),
+            icon_theme: None,
             text: TextSystem::new(),
             stats: Stats::default(),
         })
@@ -430,7 +433,11 @@ impl Platform {
         let (width, height) = surface.size?;
         let (buffer_width, buffer_height) = surface.frames.scale.buffer_size(width, height)?;
         let mut rgba = vec![0; buffer_width as usize * buffer_height as usize * 4];
-        Renderer::new()
+        let mut renderer = Renderer::new();
+        if let Some(theme) = &self.icon_theme {
+            renderer.set_icon_theme(theme.clone());
+        }
+        renderer
             .draw(
                 &entry.window.view(),
                 &[],
@@ -451,6 +458,23 @@ impl Platform {
             width: buffer_width,
             height: buffer_height,
         })
+    }
+
+    /// Sets the icon theme names are looked up in, such as `"Adwaita"`;
+    /// the default is `hicolor`. Every window is repainted whole, since any
+    /// icon may change.
+    pub fn set_icon_theme(&mut self, theme: impl Into<String>) {
+        let theme = theme.into();
+        self.renderer.set_icon_theme(theme.clone());
+        for surface in self
+            .windows
+            .entries
+            .iter_mut()
+            .filter_map(|entry| entry.surface.as_mut())
+        {
+            surface.frames.repaint_whole();
+        }
+        self.icon_theme = Some(theme);
     }
 
     /// The text system windows are laid out and drawn with.

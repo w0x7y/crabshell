@@ -18,16 +18,7 @@ use crabshell_ui::{
     Align, Button, Color, Cx, Edge, Output, PanelWindow, Rect, Row, Spacer, Style, Text, Window,
 };
 use crabshell_wayland::{Event, EventLoop, Platform, WindowId};
-use smithay_client_toolkit::reexports::client::globals::{GlobalListContents, registry_queue_init};
-use smithay_client_toolkit::reexports::client::protocol::{wl_pointer, wl_registry};
-use smithay_client_toolkit::reexports::client::{
-    Connection, Dispatch, EventQueue, QueueHandle, delegate_noop,
-};
-use smithay_client_toolkit::reexports::protocols_wlr::virtual_pointer::v1::client::{
-    zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
-    zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
-};
-use sway::{Image, Sway, run_until, settle};
+use sway::{Image, Sway, VirtualPointer, run_until, settle};
 
 #[test]
 fn a_zero_realtime_timeout_is_refused_before_sway_starts() {
@@ -333,69 +324,6 @@ fn unplugging_an_output_drops_its_windows_and_their_nodes() {
     assert_eq!(*shell.removed.borrow(), ["HEADLESS-2"]);
 }
 
-/// A second client with a virtual pointer, so the seat has a pointer: a
-/// headless Sway with no input devices has none.
-struct VirtualPointer {
-    queue: EventQueue<Helper>,
-    pointer: ZwlrVirtualPointerV1,
-}
-
-struct Helper;
-
-impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Helper {
-    fn event(
-        _: &mut Helper,
-        _: &wl_registry::WlRegistry,
-        _: wl_registry::Event,
-        _: &GlobalListContents,
-        _: &Connection,
-        _: &QueueHandle<Helper>,
-    ) {
-    }
-}
-
-delegate_noop!(Helper: ZwlrVirtualPointerManagerV1);
-delegate_noop!(Helper: ZwlrVirtualPointerV1);
-
-impl VirtualPointer {
-    fn new(sway: &Sway) -> VirtualPointer {
-        let connection = sway.connection();
-        let (globals, mut queue) =
-            registry_queue_init::<Helper>(&connection).expect("the helper's registry");
-        let manager: ZwlrVirtualPointerManagerV1 = globals
-            .bind(&queue.handle(), 1..=1, ())
-            .expect("sway offers zwlr_virtual_pointer_manager_v1");
-        let pointer = manager.create_virtual_pointer(None, &queue.handle(), ());
-        queue
-            .roundtrip(&mut Helper)
-            .expect("the helper's roundtrip");
-        VirtualPointer { queue, pointer }
-    }
-
-    /// Moves to `x`, `y` on a 1920 by 1080 layout.
-    fn move_to(&mut self, x: u32, y: u32) {
-        self.pointer.motion_absolute(0, x, y, 1920, 1080);
-        self.pointer.frame();
-        self.queue
-            .roundtrip(&mut Helper)
-            .expect("the helper's roundtrip");
-    }
-
-    fn click(&mut self) {
-        const BTN_LEFT: u32 = 0x110;
-        for state in [
-            wl_pointer::ButtonState::Pressed,
-            wl_pointer::ButtonState::Released,
-        ] {
-            self.pointer.button(0, BTN_LEFT, state);
-            self.pointer.frame();
-        }
-        self.queue
-            .roundtrip(&mut Helper)
-            .expect("the helper's roundtrip");
-    }
-}
-
 /// The button's rectangle in the bar, in logical pixels.
 fn button_rect(platform: &Platform, id: WindowId) -> Rect {
     let (_, window) = platform
@@ -422,7 +350,7 @@ fn clickable(sway: &Sway) -> (Shell, VirtualPointer, (u32, u32)) {
         (rect.y + rect.height / 2.0) as u32,
     );
     // Moving the pointer makes the seat send it to the bar.
-    pointer.move_to(center.0, center.1);
+    pointer.move_to(center.0, center.1, (1920, 1080));
     (shell, pointer, center)
 }
 

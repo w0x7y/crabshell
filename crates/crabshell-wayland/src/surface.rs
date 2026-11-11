@@ -109,6 +109,12 @@ impl Frames {
     /// attached: the history counted it, so it starts over, and another
     /// frame is asked for.
     pub(crate) fn lost(&mut self) {
+        self.repaint_whole();
+    }
+
+    /// Every pixel may change, as when the icon theme does: the history
+    /// starts over, so the next frame, asked for now, repaints everything.
+    pub(crate) fn repaint_whole(&mut self) {
         self.history = DamageHistory::new();
         self.pacing.redraw();
     }
