@@ -1,10 +1,10 @@
 //! The platform on a real compositor: headless Sway, one per test.
 //!
-//! They need `sway`, `swaymsg` and `grim`, and a machine that lets them
-//! run, so they are ignored by default. Run them with
+//! They need `sway`, `swaymsg` and `grim`, so they are ignored by
+//! default. Run them with
 //!
 //! ```text
-//! cargo test -p crabshell-wayland --test headless -- --ignored
+//! cargo test -p crabshell-wayland --test headless -- --ignored --test-threads=1
 //! ```
 
 mod sway;
@@ -19,28 +19,6 @@ use crabshell_ui::{
 };
 use crabshell_wayland::{Event, EventLoop, Platform, WindowId};
 use sway::{Image, Sway, VirtualPointer, run_until, settle};
-
-#[test]
-fn a_zero_realtime_timeout_is_refused_before_sway_starts() {
-    let limits = |rttime: &str| {
-        format!(
-            "Limit                     Soft Limit           Hard Limit           Units     \n\
-             Max realtime priority     0                    0                    \n\
-             Max realtime timeout      {rttime}us        \n"
-        )
-    };
-    let refused = sway::realtime_problem(&limits("0                    0                    "))
-        .expect("a timeout of 0 kills Sway");
-    assert!(refused.contains("swaymsg exec"), "{refused}");
-    assert!(
-        sway::realtime_problem(&limits("0                    unlimited            ")).is_some()
-    );
-    assert_eq!(
-        sway::realtime_problem(&limits("unlimited            unlimited            ")),
-        None
-    );
-    assert_eq!(sway::realtime_problem(""), None, "no such line, no check");
-}
 
 /// What the test bar's bindings read and write.
 #[derive(Clone, Copy)]

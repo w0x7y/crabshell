@@ -41,10 +41,6 @@ pub struct Sway {
 impl Sway {
     /// Starts Sway with one output, HEADLESS-1.
     pub fn start() -> Sway {
-        let limits = std::fs::read_to_string("/proc/self/limits").unwrap_or_default();
-        if let Some(problem) = realtime_problem(&limits) {
-            panic!("{problem}");
-        }
         // Unix socket paths may be only 108 bytes long, so the directory
         // is short and under /tmp rather than in the target directory.
         let run = RUNS.fetch_add(1, Ordering::Relaxed);
@@ -55,7 +51,16 @@ impl Sway {
             .expect("make the runtime directory private");
         std::fs::write(dir.join("config"), CONFIG).expect("write the Sway config");
         let log = std::fs::File::create(dir.join("sway.log")).expect("create the Sway log");
-        let child = Command::new("sway")
+        // A copy drops SwayFX's `cap_sys_nice`, so it never goes realtime
+        // and a realtime CPU limit of 0 (as under T3 Code) can't kill it.
+        let installed = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .map(|bin| bin.join("sway"))
+            .find(|sway| sway.is_file())
+            .expect("sway is installed");
+        let sway = dir.join("sway");
+        std::fs::copy(&installed, &sway)
+            .unwrap_or_else(|error| panic!("copy {installed:?} to {sway:?}: {error}"));
+        let child = Command::new(&sway)
             .arg("-c")
             .arg(dir.join("config"))
             .env_clear()
@@ -192,37 +197,6 @@ impl Drop for Sway {
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.dir);
     }
-}
-
-/// Why Sway would be killed as it starts under these `/proc/self/limits`,
-/// if it would. SwayFX has `cap_sys_nice` and makes itself realtime at
-/// startup; with a realtime timeout (`RLIMIT_RTTIME`) of 0, as everything
-/// started from T3 Code has, the kernel kills it with SIGKILL as soon as
-/// it uses the CPU.
-pub fn realtime_problem(limits: &str) -> Option<String> {
-    let line = limits
-        .lines()
-        .find_map(|line| line.strip_prefix("Max realtime timeout"))?;
-    let mut fields = line.split_whitespace();
-    let (soft, hard) = (fields.next()?, fields.next()?);
-    if soft != "0" && hard != "0" {
-        return None;
-    }
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let workspace = std::fs::canonicalize(&workspace).unwrap_or(workspace);
-    Some(format!(
-        "Sway would be killed as it starts: this process's realtime timeout \
-         (RLIMIT_RTTIME) is {soft} µs (hard limit {hard}), as under T3 Code, and Sway makes \
-         itself realtime. Run the suite through the desktop Sway, which has no such \
-         limit:\n\n  SWAYSOCK=/run/user/$(id -u)/sway-ipc.$(id -u).$(pgrep -xo sway).sock \
-         swaymsg exec 'cd {} && ~/.cargo/bin/cargo test -p {} --test headless \
-         -- --ignored --test-threads=1 > target/headless.log 2>&1 && echo passed > \
-         target/headless.status || echo failed > target/headless.status'\n\n(No `;` in it: \
-         Sway would take what follows one as a second command.)",
-        workspace.display(),
-        // The crate whose tests include this file.
-        env!("CARGO_PKG_NAME"),
-    ))
 }
 
 /// The `wayland-N` socket Sway made in `dir`.

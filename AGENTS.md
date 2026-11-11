@@ -47,8 +47,8 @@ Treat this file as good defaults. What I say in the conversation overrides it.
 
 ## The three ways to hurt yourself
 
-1. **Starting Sway from your shell.** SwayFX holds `cap_sys_nice` and switches itself to realtime. T3 Code passes its children a realtime CPU limit of 0, so the kernel SIGKILLs any Sway you start about 0.1 s in. Run headless suites through the desktop Sway with the recipe under Verifying.
-2. **Touching the live session.** The desktop Sway runs the maintainer's real session. Send it exactly one command, that `exec`, with no `;` or `,`, since Sway splits commands on both. Leave the pointer, outputs and other processes alone, and stop only the PIDs you started.
+1. **Running the installed `sway`.** SwayFX holds `cap_sys_nice` and switches itself to realtime. T3 Code passes its children a realtime CPU limit of 0, so the kernel SIGKILLs `/usr/bin/sway` about 0.1 s in. A plain copy has no file capabilities, so the headless test helper starts a copy, and the suites run straight from your shell.
+2. **Touching the live session.** The desktop Sway runs the maintainer's real session. Send it nothing: no `swaymsg` without your private `SWAYSOCK`. Leave the pointer, outputs and other processes alone, and stop only the PIDs you started.
 3. **Blessing goldens to go green.** Setting `CRABSHELL_BLESS` to any value rewrites the golden PNGs in render's and crabshell's `tests/golden`. Bless only for an intended pixel change, and name each file and the reason in your report. A font mismatch is a setup problem: the goldens need Noto Sans as fontconfig's `sans-serif`, plus DejaVu Sans and DejaVu Sans Bold.
 
 ## Hit every layer
@@ -68,15 +68,14 @@ The most common defect here is a change that works where you tested it and break
 - Before every commit, run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`.
 - Write the test first and watch it fail. Reactive and layout logic get unit tests, drawing gets goldens, and platform behavior gets headless Sway tests.
 - Prove each new test bites: break the line it guards, watch it go red, restore it, then `touch` the restored file so cargo rebuilds it.
-- The Sway-backed tests in each crate's `tests/headless.rs` are `#[ignore]`, and `CRABSHELL_MEASURE=1`, placed inside the `exec` string before `~/.cargo/bin/cargo`, makes `measure_the_counter_bar` record the performance numbers. Run them through the desktop Sway, where `<repo>` is the checkout's absolute path and `<crate>` is `crabshell-wayland` or `crabshell`:
+- The Sway-backed tests in each crate's `tests/headless.rs` are `#[ignore]`, and `CRABSHELL_MEASURE=1` makes `measure_the_counter_bar` record the performance numbers. Run them from your shell. Each test starts its own headless Sway from a copy of `sway` in a private runtime dir, with its own sockets, so nothing reaches the desktop Sway:
 
   ```sh
-  SOCK=/run/user/$(id -u)/sway-ipc.$(id -u).$(pgrep -xo sway).sock
-  rm -f <repo>/target/headless.status
-  SWAYSOCK=$SOCK swaymsg exec 'cd <repo> && ~/.cargo/bin/cargo test -p <crate> --test headless -- --ignored --test-threads=1 > target/headless.log 2>&1 && echo passed > target/headless.status || echo failed > target/headless.status'
+  cargo test -p crabshell-wayland --test headless -- --ignored --test-threads=1
+  cargo test -p crabshell --test headless -- --ignored --test-threads=1
   ```
 
-  `exec` returns at once, so wait for `target/headless.status`, then read it and `target/headless.log`. For a second checkout, set `CARGO_TARGET_DIR` and use absolute paths for both files.
+  Afterwards `pgrep -a sway` shows only the desktop Sway, the oldest.
 
 ## Commits and pushes
 

@@ -4,9 +4,7 @@
 //! outside; unplugging an output drops its bar and frees its nodes.
 //!
 //! They need `sway`, `swaymsg` and `grim`, so they are ignored by default.
-//! Under T3 Code, run them through the desktop Sway as the design doc
-//! describes; the helper says how if it can't start Sway here. Goldens are
-//! written again, on purpose only, with `CRABSHELL_BLESS=1`.
+//! Goldens are written again, on purpose only, with `CRABSHELL_BLESS=1`.
 
 #[allow(
     dead_code,
