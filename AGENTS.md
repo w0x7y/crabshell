@@ -48,7 +48,7 @@ Treat this file as good defaults. What I say in the conversation overrides it.
 ## The three ways to hurt yourself
 
 1. **Running the installed `sway`.** SwayFX holds `cap_sys_nice` and switches itself to realtime. T3 Code passes its children a realtime CPU limit of 0, so the kernel SIGKILLs `/usr/bin/sway` about 0.1 s in. A plain copy has no file capabilities, so the headless test helper starts a copy, and the suites run straight from your shell.
-2. **Touching the live session.** The desktop Sway runs the maintainer's real session. Send it nothing: no `swaymsg` without your private `SWAYSOCK`. Leave the pointer, outputs and other processes alone, and stop only the PIDs you started.
+2. **Touching the live session.** The desktop Sway runs the maintainer's real session. Send it nothing: no `swaymsg` without your private `SWAYSOCK`. Your shell inherits the desktop's `SWAYSOCK`, so run the headless suites under `env -u SWAYSOCK`; the helper's `Sway::start()` refuses otherwise. Leave the pointer, outputs and other processes alone, and stop only the PIDs you started.
 3. **Blessing goldens to go green.** Setting `CRABSHELL_BLESS` to any value rewrites the golden PNGs in render's and crabshell's `tests/golden`. Bless only for an intended pixel change, and name each file and the reason in your report. A font mismatch is a setup problem: the goldens need Noto Sans as fontconfig's `sans-serif`, plus DejaVu Sans and DejaVu Sans Bold.
 
 ## Hit every layer
@@ -71,8 +71,9 @@ The most common defect here is a change that works where you tested it and break
 - The Sway-backed tests in each crate's `tests/headless.rs` are `#[ignore]`, and `CRABSHELL_MEASURE=1` makes `measure_the_counter_bar` record the performance numbers. Run them from your shell. Each test starts its own headless Sway from a copy of `sway` in a private runtime dir, with its own sockets, so nothing reaches the desktop Sway:
 
   ```sh
-  cargo test -p crabshell-wayland --test headless -- --ignored --test-threads=1
-  cargo test -p crabshell --test headless -- --ignored --test-threads=1
+  env -u SWAYSOCK cargo test -p crabshell-wayland --test headless -- --ignored --test-threads=1
+  env -u SWAYSOCK cargo test -p crabshell --test headless -- --ignored --test-threads=1
+  env -u SWAYSOCK CRABSHELL_MEASURE=1 cargo test -p crabshell --test headless measure_the_counter_bar -- --ignored
   ```
 
   Afterwards `pgrep -a sway` shows only the desktop Sway, the oldest.

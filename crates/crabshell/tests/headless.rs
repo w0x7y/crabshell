@@ -11,6 +11,13 @@
 //! Sway, so a shell in it could switch the desktop's workspaces.
 //!
 //! They need `sway`, `swaymsg` and `grim`, so they are ignored by default.
+//! Run them without the session's `SWAYSOCK`, which `Sway::start()`
+//! refuses:
+//!
+//! ```text
+//! env -u SWAYSOCK cargo test -p crabshell --test headless -- --ignored --test-threads=1
+//! ```
+//!
 //! Goldens are written again, on purpose only, with `CRABSHELL_BLESS=1`.
 
 #[allow(

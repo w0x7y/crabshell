@@ -39,8 +39,18 @@ pub struct Sway {
 }
 
 impl Sway {
-    /// Starts Sway with one output, HEADLESS-1.
+    /// Starts Sway with one output, HEADLESS-1. Refuses when this process
+    /// has `SWAYSOCK` set, since an in-process shell would hand it to its
+    /// services, and it may name the desktop's Sway.
     pub fn start() -> Sway {
+        if let Some(socket) = std::env::var_os("SWAYSOCK") {
+            panic!(
+                "this test process has SWAYSOCK={socket:?}, maybe the desktop's Sway, so no \
+                 private Sway starts. Run the suite as\n  env -u SWAYSOCK cargo test -p {} \
+                 --test headless -- --ignored --test-threads=1",
+                env!("CARGO_PKG_NAME")
+            );
+        }
         // Unix socket paths may be only 108 bytes long, so the directory
         // is short and under /tmp rather than in the target directory.
         let run = RUNS.fetch_add(1, Ordering::Relaxed);

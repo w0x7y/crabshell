@@ -1,15 +1,17 @@
 //! The platform on a real compositor: headless Sway, one per test.
 //!
 //! They need `sway`, `swaymsg` and `grim`, so they are ignored by
-//! default. Run them with
+//! default. Run them without the session's `SWAYSOCK`, which
+//! `Sway::start()` refuses:
 //!
 //! ```text
-//! cargo test -p crabshell-wayland --test headless -- --ignored --test-threads=1
+//! env -u SWAYSOCK cargo test -p crabshell-wayland --test headless -- --ignored --test-threads=1
 //! ```
 
 mod sway;
 
 use std::cell::RefCell;
+use std::process::Command;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -19,6 +21,40 @@ use crabshell_ui::{
 };
 use crabshell_wayland::{Event, EventLoop, Platform, WindowId};
 use sway::{Image, Sway, VirtualPointer, run_until, settle};
+
+/// Set in the child that [`sway_refuses_to_start_beside_a_swaysock`] runs.
+const GUARD_CHILD: &str = "CRABSHELL_GUARD_CHILD";
+
+/// Needs no Sway: the refusal comes first. So it runs by default too.
+#[test]
+fn sway_refuses_to_start_beside_a_swaysock() {
+    if std::env::var_os(GUARD_CHILD).is_some() {
+        Sway::start();
+        return;
+    }
+    // This test again, as its own process with a SWAYSOCK that names
+    // nothing, and no PATH, so a missing refusal can't find sway either.
+    let output = Command::new(std::env::current_exe().expect("the test binary"))
+        .args(["--exact", "sway_refuses_to_start_beside_a_swaysock"])
+        .args(["--nocapture"])
+        .env_clear()
+        .env(GUARD_CHILD, "1")
+        .env("SWAYSOCK", "/nonexistent/sway.sock")
+        .output()
+        .expect("the test binary runs");
+    let printed = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!output.status.success(), "Sway started: {printed}");
+    assert!(
+        printed.contains(
+            "env -u SWAYSOCK cargo test -p crabshell-wayland --test headless -- --ignored --test-threads=1"
+        ),
+        "{printed}"
+    );
+}
 
 /// What the test bar's bindings read and write.
 #[derive(Clone, Copy)]
