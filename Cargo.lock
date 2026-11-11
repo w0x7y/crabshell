@@ -211,6 +211,7 @@ dependencies = [
  "crabshell-ui",
  "jiff",
  "tracing",
+ "zbus",
 ]
 
 [[package]]

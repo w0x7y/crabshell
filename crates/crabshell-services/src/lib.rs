@@ -16,10 +16,12 @@
 
 mod clock;
 
+use std::cell::OnceCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Instant;
 
+use calloop::futures::{Executor, Scheduler};
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{LoopHandle, RegistrationToken};
 use crabshell_reactive::{Owner, ReadSignal};
@@ -72,6 +74,9 @@ struct Shared {
     /// after the shell drops. calloop's weak handle has no type we can
     /// name, so a closure keeps it.
     event_loop: Box<dyn Fn() -> Option<Box<dyn EventLoop>>>,
+    /// The one futures executor every service's D-Bus calls run on, added
+    /// to the loop on first use. `None` if that failed.
+    executor: OnceCell<Option<Scheduler<()>>>,
     config: Config,
 }
 
@@ -84,6 +89,7 @@ impl Shared {
                 weak.upgrade()
                     .map(|handle| Box::new(handle) as Box<dyn EventLoop>)
             }),
+            executor: OnceCell::new(),
             config,
         }
     }
@@ -91,6 +97,24 @@ impl Shared {
     /// The event loop, while it is still there.
     fn event_loop(&self) -> Option<Box<dyn EventLoop>> {
         (self.event_loop)()
+    }
+
+    /// Runs `future` on the main thread, between the loop's other sources,
+    /// so no D-Bus call delays a frame.
+    fn spawn(&self, future: impl Future<Output = ()> + 'static) {
+        let scheduler = self.executor.get_or_init(|| {
+            let (executor, scheduler) = calloop::futures::executor()
+                .inspect_err(|error| tracing::error!(%error, "no executor for the services"))
+                .ok()?;
+            self.event_loop()?
+                .insert_executor(executor)
+                .then_some(scheduler)
+        });
+        if let Some(scheduler) = scheduler
+            && let Err(error) = scheduler.schedule(future)
+        {
+            tracing::error!(%error, "a service's future couldn't start");
+        }
     }
 }
 
@@ -104,6 +128,12 @@ trait EventLoop {
         deadline: Instant,
         tick: Box<dyn FnMut() -> TimeoutAction>,
     ) -> Option<RegistrationToken>;
+
+    /// Removes a source. One that is already gone is ignored.
+    fn remove(&self, token: RegistrationToken);
+
+    /// Adds the services' executor. `false`, logged, if the loop refused it.
+    fn insert_executor(&self, executor: Executor<()>) -> bool;
 }
 
 impl<D: 'static> EventLoop for LoopHandle<'static, D> {
@@ -116,13 +146,28 @@ impl<D: 'static> EventLoop for LoopHandle<'static, D> {
             .inspect_err(|error| tracing::error!(%error, "a service's timer couldn't be added"))
             .ok()
     }
+
+    fn remove(&self, token: RegistrationToken) {
+        LoopHandle::remove(self, token);
+    }
+
+    fn insert_executor(&self, executor: Executor<()>) -> bool {
+        self.insert_source(executor, |(), _, _| {})
+            .inspect_err(
+                |error| tracing::error!(%error, "the services' executor couldn't be added"),
+            )
+            .is_ok()
+    }
 }
 
-/// Where the services find the system. Tests point it at their own files.
+/// Where the services find the system. Tests point it at their own files
+/// and a private bus.
 struct Config {
     /// The link that names the system time zone, `/etc/localtime`. `None`
     /// when `TZ` is set, since it names the zone then, as it does for libc.
     localtime: Option<PathBuf>,
+    /// The system bus, where logind and timedated are. `None` for none.
+    system_bus: Option<zbus::Address>,
 }
 
 impl Config {
@@ -131,6 +176,9 @@ impl Config {
             localtime: std::env::var_os("TZ")
                 .is_none()
                 .then(|| PathBuf::from("/etc/localtime")),
+            system_bus: zbus::Address::system()
+                .inspect_err(|error| tracing::warn!(%error, "no system bus address"))
+                .ok(),
         }
     }
 }

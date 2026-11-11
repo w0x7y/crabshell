@@ -14,10 +14,11 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Install fontconfig and fonts
+      # dbus-daemon and /usr/share/zoneinfo are for the clock's tests
+      - name: Install fontconfig, fonts, dbus and tzdata
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev fonts-dejavu-core fonts-noto-color-emoji
+          sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev fonts-dejavu-core fonts-noto-color-emoji dbus tzdata
       # Ubuntu's Noto Sans is older than the one the goldens were drawn with and
       # it has no Znamenny, so both come from the notofonts commit Gentoo packages
       - name: Install the Noto fonts the goldens were drawn with

@@ -13,3 +13,4 @@ crabshell-reactive.workspace = true
 crabshell-ui.workspace = true
 jiff.workspace = true
 tracing.workspace = true
+zbus.workspace = true
