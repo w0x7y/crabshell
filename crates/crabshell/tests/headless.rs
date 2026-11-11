@@ -3,17 +3,19 @@
 //! after a click; an idle bar wakes nothing, by its own counters and from
 //! outside; unplugging an output drops its bar and frees its nodes. And
 //! Phase 3's: the v1 bar example shows the private Sway's workspaces,
-//! switches them on a click, logs each switch's time to the screen and
-//! wakes only on the minute.
+//! switches them on a click, logs each switch's time to the screen, wakes
+//! only on the minute with audio connected, and its volume button agrees
+//! with a private pipewire-pulse through scrolls, clicks and changes made
+//! elsewhere.
 //!
 //! Anything that asks for `cx.sway()` or `cx.audio()` runs as its own
 //! process, given the private Sway's socket and a `PULSE_SERVER` that is
 //! private or names nothing: in this process, libpulse would look for the
 //! desktop's audio server.
 //!
-//! They need `sway`, `swaymsg` and `grim`, so they are ignored by default.
-//! Run them without the session's `SWAYSOCK`, which `Sway::start()`
-//! refuses:
+//! They need `sway`, `swaymsg` and `grim`, and the audio ones `pipewire`
+//! and `pactl`, so they are ignored by default. Run them without the
+//! session's `SWAYSOCK`, which `Sway::start()` refuses:
 //!
 //! ```text
 //! env -u SWAYSOCK cargo test -p crabshell --test headless -- --ignored --test-threads=1
@@ -35,6 +37,13 @@ mod sway;
 #[path = "../examples/counter.rs"]
 mod counter;
 
+#[allow(
+    dead_code,
+    reason = "the example's bar is tested; its main isn't run here"
+)]
+#[path = "../examples/bar.rs"]
+mod v1;
+
 #[allow(dead_code, reason = "the services' own tests use the rest")]
 #[path = "../../crabshell-services/tests/pipewire/mod.rs"]
 mod pipewire;
@@ -52,7 +61,7 @@ use crabshell::Shell;
 use crabshell::prelude::*;
 use crabshell_reactive::Runtime;
 use crabshell_ui::{Content, NodeView, Rect};
-use crabshell_wayland::{Platform, WindowId};
+use crabshell_wayland::{EventLoop, Platform, WindowId};
 use pipewire::PrivateServer;
 use sway::{Image, Sway, VirtualPointer};
 
@@ -106,44 +115,59 @@ fn shown_on(platform: &Platform, output: &str) -> Option<WindowId> {
         })
 }
 
-/// The counter button: the bar's row's first child.
-fn button<T>(platform: &Platform, id: WindowId, read: impl FnOnce(NodeView<'_>) -> T) -> T {
+/// The `n`th child of the bar's row.
+fn in_row<T>(
+    platform: &Platform,
+    id: WindowId,
+    n: usize,
+    read: impl FnOnce(NodeView<'_>) -> T,
+) -> T {
     let (_, window) = platform
         .windows()
         .find(|(held, _)| *held == id)
         .expect("the bar is held");
     let view = window.view();
     let row = view.root().children().next().expect("the bar has a row");
-    read(
-        row.children()
-            .next()
-            .expect("the row starts with the button"),
-    )
+    read(row.children().nth(n).expect("the row holds that child"))
+}
+
+/// The counter button: the bar's row's first child.
+fn button<T>(platform: &Platform, id: WindowId, read: impl FnOnce(NodeView<'_>) -> T) -> T {
+    in_row(platform, id, 0, read)
+}
+
+/// A button's label, as laid out.
+fn text_of(button: NodeView<'_>) -> String {
+    let text = button
+        .children()
+        .next()
+        .expect("the button holds its label");
+    let Content::Text(text) = text.content() else {
+        panic!("the label is text");
+    };
+    text.runs().map(|run| run.text).collect()
 }
 
 /// The counter button's label.
 fn label(platform: &Platform, id: WindowId) -> String {
-    button(platform, id, |button| {
-        let text = button
-            .children()
-            .next()
-            .expect("the button holds its label");
-        let Content::Text(text) = text.content() else {
-            panic!("the label is text");
-        };
-        text.runs().map(|run| run.text).collect()
-    })
+    button(platform, id, text_of)
 }
 
-/// The middle of the counter button, in logical pixels.
-fn button_center(platform: &Platform, id: WindowId) -> (u32, u32) {
-    let Rect {
+/// The middle of `rect`, in whole logical pixels.
+fn middle(
+    Rect {
         x,
         y,
         width,
         height,
-    } = button(platform, id, |button| button.rect());
+    }: Rect,
+) -> (u32, u32) {
     ((x + width / 2.0) as u32, (y + height / 2.0) as u32)
+}
+
+/// The middle of the counter button, in logical pixels.
+fn button_center(platform: &Platform, id: WindowId) -> (u32, u32) {
+    button(platform, id, |button| middle(button.rect()))
 }
 
 /// Fails unless the label's font is Noto Sans, which `sans-serif` was when
@@ -465,6 +489,17 @@ impl ExampleBar {
         }
     }
 
+    /// Waits for the v1 bar run by [`run_v1_bar_logging_its_volume`] to log
+    /// its volume button saying `label`, and returns the button's middle.
+    fn volume_says(&self, label: &str) -> (u32, u32) {
+        let line = self.wait_for(&format!(" says {label}"));
+        line.split(VOLUME)
+            .nth(1)
+            .and_then(|rest| rest.split(" says").next()?.split_once(','))
+            .and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)))
+            .unwrap_or_else(|| panic!("no volume button's middle in {line:?}"))
+    }
+
     /// Its resident memory in KiB, from `ps -o rss=`.
     fn rss_kib(&self) -> u64 {
         let output = Command::new("ps")
@@ -608,8 +643,8 @@ fn measure_the_counter_bar() {
     let times = switch_workspaces(&sway, &bar, 10);
     let slowest = times.iter().copied().fold(0.0, f64::max);
     report += &format!(
-        "bar example with audio on a private pipewire-pulse, {idle}; workspace switch to screen: median {:.1} ms, slowest {slowest:.1} ms \
-         over {} switches, each {times:.1?} ms\n",
+        "bar example with audio on a private pipewire-pulse, {idle}; workspace switch to \
+         screen: median {:.1} ms, slowest {slowest:.1} ms over {} switches, each {times:.1?} ms\n",
         median(&times),
         times.len()
     );
@@ -1079,8 +1114,88 @@ fn run_as_child() {
     match std::env::var(CHILD).as_deref() {
         Ok("panics") => crabshell::run(|_| panic!("a broken config")),
         Ok("counter") => crabshell::run(|cx| cx.per_output(counter::bar)),
+        Ok("v1") => run_v1_bar_logging_its_volume(),
         _ => {}
     }
+}
+
+/// What [`run_v1_bar_logging_its_volume`] logs, before the volume button's
+/// middle and label.
+const VOLUME: &str = "the volume button at ";
+
+/// The v1 bar on every output, on a loop of its own that logs the volume
+/// button's middle and label whenever they change: what the bar shows,
+/// read from its laid-out tree after each turn. Never returns.
+fn run_v1_bar_logging_its_volume() -> ! {
+    let event_loop = EventLoop::connect().expect("the private Sway");
+    let mut shell =
+        Shell::new(event_loop, |cx| cx.per_output(v1::bar)).expect("the root closure runs");
+    let mut logged = String::new();
+    loop {
+        shell.dispatch(None).expect("the connection works");
+        let platform = shell.platform();
+        let Some(id) = shown_on(platform, "HEADLESS-1") else {
+            continue;
+        };
+        // Between the spacer and the clock.
+        let ((x, y), label) = in_row(platform, id, 2, |button| {
+            (middle(button.rect()), text_of(button))
+        });
+        let line = format!("{VOLUME}{x},{y} says {label}");
+        if line != logged {
+            eprintln!("{line}");
+            logged = line;
+        }
+    }
+}
+
+/// Phase 3's exit check for audio, plus mute and the way back.
+#[test]
+#[ignore = "needs headless Sway and pipewire"]
+fn the_volume_button_and_the_audio_server_agree() {
+    run_as_child();
+    let sway = Sway::start();
+    sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080"]);
+    let server = PrivateServer::start("volume");
+    server.pactl(&["set-sink-volume", "@DEFAULT_SINK@", "50%"]);
+    let volume = || server.pactl(&["get-sink-volume", "@DEFAULT_SINK@"]);
+    let mute = || server.pactl(&["get-sink-mute", "@DEFAULT_SINK@"]);
+    // Before the shell, so the seat has a pointer when the shell binds it,
+    // and the first scroll can't miss.
+    let mut pointer = VirtualPointer::new(&sway);
+    let bar = ExampleBar::spawn(
+        &sway,
+        this_as_shell("the_volume_button_and_the_audio_server_agree"),
+        &[(CHILD, "v1"), ("PULSE_SERVER", &server.address())],
+    );
+    let layout = (1920, 1080);
+    let (x, y) = bar.volume_says("vol 50%");
+
+    // One notch up.
+    pointer.move_to(x, y, layout);
+    pointer.scroll(-1);
+    bar.volume_says("vol 55%");
+    assert!(volume().contains(" 55% "), "{}", volume());
+
+    // Two notches down.
+    pointer.scroll(1);
+    pointer.scroll(1);
+    let (x, y) = bar.volume_says("vol 45%");
+    assert!(volume().contains(" 45% "), "{}", volume());
+
+    // A click mutes, and another unmutes.
+    pointer.move_to(x, y, layout);
+    pointer.click();
+    let (x, y) = bar.volume_says("muted");
+    assert_eq!(mute().trim(), "Mute: yes");
+    pointer.move_to(x, y, layout);
+    pointer.click();
+    bar.volume_says("vol 45%");
+    assert_eq!(mute().trim(), "Mute: no");
+
+    // A change from elsewhere shows.
+    server.pactl(&["set-sink-volume", "@DEFAULT_SINK@", "30%"]);
+    bar.volume_says("vol 30%");
 }
 
 #[test]

@@ -92,6 +92,6 @@ env -u SWAYSOCK cargo test -p crabshell-wayland --test headless -- --ignored --t
 env -u SWAYSOCK cargo test -p crabshell --test headless -- --ignored --test-threads=1
 ```
 
-they need `sway`, `swaymsg` and `grim`, and each test runs its own private sway from a copy of `sway`. the copy drops swayfx's `cap_sys_nice`, so it never goes realtime and a realtime cpu limit of 0 can't kill it. `CRABSHELL_BLESS=1` rewrites the golden images, which expect noto sans as your `sans-serif`
+they need `sway`, `swaymsg` and `grim`, plus `pipewire` and `pactl` for the audio ones. each test runs its own private sway from a copy of `sway`. the copy drops swayfx's `cap_sys_nice`, so it never goes realtime and a realtime cpu limit of 0 can't kill it. the audio ones also run their own pipewire-pulse, so your volume never moves. `CRABSHELL_BLESS=1` rewrites the golden images, which expect noto sans as your `sans-serif`
 
 _license: [mit](./LICENSE-MIT) or [apache-2.0](./LICENSE-APACHE), your choice_

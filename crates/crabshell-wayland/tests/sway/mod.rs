@@ -355,6 +355,21 @@ impl VirtualPointer {
             .expect("the helper's roundtrip");
     }
 
+    /// Turns a mouse wheel by `notches`, down when positive as Wayland
+    /// counts. wlroots turns each notch into 120 `axis_value120` units.
+    #[allow(dead_code, reason = "crabshell's tests use it; these don't")]
+    pub fn scroll(&mut self, notches: i32) {
+        self.pointer.axis_source(wl_pointer::AxisSource::Wheel);
+        let axis = wl_pointer::Axis::VerticalScroll;
+        // 15 is libinput's length of one notch.
+        self.pointer
+            .axis_discrete(0, axis, 15.0 * f64::from(notches), notches);
+        self.pointer.frame();
+        self.queue
+            .roundtrip(&mut Helper)
+            .expect("the helper's roundtrip");
+    }
+
     /// Presses and releases the left button.
     pub fn click(&mut self) {
         const BTN_LEFT: u32 = 0x110;
