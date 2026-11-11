@@ -1,6 +1,8 @@
+use std::cell::Cell;
 use std::io::{self, Write};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -9,10 +11,18 @@ use crabshell_reactive::Runtime;
 use crabshell_ui::Cx;
 use libpulse_binding::volume::{ChannelVolumes, Volume};
 
-use super::{AudioService, Info, Server, changed, percent};
+use super::{AudioService, Event, Info, Server, changed, percent};
 use crate::{Config, ServicesExt};
+use fake::{
+    Client, FakePulse, GET_SERVER_INFO, GET_SINK_INFO, SET_SINK_MUTE, SET_SINK_VOLUME, SUBSCRIBE,
+};
+
+mod fake;
 
 const NORM: u32 = Volume::NORMAL.0;
+
+/// No commands.
+const NOTHING: [u32; 0] = [];
 
 /// The volume `pactl set-sink-volume` sets for `percent`.
 fn level(percent: u32) -> u32 {
@@ -170,15 +180,51 @@ impl Harness {
         Harness { event_loop, cx }
     }
 
-    /// Runs the loop as the shell does, for `time`.
-    fn run_for(&mut self, time: Duration) {
+    /// Runs the loop as the shell does, for `time`. Returns how many times
+    /// it woke.
+    fn run_for(&mut self, time: Duration) -> usize {
         let deadline = Instant::now() + time;
+        let mut wakeups = 0;
         while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            if left.is_zero() {
+                break;
+            }
             self.event_loop
                 .dispatch(Some(left), &mut ())
                 .expect("the loop runs");
             Runtime::current().flush();
+            wakeups += 1;
         }
+        wakeups
+    }
+
+    /// Runs the loop until libpulse's context is ready and the service
+    /// has acted on it, for up to 2 s.
+    fn run_until_ready(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let ready = |shell: &Harness| {
+            let pulse = shell
+                .service()
+                .pulse
+                .borrow()
+                .as_ref()
+                .map(|p| p.intro.is_some());
+            pulse == Some(true)
+        };
+        while !ready(self) {
+            assert!(Instant::now() < deadline, "never ready");
+            self.run_for(Duration::from_millis(10));
+        }
+    }
+
+    fn service(&self) -> Rc<AudioService> {
+        self.cx.service::<AudioService>().expect("provided")
+    }
+
+    /// Hands the service `event` from the current connection, as libpulse's
+    /// thread would.
+    fn send(&self, event: Event) {
+        self.service().on_message((self.lost(), event));
     }
 
     /// How many contexts the service has dropped so far.
@@ -186,6 +232,28 @@ impl Harness {
         let service = self.cx.service::<AudioService>().expect("provided");
         let pulse = service.pulse.borrow();
         pulse.as_ref().expect("libpulse started").generation
+    }
+}
+
+/// A shell whose audio service is ready on `fake`, with the commands it
+/// sends on Ready taken.
+fn connected(fake: &FakePulse) -> (Harness, Client) {
+    let mut shell = Harness::new(&fake.address());
+    shell.cx.audio();
+    shell.run_for(Duration::from_millis(20));
+    let mut client = fake.accept();
+    shell.run_until_ready();
+    assert_eq!(client.command_numbers(), [SUBSCRIBE, GET_SERVER_INFO]);
+    (shell, client)
+}
+
+/// A two-channel sink at `percent`.
+fn info(index: u32, percent: u32, muted: bool) -> Info {
+    Info {
+        index,
+        name: "speakers".to_owned(),
+        volumes: channels(&[level(percent); 2]),
+        muted,
     }
 }
 
@@ -337,4 +405,107 @@ fn dropping_the_shell_stops_libpulse() {
     assert_eq!(libpulse_threads(), before + 1);
     drop((audio, shell));
     assert_eq!(libpulse_threads(), before);
+}
+
+#[test]
+fn a_message_from_a_dropped_connection_is_ignored() {
+    let _one = one_at_a_time();
+    let mut shell = Harness::new(&NoServer::new("stale").address());
+    let sink = shell.cx.audio().default_sink();
+    shell.run_for(Duration::from_millis(100));
+    let lost = shell.lost();
+    assert!(lost >= 1);
+    let stale = (lost - 1, Event::Info(Some(info(3, 50, false))));
+    shell.service().on_message(stale);
+    assert_eq!(sink.get_untracked(), None);
+    shell.send(Event::Info(Some(info(3, 50, false))));
+    assert_eq!(
+        sink.get_untracked().map(|sink| sink.volume_percent),
+        Some(50)
+    );
+}
+
+#[test]
+fn an_unchanged_sink_is_not_set_again() {
+    let _one = one_at_a_time();
+    let mut shell = Harness::new(&NoServer::new("unchanged").address());
+    let sink = shell.cx.audio().default_sink();
+    let runs = Rc::new(Cell::new(0));
+    shell.cx.effect({
+        let runs = Rc::clone(&runs);
+        move || {
+            sink.with(|_| ());
+            runs.set(runs.get() + 1);
+        }
+    });
+    shell.run_for(Duration::from_millis(20));
+    assert_eq!(runs.get(), 1);
+    let reads = [
+        (Some(info(3, 50, false)), 2),
+        (Some(info(3, 50, false)), 2),
+        (Some(info(3, 55, false)), 3),
+        (Some(info(3, 55, true)), 4),
+        (None, 5),
+        (None, 5),
+    ];
+    for (read, runs_after) in reads {
+        shell.send(Event::Info(read));
+        Runtime::current().flush();
+        assert_eq!(runs.get(), runs_after);
+    }
+}
+
+#[test]
+fn reads_follow_the_server_and_the_shown_sink_only() {
+    let _one = one_at_a_time();
+    let fake = FakePulse::new("reads");
+    let (shell, mut client) = connected(&fake);
+    let sink = shell.cx.audio().default_sink();
+    shell.send(Event::Default(Some("speakers".to_owned())));
+    assert_eq!(client.command_numbers(), [GET_SINK_INFO]);
+    shell.send(Event::Info(Some(info(3, 50, false))));
+    assert_eq!(sink.get_untracked(), Some(info(3, 50, false).sink()));
+    shell.send(Event::Sink(4));
+    assert_eq!(client.command_numbers(), NOTHING, "another sink changed");
+    shell.send(Event::Sink(3));
+    assert_eq!(client.command_numbers(), [GET_SERVER_INFO]);
+    shell.send(Event::Server);
+    assert_eq!(client.command_numbers(), [GET_SERVER_INFO]);
+    shell.send(Event::Default(None));
+    assert_eq!(sink.get_untracked(), None);
+    assert_eq!(client.command_numbers(), NOTHING);
+}
+
+#[test]
+fn ready_is_acted_on_once() {
+    let _one = one_at_a_time();
+    let fake = FakePulse::new("ready");
+    let (shell, mut client) = connected(&fake);
+    // Several queued state messages can each find the context ready.
+    shell.send(Event::State);
+    shell.send(Event::State);
+    assert_eq!(client.command_numbers(), NOTHING, "no second subscription");
+}
+
+#[test]
+fn a_second_step_before_any_reply_builds_on_the_first() {
+    let _one = one_at_a_time();
+    let fake = FakePulse::new("steps");
+    let (shell, mut client) = connected(&fake);
+    let audio = shell.cx.audio();
+    shell.send(Event::Info(Some(info(3, 50, false))));
+    audio.change_volume(5);
+    audio.change_volume(5);
+    audio.toggle_mute();
+    audio.toggle_mute();
+    let sent = client.commands();
+    let volumes = sent
+        .iter()
+        .filter(|(command, _)| *command == SET_SINK_VOLUME);
+    let volumes: Vec<_> = volumes.map(|(_, rest)| fake::volumes_set(rest)).collect();
+    let speakers = |volume| ("speakers".to_owned(), vec![level(volume); 2]);
+    assert_eq!(volumes, [speakers(55), speakers(60)]);
+    let mutes = sent.iter().filter(|(command, _)| *command == SET_SINK_MUTE);
+    let mutes: Vec<_> = mutes.map(|(_, rest)| fake::mute_set(rest).1).collect();
+    assert_eq!(mutes, [true, false]);
 }
