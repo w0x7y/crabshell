@@ -30,6 +30,9 @@ mod tests;
 /// How long the service waits before each reconnect.
 pub(crate) const RETRY: Duration = Duration::from_secs(2);
 
+/// How long a command's result stands in for the server's reads.
+pub(crate) const SETTLE: Duration = Duration::from_millis(250);
+
 /// Where the audio server is.
 pub(crate) struct Server {
     /// In libpulse's server syntax. `None` for libpulse's default, which
@@ -186,6 +189,7 @@ impl AudioService {
             sender: Arc::new(sender),
             generation: 0,
             shown: None,
+            asked: None,
             sink,
             down: false,
         };
@@ -283,12 +287,18 @@ struct Pulse {
     generation: u32,
     /// The default sink as last read.
     shown: Option<Info>,
+    /// The default sink as the last command left it, and when that was
+    /// sent. pipewire-pulse answers a read sent right after a set with the
+    /// sink as it was before, so commands build on this instead until a
+    /// read echoes it or [`SETTLE`] passes.
+    asked: Option<(Info, Instant)>,
     sink: Signal<Option<Sink>>,
     /// Whether the server is gone and that was logged.
     down: bool,
 }
 
 /// The default sink as libpulse reported it.
+#[derive(Clone, PartialEq)]
 pub(crate) struct Info {
     index: u32,
     name: String,
@@ -399,6 +409,14 @@ impl Pulse {
     /// Shows `info`, or no sink. The signal is set only when that changes
     /// what the bar shows, since every set repaints.
     fn show(&mut self, info: Option<Info>) {
+        // An echo of the last command, or another sink, ends its stand-in.
+        let stands = match (&self.asked, &info) {
+            (Some((asked, _)), Some(read)) => read != asked && read.index == asked.index,
+            _ => false,
+        };
+        if !stands {
+            self.asked = None;
+        }
         let sink = info.as_ref().map(Info::sink);
         self.shown = info;
         if self.sink.try_with(|shown| *shown != sink) == Some(true) {
@@ -406,32 +424,42 @@ impl Pulse {
         }
     }
 
+    /// What the next command builds on: the last one's result while it
+    /// stands in, or else the last read.
+    fn base(&self) -> Option<Info> {
+        match &self.asked {
+            Some((asked, at)) if at.elapsed() < SETTLE => Some(asked.clone()),
+            _ => self.shown.clone(),
+        }
+    }
+
     fn change_volume(&mut self, percent: i32) {
-        let Some(shown) = &self.shown else {
+        let Some(mut next) = self.base() else {
             return tracing::debug!("no default sink: the volume stays");
         };
-        let (name, volumes) = (shown.name.clone(), changed(shown.volumes, percent));
+        next.volumes = changed(next.volumes, percent);
         let sent = self.when_ready(|intro| {
-            intro.set_sink_volume_by_name(&name, &volumes, None);
+            intro.set_sink_volume_by_name(&next.name, &next.volumes, None);
         });
-        match (sent, &mut self.shown) {
-            // So a second step before the server's reply builds on this one.
-            (true, Some(shown)) => shown.volumes = volumes,
-            _ => tracing::debug!("no audio server: the volume stays"),
+        if sent {
+            self.asked = Some((next, Instant::now()));
+        } else {
+            tracing::debug!("no audio server: the volume stays");
         }
     }
 
     fn toggle_mute(&mut self) {
-        let Some(shown) = &self.shown else {
+        let Some(mut next) = self.base() else {
             return tracing::debug!("no default sink: nothing to mute");
         };
-        let (name, muted) = (shown.name.clone(), !shown.muted);
+        next.muted = !next.muted;
         let sent = self.when_ready(|intro| {
-            intro.set_sink_mute_by_name(&name, muted, None);
+            intro.set_sink_mute_by_name(&next.name, next.muted, None);
         });
-        match (sent, &mut self.shown) {
-            (true, Some(shown)) => shown.muted = muted,
-            _ => tracing::debug!("no audio server: nothing to mute"),
+        if sent {
+            self.asked = Some((next, Instant::now()));
+        } else {
+            tracing::debug!("no audio server: nothing to mute");
         }
     }
 

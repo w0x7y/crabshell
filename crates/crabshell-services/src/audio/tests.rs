@@ -11,7 +11,7 @@ use crabshell_reactive::Runtime;
 use crabshell_ui::Cx;
 use libpulse_binding::volume::{ChannelVolumes, Volume};
 
-use super::{AudioService, Event, Info, Server, changed, percent};
+use super::{AudioService, Event, Info, SETTLE, Server, changed, percent};
 use crate::{Config, ServicesExt};
 use fake::{
     Client, FakePulse, GET_SERVER_INFO, GET_SINK_INFO, SET_SINK_MUTE, SET_SINK_VOLUME, SUBSCRIBE,
@@ -257,6 +257,23 @@ fn info(index: u32, percent: u32, muted: bool) -> Info {
     }
 }
 
+/// The volumes and mutes the service sent, in order.
+fn sets(client: &mut Client) -> (Vec<(String, Vec<u32>)>, Vec<bool>) {
+    let sent = client.commands();
+    let volumes = sent
+        .iter()
+        .filter(|(command, _)| *command == SET_SINK_VOLUME);
+    let mutes = sent.iter().filter(|(command, _)| *command == SET_SINK_MUTE);
+    (
+        volumes.map(|(_, rest)| fake::volumes_set(rest)).collect(),
+        mutes.map(|(_, rest)| fake::mute_set(rest).1).collect(),
+    )
+}
+
+fn at(name: &str, percent: u32) -> (String, Vec<u32>) {
+    (name.to_owned(), vec![level(percent); 2])
+}
+
 /// A path for a socket nobody listens on, in a directory of its own. The
 /// directory goes on drop.
 struct NoServer(PathBuf);
@@ -498,17 +515,11 @@ fn a_second_step_before_any_reply_builds_on_the_first() {
     audio.change_volume(5);
     audio.toggle_mute();
     audio.toggle_mute();
-    let sent = client.commands();
-    let volumes = sent
-        .iter()
-        .filter(|(command, _)| *command == SET_SINK_VOLUME);
-    let volumes: Vec<_> = volumes.map(|(_, rest)| fake::volumes_set(rest)).collect();
-    let speakers = |volume| ("speakers".to_owned(), vec![level(volume); 2]);
-    assert_eq!(volumes, [speakers(55), speakers(60)]);
-    let mutes = sent.iter().filter(|(command, _)| *command == SET_SINK_MUTE);
-    let mutes: Vec<_> = mutes.map(|(_, rest)| fake::mute_set(rest).1).collect();
+    let (volumes, mutes) = sets(&mut client);
+    assert_eq!(volumes, [at("speakers", 55), at("speakers", 60)]);
     assert_eq!(mutes, [true, false]);
 }
+
 #[test]
 fn a_disconnect_leaves_no_message_behind() {
     let _one = one_at_a_time();
@@ -520,4 +531,57 @@ fn a_disconnect_leaves_no_message_behind() {
     drop(started);
     // One wakeup: the one that ends the run.
     assert_eq!(shell.run_for(Duration::from_millis(100)), 1);
+}
+
+#[test]
+fn a_stale_read_between_steps_is_not_built_on() {
+    let _one = one_at_a_time();
+    let fake = FakePulse::new("stale-read");
+    let (shell, mut client) = connected(&fake);
+    let audio = shell.cx.audio();
+    shell.send(Event::Info(Some(info(3, 50, false))));
+    // pipewire-pulse answers a read sent after a set with the sink as it
+    // was before the set.
+    audio.change_volume(5);
+    shell.send(Event::Info(Some(info(3, 50, false))));
+    audio.change_volume(5);
+    audio.toggle_mute();
+    shell.send(Event::Info(Some(info(3, 50, false))));
+    audio.toggle_mute();
+    let (volumes, mutes) = sets(&mut client);
+    assert_eq!(volumes, [at("speakers", 55), at("speakers", 60)]);
+    assert_eq!(mutes, [true, false]);
+}
+
+#[test]
+fn an_echo_another_sink_or_time_ends_the_last_step_standing_in() {
+    let _one = one_at_a_time();
+    let fake = FakePulse::new("settle");
+    let (shell, mut client) = connected(&fake);
+    let audio = shell.cx.audio();
+    shell.send(Event::Info(Some(info(3, 50, false))));
+    audio.change_volume(5);
+    // The server echoes the step, then another app sets 30%.
+    shell.send(Event::Info(Some(info(3, 55, false))));
+    shell.send(Event::Info(Some(info(3, 30, false))));
+    audio.change_volume(5);
+    // The default sink changes.
+    let headphones = |percent| Info {
+        name: "headphones".to_owned(),
+        ..info(4, percent, false)
+    };
+    shell.send(Event::Info(Some(headphones(20))));
+    audio.change_volume(5);
+    // A read with no echo wins once the step has had time to land.
+    shell.send(Event::Info(Some(headphones(10))));
+    std::thread::sleep(SETTLE);
+    audio.change_volume(5);
+    let (volumes, _) = sets(&mut client);
+    let expected = [
+        at("speakers", 55),
+        at("speakers", 35),
+        at("headphones", 25),
+        at("headphones", 15),
+    ];
+    assert_eq!(volumes, expected);
 }
