@@ -52,13 +52,16 @@
 //!   the context it was called with. The owner is disposed when the output
 //!   goes, or when the compositor closes one of its windows.
 //! - Logs go to stderr through `tracing`, including the time from [`run`]
-//!   to the first committed frame.
+//!   to the first committed frame, and from each of Sway's workspace
+//!   events to the commit that shows the new list: with several windows,
+//!   the last one that had to repaint.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 mod per_output;
 mod shell;
+mod switch_log;
 
 #[cfg(test)]
 mod tests;

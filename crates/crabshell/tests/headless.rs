@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crabshell::Shell;
 use crabshell::prelude::*;
@@ -359,6 +359,11 @@ impl ExampleBar {
         ms_after(&self.wait_for(FIRST_FRAME), FIRST_FRAME)
     }
 
+    /// The log lines that came and weren't read yet.
+    fn drain(&self) -> Vec<String> {
+        self.lines.try_iter().collect()
+    }
+
     /// Its exit status, waiting up to ten seconds; `None` if it is still
     /// running then.
     fn exit_status(&mut self) -> Option<std::process::ExitStatus> {
@@ -403,6 +408,27 @@ impl ExampleBar {
                 quiet_since = Instant::now();
             }
         }
+    }
+
+    /// Watches its context switches for `time`, every 50 ms. Returns each
+    /// change seen: when, in seconds past the wall clock's minute, and how
+    /// many switches it was.
+    fn wakeups_for(&self, time: Duration) -> Vec<(f64, u64)> {
+        let end = Instant::now() + time;
+        let mut last = self.context_switches();
+        let mut seen = Vec::new();
+        while Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(50));
+            let now = self.context_switches();
+            if now != last {
+                let wall = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .expect("the clock is past 1970");
+                seen.push((wall.as_secs_f64() % 60.0, now - last));
+                last = now;
+            }
+        }
+        seen
     }
 
     /// Its resident memory in KiB, from `ps -o rss=`.
@@ -452,6 +478,8 @@ fn an_idle_counter_bar_wakes_nothing() {
         "Wayland events"
     );
     assert_eq!(after.commits, before.commits, "frames");
+    // Nor did the switch log start the Sway service to read it.
+    assert!(crabshell_services::Sway::started(shell.cx()).is_none());
     drop(shell);
 
     // From outside, for a minute: the example program, sleeping in the
@@ -509,29 +537,81 @@ fn unplugging_an_output_drops_its_bar_and_frees_its_nodes() {
 #[ignore = "needs headless Sway; measures only with CRABSHELL_MEASURE set"]
 fn measure_the_counter_bar() {
     if std::env::var_os("CRABSHELL_MEASURE").is_none() {
-        eprintln!("not measuring: set CRABSHELL_MEASURE=1 to, which takes a minute");
+        eprintln!("not measuring: set CRABSHELL_MEASURE=1 to, which takes two minutes");
         return;
     }
     let sway = Sway::start();
     sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
-    let bar = ExampleBar::start(&sway, "counter", true);
-    let first_frame_ms = bar.first_frame_ms();
-    let started = Instant::now();
-    bar.wait_until_quiet();
-    let quiet = bar.context_switches();
-    std::thread::sleep(Duration::from_secs(60).saturating_sub(started.elapsed()));
-    let switches = bar.context_switches() - quiet;
-    let rss = bar.rss_kib();
-    let report = format!(
-        "counter example, release build, one 1920x1080 headless output at scale 1: \
-         first frame {first_frame_ms:.1} ms after run(), RSS {rss} KiB ({:.1} MiB) after 60 s, \
-         {quiet} context switches by the time it was quiet, {switches} more while idle\n",
-        rss as f64 / 1024.0
+    let counter = ExampleBar::start(&sway, "counter", true);
+    let mut report = format!("counter example, {}\n", measure(&counter));
+    drop(counter);
+    // Then the v1 bar, on workspace 1, then switching between 1 and 2.
+    let bar = ExampleBar::start(&sway, "bar", true);
+    let idle = measure(&bar);
+    let times = switch_workspaces(&sway, &bar, 10);
+    let slowest = times.iter().copied().fold(0.0, f64::max);
+    report += &format!(
+        "bar example, {idle}; workspace switch to screen: median {:.1} ms, slowest {slowest:.1} ms \
+         over {} switches, each {times:.1?} ms\n",
+        median(&times),
+        times.len()
     );
     eprint!("{report}");
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("headless");
     std::fs::create_dir_all(&dir).expect("create the output directory");
     std::fs::write(dir.join("measurements.txt"), report).expect("write the measurements");
+}
+
+/// A release example's numbers on one 1920x1080 output: its first frame,
+/// its RSS 60 s after it, and its wakeups while idle until then.
+fn measure(bar: &ExampleBar) -> String {
+    let first_frame_ms = bar.first_frame_ms();
+    let started = Instant::now();
+    bar.wait_until_quiet();
+    let quiet = bar.context_switches();
+    let wakeups = bar.wakeups_for(Duration::from_secs(60).saturating_sub(started.elapsed()));
+    let idle: u64 = wakeups.iter().map(|(_, switches)| switches).sum();
+    let seen: Vec<f64> = wakeups.iter().map(|(past, _)| *past).collect();
+    let rss = bar.rss_kib();
+    format!(
+        "release build, one 1920x1080 headless output at scale 1: \
+         first frame {first_frame_ms:.1} ms after run(), RSS {rss} KiB ({:.1} MiB) after 60 s, \
+         {quiet} context switches by the time it was quiet, {idle} more while idle, \
+         seen at {seen:.2?} s past the minute",
+        rss as f64 / 1024.0
+    )
+}
+
+/// What the shell logs once a workspace switch is on screen, before its
+/// time.
+const SWITCHED: &str = "workspace switch on screen in ";
+
+/// Switches the private Sway between workspaces 2 and 1 `n` times, a
+/// quarter second apart so the bar is idle each time, and returns each
+/// switch's time to the screen from `bar`'s log, in ms. Each switch must
+/// be logged exactly once.
+fn switch_workspaces(sway: &Sway, bar: &ExampleBar, n: usize) -> Vec<f64> {
+    let mut times = Vec::new();
+    for i in 0..=n {
+        std::thread::sleep(Duration::from_millis(250));
+        let extra = bar.drain();
+        assert!(
+            !extra.iter().any(|line| line.contains(SWITCHED)),
+            "a switch was logged twice: {extra:?}"
+        );
+        if i < n {
+            sway.msg(&["workspace", if i % 2 == 0 { "2" } else { "1" }]);
+            times.push(ms_after(&bar.wait_for(SWITCHED), SWITCHED));
+        }
+    }
+    times
+}
+
+/// The middle of `times`, or the upper of the two middle ones.
+fn median(times: &[f64]) -> f64 {
+    let mut sorted = times.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    sorted[sorted.len() / 2]
 }
 
 /// What `run` logs once the first frame is committed, before its time.
@@ -691,6 +771,42 @@ fn clicking_a_workspace_focuses_it_in_the_private_sway() {
     wait_for_shot(&sway, "HEADLESS-1", "workspace 1, focused again", |shot| {
         focused_button(shot) == Some(one.clone())
     });
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn each_workspace_switch_logs_its_time_to_the_screen() {
+    // Release, as a config's template builds its dependencies optimized.
+    // Each switch repaints both outputs' bars.
+    let (sway, bar, _) = start_bar(true);
+    let times = switch_workspaces(&sway, &bar, 10);
+    let median = median(&times);
+    eprintln!("workspace switch to screen: median {median:.1} ms, each {times:.1?} ms");
+    let frame = 1000.0 / 60.0;
+    assert!(
+        median <= frame,
+        "the median switch took {median:.1} ms, more than a frame at 60 Hz: {times:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn an_idle_bar_wakes_only_on_the_minute() {
+    let sway = Sway::start();
+    let bar = ExampleBar::start(&sway, "bar", false);
+    bar.wait_for(FIRST_FRAME);
+    bar.wait_until_quiet();
+    // 65 s holds a minute boundary or two, and the minute clock's tick on
+    // each, early by up to 50 ms or late by the sampling.
+    let wakeups = bar.wakeups_for(Duration::from_secs(65));
+    eprintln!("idle wakeups, as (seconds past the minute, context switches): {wakeups:.2?}");
+    assert!(!wakeups.is_empty(), "the clock never ticked in 65 s");
+    for (past, _) in &wakeups {
+        assert!(
+            *past < 1.0 || *past > 59.9,
+            "a wakeup {past:.2} s past the minute, away from the clock's tick: {wakeups:.2?}"
+        );
+    }
 }
 
 /// Log lines captured from this thread, while a guard from

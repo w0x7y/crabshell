@@ -7,11 +7,13 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crabshell_reactive::Runtime;
+use crabshell_services::Sway;
 use crabshell_ui::{Cx, Output, Window};
 use crabshell_wayland::{Event, EventLoop, LoopSignal, Platform, WindowId};
 use tracing::level_filters::LevelFilter;
 
 use crate::per_output::{self, Host, IntoPanels, PerOutput};
+use crate::switch_log::SwitchLog;
 
 /// The exit status when the root closure panicked: the config is broken.
 pub const EXIT_ROOT_PANICKED: i32 = 1;
@@ -34,7 +36,8 @@ pub const EXIT_NO_COMPOSITOR: i32 = 2;
 /// Logs go to stderr through `tracing`, at the level `CRABSHELL_LOG` names
 /// (`error`, `warn`, `info`, `debug` or `trace`; `info` if unset or empty;
 /// any other value is warned about). The time from this call to the first
-/// committed frame is logged at `info`.
+/// committed frame is logged at `info`, and so is the time from each of
+/// Sway's workspace events to the commit that shows it.
 pub fn run(root: impl FnOnce(&Cx)) -> ! {
     let started = Instant::now();
     init_logging();
@@ -113,6 +116,7 @@ pub struct Shell {
     event_loop: EventLoop,
     pub(crate) started: Instant,
     first_frame: bool,
+    switches: SwitchLog,
     cx: Cx,
 }
 
@@ -159,6 +163,7 @@ impl Shell {
             event_loop,
             started: Instant::now(),
             first_frame: false,
+            switches: SwitchLog::default(),
             cx,
         };
         if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| root(&shell.cx))) {
@@ -179,6 +184,7 @@ impl Shell {
     ///
     /// If the connection to the compositor failed.
     pub fn dispatch(&mut self, timeout: Option<Duration>) -> Result<(), crabshell_wayland::Error> {
+        let commits = self.event_loop.platform().stats().commits;
         self.event_loop.dispatch(timeout)?;
         if !self.first_frame && self.event_loop.platform().stats().commits > 0 {
             self.first_frame = true;
@@ -189,7 +195,30 @@ impl Shell {
                 elapsed.as_secs_f64() * 1000.0
             );
         }
+        self.log_switch(commits);
         Ok(())
+    }
+
+    /// Logs how long a workspace switch took to reach the screen, once a
+    /// dispatch made the commit that shows it. `commits` is the count from
+    /// before this dispatch. A config that never asked for `cx.sway()` has
+    /// no switches, and this doesn't connect to Sway to look.
+    fn log_switch(&mut self, commits: u64) {
+        let changed_at = Sway::started(&self.cx).and_then(|sway| sway.changed_at());
+        let platform = self.event_loop.platform();
+        let after = platform.stats().commits;
+        let drawing = || {
+            platform.windows().any(|(id, window)| {
+                window.has_damage() && platform.window_info(id).is_some_and(|info| info.configured)
+            })
+        };
+        if let Some(event) = self
+            .switches
+            .after_dispatch(changed_at, commits, after, drawing)
+        {
+            let ms = event.elapsed().as_secs_f64() * 1000.0;
+            tracing::info!(ms, "workspace switch on screen in {ms:.1} ms");
+        }
     }
 
     /// Runs the event loop until the connection is lost, then logs it and

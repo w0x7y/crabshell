@@ -12,7 +12,7 @@ use crabshell_reactive::Runtime;
 use crabshell_ui::Cx;
 
 use super::ipc::{self, GET_WORKSPACES, RUN_COMMAND, SUBSCRIBE, WORKSPACE_EVENT};
-use super::{Service, Socket, Workspace};
+use super::{Service, Socket, Sway, Workspace};
 use crate::{Config, ServicesExt};
 
 /// The reconnect delay in these tests.
@@ -425,6 +425,30 @@ fn every_caller_shares_one_connection() {
     // The list belongs to the root, so an output going away leaves it.
     output.owner().dispose();
     assert_eq!(first.try_get(), Some(Vec::new()));
+}
+
+#[test]
+fn started_reads_the_service_without_connecting() {
+    let fake = FakeSway::new();
+    let mut shell = Harness::new(Some(fake.socket()));
+    assert!(Sway::started(&shell.cx).is_none());
+    shell.run_for(Duration::from_millis(50));
+    assert!(fake.try_accept().is_none(), "nothing connected");
+
+    shell.cx.sway();
+    let mut peer = fake.accept();
+    let (list, _) = one();
+    peer.greet(&list);
+    shell.turn();
+    peer.send_event(&mut shell);
+    let (list, expected) = two();
+    peer.send(GET_WORKSPACES, &list);
+    shell.turn();
+    let started = Sway::started(&shell.cx.child()).expect("started by cx.sway()");
+    assert_eq!(started.workspaces().get_untracked(), expected);
+    assert_eq!(started.changed_at(), shell.cx.sway().changed_at());
+    assert!(started.changed_at().is_some());
+    assert!(fake.try_accept().is_none(), "still one connection");
 }
 
 #[test]

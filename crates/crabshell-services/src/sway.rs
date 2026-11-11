@@ -61,6 +61,18 @@ pub struct Sway {
 }
 
 impl Sway {
+    /// The service if a config has started it with `cx.sway()`, without
+    /// starting it, so the shell can read [`changed_at`](Self::changed_at)
+    /// and a bar that shows no workspaces never connects.
+    pub fn started(cx: &Cx) -> Option<Sway> {
+        let service = cx.service::<Service>()?;
+        let workspaces = service.state.borrow().as_ref()?.workspaces.read_only();
+        Some(Sway {
+            service: Some(service),
+            workspaces,
+        })
+    }
+
     /// Every workspace on every output, in Sway's order. Empty while Sway
     /// isn't connected.
     pub fn workspaces(&self) -> ReadSignal<Vec<Workspace>> {

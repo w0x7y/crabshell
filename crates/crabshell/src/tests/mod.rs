@@ -3,6 +3,7 @@
 
 mod logging;
 mod per_output;
+mod switch_log;
 
 use std::panic::Location;
 
