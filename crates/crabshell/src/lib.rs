@@ -39,7 +39,10 @@
 //!
 //! - [`run`] connects to the compositor, gives the root closure a context
 //!   that carries the shell's services, and runs the event loop. It never
-//!   returns: a fatal error is logged and the process exits with status 1.
+//!   returns: a fatal error is logged and the process exits with
+//!   [`EXIT_ROOT_PANICKED`] (1) if the root closure panics, or with
+//!   [`EXIT_NO_COMPOSITOR`] (2) if there is no compositor, it lacks a
+//!   protocol the shell needs, or the connection is lost.
 //! - `per_output` runs its closure for each output under a child owner of
 //!   the context it was called with. The owner is disposed when the output
 //!   goes, or when the compositor closes one of its windows.
