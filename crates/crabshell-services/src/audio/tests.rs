@@ -9,7 +9,7 @@ use crabshell_reactive::Runtime;
 use crabshell_ui::Cx;
 use libpulse_binding::volume::{ChannelVolumes, Volume};
 
-use super::{AudioService, Info, Server, percent};
+use super::{AudioService, Info, Server, changed, percent};
 use crate::{Config, ServicesExt};
 
 const NORM: u32 = Volume::NORMAL.0;
@@ -26,6 +26,10 @@ fn channels(volumes: &[u32]) -> ChannelVolumes {
         *channel = Volume(volume);
     }
     channels
+}
+
+fn raw(volumes: ChannelVolumes) -> Vec<u32> {
+    volumes.get().iter().map(|volume| volume.0).collect()
 }
 
 /// What `pactl get-sink-volume` prints for one channel at `volume`.
@@ -66,6 +70,61 @@ fn the_percent_is_the_average_of_the_channels() {
     assert_eq!(percent_of(&[NORM, NORM / 2]), 75);
     assert_eq!(percent_of(&[NORM, 0, 0]), 33);
     assert_eq!(percent_of(&[level(40); 2]), 40);
+}
+
+#[test]
+fn a_change_lands_where_pactl_then_reads() {
+    for start in 0..=100 {
+        for delta in [-15, -5, -1, 1, 5, 15] {
+            let after = changed(channels(&[level(start); 2]), delta);
+            let expected = (i64::from(start) + i64::from(delta)).clamp(0, 100);
+            for &channel in after.get() {
+                assert_eq!(
+                    pactl_percent(channel),
+                    format!("{expected}%"),
+                    "{start}%{delta:+}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn scrolling_moves_five_percent_a_step_and_clamps() {
+    let scroll = |volumes, steps: i32| changed(volumes, steps * 5);
+    let mut volumes = channels(&[0, 0]);
+    for step in 1..=22 {
+        volumes = scroll(volumes, 1);
+        assert_eq!(percent(volumes.avg()), (step * 5).min(100));
+    }
+    assert_eq!(raw(volumes), [NORM, NORM], "clamped at 100%");
+    assert_eq!(percent(scroll(volumes, -3).avg()), 85);
+    assert_eq!(
+        raw(scroll(channels(&[level(3); 2]), -1)),
+        [0, 0],
+        "clamped at 0%"
+    );
+    // Above 100%, set by another app, the first step comes back to 100%.
+    assert_eq!(raw(scroll(channels(&[level(150); 2]), 1)), [NORM, NORM]);
+}
+
+#[test]
+fn a_change_keeps_the_balance() {
+    let after = changed(channels(&[level(60), level(40)]), 10);
+    assert_eq!(percent(after.avg()), 60);
+    let [left, right] = raw(after)[..] else {
+        panic!("two channels");
+    };
+    assert_eq!(left - right, level(60) - level(40));
+    // Past 100% on average, the loudest channel stops at 100%.
+    let after = changed(channels(&[level(100), level(90)]), 10);
+    assert_eq!(raw(after), [NORM, level(95)]);
+    // A channel at an end stops there and the others go on.
+    assert_eq!(raw(changed(channels(&[level(98), level(90)]), 5))[0], NORM);
+    assert_eq!(
+        raw(changed(channels(&[level(10), 0]), -10)),
+        [level(10) - level(5), 0]
+    );
 }
 
 /// The tests that start libpulse run one at a time, so the one that counts
@@ -192,6 +251,8 @@ fn with_no_server_the_sink_is_none_and_it_tries_again() {
         shell.run_for(Duration::from_millis(300));
         assert!(shell.lost() >= 3, "{} tries in 300 ms", shell.lost());
         assert_eq!(audio.default_sink().get_untracked(), None);
+        audio.change_volume(5);
+        audio.toggle_mute();
     });
     assert_eq!(logs.matches("no audio server").count(), 1, "{logs}");
 }
@@ -240,6 +301,8 @@ fn without_provide_the_sink_is_none_under_its_context() {
     let cx = Cx::new(Runtime::current().new_owner());
     let audio = cx.audio();
     assert_eq!(audio.default_sink().get(), None);
+    audio.change_volume(5);
+    audio.toggle_mute();
     cx.owner().dispose();
     assert_eq!(audio.default_sink().try_get(), None);
 }

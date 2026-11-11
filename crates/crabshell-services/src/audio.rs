@@ -56,6 +56,8 @@ pub struct Sink {
 #[derive(Clone)]
 pub struct Audio {
     sink: ReadSignal<Option<Sink>>,
+    /// `None` on a context the shell didn't set up.
+    service: Option<Rc<AudioService>>,
 }
 
 impl Audio {
@@ -63,6 +65,31 @@ impl Audio {
     /// server has no sink. Every caller gets the same signal.
     pub fn default_sink(&self) -> ReadSignal<Option<Sink>> {
         self.sink
+    }
+
+    /// Changes the default sink's volume by `percent`, louder when
+    /// positive, and keeps it within 0-100%. Every channel moves by the
+    /// same amount, so their balance stays. With no sink or no server it
+    /// does nothing.
+    pub fn change_volume(&self, percent: i32) {
+        self.command(|pulse| pulse.change_volume(percent));
+    }
+
+    /// Mutes the default sink, or unmutes it. With no sink or no server it
+    /// does nothing.
+    pub fn toggle_mute(&self) {
+        self.command(Pulse::toggle_mute);
+    }
+
+    fn command(&self, command: impl FnOnce(&mut Pulse)) {
+        let mut pulse = self
+            .service
+            .as_ref()
+            .map(|service| service.pulse.borrow_mut());
+        match pulse.as_deref_mut().and_then(Option::as_mut) {
+            Some(pulse) => command(pulse),
+            None => tracing::debug!("no audio service: nothing to change"),
+        }
     }
 }
 
@@ -77,6 +104,7 @@ pub(crate) fn audio(cx: &Cx) -> Audio {
     });
     Audio {
         sink: cx.signal(None).read_only(),
+        service: None,
     }
 }
 
@@ -124,6 +152,7 @@ impl AudioService {
         });
         Audio {
             sink: sink.read_only(),
+            service: Some(Rc::clone(self)),
         }
     }
 
@@ -374,6 +403,35 @@ impl Pulse {
         }
     }
 
+    fn change_volume(&mut self, percent: i32) {
+        let Some(shown) = &self.shown else {
+            return tracing::debug!("no default sink: the volume stays");
+        };
+        let (name, volumes) = (shown.name.clone(), changed(shown.volumes, percent));
+        let sent = self.when_ready(|intro| {
+            intro.set_sink_volume_by_name(&name, &volumes, None);
+        });
+        match (sent, &mut self.shown) {
+            // So a second step before the server's reply builds on this one.
+            (true, Some(shown)) => shown.volumes = volumes,
+            _ => tracing::debug!("no audio server: the volume stays"),
+        }
+    }
+
+    fn toggle_mute(&mut self) {
+        let Some(shown) = &self.shown else {
+            return tracing::debug!("no default sink: nothing to mute");
+        };
+        let (name, muted) = (shown.name.clone(), !shown.muted);
+        let sent = self.when_ready(|intro| {
+            intro.set_sink_mute_by_name(&name, muted, None);
+        });
+        match (sent, &mut self.shown) {
+            (true, Some(shown)) => shown.muted = muted,
+            _ => tracing::debug!("no audio server: nothing to mute"),
+        }
+    }
+
     /// Drops the context and shows no sink. `true` when this starts an
     /// outage.
     fn disconnect(&mut self) -> bool {
@@ -457,4 +515,19 @@ fn percent(volume: Volume) -> u32 {
     let norm = u64::from(Volume::NORMAL.0);
     // At most u32::MAX * 100 / norm, which fits.
     ((u64::from(volume.0) * 100 + norm / 2) / norm) as u32
+}
+
+/// `volumes` changed by `delta` percent. Every channel moves by the same
+/// amount, so their balance stays, and the average lands on the whole
+/// percent the bar shows next. Every channel stays within 0-100%.
+fn changed(mut volumes: ChannelVolumes, delta: i32) -> ChannelVolumes {
+    let norm = i64::from(Volume::NORMAL.0);
+    let average = volumes.avg();
+    let target = (i64::from(percent(average)) + i64::from(delta)).clamp(0, 100);
+    let shift = (target * norm + 50) / 100 - i64::from(average.0);
+    for volume in volumes.get_mut() {
+        // Within 0..=norm, which fits.
+        volume.0 = (i64::from(volume.0) + shift).clamp(0, norm) as u32;
+    }
+    volumes
 }
