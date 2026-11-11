@@ -9,4 +9,11 @@ publish = false
 
 [dependencies]
 crabshell-render.workspace = true
+crabshell-ui.workspace = true
 smithay-client-toolkit.workspace = true
+tracing.workspace = true
+wayland-protocols.workspace = true
+
+[dev-dependencies]
+# Tests build windows to draw.
+crabshell-reactive.workspace = true

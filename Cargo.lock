@@ -219,8 +219,12 @@ dependencies = [
 name = "crabshell-wayland"
 version = "0.0.0"
 dependencies = [
+ "crabshell-reactive",
  "crabshell-render",
+ "crabshell-ui",
  "smithay-client-toolkit",
+ "tracing",
+ "wayland-protocols",
 ]
 
 [[package]]
