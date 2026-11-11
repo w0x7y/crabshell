@@ -13,6 +13,8 @@ status: early. bars draw, take clicks and follow monitors as they come and go. t
 needs rust 1.99 or newer, fontconfig, and sway or another wlroots compositor
 
 ```sh
+git clone https://github.com/w0x7y/crabshell
+cd crabshell
 cargo run --release -p crabshell --example counter
 ```
 
@@ -71,6 +73,8 @@ for comparison, quickshell drawing the [phase 0 test bar](spike/RESULTS.md) uses
 ```sh
 cargo test --workspace
 ```
+
+ci runs fmt, clippy and these tests on every push. the headless sway tests only run on your machine
 
 the headless sway tests are skipped by default. run them from a terminal your desktop sway started
 
