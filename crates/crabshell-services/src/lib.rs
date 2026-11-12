@@ -96,8 +96,9 @@ pub trait ServicesExt {
   /// Every caller shares one connection, which starts on the loop's next
   /// turn and never waits for the bus.
   ///
-  /// The shell runs the StatusNotifierWatcher. While another program
-  /// runs it, the list stays empty until that program leaves. With no session bus the list stays empty and
+  /// The shell runs the StatusNotifierWatcher while no other program
+  /// does, and otherwise reads the list from the one that runs, taking
+  /// over when it leaves. With no session bus the list stays empty and
   /// the service never wakes the shell. It wakes the shell only when
   /// something arrives on the bus for it.
   fn tray(&self) -> TrayHost;

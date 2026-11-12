@@ -389,6 +389,126 @@ fn listen_to_the_watcher(shell: &mut Harness, listener: &Connection) -> Rc<RefCe
   heard
 }
 
+/// A watcher another program runs: it lists `items`, writes down each
+/// host that registers, and leaves on drop of its connection.
+fn fake_watcher(
+  shell: &mut Harness,
+  bus: &PrivateBus,
+  items: Vec<String>,
+) -> (Connection, Rc<RefCell<Vec<String>>>) {
+  let connection = shell.block_on(bus.connect(&[WATCHER]));
+  let hosts: Rc<RefCell<Vec<String>>> = Rc::default();
+  let (answering, registered) = (connection.clone(), Rc::clone(&hosts));
+  shell.spawn(async move {
+    let mut messages = MessageStream::from(&answering);
+    while let Some(Ok(call)) = poll_fn(|cx| Pin::new(&mut messages).poll_next(cx)).await {
+      let header = call.header();
+      if header.message_type() != Kind::MethodCall {
+        continue;
+      }
+      let sent = match header.member().map_or("", |member| member.as_str()) {
+        "RegisterStatusNotifierHost" => {
+          registered
+            .borrow_mut()
+            .push(call.body().deserialize().expect("a host name"));
+          answering.reply(&header, &()).await
+        }
+        "Get" => {
+          answering
+            .reply(&header, &Variant::from(items.clone()))
+            .await
+        }
+        _ => continue,
+      };
+      sent.expect("the fake watcher's reply");
+    }
+  });
+  (connection, hosts)
+}
+
+#[test]
+fn another_watcher_is_used_and_taken_over_when_it_leaves() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let (first, second) = (item_name(), item_name());
+  let _apps = [first, second]
+    .map(|name| FakeItem::start(&mut shell, &bus, &[name], ITEM_PATH, Some(sample())));
+  let (first, second) = (
+    format!("{first}{ITEM_PATH}"),
+    format!("{second}{ITEM_PATH}"),
+  );
+  let (watcher, hosts) = fake_watcher(&mut shell, &bus, vec![first.clone()]);
+
+  let items = shell.cx.tray().items();
+  let ids = || -> Vec<String> {
+    items
+      .get_untracked()
+      .into_iter()
+      .map(|item| item.id)
+      .collect()
+  };
+  wait_for(&mut shell, "the listed item", || ids() == [first.clone()]);
+  let host = format!("org.kde.StatusNotifierHost-{}", std::process::id());
+  assert_eq!(*hosts.borrow(), std::slice::from_ref(&host));
+
+  // Another app can address the watcher's signals to the shell, but they
+  // don't count.
+  let stranger = shell.block_on(bus.connect(&[]));
+  let spoofed = first.clone();
+  let logs = capture_logs(|| {
+    shell
+      .block_on(async move {
+        let ask = stranger.call_method(Some(BUS), BUS_PATH, Some(BUS), "GetNameOwner", &host);
+        let shell: String = ask.await?.body().deserialize()?;
+        let unregistered = "StatusNotifierItemUnregistered";
+        let emit = stranger.emit_signal(
+          Some(shell.as_str()),
+          WATCHER_PATH,
+          WATCHER,
+          unregistered,
+          &spoofed,
+        );
+        emit.await
+      })
+      .expect("a signal addressed to the shell");
+    shell.run_until(Instant::now() + Duration::from_millis(200));
+  });
+  assert_eq!(ids(), std::slice::from_ref(&first), "{logs}");
+
+  let announce = |shell: &mut Harness, signal: &'static str, id: &str| {
+    let (watcher, id) = (watcher.clone(), id.to_owned());
+    shell
+      .block_on(async move {
+        let emit = watcher.emit_signal(None::<&str>, WATCHER_PATH, WATCHER, signal, &id);
+        emit.await
+      })
+      .expect("a signal from the fake watcher");
+  };
+  announce(&mut shell, "StatusNotifierItemRegistered", &second);
+  wait_for(&mut shell, "the second item", || ids().len() == 2);
+  announce(&mut shell, "StatusNotifierItemUnregistered", &first);
+  wait_for(&mut shell, "the first item to go", || {
+    ids() == [second.clone()]
+  });
+
+  // The watcher leaves, and the shell takes its name and keeps the items.
+  shell
+    .block_on(watcher.clone().close())
+    .expect("the fake watcher leaves");
+  let other = shell.block_on(bus.connect(&[]));
+  let listed = eventually(&mut shell, "the shell's watcher", || {
+    let other = other.clone();
+    async move {
+      let get = (WATCHER, "RegisteredStatusNotifierItems");
+      let call = other.call_method(Some(WATCHER), WATCHER_PATH, Some(PROPERTIES), "Get", &get);
+      let value = call.await.ok()?.body().deserialize::<OwnedVariant>().ok()?;
+      Vec::<String>::try_from(value).ok()
+    }
+  });
+  assert_eq!(listed, std::slice::from_ref(&second));
+  assert_eq!(ids(), [second]);
+}
+
 #[test]
 fn bad_registrations_and_unknown_calls_get_errors() {
   let bus = PrivateBus::start();
@@ -562,6 +682,34 @@ fn a_registration_that_wants_no_reply_still_counts() {
     })
     .expect("a call that wants no reply");
   wait_for(&mut shell, "the item", || !items.get_untracked().is_empty());
+}
+
+#[test]
+fn a_frozen_watcher_leaves_the_shell_answering() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  // It owns the name and never reads a message.
+  let _frozen = shell.block_on(bus.connect(&[WATCHER]));
+  shell.cx.tray();
+  let other = shell.block_on(bus.connect(&[]));
+  let host = format!("org.kde.StatusNotifierHost-{}", std::process::id());
+  let xml = eventually(&mut shell, "an answer from the shell", move || {
+    let (other, host) = (other.clone(), host.clone());
+    async move {
+      let ask = other.call_method(Some(BUS), BUS_PATH, Some(BUS), "GetNameOwner", &host);
+      let shell: String = ask.await.ok()?.body().deserialize().ok()?;
+      let introspect = "org.freedesktop.DBus.Introspectable";
+      let call = other.call_method(
+        Some(shell.as_str()),
+        WATCHER_PATH,
+        Some(introspect),
+        "Introspect",
+        &(),
+      );
+      call.await.ok()?.body().deserialize::<String>().ok()
+    }
+  });
+  assert!(xml.contains("StatusNotifierWatcher"));
 }
 
 #[test]

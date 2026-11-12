@@ -4,8 +4,8 @@
 //! `org.kde.StatusNotifierItem` interface. A watcher, the owner of
 //! `org.kde.StatusNotifierWatcher`, keeps the list of items, and hosts
 //! such as this bar show them. The shell queues for the watcher's name,
-//! so it runs the watcher, or takes it over when the program that runs
-//! it leaves.
+//! so it runs the watcher while nobody else does, and otherwise reads the
+//! list from the one that runs.
 //!
 //! Everything runs on the services' executor, on the main thread. One
 //! stream reads every message the bus sends this connection, so a quiet
@@ -25,7 +25,7 @@ use std::sync::Once;
 use crabshell_reactive::{ReadSignal, Signal};
 use crabshell_ui::{Cx, IconPixels};
 use zbus::export::futures_core::Stream;
-use zbus::fdo::RequestNameFlags;
+use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::message::Type as Kind;
 use zbus::names::BusName;
 use zbus::{Connection, DeserializeDict, Message, MessageStream, ObjectPath, Type};
@@ -47,7 +47,8 @@ const MAX_PIXMAP_SIDE: i32 = 512;
 /// set of sizes from 16 to 256 px.
 const MAX_PIXMAP_BYTES: usize = 512 * 512 * 4;
 
-/// How long a call to an app may take, libdbus's default.
+/// How long a call to an app or another watcher may take, libdbus's
+/// default.
 const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
 
 /// Whether a tray item wants to be seen.
@@ -185,6 +186,14 @@ impl Service {
     alive.is_some()
   }
 
+  fn is_watcher(&self) -> bool {
+    self
+      .state
+      .borrow()
+      .as_ref()
+      .is_some_and(|state| state.watcher)
+  }
+
   /// Every registered item's id, read or not, as the watcher lists them.
   fn ids(&self) -> Vec<String> {
     let state = self.state.borrow();
@@ -206,8 +215,8 @@ impl Service {
     Some(f(entry))
   }
 
-  /// Subscribes to what items say, then takes a host's name and queues
-  /// for the watcher's.
+  /// Subscribes to what items and the watcher say, then queues for the
+  /// watcher's name and registers as a host.
   async fn join(self: &Rc<Self>, connection: &Connection) -> zbus::Result<()> {
     bus_call(
       connection,
@@ -215,13 +224,47 @@ impl Service {
       &format!("type='signal',interface='{ITEM}'"),
     )
     .await?;
+    // From the watcher's owner only, so no other app can spoof it.
+    let rule = format!("type='signal',sender='{WATCHER}',interface='{WATCHER}'");
+    bus_call(connection, "AddMatch", &rule).await?;
     let host = format!("org.kde.StatusNotifierHost-{}", std::process::id());
     connection.request_name(host.as_str()).await?;
     // Queued rather than refused, so the bus hands the name over when
     // another watcher leaves. NameAcquired says so, in `on_signal`.
-    connection
+    let reply = connection
       .request_name_with_flags(WATCHER, RequestNameFlags::empty())
       .await?;
+    if reply == RequestNameReply::InQueue {
+      // Apart from the message loop, so a frozen watcher can't stall it.
+      let (service, connection) = (Rc::clone(self), connection.clone());
+      self.shared.spawn(async move {
+        if let Err(error) = service.use_watcher(&connection, &host).await {
+          tracing::warn!(%error, "the running tray watcher didn't answer");
+        }
+      });
+    }
+    Ok(())
+  }
+
+  /// Registers with the watcher another program runs, and takes its list.
+  async fn use_watcher(self: &Rc<Self>, connection: &Connection, host: &str) -> zbus::Result<()> {
+    tracing::info!("another program runs the tray watcher; using it");
+    let register = "RegisterStatusNotifierHost";
+    let path = WATCHER_PATH;
+    connection
+      .call_method(Some(WATCHER), path, Some(WATCHER), register, &host)
+      .await?;
+    let get = (WATCHER, "RegisteredStatusNotifierItems");
+    let reply = connection
+      .call_method(Some(WATCHER), path, Some(PROPERTIES), "Get", &get)
+      .await?;
+    let list: Vec<String> = reply
+      .body()
+      .deserialize::<zbus::Variant<'_>>()?
+      .downcast()?;
+    for service in list {
+      self.add_registered(connection, &service);
+    }
     Ok(())
   }
 
@@ -240,6 +283,9 @@ impl Service {
       return;
     };
     let from_bus = header.sender().is_some_and(|sender| sender.as_str() == BUS);
+    // The bus sends this connection a broadcast signal only when a match
+    // rule picks it, but any app can address one to it directly.
+    let broadcast = header.destination().is_none();
     let body = message.body();
     match (interface.as_str(), member.as_str()) {
       (BUS, "NameAcquired") if from_bus && body.deserialize::<&str>().ok() == Some(WATCHER) => {
@@ -248,6 +294,17 @@ impl Service {
       (BUS, "NameOwnerChanged") if from_bus => {
         if let Ok((name, _, owner)) = body.deserialize::<(&str, &str, &str)>() {
           self.owner_changed(connection, name, owner);
+        }
+      }
+      // Ours echo back while this shell is the watcher.
+      (WATCHER, "StatusNotifierItemRegistered") if broadcast && !self.is_watcher() => {
+        if let Ok(service) = body.deserialize::<&str>() {
+          self.add_registered(connection, service);
+        }
+      }
+      (WATCHER, "StatusNotifierItemUnregistered") if broadcast && !self.is_watcher() => {
+        if let Ok(id) = body.deserialize::<&str>() {
+          self.remove(connection, id);
         }
       }
       // NewIcon, NewTitle, NewStatus and the rest: read it all again.
@@ -282,6 +339,14 @@ impl Service {
       state.watcher = true;
     }
     self.emit(connection, "StatusNotifierHostRegistered", None);
+  }
+
+  /// Adds the item a watcher's list or signal names. A bad name is logged.
+  fn add_registered(self: &Rc<Self>, connection: &Connection, service: &str) {
+    match parse_service(service, None) {
+      Some((bus, path)) => self.add(connection, bus, path),
+      None => tracing::warn!(service, "the tray watcher named a bad item; skipped"),
+    }
   }
 
   /// Starts showing the item at `bus` and `path`, unless it is already
