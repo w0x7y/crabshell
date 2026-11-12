@@ -1,20 +1,17 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use calloop::EventLoop;
-use calloop::futures::Scheduler;
 use crabshell_reactive::Runtime;
 use crabshell_ui::Cx;
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp, Zoned};
 
 use super::{Clocks, EARLY, Precision, boundaries, system_zone};
+use crate::testing::{Harness, PrivateBus, offline};
 use crate::{Config, ServicesExt};
 
 fn at(time: &str) -> Timestamp {
@@ -113,96 +110,6 @@ fn a_changed_zone_is_read_again_at_once() {
   assert_eq!(system_zone(Some(&path)).iana_name(), Some("Europe/Paris"));
   localtime.point_at("Asia/Tokyo");
   assert_eq!(system_zone(Some(&path)).iana_name(), Some("Asia/Tokyo"));
-}
-
-/// What a shell gives the services, with no compositor: a loop and a root
-/// context.
-struct Harness {
-  event_loop: EventLoop<'static, ()>,
-  cx: Cx,
-  /// Runs the tests' own futures, such as a fake logind's.
-  scheduler: Scheduler<()>,
-}
-
-impl Harness {
-  fn new(config: Config) -> Harness {
-    let event_loop = EventLoop::try_new().expect("an event loop");
-    let cx = Cx::new(Runtime::current().new_owner());
-    crate::provide_with(&cx, &event_loop.handle(), config);
-    let (executor, scheduler) = calloop::futures::executor().expect("an executor");
-    event_loop
-      .handle()
-      .insert_source(executor, |(), _, _| {})
-      .expect("the tests' executor in the loop");
-    Harness {
-      event_loop,
-      cx,
-      scheduler,
-    }
-  }
-
-  /// Runs the loop as the shell does, until `deadline`. Returns how many
-  /// times it woke.
-  fn run_until(&mut self, deadline: Instant) -> usize {
-    let mut wakeups = 0;
-    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
-      if left.is_zero() {
-        break;
-      }
-      self
-        .event_loop
-        .dispatch(Some(left), &mut ())
-        .expect("the loop runs");
-      Runtime::current().flush();
-      wakeups += 1;
-    }
-    wakeups
-  }
-
-  /// Runs `future` to its end on the loop, which runs everything else
-  /// meanwhile. Gives up after 5 s.
-  fn block_on<R: 'static>(&mut self, future: impl Future<Output = R> + 'static) -> R {
-    let result = Rc::new(RefCell::new(None));
-    let sink = Rc::clone(&result);
-    self
-      .scheduler
-      .schedule(async move { *sink.borrow_mut() = Some(future.await) })
-      .expect("the tests' executor runs");
-    let give_up = Instant::now() + Duration::from_secs(5);
-    loop {
-      if let Some(result) = result.borrow_mut().take() {
-        return result;
-      }
-      assert!(Instant::now() < give_up, "a future still running after 5 s");
-      self.run_until(Instant::now() + Duration::from_millis(10));
-    }
-  }
-
-  /// Does `act`, then runs the loop for 100 ms, until `done`. Gives up
-  /// after 5 s.
-  fn retry_until(
-    &mut self,
-    what: &str,
-    done: impl Fn() -> bool,
-    mut act: impl FnMut(&mut Harness),
-  ) {
-    let give_up = Instant::now() + Duration::from_secs(5);
-    while !done() {
-      assert!(Instant::now() < give_up, "no {what} after 5 s");
-      act(self);
-      self.run_until(Instant::now() + Duration::from_millis(100));
-    }
-  }
-}
-
-/// A config that reads the system zone through jiff and has no bus.
-fn offline() -> Config {
-  Config {
-    localtime: None,
-    system_bus: None,
-    sway: None,
-    audio: None,
-  }
 }
 
 #[test]
@@ -309,8 +216,7 @@ fn one_system_bus_watcher_serves_every_clock() {
         .parse()
         .expect("an address"),
     ),
-    sway: None,
-    audio: None,
+    ..offline()
   });
   let clocks = shell.cx.service::<Clocks>().expect("provided");
   let held = Rc::strong_count(&clocks);
@@ -328,9 +234,7 @@ fn a_tick_reads_the_zone_again() {
   let localtime = Localtime::new("Europe/Paris");
   let mut shell = Harness::new(Config {
     localtime: Some(localtime.path()),
-    system_bus: None,
-    sway: None,
-    audio: None,
+    ..offline()
   });
   let clock = shell.cx.clock(Precision::Second);
   assert_eq!(
@@ -354,58 +258,12 @@ fn without_a_system_bus_the_clock_keeps_ticking() {
         .parse()
         .expect("an address"),
     ),
-    sway: None,
-    audio: None,
+    ..offline()
   });
   let clock = shell.cx.clock(Precision::Second);
   let first = clock.get_untracked().timestamp();
   shell.run_until(Instant::now() + Duration::from_millis(1100));
   assert!(clock.get_untracked().timestamp() > first);
-}
-
-/// A private bus standing in for the system bus: `dbus-daemon --session`
-/// on an address of its own. It stops on drop.
-struct PrivateBus {
-  daemon: Child,
-  address: String,
-}
-
-impl PrivateBus {
-  fn start() -> PrivateBus {
-    let mut daemon = Command::new("dbus-daemon")
-      .args(["--session", "--nofork", "--print-address"])
-      .stdout(Stdio::piped())
-      .spawn()
-      .expect("dbus-daemon starts (it comes with dbus)");
-    let stdout = daemon.stdout.take().expect("dbus-daemon's stdout");
-    let mut address = String::new();
-    BufReader::new(stdout)
-      .read_line(&mut address)
-      .expect("dbus-daemon prints its address");
-    let address = address.trim().to_owned();
-    PrivateBus { daemon, address }
-  }
-
-  /// A connection to it, owning `names`.
-  fn connect(&self, names: &[&'static str]) -> impl Future<Output = zbus::Connection> + 'static {
-    let mut builder = zbus::connection::Builder::address(self.address.as_str());
-    for &name in names {
-      builder = builder.name(name);
-    }
-    async move {
-      builder
-        .build()
-        .await
-        .expect("a connection to the private bus")
-    }
-  }
-}
-
-impl Drop for PrivateBus {
-  fn drop(&mut self) {
-    let _ = self.daemon.kill();
-    let _ = self.daemon.wait();
-  }
 }
 
 async fn prepare_for_sleep(from: zbus::Connection, start: bool) {
@@ -439,8 +297,7 @@ fn logind_and_timedated_resync_the_clock() {
   let mut shell = Harness::new(Config {
     localtime: Some(localtime.path()),
     system_bus: Some(bus.address.parse().expect("dbus-daemon's address")),
-    sway: None,
-    audio: None,
+    ..offline()
   });
   let clock = shell.cx.clock(Precision::Minute);
   let zone = || {

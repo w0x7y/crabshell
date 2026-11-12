@@ -17,6 +17,8 @@
 mod audio;
 mod clock;
 mod sway;
+#[cfg(test)]
+mod testing;
 
 use std::cell::OnceCell;
 use std::os::fd::OwnedFd;
