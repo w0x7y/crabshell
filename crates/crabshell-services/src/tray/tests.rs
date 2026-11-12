@@ -52,7 +52,8 @@ fn sample() -> Properties {
 const MENU_PATH: &str = "/MenuBar";
 
 /// The test app's menu: an entry with an access key, a separator, a
-/// checked checkmark, a hidden entry, and a disabled submenu.
+/// checked checkmark, a hidden entry, a disabled submenu, and a submenu
+/// the app fills only when it opens.
 fn sample_menu() -> Layout {
   let node =
     |id, props, children: Vec<Layout>| Layout(id, props, children.into_iter().map(Child).collect());
@@ -77,6 +78,10 @@ fn sample_menu() -> Layout {
     enabled: Some(false),
     ..label("More")
   };
+  let later = Props {
+    children_display: Some("submenu".into()),
+    ..label("Later")
+  };
   let radio = Props {
     toggle_type: Some("radio".into()),
     toggle_state: Some(0),
@@ -91,6 +96,7 @@ fn sample_menu() -> Layout {
       node(3, checked, vec![]),
       node(4, hidden, vec![]),
       node(5, disabled, vec![node(6, radio, vec![])]),
+      node(7, later, vec![]),
     ],
   )
 }
@@ -111,6 +117,7 @@ fn sample_entries() -> Vec<MenuEntry> {
     enabled: true,
     toggle: None,
     checked: false,
+    submenu: false,
     children: Vec::new(),
   };
   vec![
@@ -126,11 +133,16 @@ fn sample_entries() -> Vec<MenuEntry> {
     },
     MenuEntry {
       enabled: false,
+      submenu: true,
       children: vec![MenuEntry {
         toggle: Some(MenuToggle::Radio),
         ..entry(6, "A_B")
       }],
       ..entry(5, "More")
+    },
+    MenuEntry {
+      submenu: true,
+      ..entry(7, "Later")
     },
   ]
 }
@@ -1048,7 +1060,8 @@ fn a_menu_opens_after_about_to_show_and_reads_the_layout() {
     entries: sample_entries(),
   };
   assert_eq!(menu.get_untracked(), Some(expected));
-  let names = r#"["type", "label", "enabled", "visible", "toggle-type", "toggle-state"]"#;
+  let names =
+    r#"["type", "label", "enabled", "visible", "toggle-type", "toggle-state", "children-display"]"#;
   assert_eq!(
     app.calls()[1..],
     [
@@ -1389,6 +1402,31 @@ fn a_menu_opened_over_another_is_read_once_after_it_is_told() {
   let second_calls = menu_calls(&second);
   assert_eq!(second_calls.len(), 2, "{second_calls:?}");
   assert_eq!(second_calls[0], "AboutToShow(0)");
+}
+
+#[test]
+fn opening_a_submenu_asks_the_app_and_reads_what_changed() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let (app, id) = one_item(&mut shell, &bus);
+  let tray = shell.cx.tray();
+  let menu = tray.menu();
+  tray.open_menu(&id);
+  wait_for(&mut shell, "the menu", || menu.get_untracked().is_some());
+  tray.open_submenu(7);
+  let reads = || {
+    app
+      .calls()
+      .iter()
+      .filter(|call| call.starts_with("GetLayout"))
+      .count()
+  };
+  wait_for(&mut shell, "a second read", || reads() == 2);
+  assert!(app.calls().contains(&"AboutToShow(7)".to_owned()));
+
+  tray.close_menu();
+  let logs = capture_logs(|| tray.open_submenu(5));
+  assert!(logs.contains("no tray menu is open"), "{logs}");
 }
 
 #[test]

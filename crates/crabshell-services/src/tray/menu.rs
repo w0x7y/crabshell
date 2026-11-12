@@ -19,6 +19,7 @@ const PROPERTY_NAMES: &[&str] = &[
   "visible",
   "toggle-type",
   "toggle-state",
+  "children-display",
 ];
 
 /// The most entries a menu keeps, all levels together. Past it, the rest
@@ -49,7 +50,10 @@ pub struct MenuEntry {
   pub toggle: Option<MenuToggle>,
   /// Whether that checkmark or radio button is on.
   pub checked: bool,
-  /// Its submenu's entries, empty for none.
+  /// Whether it opens a submenu. Some apps fill a submenu only when it
+  /// opens, so ask with [`TrayHost::open_submenu`](super::TrayHost::open_submenu).
+  pub submenu: bool,
+  /// Its submenu's entries, empty for none or until they are asked for.
   pub children: Vec<MenuEntry>,
 }
 
@@ -133,6 +137,41 @@ impl Service {
       }
       if service.is_open(|open| open.opened == opened) {
         service.read_menu(&connection);
+      }
+    });
+  }
+
+  /// Tells the open menu's app that submenu `entry` opens, and reads the
+  /// layout again if the app says the submenu changed.
+  pub(super) fn open_submenu(self: &Rc<Self>, entry: i32) {
+    let asked = {
+      let state = self.state.borrow();
+      let state = state.as_ref();
+      let open = state.and_then(|state| state.open.as_ref());
+      let connection = state.and_then(|state| state.connection.clone());
+      open
+        .zip(connection)
+        .map(|(open, connection)| (open.bus.clone(), open.path.clone(), open.opened, connection))
+    };
+    let Some((bus, path, opened, connection)) = asked else {
+      return tracing::warn!(entry, "no tray menu is open");
+    };
+    let service = Rc::clone(self);
+    self.shared.spawn(async move {
+      let about = connection.call_method(
+        Some(bus.as_str()),
+        path.as_str(),
+        Some(DBUSMENU),
+        "AboutToShow",
+        &entry,
+      );
+      let changed = about
+        .await
+        .and_then(|reply| reply.body().deserialize::<bool>());
+      match changed {
+        Ok(true) if service.is_open(|open| open.opened == opened) => service.read_menu(&connection),
+        Ok(_) => {}
+        Err(error) => tracing::debug!(entry, %error, "a tray menu refused AboutToShow"),
       }
     });
   }
@@ -268,6 +307,7 @@ pub(super) struct Props {
   pub(super) visible: Option<bool>,
   pub(super) toggle_type: Option<String>,
   pub(super) toggle_state: Option<i32>,
+  pub(super) children_display: Option<String>,
 }
 
 /// The visible entries of `children`, with the spec's defaults, until
@@ -294,6 +334,7 @@ pub(super) fn entries(children: Vec<Child>, left: &mut usize) -> Vec<MenuEntry> 
         _ => None,
       },
       checked: props.toggle_state == Some(1),
+      submenu: props.children_display.as_deref() == Some("submenu") || !children.is_empty(),
       children,
     });
   }

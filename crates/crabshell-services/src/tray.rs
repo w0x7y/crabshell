@@ -197,6 +197,15 @@ impl TrayHost {
     }
   }
 
+  /// Tells the open menu's app that its submenu `entry` opens, as a
+  /// nested popup does. An app that fills submenus only then sends the
+  /// entries, and [`menu`](Self::menu) shows them.
+  pub fn open_submenu(&self, entry: i32) {
+    if let Some(service) = &self.service {
+      service.open_submenu(entry);
+    }
+  }
+
   /// Closes the open menu and stops following it.
   pub fn close_menu(&self) {
     if let Some(service) = &self.service {
