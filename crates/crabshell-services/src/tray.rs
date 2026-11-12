@@ -18,17 +18,18 @@ mod tests;
 
 use std::cell::RefCell;
 use std::future::poll_fn;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Once;
 
 use crabshell_reactive::{ReadSignal, Signal};
-use crabshell_ui::{Cx, IconPixels};
+use crabshell_ui::{Cx, IconPixels, IconSource};
 use zbus::export::futures_core::Stream;
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::message::Type as Kind;
 use zbus::names::BusName;
-use zbus::{Connection, DeserializeDict, Message, MessageStream, ObjectPath, Type};
+use zbus::{Connection, DeserializeDict, DynamicType, Message, MessageStream, ObjectPath, Type};
 
 use crate::Shared;
 
@@ -69,7 +70,7 @@ pub enum TrayStatus {
 pub struct TrayItem {
   /// Unique while the item is registered: its bus name and object path,
   /// such as `:1.42/StatusNotifierItem`. The key to give
-  /// `children_keyed`.
+  /// `children_keyed`, and what [`TrayHost::activate`] and the rest take.
   pub id: String,
   /// The app's name for itself, such as `nm-applet`. Two copies of one
   /// app share it.
@@ -90,14 +91,60 @@ pub struct TrayItem {
   /// The tooltip's title, or empty.
   pub tooltip: String,
   /// Whether the item offers only its menu, so a left click opens the
-  /// menu.
+  /// menu instead of calling [`TrayHost::activate`].
   pub item_is_menu: bool,
+}
+
+impl TrayItem {
+  /// What to draw at `size` physical pixels, the icon's logical size
+  /// times the output's scale. That is the attention icon while the item
+  /// needs attention and has one, otherwise its icon name, as a file in
+  /// `icon_theme_path` if one is there. An app with an `icon_theme_path`
+  /// that lacks the file keeps its icons apart from the theme, so its
+  /// pixmaps, if it sent any, come before the name. With no name, it is
+  /// the pixmap closest to `size`. `None` when there is nothing to draw.
+  pub fn icon(&self, size: u32) -> Option<IconSource> {
+    let name = match self.status {
+      TrayStatus::NeedsAttention if !self.attention_icon_name.is_empty() => {
+        &self.attention_icon_name
+      }
+      _ => &self.icon_name,
+    };
+    if let Some(file) = app_icon_file(Path::new(&self.icon_theme_path), name) {
+      return Some(IconSource::File(file));
+    }
+    let closest = self
+      .icon_pixmaps
+      .iter()
+      .min_by_key(|pixels| pixels.width.max(pixels.height).abs_diff(size));
+    match closest {
+      Some(pixels) if name.is_empty() || !self.icon_theme_path.is_empty() => {
+        Some(IconSource::Pixels(pixels.clone()))
+      }
+      _ => (!name.is_empty()).then(|| IconSource::Name(name.clone())),
+    }
+  }
+}
+
+/// `<dir>/<name>.png` or `.svg`, where Electron apps put their icon.
+/// `None` for a relative `dir`, a name that could leave it, or no file.
+fn app_icon_file(dir: &Path, name: &str) -> Option<PathBuf> {
+  let safe = !matches!(name, "" | "." | "..") && !name.contains(['/', '\0']);
+  if !dir.is_absolute() || !safe {
+    return None;
+  }
+  ["png", "svg"]
+    .into_iter()
+    .map(|extension| dir.join(format!("{name}.{extension}")))
+    .find(|path| path.is_file())
 }
 
 /// The tray, from `cx.tray()`. A clone is cheap and shares the one
 /// connection.
 #[derive(Clone)]
 pub struct TrayHost {
+  /// `None` when the shell provided no services.
+  service: Option<Rc<Service>>,
   items: ReadSignal<Vec<TrayItem>>,
 }
 
@@ -106,6 +153,47 @@ impl TrayHost {
   /// session bus. An item shows once its properties are read.
   pub fn items(&self) -> ReadSignal<Vec<TrayItem>> {
     self.items
+  }
+
+  /// Tells item `id` it was clicked, as a left click does. A Wayland
+  /// client can't know where on screen that was, so the item is told
+  /// `(0, 0)`. A refusal or an unknown `id` is logged.
+  pub fn activate(&self, id: &str) {
+    self.call(id, "Activate", (0, 0));
+  }
+
+  /// Tells item `id` it was middle-clicked, as for [`activate`](Self::activate).
+  pub fn secondary_activate(&self, id: &str) {
+    self.call(id, "SecondaryActivate", (0, 0));
+  }
+
+  /// Tells item `id` the wheel turned `steps`, positive for up, as a
+  /// button's `on_scroll` gives them.
+  pub fn scroll(&self, id: &str, steps: i32) {
+    self.call(id, "Scroll", (steps, "vertical"));
+  }
+
+  /// Calls `method` on item `id`, without waiting for the answer.
+  fn call<B>(&self, id: &str, method: &'static str, body: B)
+  where
+    B: serde::Serialize + DynamicType + 'static,
+  {
+    let target = self.service.as_ref().and_then(|service| {
+      let connection = service.state.borrow().as_ref()?.connection.clone()?;
+      let (bus, path) = service.with_entry(id, |entry| (entry.bus.clone(), entry.path.clone()))?;
+      Some((service, connection, bus, path))
+    });
+    let Some((service, connection, bus, path)) = target else {
+      return tracing::warn!(id, method, "no such tray item");
+    };
+    let id = id.to_owned();
+    service.shared.spawn(async move {
+      let call =
+        connection.call_method(Some(bus.as_str()), path.as_str(), Some(ITEM), method, &body);
+      if let Err(error) = call.await {
+        tracing::info!(id, method, %error, "the tray item refused");
+      }
+    });
   }
 }
 
@@ -117,11 +205,15 @@ pub(crate) fn tray(cx: &Cx) -> TrayHost {
       tracing::warn!("cx.tray() needs the services the shell provides; the tray stays empty");
     });
     return TrayHost {
+      service: None,
       items: cx.signal(Vec::new()).read_only(),
     };
   };
   let items = service.start();
-  TrayHost { items }
+  TrayHost {
+    service: Some(service),
+    items,
+  }
 }
 
 /// The tray of one shell, started on first use.
@@ -132,6 +224,8 @@ pub(crate) struct Service {
 
 struct State {
   items: Signal<Vec<TrayItem>>,
+  /// The session bus, once connected.
+  connection: Option<Connection>,
   /// Every registered item, in the order they came, read or not.
   entries: Vec<Entry>,
   /// Whether this shell owns the watcher's name.
@@ -167,6 +261,7 @@ impl Service {
     let items = self.shared.root.signal(Vec::new());
     *self.state.borrow_mut() = Some(State {
       items,
+      connection: None,
       entries: Vec::new(),
       watcher: false,
     });
@@ -500,6 +595,7 @@ impl Service {
   fn clear(&self) {
     if let Some(state) = self.state.borrow_mut().as_mut() {
       state.entries.clear();
+      state.connection = None;
     }
     self.publish();
   }
@@ -539,6 +635,9 @@ async fn run(service: Rc<Service>, address: zbus::Address) {
   };
   // Made before anything is asked, so no reply or signal is missed.
   let mut messages = MessageStream::from(&connection);
+  if let Some(state) = service.state.borrow_mut().as_mut() {
+    state.connection = Some(connection.clone());
+  }
   if let Err(error) = service.join(&connection).await {
     return tracing::warn!(%error, "couldn't join the tray on the session bus");
   }

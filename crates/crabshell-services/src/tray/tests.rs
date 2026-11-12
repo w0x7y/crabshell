@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use crabshell_reactive::Runtime;
-use crabshell_ui::{Cx, IconPixels};
+use crabshell_ui::{Cx, IconPixels, IconSource};
 use zbus::export::futures_core::Stream;
 use zbus::message::Type as Kind;
 use zbus::{Connection, MessageStream, OwnedVariant, Variant};
@@ -389,6 +389,36 @@ fn listen_to_the_watcher(shell: &mut Harness, listener: &Connection) -> Rc<RefCe
   heard
 }
 
+#[test]
+fn clicks_and_scrolls_reach_the_item() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let tray = shell.cx.tray();
+  let items = tray.items();
+  let name = item_name();
+  let app = FakeItem::start(&mut shell, &bus, &[name], ITEM_PATH, Some(sample()));
+  app.register(&mut shell, name);
+  wait_for(&mut shell, "the item", || !items.get_untracked().is_empty());
+
+  let id = items.get_untracked()[0].id.clone();
+  tray.activate(&id);
+  tray.secondary_activate(&id);
+  tray.scroll(&id, -2);
+  let calls = || app.calls()[1..].to_vec();
+  wait_for(&mut shell, "three calls", || calls().len() == 3);
+  assert_eq!(
+    calls(),
+    [
+      "Activate(0, 0)",
+      "SecondaryActivate(0, 0)",
+      r#"Scroll(-2, "vertical")"#
+    ]
+  );
+
+  let logs = capture_logs(|| tray.activate("no-such-item"));
+  assert!(logs.contains("no such tray item"), "{logs}");
+}
+
 /// A watcher another program runs: it lists `items`, writes down each
 /// host that registers, and leaves on drop of its connection.
 fn fake_watcher(
@@ -589,6 +619,44 @@ fn registrations_parse_as_the_spec_and_watchers_write_them() {
   assert_eq!(parse_service("/StatusNotifierItem", None), None);
   assert_eq!(parse_service("not a name", None), None);
   assert_eq!(parse_service(":1.7/bad path", None), None);
+}
+
+#[test]
+fn the_icon_is_the_attention_name_the_name_or_the_closest_pixmap() {
+  let pixels = |side: u32| IconPixels {
+    width: side,
+    height: side,
+    data: vec![0; (side * side * 4) as usize].into(),
+  };
+  let mut item = sample_item("x");
+  item.icon_theme_path.clear();
+  let name = |name: &str| Some(IconSource::Name(name.into()));
+  // A name comes before pixmaps.
+  assert_eq!(item.icon(16), name("dialog-warning"));
+  item.status = TrayStatus::Active;
+  assert_eq!(item.icon(16), name("network-wireless"));
+
+  // The app's own directory comes first. Where that lacks the name, the
+  // name is the app's own, so its pixmaps come next.
+  let dir = std::env::temp_dir().join(format!("crabshell-tray-{}", std::process::id()));
+  std::fs::create_dir_all(&dir).expect("a temporary directory");
+  let file = dir.join("network-wireless.png");
+  std::fs::write(&file, b"").expect("an icon file");
+  item.icon_theme_path = dir.display().to_string();
+  assert_eq!(item.icon(16), Some(IconSource::File(file)));
+  item.icon_name = "../network-wireless".into();
+  let sent = item.icon_pixmaps[0].clone();
+  assert_eq!(item.icon(16), Some(IconSource::Pixels(sent)));
+  item.icon_pixmaps.clear();
+  assert_eq!(item.icon(16), name("../network-wireless"));
+  std::fs::remove_dir_all(&dir).expect("the directory removed");
+
+  item.icon_name.clear();
+  item.icon_pixmaps = vec![pixels(16), pixels(22), pixels(48)];
+  assert_eq!(item.icon(24), Some(IconSource::Pixels(pixels(22))));
+  assert_eq!(item.icon(40), Some(IconSource::Pixels(pixels(48))));
+  item.icon_pixmaps.clear();
+  assert_eq!(item.icon(24), None);
 }
 
 #[test]
