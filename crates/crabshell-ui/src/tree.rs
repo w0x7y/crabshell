@@ -108,6 +108,7 @@ pub(crate) enum NodeKind {
 
 pub(crate) struct Flex {
   pub(crate) column: bool,
+  pub(crate) grow: bool,
   pub(crate) gap: u32,
   pub(crate) padding_vertical: Option<u32>,
   pub(crate) padding_horizontal: Option<u32>,
@@ -333,6 +334,7 @@ impl Tree {
     let node_kind = match &mut kind {
       ElementKind::Flex(props) => NodeKind::Flex(Flex {
         column: props.column,
+        grow: props.grow,
         gap: 0,
         padding_vertical: None,
         padding_horizontal: None,

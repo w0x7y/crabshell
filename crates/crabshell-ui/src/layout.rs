@@ -266,6 +266,9 @@ fn taffy_style(node: &Node, parent: Parent, size: crate::Size) -> taffy::Style {
       } else {
         FlexDirection::Row
       };
+      if flex.grow {
+        style.flex_grow = 1.0;
+      }
       let gap = LengthPercentage::length(flex.gap as f32);
       style.gap = taffy::Size {
         width: gap,

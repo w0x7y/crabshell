@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::menu::MenuEntry;
 use crate::style::Style;
 use crate::widgets::{Align, IconSource, Justify};
 use crate::window::{Anchors, Edge, Layer};
@@ -55,7 +56,17 @@ macro_rules! value_props {
 }
 
 value_props!(
-  bool, u32, i32, String, Style, Align, Justify, Anchors, Layer, IconSource
+  bool,
+  u32,
+  i32,
+  String,
+  Style,
+  Align,
+  Justify,
+  Anchors,
+  Layer,
+  IconSource,
+  Vec<MenuEntry>,
 );
 
 impl IntoProp<String> for &str {

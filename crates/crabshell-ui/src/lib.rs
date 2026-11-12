@@ -62,6 +62,7 @@ mod geometry;
 mod input;
 mod keyed;
 mod layout;
+mod menu;
 mod popup;
 mod prop;
 mod style;
@@ -77,6 +78,7 @@ mod tests;
 pub use cx::Cx;
 pub use geometry::{Point, Rect, Size};
 pub use input::{CursorShape, PointerButton, ScrollDelta};
+pub use menu::{Menu, MenuEntry, MenuToggle};
 pub use popup::{Popup, PopupWindow};
 pub use prop::{IntoProp, Prop};
 pub use style::{Border, Color, Font, Padding, Style};
@@ -91,7 +93,7 @@ pub use window::{Anchors, Edge, Layer, Output, PanelWindow, SurfaceConfig, Windo
 /// What a bar's code needs, in one `use`.
 pub mod prelude {
   pub use crate::{
-    Align, Button, Color, Column, Cx, Edge, Font, Icon, IconSource, Justify, Layer, Output,
+    Align, Button, Color, Column, Cx, Edge, Font, Icon, IconSource, Justify, Layer, Menu, Output,
     PanelWindow, PopupWindow, Row, Size, Spacer, Stack, Style, Text, TextSystem, Widget, Window,
   };
 }

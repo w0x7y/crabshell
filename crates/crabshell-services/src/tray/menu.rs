@@ -7,6 +7,7 @@ use serde::Deserialize;
 use zbus::{Connection, DeserializeDict, Type, as_variant};
 
 use super::{Service, bus_call};
+pub use crabshell_ui::{MenuEntry, MenuToggle};
 
 pub(super) const DBUSMENU: &str = "com.canonical.dbusmenu";
 
@@ -33,37 +34,6 @@ pub struct TrayMenu {
   pub item: String,
   /// The top-level entries, in order.
   pub entries: Vec<MenuEntry>,
-}
-
-/// One entry of a tray menu. Hidden entries are left out.
-#[derive(Clone, Debug, PartialEq)]
-pub struct MenuEntry {
-  /// The app's id for it, to give [`TrayHost::menu_event`](super::TrayHost::menu_event).
-  pub id: i32,
-  /// What it says, with the underscores that mark access keys removed.
-  pub label: String,
-  /// Whether it is a separator line rather than something to click.
-  pub separator: bool,
-  /// Whether it can be clicked.
-  pub enabled: bool,
-  /// Whether it shows a checkmark or a radio button.
-  pub toggle: Option<MenuToggle>,
-  /// Whether that checkmark or radio button is on.
-  pub checked: bool,
-  /// Whether it opens a submenu. Some apps fill a submenu only when it
-  /// opens, so ask with [`TrayHost::open_submenu`](super::TrayHost::open_submenu).
-  pub submenu: bool,
-  /// Its submenu's entries, empty for none or until they are asked for.
-  pub children: Vec<MenuEntry>,
-}
-
-/// What a toggling menu entry shows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MenuToggle {
-  /// A checkmark, on or off on its own.
-  Checkmark,
-  /// A radio button, one of a group.
-  Radio,
 }
 
 /// The menu that is open: whose it is and where its signals come from.

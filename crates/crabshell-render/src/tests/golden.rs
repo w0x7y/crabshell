@@ -4,8 +4,8 @@
 use std::rc::Rc;
 
 use crabshell_ui::{
-  Align, Color, Column, Content, Font, Icon, IconPixels, IconSource, Row, Stack, Style, Text,
-  Window,
+  Align, Color, Column, Content, Font, Icon, IconPixels, IconSource, Menu, MenuEntry, MenuToggle,
+  Row, Stack, Style, Text, Window,
 };
 
 use super::{Scene, assert_golden, fixture};
@@ -177,5 +177,53 @@ fn icons() {
         .child(Icon::new(IconSource::Pixels(pixels.clone())).size(16))
         .child(Icon::new(fixture("shapes.svg").as_path()).size(12)),
     )
+  });
+}
+
+#[test]
+fn menu() {
+  check_fonts();
+  let entry = |id, label: &str| MenuEntry {
+    id,
+    label: label.into(),
+    separator: false,
+    enabled: true,
+    toggle: None,
+    checked: false,
+    submenu: false,
+    children: Vec::new(),
+  };
+  // An entry, a separator, a checked checkmark, a checked radio button, a
+  // submenu and a disabled entry.
+  let entries = vec![
+    entry(1, "Open"),
+    MenuEntry {
+      separator: true,
+      ..entry(2, "")
+    },
+    MenuEntry {
+      toggle: Some(MenuToggle::Checkmark),
+      checked: true,
+      ..entry(3, "Wi-Fi")
+    },
+    MenuEntry {
+      toggle: Some(MenuToggle::Radio),
+      checked: true,
+      ..entry(4, "Balanced")
+    },
+    MenuEntry {
+      submenu: true,
+      ..entry(5, "More")
+    },
+    MenuEntry {
+      enabled: false,
+      ..entry(6, "Off")
+    },
+  ];
+  check("menu", 140.0, 150.0, |scene| {
+    scene
+      .panel()
+      .style(BAR)
+      .child(Menu::new(entries.clone()).style(Style::new().padding(4, 0)))
   });
 }

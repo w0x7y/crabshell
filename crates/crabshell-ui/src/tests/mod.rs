@@ -9,6 +9,7 @@ mod input;
 mod invalidation;
 mod keyed;
 mod layout;
+mod menu;
 mod popup;
 mod services;
 mod style;

@@ -88,6 +88,9 @@ fn describe(children: Vec<Child>) -> Vec<ElementChild> {
 
 pub(crate) struct FlexProps {
   pub(crate) column: bool,
+  /// Takes the room left in its parent, like a spacer. Only `Menu` sets
+  /// it, so an entry's row fills its button.
+  pub(crate) grow: bool,
   pub(crate) gap: Option<Prop<u32>>,
   pub(crate) padding_vertical: Option<Prop<u32>>,
   pub(crate) padding_horizontal: Option<Prop<u32>>,
@@ -238,6 +241,7 @@ macro_rules! flex_widget {
         $name {
           flex: FlexProps {
             column: $column,
+            grow: false,
             gap: None,
             padding_vertical: None,
             padding_horizontal: None,
