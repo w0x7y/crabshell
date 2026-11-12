@@ -1,5 +1,5 @@
-//! The services a Crabshell bar reads: the clock, Sway's workspaces and
-//! audio, and later the tray.
+//! The services a Crabshell bar reads: the clock, Sway's workspaces, audio
+//! and the tray.
 //!
 //! The shell calls [`provide`] once, with its root context and event loop.
 //! After that, any context hands out services through [`ServicesExt`],
@@ -19,6 +19,7 @@ mod clock;
 mod sway;
 #[cfg(test)]
 mod testing;
+mod tray;
 
 use std::cell::OnceCell;
 use std::os::fd::OwnedFd;
@@ -37,6 +38,7 @@ use crabshell_ui::Cx;
 pub use audio::{Audio, Sink};
 pub use clock::Precision;
 pub use sway::{Sway, Workspace};
+pub use tray::{TrayHost, TrayItem, TrayStatus};
 
 /// Makes the services reachable from `cx` and every context made from it.
 /// The shell calls this once, with its root context and its event loop.
@@ -54,6 +56,7 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(clock::Clocks::new(Rc::clone(&shared)));
   cx.provide(sway::Service::new(Rc::clone(&shared)));
   cx.provide(audio::AudioService::new(Rc::clone(&shared)));
+  cx.provide(tray::Service::new(Rc::clone(&shared)));
 }
 
 /// The services a context hands out.
@@ -88,6 +91,16 @@ pub trait ServicesExt {
   /// a working connection. Then it stops, logs that once and never wakes
   /// the shell again; a restart tries again.
   fn audio(&self) -> Audio;
+
+  /// The system tray: every app's StatusNotifierItem on the session bus.
+  /// Every caller shares one connection, which starts on the loop's next
+  /// turn and never waits for the bus.
+  ///
+  /// The shell runs the StatusNotifierWatcher. While another program
+  /// runs it, the list stays empty until that program leaves. With no session bus the list stays empty and
+  /// the service never wakes the shell. It wakes the shell only when
+  /// something arrives on the bus for it.
+  fn tray(&self) -> TrayHost;
 }
 
 impl ServicesExt for Cx {
@@ -101,6 +114,10 @@ impl ServicesExt for Cx {
 
   fn audio(&self) -> Audio {
     audio::audio(self)
+  }
+
+  fn tray(&self) -> TrayHost {
+    tray::tray(self)
   }
 }
 
@@ -260,6 +277,8 @@ struct Config {
   localtime: Option<PathBuf>,
   /// The system bus, where logind and timedated are. `None` for none.
   system_bus: Option<zbus::Address>,
+  /// The session bus, where tray items are. `None` for none.
+  session_bus: Option<zbus::Address>,
   /// Sway's IPC socket, from `SWAYSOCK`. `None` when that is unset.
   sway: Option<sway::Socket>,
   /// The audio server. `None` for none, so a test never reaches the
@@ -275,6 +294,9 @@ impl Config {
         .then(|| PathBuf::from("/etc/localtime")),
       system_bus: zbus::Address::system()
         .inspect_err(|error| tracing::warn!(%error, "no system bus address"))
+        .ok(),
+      session_bus: zbus::Address::session()
+        .inspect_err(|error| tracing::warn!(%error, "no session bus address"))
         .ok(),
       sway: std::env::var_os("SWAYSOCK")
         .filter(|path| !path.is_empty())

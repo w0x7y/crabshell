@@ -198,6 +198,7 @@ impl Harness {
     let config = Config {
       localtime: None,
       system_bus: None,
+      session_bus: None,
       sway: None,
       audio: Some(server),
     };

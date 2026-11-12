@@ -2,9 +2,10 @@
 //! private D-Bus daemon.
 
 use std::cell::RefCell;
-use std::io::{BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use calloop::EventLoop;
@@ -105,6 +106,7 @@ pub(crate) fn offline() -> Config {
   Config {
     localtime: None,
     system_bus: None,
+    session_bus: None,
     sway: None,
     audio: None,
   }
@@ -156,4 +158,31 @@ impl Drop for PrivateBus {
     let _ = self.daemon.kill();
     let _ = self.daemon.wait();
   }
+}
+
+/// Runs `f` and returns everything it logged through `tracing` on this
+/// thread.
+pub(crate) fn capture_logs(f: impl FnOnce()) -> String {
+  #[derive(Clone, Default)]
+  struct Buffer(Arc<Mutex<Vec<u8>>>);
+
+  impl Write for Buffer {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+      self.0.lock().expect("log lock").extend_from_slice(bytes);
+      Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+      Ok(())
+    }
+  }
+
+  let buffer = Buffer::default();
+  let writer = buffer.clone();
+  let subscriber = tracing_subscriber::fmt()
+    .with_writer(move || writer.clone())
+    .finish();
+  tracing::subscriber::with_default(subscriber, f);
+  let bytes = buffer.0.lock().expect("log lock").clone();
+  String::from_utf8(bytes).expect("UTF-8 logs")
 }
