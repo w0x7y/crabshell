@@ -38,7 +38,7 @@ use crabshell_ui::Cx;
 pub use audio::{Audio, Sink};
 pub use clock::Precision;
 pub use sway::{Sway, Workspace};
-pub use tray::{TrayHost, TrayItem, TrayStatus};
+pub use tray::{MenuEntry, MenuToggle, TrayHost, TrayItem, TrayMenu, TrayStatus};
 
 /// Makes the services reachable from `cx` and every context made from it.
 /// The shell calls this once, with its root context and its event loop.

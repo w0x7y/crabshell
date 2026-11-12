@@ -12,9 +12,10 @@ use zbus::export::futures_core::Stream;
 use zbus::message::Type as Kind;
 use zbus::{Connection, MessageStream, OwnedVariant, Variant};
 
+use super::menu::{Child, DBUSMENU, Layout, Props, entries, without_access_keys};
 use super::{
-  BUS, BUS_PATH, ITEM, ITEM_PATH, PROPERTIES, Properties, TrayItem, TrayStatus, WATCHER,
-  WATCHER_PATH,
+  BUS, BUS_PATH, ITEM, ITEM_PATH, MenuEntry, MenuToggle, PROPERTIES, Properties, TrayItem,
+  TrayMenu, TrayStatus, WATCHER, WATCHER_PATH,
 };
 use crate::testing::{Harness, PrivateBus, capture_logs, offline};
 use crate::{Config, ServicesExt};
@@ -44,7 +45,94 @@ fn sample() -> Properties {
       "Wi-Fi".into(),
     )),
     item_is_menu: Some(true),
+    menu: Some(MENU_PATH.try_into().expect("an object path")),
   }
+}
+
+const MENU_PATH: &str = "/MenuBar";
+
+/// The test app's menu: an entry with an access key, a separator, a
+/// checked checkmark, a hidden entry, and a disabled submenu.
+fn sample_menu() -> Layout {
+  let node =
+    |id, props, children: Vec<Layout>| Layout(id, props, children.into_iter().map(Child).collect());
+  let label = |label: &str| Props {
+    label: Some(label.into()),
+    ..Props::default()
+  };
+  let separator = Props {
+    kind: Some("separator".into()),
+    ..Props::default()
+  };
+  let checked = Props {
+    toggle_type: Some("checkmark".into()),
+    toggle_state: Some(1),
+    ..label("Wi-Fi")
+  };
+  let hidden = Props {
+    visible: Some(false),
+    ..label("Hidden")
+  };
+  let disabled = Props {
+    enabled: Some(false),
+    ..label("More")
+  };
+  let radio = Props {
+    toggle_type: Some("radio".into()),
+    toggle_state: Some(0),
+    ..label("A__B")
+  };
+  node(
+    0,
+    Props::default(),
+    vec![
+      node(1, label("_Connect"), vec![]),
+      node(2, separator, vec![]),
+      node(3, checked, vec![]),
+      node(4, hidden, vec![]),
+      node(5, disabled, vec![node(6, radio, vec![])]),
+    ],
+  )
+}
+
+/// [`sample_menu`] with its first entry called `label`.
+fn renamed_menu(label: &str) -> Layout {
+  let mut layout = sample_menu();
+  layout.2[0].0.1.label = Some(label.into());
+  layout
+}
+
+/// [`sample_menu`] as the tray shows it.
+fn sample_entries() -> Vec<MenuEntry> {
+  let entry = |id, label: &str| MenuEntry {
+    id,
+    label: label.into(),
+    separator: false,
+    enabled: true,
+    toggle: None,
+    checked: false,
+    children: Vec::new(),
+  };
+  vec![
+    entry(1, "Connect"),
+    MenuEntry {
+      separator: true,
+      ..entry(2, "")
+    },
+    MenuEntry {
+      toggle: Some(MenuToggle::Checkmark),
+      checked: true,
+      ..entry(3, "Wi-Fi")
+    },
+    MenuEntry {
+      enabled: false,
+      children: vec![MenuEntry {
+        toggle: Some(MenuToggle::Radio),
+        ..entry(6, "A_B")
+      }],
+      ..entry(5, "More")
+    },
+  ]
 }
 
 /// [`sample`] as the tray shows it, at `id`.
@@ -64,19 +152,24 @@ fn sample_item(id: &str) -> TrayItem {
     icon_theme_path: "/nonexistent".into(),
     tooltip: "Connected".into(),
     item_is_menu: true,
+    menu: MENU_PATH.into(),
   }
 }
 
 /// An app's tray item on the private bus. It answers `GetAll` with
 /// `properties`, or with a wrongly typed title while that is `None`, and
-/// writes down every call it gets.
+/// writes down every call it gets. Its menu at [`MENU_PATH`] answers
+/// `GetLayout` with `layout`, or with a wrongly typed label while that is
+/// `None`.
 struct FakeItem {
   connection: Connection,
   path: &'static str,
   properties: Rc<RefCell<Option<Properties>>>,
   calls: Rc<RefCell<Vec<String>>>,
-  /// While `Some`, each `GetAll` waits here for the test to answer it.
+  /// While `Some`, each `GetAll` and `GetLayout` waits here for the test
+  /// to answer it.
   held: Rc<RefCell<Option<Vec<zbus::Message>>>>,
+  layout: Rc<RefCell<Option<Layout>>>,
 }
 
 impl FakeItem {
@@ -94,9 +187,10 @@ impl FakeItem {
       properties: Rc::new(RefCell::new(properties)),
       calls: Rc::default(),
       held: Rc::default(),
+      layout: Rc::new(RefCell::new(Some(sample_menu()))),
     };
     let (properties, calls) = (Rc::clone(&item.properties), Rc::clone(&item.calls));
-    let held = Rc::clone(&item.held);
+    let (held, layout) = (Rc::clone(&item.held), Rc::clone(&item.layout));
     // Before the names, so a call that comes at once isn't missed.
     let mut messages = MessageStream::from(&connection);
     for &name in names {
@@ -108,12 +202,19 @@ impl FakeItem {
     shell.spawn(async move {
       while let Some(Ok(call)) = poll_fn(|cx| Pin::new(&mut messages).poll_next(cx)).await {
         let header = call.header();
-        if header.message_type() != Kind::MethodCall
-          || header.path().map(|path| path.as_str()) != Some(path)
-        {
+        let at = header.path().map(|path| path.as_str());
+        if header.message_type() != Kind::MethodCall {
           continue;
         }
-        let member = header.member().map_or("", |member| member.as_str());
+        // The item's methods at its path, the menu's at the menu's.
+        let member = match header.member().map_or("", |member| member.as_str()) {
+          "GetAll" | "Activate" | "SecondaryActivate" | "Scroll" if at == Some(path) => {
+            member_of(&header)
+          }
+          "AboutToShow" | "GetLayout" | "Event" if at == Some(MENU_PATH) => member_of(&header),
+          _ => continue,
+        };
+        let member = member.as_str();
         let sent = match member {
           "GetAll" => {
             calls.borrow_mut().push("GetAll".into());
@@ -138,6 +239,37 @@ impl FakeItem {
           "Scroll" => {
             let scroll: (i32, String) = call.body().deserialize().expect("(is)");
             calls.borrow_mut().push(format!("{member}{scroll:?}"));
+            connection.reply(&header, &()).await
+          }
+          "AboutToShow" => {
+            let id: i32 = call.body().deserialize().expect("i");
+            calls.borrow_mut().push(format!("{member}({id})"));
+            // A submenu changes as it opens; the root doesn't.
+            connection.reply(&header, &(id != 0)).await
+          }
+          "GetLayout" => {
+            let args: (i32, i32, Vec<String>) = call.body().deserialize().expect("(iias)");
+            calls.borrow_mut().push(format!("{member}{args:?}"));
+            if let Some(held) = held.borrow_mut().as_mut() {
+              held.push(call.clone());
+              continue;
+            }
+            let layout = layout.borrow().clone();
+            match layout {
+              Some(layout) => connection.reply(&header, &(1u32, layout)).await,
+              None => {
+                let wrong = HashMap::from([("label", Variant::from(7u32))]);
+                let root = (0, wrong, Vec::<Variant<'_>>::new());
+                connection.reply(&header, &(1u32, root)).await
+              }
+            }
+          }
+          "Event" => {
+            let (id, event, _, _): (i32, String, OwnedVariant, u32) =
+              call.body().deserialize().expect("(isvu)");
+            calls
+              .borrow_mut()
+              .push(format!("{member}({id}, {event:?})"));
             connection.reply(&header, &()).await
           }
           _ => continue,
@@ -168,6 +300,19 @@ impl FakeItem {
 
   fn calls(&self) -> Vec<String> {
     self.calls.borrow().clone()
+  }
+
+  /// Says its menu changed, from `connection`, as `LayoutUpdated` does:
+  /// to anyone listening, or only to `to`.
+  fn menu_changed(shell: &mut Harness, connection: &Connection, to: Option<String>) {
+    let connection = connection.clone();
+    shell
+      .block_on(async move {
+        let signal = "LayoutUpdated";
+        let emit = connection.emit_signal(to.as_deref(), MENU_PATH, DBUSMENU, signal, &(2u32, 0));
+        emit.await
+      })
+      .expect("a signal on the private bus");
   }
 
   /// Answers the held `GetAll` number `index` with `title`.
@@ -704,6 +849,11 @@ fn an_item_name_taken_by_another_app_is_read_from_it() {
   first.register(&mut shell, name);
   wait_for(&mut shell, "the item", || !items.get_untracked().is_empty());
 
+  let tray = shell.cx.tray();
+  tray.open_menu(&items.get_untracked()[0].id);
+  let menu = tray.menu();
+  wait_for(&mut shell, "the menu", || menu.get_untracked().is_some());
+
   // A restarted app takes the name over before it registers again.
   let renamed = Properties {
     title: Some("Second".into()),
@@ -712,6 +862,8 @@ fn an_item_name_taken_by_another_app_is_read_from_it() {
   let second = FakeItem::start(&mut shell, &bus, &[name], ITEM_PATH, Some(renamed));
   let title = || items.get_untracked()[0].title.clone();
   wait_for(&mut shell, "the second app's title", || title() == "Second");
+  // The first app's menu closed with it.
+  assert_eq!(menu.get_untracked(), None);
   // Its signals count now, and the first app's don't.
   if let Some(properties) = second.properties.borrow_mut().as_mut() {
     properties.title = Some("Third".into());
@@ -861,4 +1013,397 @@ fn disposing_the_root_frees_the_tray() {
   // A message after that finds the list gone, and nothing panics.
   app.emit(&mut shell, "NewTitle");
   shell.run_until(Instant::now() + Duration::from_millis(100));
+}
+
+fn member_of(header: &zbus::message::Header<'_>) -> String {
+  header
+    .member()
+    .map(|member| member.to_string())
+    .unwrap_or_default()
+}
+
+/// A shell with one registered, read test app: the app and its item's id.
+fn one_item(shell: &mut Harness, bus: &PrivateBus) -> (FakeItem, String) {
+  let items = shell.cx.tray().items();
+  let name = item_name();
+  let app = FakeItem::start(shell, bus, &[name], ITEM_PATH, Some(sample()));
+  app.register(shell, name);
+  wait_for(shell, "the item", || !items.get_untracked().is_empty());
+  (app, format!("{name}{ITEM_PATH}"))
+}
+
+#[test]
+fn a_menu_opens_after_about_to_show_and_reads_the_layout() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let (app, id) = one_item(&mut shell, &bus);
+  let tray = shell.cx.tray();
+  let menu = tray.menu();
+  assert_eq!(menu.get_untracked(), None);
+
+  tray.open_menu(&id);
+  wait_for(&mut shell, "the menu", || menu.get_untracked().is_some());
+  let expected = TrayMenu {
+    item: id,
+    entries: sample_entries(),
+  };
+  assert_eq!(menu.get_untracked(), Some(expected));
+  let names = r#"["type", "label", "enabled", "visible", "toggle-type", "toggle-state"]"#;
+  assert_eq!(
+    app.calls()[1..],
+    [
+      "AboutToShow(0)".to_owned(),
+      format!("GetLayout(0, -1, {names})")
+    ]
+  );
+
+  // An open menu wakes nothing while nothing changes.
+  shell.run_until(Instant::now() + Duration::from_millis(100));
+  let wakeups = shell.run_until(Instant::now() + Duration::from_secs(1));
+  assert_eq!(wakeups, 1);
+}
+
+#[test]
+fn an_open_menu_follows_its_app_until_it_closes() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let (app, id) = one_item(&mut shell, &bus);
+  let tray = shell.cx.tray();
+  let menu = tray.menu();
+  tray.open_menu(&id);
+  wait_for(&mut shell, "the menu", || menu.get_untracked().is_some());
+
+  let renamed = renamed_menu;
+  let first = || {
+    menu
+      .get_untracked()
+      .map(|menu| menu.entries[0].label.clone())
+  };
+  *app.layout.borrow_mut() = Some(renamed("Disconnect"));
+  FakeItem::menu_changed(&mut shell, &app.connection, None);
+  wait_for(&mut shell, "the new label", || {
+    first().as_deref() == Some("Disconnect")
+  });
+
+  // Another app saying so reads nothing, even addressed to the shell, and
+  // neither does the app once the menu is closed.
+  let reads = || {
+    app
+      .calls()
+      .iter()
+      .filter(|call| call.starts_with("GetLayout"))
+      .count()
+  };
+  let before = reads();
+  let stranger = shell.block_on(bus.connect(&[]));
+  let asking = stranger.clone();
+  let host = format!("org.kde.StatusNotifierHost-{}", std::process::id());
+  let shell_name: String = shell
+    .block_on(async move {
+      let ask = asking.call_method(Some(BUS), BUS_PATH, Some(BUS), "GetNameOwner", &host);
+      ask.await?.body().deserialize::<String>()
+    })
+    .expect("the shell's unique name");
+  FakeItem::menu_changed(&mut shell, &stranger, None);
+  FakeItem::menu_changed(&mut shell, &stranger, Some(shell_name));
+  shell.run_until(Instant::now() + Duration::from_millis(200));
+  assert_eq!(reads(), before);
+  tray.close_menu();
+  assert_eq!(menu.get_untracked(), None);
+  FakeItem::menu_changed(&mut shell, &app.connection, None);
+  shell.run_until(Instant::now() + Duration::from_millis(200));
+  assert_eq!(reads(), before);
+  assert_eq!(menu.get_untracked(), None);
+}
+
+#[test]
+fn clicking_a_menu_entry_sends_an_event() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let (app, id) = one_item(&mut shell, &bus);
+  shell.cx.tray().menu_event(&id, 3);
+  let events = || {
+    app
+      .calls()
+      .into_iter()
+      .filter(|call| call.starts_with("Event"))
+      .collect::<Vec<_>>()
+  };
+  wait_for(&mut shell, "the event", || !events().is_empty());
+  assert_eq!(events(), [r#"Event(3, "clicked")"#]);
+}
+
+#[test]
+fn a_bad_menu_is_logged_and_stays_closed() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let (app, id) = one_item(&mut shell, &bus);
+  let tray = shell.cx.tray();
+  *app.layout.borrow_mut() = None;
+  let logs = capture_logs(|| {
+    tray.open_menu(&id);
+    let read = || app.calls().iter().any(|call| call.starts_with("GetLayout"));
+    wait_for(&mut shell, "a read", read);
+    shell.run_until(Instant::now() + Duration::from_millis(100));
+  });
+  assert!(logs.contains("can't read a tray item's menu"), "{logs}");
+  assert_eq!(tray.menu().get_untracked(), None);
+
+  let logs = capture_logs(|| tray.open_menu("no-such-item"));
+  assert!(logs.contains("this tray item has no menu"), "{logs}");
+}
+
+#[test]
+fn an_item_that_leaves_closes_its_menu() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let (app, id) = one_item(&mut shell, &bus);
+  let tray = shell.cx.tray();
+  let menu = tray.menu();
+  tray.open_menu(&id);
+  wait_for(&mut shell, "the menu", || menu.get_untracked().is_some());
+  let connection = app.connection.clone();
+  shell
+    .block_on(connection.close())
+    .expect("the app leaves the bus");
+  wait_for(&mut shell, "the menu to close", || {
+    menu.get_untracked().is_none()
+  });
+}
+
+#[test]
+fn labels_lose_their_access_key_underscores() {
+  assert_eq!(without_access_keys("_File"), "File");
+  assert_eq!(without_access_keys("Save _As"), "Save As");
+  assert_eq!(without_access_keys("snake__case"), "snake_case");
+  assert_eq!(without_access_keys("trailing_"), "trailing");
+  assert_eq!(without_access_keys(""), "");
+}
+
+#[test]
+fn a_no_menu_path_means_no_menu() {
+  let none = Properties {
+    menu: Some("/NO_DBUSMENU".try_into().expect("an object path")),
+    ..sample()
+  };
+  assert_eq!(none.into_item("x".into()).menu, "");
+  assert_eq!(sample().into_item("x".into()).menu, MENU_PATH);
+}
+
+#[test]
+fn a_menu_closed_while_its_layout_is_read_stays_closed() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let (app, id) = one_item(&mut shell, &bus);
+  let tray = shell.cx.tray();
+  *app.held.borrow_mut() = Some(Vec::new());
+  tray.open_menu(&id);
+  let held = || app.held.borrow().as_ref().map_or(0, Vec::len);
+  wait_for(&mut shell, "the layout read", || held() == 1);
+  tray.close_menu();
+  let call = app.held.borrow().as_ref().expect("held calls")[0].clone();
+  let connection = app.connection.clone();
+  shell
+    .block_on(async move {
+      connection
+        .reply(&call.header(), &(1u32, sample_menu()))
+        .await
+    })
+    .expect("the late layout");
+  shell.run_until(Instant::now() + Duration::from_millis(200));
+  assert_eq!(tray.menu().get_untracked(), None);
+}
+
+/// Every `AddMatch` and `RemoveMatch` any connection sends the bus, as a
+/// monitor sees them: the method, a space and the rule.
+fn match_calls(shell: &mut Harness, bus: &PrivateBus) -> Rc<RefCell<Vec<String>>> {
+  let monitor = shell.block_on(bus.connect(&[]));
+  let mut messages = MessageStream::from(&monitor);
+  let becoming = monitor.clone();
+  shell
+    .block_on(async move {
+      let monitoring = "org.freedesktop.DBus.Monitoring";
+      let rules = (Vec::<&str>::new(), 0u32);
+      let call = becoming.call_method(
+        Some(BUS),
+        BUS_PATH,
+        Some(monitoring),
+        "BecomeMonitor",
+        &rules,
+      );
+      call.await
+    })
+    .expect("a monitor on the private bus");
+  let seen: Rc<RefCell<Vec<String>>> = Rc::default();
+  let sink = Rc::clone(&seen);
+  shell.spawn(async move {
+    let _monitor = monitor;
+    while let Some(Ok(message)) = poll_fn(|cx| Pin::new(&mut messages).poll_next(cx)).await {
+      let header = message.header();
+      let member = member_of(&header);
+      if header.message_type() == Kind::MethodCall
+        && matches!(member.as_str(), "AddMatch" | "RemoveMatch")
+        && let Ok(rule) = message.body().deserialize::<String>()
+      {
+        sink.borrow_mut().push(format!("{member} {rule}"));
+      }
+    }
+  });
+  seen
+}
+
+#[test]
+fn a_menu_follows_its_app_only_while_open() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let matches = match_calls(&mut shell, &bus);
+  let (app, id) = one_item(&mut shell, &bus);
+  let tray = shell.cx.tray();
+  let menu = tray.menu();
+  let sender = app
+    .connection
+    .unique_name()
+    .expect("a unique name")
+    .to_string();
+  let rule = format!("type='signal',sender='{sender}',path='{MENU_PATH}',interface='{DBUSMENU}'");
+  let count = |call: &str| {
+    let line = format!("{call} {rule}");
+    matches
+      .borrow()
+      .iter()
+      .filter(|seen| **seen == line)
+      .count()
+  };
+
+  tray.open_menu(&id);
+  wait_for(&mut shell, "the menu", || menu.get_untracked().is_some());
+  tray.close_menu();
+  wait_for(&mut shell, "the match removed", || {
+    count("RemoveMatch") == 1
+  });
+  assert_eq!(count("AddMatch"), 1);
+
+  // A menu that can't be read closes, and its match goes too.
+  *app.layout.borrow_mut() = None;
+  tray.open_menu(&id);
+  wait_for(&mut shell, "the second match removed", || {
+    count("RemoveMatch") == 2
+  });
+  assert_eq!(count("AddMatch"), 2);
+  assert_eq!(menu.get_untracked(), None);
+}
+
+#[test]
+fn a_slow_menu_read_never_overwrites_a_newer_one() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let (app, id) = one_item(&mut shell, &bus);
+  let tray = shell.cx.tray();
+  let menu = tray.menu();
+  *app.held.borrow_mut() = Some(Vec::new());
+  tray.open_menu(&id);
+  let held = || app.held.borrow().as_ref().map_or(0, Vec::len);
+  wait_for(&mut shell, "the first read", || held() == 1);
+  FakeItem::menu_changed(&mut shell, &app.connection, None);
+  wait_for(&mut shell, "the second read", || held() == 2);
+
+  let answer = |shell: &mut Harness, index: usize, layout: Layout| {
+    let call = app.held.borrow().as_ref().expect("held calls")[index].clone();
+    let connection = app.connection.clone();
+    shell
+      .block_on(async move { connection.reply(&call.header(), &(1u32, layout)).await })
+      .expect("a held layout");
+  };
+  answer(&mut shell, 1, renamed_menu("Newer"));
+  let first = || {
+    menu
+      .get_untracked()
+      .map(|menu| menu.entries[0].label.clone())
+  };
+  wait_for(&mut shell, "the newer menu", || {
+    first().as_deref() == Some("Newer")
+  });
+  answer(&mut shell, 0, sample_menu());
+  shell.run_until(Instant::now() + Duration::from_millis(200));
+  assert_eq!(first().as_deref(), Some("Newer"));
+}
+
+#[test]
+fn an_unchanged_menu_is_not_set_again() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let (app, id) = one_item(&mut shell, &bus);
+  let tray = shell.cx.tray();
+  let menu = tray.menu();
+  tray.open_menu(&id);
+  wait_for(&mut shell, "the menu", || menu.get_untracked().is_some());
+  let runs = Rc::new(std::cell::Cell::new(0));
+  let counting = Rc::clone(&runs);
+  shell.cx.effect(move || {
+    menu.with(|_| ());
+    counting.set(counting.get() + 1);
+  });
+  Runtime::current().flush();
+  let before = runs.get();
+
+  FakeItem::menu_changed(&mut shell, &app.connection, None);
+  let reads = || {
+    app
+      .calls()
+      .iter()
+      .filter(|call| call.starts_with("GetLayout"))
+      .count()
+  };
+  wait_for(&mut shell, "the second read", || reads() == 2);
+  shell.run_until(Instant::now() + Duration::from_millis(200));
+  assert_eq!(runs.get(), before);
+}
+
+#[test]
+fn a_menu_opened_over_another_is_read_once_after_it_is_told() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let (first, first_id) = one_item(&mut shell, &bus);
+  let (second, second_id) = one_item(&mut shell, &bus);
+  let tray = shell.cx.tray();
+  let menu = tray.menu();
+  tray.open_menu(&first_id);
+  tray.open_menu(&second_id);
+  let shown = || menu.get_untracked().map(|menu| menu.item);
+  wait_for(&mut shell, "the second menu", || {
+    shown() == Some(second_id.clone())
+  });
+  shell.run_until(Instant::now() + Duration::from_millis(200));
+  // The first opening's task, left over, reads neither menu.
+  let menu_calls = |app: &FakeItem| {
+    let calls = app.calls().into_iter();
+    calls
+      .filter(|call| !call.starts_with("GetAll"))
+      .collect::<Vec<_>>()
+  };
+  assert!(
+    !menu_calls(&first)
+      .iter()
+      .any(|call| call.starts_with("GetLayout"))
+  );
+  let second_calls = menu_calls(&second);
+  assert_eq!(second_calls.len(), 2, "{second_calls:?}");
+  assert_eq!(second_calls[0], "AboutToShow(0)");
+}
+
+#[test]
+fn a_huge_menu_keeps_its_first_entries() {
+  let leaf = |id| Child(Layout(id, Props::default(), Vec::new()));
+  let mut left = 1024;
+  assert_eq!(
+    entries((0..1100).map(leaf).collect(), &mut left).len(),
+    1024
+  );
+  let mut left = 1024;
+  let nested = vec![Child(Layout(
+    0,
+    Props::default(),
+    (1..1100).map(leaf).collect(),
+  ))];
+  assert_eq!(entries(nested, &mut left)[0].children.len(), 1023);
 }

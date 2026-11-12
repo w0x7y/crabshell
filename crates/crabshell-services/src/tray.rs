@@ -11,6 +11,7 @@
 //! stream reads every message the bus sends this connection, so a quiet
 //! bus leaves the shell asleep.
 
+mod menu;
 mod watcher;
 
 #[cfg(test)]
@@ -32,6 +33,8 @@ use zbus::names::BusName;
 use zbus::{Connection, DeserializeDict, DynamicType, Message, MessageStream, ObjectPath, Type};
 
 use crate::Shared;
+use menu::{DBUSMENU, OpenMenu};
+pub use menu::{MenuEntry, MenuToggle, TrayMenu};
 
 const WATCHER: &str = "org.kde.StatusNotifierWatcher";
 const WATCHER_PATH: &str = "/StatusNotifierWatcher";
@@ -93,6 +96,9 @@ pub struct TrayItem {
   /// Whether the item offers only its menu, so a left click opens the
   /// menu instead of calling [`TrayHost::activate`].
   pub item_is_menu: bool,
+  /// Where its menu is on the bus, or empty for none. Open it with
+  /// [`TrayHost::open_menu`].
+  pub menu: String,
 }
 
 impl TrayItem {
@@ -146,6 +152,7 @@ pub struct TrayHost {
   /// `None` when the shell provided no services.
   service: Option<Rc<Service>>,
   items: ReadSignal<Vec<TrayItem>>,
+  menu: ReadSignal<Option<TrayMenu>>,
 }
 
 impl TrayHost {
@@ -159,28 +166,67 @@ impl TrayHost {
   /// client can't know where on screen that was, so the item is told
   /// `(0, 0)`. A refusal or an unknown `id` is logged.
   pub fn activate(&self, id: &str) {
-    self.call(id, "Activate", (0, 0));
+    self.call(id, ITEM, "Activate", (0, 0));
   }
 
   /// Tells item `id` it was middle-clicked, as for [`activate`](Self::activate).
   pub fn secondary_activate(&self, id: &str) {
-    self.call(id, "SecondaryActivate", (0, 0));
+    self.call(id, ITEM, "SecondaryActivate", (0, 0));
   }
 
   /// Tells item `id` the wheel turned `steps`, positive for up, as a
   /// button's `on_scroll` gives them.
   pub fn scroll(&self, id: &str, steps: i32) {
-    self.call(id, "Scroll", (steps, "vertical"));
+    self.call(id, ITEM, "Scroll", (steps, "vertical"));
   }
 
-  /// Calls `method` on item `id`, without waiting for the answer.
-  fn call<B>(&self, id: &str, method: &'static str, body: B)
+  /// The tray menu that is open, if any. One is open at a time: opening
+  /// another closes it. It is `None` from [`open_menu`](Self::open_menu)
+  /// until the app's layout arrives, and follows the app's changes while
+  /// it stays open.
+  pub fn menu(&self) -> ReadSignal<Option<TrayMenu>> {
+    self.menu
+  }
+
+  /// Opens item `id`'s menu: tells the app, as a right click does, then
+  /// reads the layout into [`menu`](Self::menu). An item with no menu, or
+  /// an unknown `id`, is logged.
+  pub fn open_menu(&self, id: &str) {
+    if let Some(service) = &self.service {
+      service.open_menu(id);
+    }
+  }
+
+  /// Closes the open menu and stops following it.
+  pub fn close_menu(&self) {
+    if let Some(service) = &self.service {
+      service.close_menu();
+    }
+  }
+
+  /// Tells item `id` its menu entry `entry` was clicked. A refusal or an
+  /// unknown `id` is logged.
+  pub fn menu_event(&self, id: &str, entry: i32) {
+    let event = (entry, "clicked", zbus::Variant::from(0), 0u32);
+    self.call(id, DBUSMENU, "Event", event);
+  }
+
+  /// Calls `method` on item `id`, or on its menu for [`DBUSMENU`],
+  /// without waiting for the answer.
+  fn call<B>(&self, id: &str, interface: &'static str, method: &'static str, body: B)
   where
     B: serde::Serialize + DynamicType + 'static,
   {
     let target = self.service.as_ref().and_then(|service| {
       let connection = service.state.borrow().as_ref()?.connection.clone()?;
-      let (bus, path) = service.with_entry(id, |entry| (entry.bus.clone(), entry.path.clone()))?;
+      let at = service.with_entry(id, |entry| {
+        let path = match interface {
+          ITEM => entry.path.clone(),
+          _ => entry.shown.as_ref()?.menu.clone(),
+        };
+        Some((entry.bus.clone(), path)).filter(|(_, path)| !path.is_empty())
+      });
+      let (bus, path) = at.flatten()?;
       Some((service, connection, bus, path))
     });
     let Some((service, connection, bus, path)) = target else {
@@ -188,8 +234,13 @@ impl TrayHost {
     };
     let id = id.to_owned();
     service.shared.spawn(async move {
-      let call =
-        connection.call_method(Some(bus.as_str()), path.as_str(), Some(ITEM), method, &body);
+      let call = connection.call_method(
+        Some(bus.as_str()),
+        path.as_str(),
+        Some(interface),
+        method,
+        &body,
+      );
       if let Err(error) = call.await {
         tracing::info!(id, method, %error, "the tray item refused");
       }
@@ -207,12 +258,14 @@ pub(crate) fn tray(cx: &Cx) -> TrayHost {
     return TrayHost {
       service: None,
       items: cx.signal(Vec::new()).read_only(),
+      menu: cx.signal(None).read_only(),
     };
   };
-  let items = service.start();
+  let (items, menu) = service.start();
   TrayHost {
     service: Some(service),
     items,
+    menu,
   }
 }
 
@@ -230,6 +283,13 @@ struct State {
   entries: Vec<Entry>,
   /// Whether this shell owns the watcher's name.
   watcher: bool,
+  /// The open menu's layout, `None` while none is shown.
+  menu: Signal<Option<TrayMenu>>,
+  /// The open menu, from `open_menu` until `close_menu`.
+  open: Option<OpenMenu>,
+  /// Counts menu openings and reads, so a task or reply left from an
+  /// earlier one never overwrites a newer one.
+  menu_count: u64,
 }
 
 struct Entry {
@@ -253,23 +313,27 @@ impl Service {
     }
   }
 
-  /// The list, joining the bus if this is the first ask.
-  fn start(self: &Rc<Self>) -> ReadSignal<Vec<TrayItem>> {
+  /// The list and the open menu, joining the bus if this is the first ask.
+  fn start(self: &Rc<Self>) -> (ReadSignal<Vec<TrayItem>>, ReadSignal<Option<TrayMenu>>) {
     if let Some(state) = &*self.state.borrow() {
-      return state.items.read_only();
+      return (state.items.read_only(), state.menu.read_only());
     }
     let items = self.shared.root.signal(Vec::new());
+    let menu = self.shared.root.signal(None);
     *self.state.borrow_mut() = Some(State {
       items,
       connection: None,
       entries: Vec::new(),
       watcher: false,
+      menu,
+      open: None,
+      menu_count: 0,
     });
     match self.shared.config.session_bus.clone() {
       Some(address) => self.shared.spawn(run(Rc::clone(self), address)),
       None => tracing::info!("no session bus, so the tray is empty"),
     }
-    items.read_only()
+    (items.read_only(), menu.read_only())
   }
 
   /// Whether the list is still there: its owner, the root, isn't disposed.
@@ -400,6 +464,11 @@ impl Service {
       (WATCHER, "StatusNotifierItemUnregistered") if broadcast && !self.is_watcher() => {
         if let Ok(id) = body.deserialize::<&str>() {
           self.remove(connection, id);
+        }
+      }
+      (DBUSMENU, "LayoutUpdated" | "ItemsPropertiesUpdated") => {
+        if let (Some(sender), Some(path)) = (header.sender(), header.path()) {
+          self.menu_changed(connection, sender.as_str(), path.as_str());
         }
       }
       // NewIcon, NewTitle, NewStatus and the rest: read it all again.
@@ -543,6 +612,8 @@ impl Service {
       if owner.is_empty() {
         self.remove(connection, &id);
       } else {
+        // Its menu's signals now come from the new owner.
+        self.close_menu_of(&id);
         self.with_entry(&id, |entry| entry.owner = Some(owner.to_owned()));
         self.read(connection, id);
       }
@@ -562,6 +633,7 @@ impl Service {
     let Some((entry, watcher)) = removed else {
       return;
     };
+    self.close_menu_of(id);
     let rule = owner_rule(&entry.bus);
     let bus = connection.clone();
     self.shared.spawn(async move {
@@ -593,6 +665,7 @@ impl Service {
 
   /// Empties the list, once the bus is gone.
   fn clear(&self) {
+    self.close_menu();
     if let Some(state) = self.state.borrow_mut().as_mut() {
       state.entries.clear();
       state.connection = None;
@@ -702,6 +775,7 @@ struct Properties {
   /// Icon name, icon pixmaps, title and description.
   tool_tip: Option<(String, Pixmaps, String, String)>,
   item_is_menu: Option<bool>,
+  menu: Option<zbus::OwnedObjectPath>,
 }
 
 impl Properties {
@@ -732,6 +806,12 @@ impl Properties {
         .map(|(_, _, title, _)| title)
         .unwrap_or_default(),
       item_is_menu: self.item_is_menu.unwrap_or_default(),
+      // Some apps name this path for "no menu".
+      menu: self
+        .menu
+        .map(|path| path.to_string())
+        .filter(|path| path != "/NO_DBUSMENU")
+        .unwrap_or_default(),
       id,
     }
   }
