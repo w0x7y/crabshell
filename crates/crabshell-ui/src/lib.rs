@@ -62,6 +62,7 @@ mod geometry;
 mod input;
 mod keyed;
 mod layout;
+mod popup;
 mod prop;
 mod style;
 mod text;
@@ -76,6 +77,7 @@ mod tests;
 pub use cx::Cx;
 pub use geometry::{Point, Rect, Size};
 pub use input::{CursorShape, PointerButton, ScrollDelta};
+pub use popup::{Popup, PopupWindow};
 pub use prop::{IntoProp, Prop};
 pub use style::{Border, Color, Font, Padding, Style};
 pub use text::TextSystem;
@@ -90,6 +92,6 @@ pub use window::{Anchors, Edge, Layer, Output, PanelWindow, SurfaceConfig, Windo
 pub mod prelude {
   pub use crate::{
     Align, Button, Color, Column, Cx, Edge, Font, Icon, IconSource, Justify, Layer, Output,
-    PanelWindow, Row, Size, Spacer, Stack, Style, Text, TextSystem, Widget, Window,
+    PanelWindow, PopupWindow, Row, Size, Spacer, Stack, Style, Text, TextSystem, Widget, Window,
   };
 }

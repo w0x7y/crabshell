@@ -37,12 +37,19 @@ enum Parent {
 }
 
 impl Tree {
-  /// Lays the window out at `self.size` and records damage.
+  /// Lays the window out at `self.size` and records damage. A popup first
+  /// takes the size its content wants, rounded up to whole pixels.
   pub(crate) fn layout(&mut self, text: &mut TextSystem) {
     let root = self.root;
     self.sync(root, Parent::Flex, Font::DEFAULT, text);
 
     let fonts = text.font_system();
+    if self.popup.is_some() {
+      self.size = self.natural_size(fonts);
+      let mut style = self.taffy.style(root).cloned().unwrap_or_default();
+      style.size = definite(self.size);
+      let _ = self.taffy.set_style(root, style);
+    }
     let available = taffy::Size {
       width: AvailableSpace::Definite(self.size.width),
       height: AvailableSpace::Definite(self.size.height),
@@ -66,6 +73,46 @@ impl Tree {
     self.place(root, Point::default(), fonts);
     self.needs_layout = false;
     self.pointer_after_layout();
+  }
+
+  /// The size the window's content wants, in whole logical pixels and at
+  /// least 1 a side: its root laid out with no size of its own and
+  /// unlimited room.
+  fn natural_size(&mut self, fonts: &mut FontSystem) -> crate::Size {
+    let root = self.root;
+    let mut style = self.taffy.style(root).cloned().unwrap_or_default();
+    style.size = taffy::Size::auto();
+    let _ = self.taffy.set_style(root, style);
+    let unlimited = taffy::Size {
+      width: AvailableSpace::MaxContent,
+      height: AvailableSpace::MaxContent,
+    };
+    let measured =
+      self
+        .taffy
+        .compute_layout_with_measure(root, unlimited, |inputs, _id, node, style| {
+          taffy::compute_leaf_layout(
+            inputs,
+            style,
+            |_, _| 0.0,
+            |known, available| measure(node, fonts, known, available),
+          )
+        });
+    match (measured, self.taffy.layout(root)) {
+      // At least 1 px a side: xdg_positioner refuses an empty size.
+      (Ok(()), Ok(layout)) => crate::Size::new(
+        layout.size.width.ceil().max(1.0),
+        layout.size.height.ceil().max(1.0),
+      ),
+      (Err(error), _) => {
+        tracing::error!(%error, "taffy failed to measure a popup");
+        self.size
+      }
+      (_, Err(error)) => {
+        tracing::error!(%error, "taffy has no layout for a popup's root");
+        self.size
+      }
+    }
   }
 
   /// The first pass: gives taffy each node's style, and reshapes text.
@@ -209,10 +256,7 @@ fn taffy_style(node: &Node, parent: Parent, size: crate::Size) -> taffy::Style {
   match &node.kind {
     NodeKind::Root => {
       style.display = Display::Grid;
-      style.size = taffy::Size {
-        width: taffy::Dimension::length(size.width),
-        height: taffy::Dimension::length(size.height),
-      };
+      style.size = definite(size);
       style.grid_template_columns = vec![taffy::prelude::fr(1.0)];
       style.grid_template_rows = vec![taffy::prelude::fr(1.0)];
     }
@@ -268,4 +312,12 @@ fn taffy_style(node: &Node, parent: Parent, size: crate::Size) -> taffy::Style {
     };
   }
   style
+}
+
+/// A taffy size of exactly `size`.
+fn definite(size: crate::Size) -> taffy::Size<taffy::Dimension> {
+  taffy::Size {
+    width: taffy::Dimension::length(size.width),
+    height: taffy::Dimension::length(size.height),
+  }
 }

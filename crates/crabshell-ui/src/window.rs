@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use crabshell_reactive::{Owner, untrack};
 
-use crate::cx::Cx;
+use crate::cx::{Anchor, Cx};
 use crate::geometry::{Rect, Size};
 use crate::prop::{IntoProp, Prop};
 use crate::style::Style;
@@ -242,7 +242,7 @@ pub struct SurfaceConfig {
 /// binding and handler in it.
 pub struct Window {
   pub(crate) tree: Rc<RefCell<Tree>>,
-  owner: Owner,
+  pub(crate) owner: Owner,
 }
 
 impl Window {
@@ -259,10 +259,14 @@ impl Window {
     // effect is building this window.
     let child = untrack(|| panel.child.take().map(|child| child.into_element()));
     let path: Rc<str> = format!("PanelWindow[{}]", panel.output.name).into();
-    let cx = cx.child().named(path.to_string());
+    let cx = cx
+      .child()
+      .named(path.to_string())
+      .at(Rc::new(Anchor::default()));
     let owner = cx.owner();
     let output = panel.output.clone();
-    let tree = Rc::new_cyclic(|this| RefCell::new(Tree::new(this.clone(), output, cx, path)));
+    let tree =
+      Rc::new_cyclic(|this| RefCell::new(Tree::new(this.clone(), "PanelWindow", output, cx, path)));
     borrow(&tree).mount_panel(panel, child);
     Window { tree, owner }
   }
@@ -304,7 +308,8 @@ impl Window {
     std::mem::take(&mut borrow(&self.tree).surface.changed)
   }
 
-  /// The size the compositor gave the window, in logical pixels.
+  /// The window's size in logical pixels: the size the compositor gave a
+  /// panel, or the size a popup's content wants, from its last layout.
   pub fn size(&self) -> Size {
     self.tree.borrow().size
   }

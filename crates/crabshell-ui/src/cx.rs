@@ -1,11 +1,13 @@
 //! [`Cx`], the context that widget code, event handlers and list views get.
 
 use std::any::{Any, TypeId};
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use crabshell_reactive::{Effect, Memo, Owner, Signal};
+
+use crate::tree::{NodeId, Tree};
 
 /// The context widget code runs in.
 ///
@@ -24,6 +26,27 @@ use crabshell_reactive::{Effect, Memo, Owner, Signal};
 pub struct Cx {
   owner: Owner,
   services: Rc<Services>,
+  /// The widget this context belongs to, if any, for
+  /// [`open_popup`](Self::open_popup). A child context shares it.
+  pub(crate) anchor: Option<Rc<Anchor>>,
+}
+
+/// Where a widget is: its window's tree and its node. Set once the node
+/// exists, which is after its context is made.
+#[derive(Default)]
+pub(crate) struct Anchor(OnceCell<(Weak<RefCell<Tree>>, NodeId)>);
+
+impl Anchor {
+  pub(crate) fn set(&self, tree: Weak<RefCell<Tree>>, node: NodeId) {
+    // A second set can't happen: each anchor is made for one node.
+    let _ = self.0.set((tree, node));
+  }
+
+  /// The tree, while the window is there, and the node.
+  pub(crate) fn get(&self) -> Option<(Rc<RefCell<Tree>>, NodeId)> {
+    let (tree, node) = self.0.get()?;
+    Some((tree.upgrade()?, *node))
+  }
 }
 
 /// The services of one shell, by type.
@@ -47,6 +70,7 @@ impl Cx {
     Cx {
       owner,
       services: Rc::default(),
+      anchor: None,
     }
   }
 
@@ -63,6 +87,7 @@ impl Cx {
     Cx {
       owner: self.owner.child(),
       services: Rc::clone(&self.services),
+      anchor: self.anchor.clone(),
     }
   }
 
@@ -70,7 +95,15 @@ impl Cx {
   pub(crate) fn named(self, name: impl Into<String>) -> Cx {
     Cx {
       owner: self.owner.named(name),
-      services: self.services,
+      ..self
+    }
+  }
+
+  /// The context of a widget's own node, at `anchor`.
+  pub(crate) fn at(self, anchor: Rc<Anchor>) -> Cx {
+    Cx {
+      anchor: Some(anchor),
+      ..self
     }
   }
 

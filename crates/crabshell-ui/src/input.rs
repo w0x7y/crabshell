@@ -370,7 +370,7 @@ fn run_isolated<F: ?Sized>(path: &str, name: &str, handler: Rc<Handler<F>>, call
   }
 }
 
-fn panic_message(payload: &(dyn Any + Send)) -> &str {
+pub(crate) fn panic_message(payload: &(dyn Any + Send)) -> &str {
   if let Some(message) = payload.downcast_ref::<&str>() {
     message
   } else if let Some(message) = payload.downcast_ref::<String>() {

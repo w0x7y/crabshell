@@ -16,10 +16,11 @@ use std::rc::{Rc, Weak};
 use crabshell_reactive::Signal;
 use taffy::TaffyTree;
 
-use crate::cx::Cx;
+use crate::cx::{Anchor, Cx};
 use crate::geometry::{Rect, Size};
 use crate::input::{Handlers, Pointer};
 use crate::keyed::KeyedSlot;
+use crate::popup::Popup;
 use crate::prop::{Prop, PropKind};
 use crate::style::{Padding, Style};
 use crate::text::TextNode;
@@ -41,6 +42,21 @@ pub(crate) struct Tree {
   /// Areas to repaint, gathered since the renderer last took them.
   pub(crate) damage: Vec<Rect>,
   pub(crate) pointer: Pointer,
+  /// Popups its widgets opened, until the platform takes them.
+  pub(crate) popups: Vec<Popup>,
+  /// Set for a popup's own tree.
+  pub(crate) popup: Option<PopupState>,
+}
+
+/// What only a popup's tree has.
+pub(crate) struct PopupState {
+  /// The window it opened from, a panel or another popup.
+  pub(crate) opener: Weak<RefCell<Tree>>,
+  /// `close_popup` asked for it to close.
+  pub(crate) close: bool,
+  /// Lives under the popup's owner, so it is gone once the widget that
+  /// opened the popup is.
+  pub(crate) alive: Signal<()>,
 }
 
 pub(crate) struct Node {
@@ -202,15 +218,26 @@ impl Node {
 }
 
 impl Tree {
-  /// A tree holding only the window's root node, owned by `cx`.
-  pub(crate) fn new(this: Weak<RefCell<Tree>>, output: Output, cx: Cx, path: Rc<str>) -> Tree {
+  /// A tree holding only the window's root node, a `name` such as
+  /// `"PanelWindow"`, owned by `cx`, which is anchored at the root.
+  pub(crate) fn new(
+    this: Weak<RefCell<Tree>>,
+    name: &'static str,
+    output: Output,
+    cx: Cx,
+    path: Rc<str>,
+  ) -> Tree {
     let mut taffy = TaffyTree::new();
+    let anchor = cx.anchor.clone();
     let root = taffy
       .new_leaf_with_context(
         taffy::Style::default(),
-        Node::new("PanelWindow", path, cx, NodeKind::Root),
+        Node::new(name, path, cx, NodeKind::Root),
       )
       .expect("invariant: adding a leaf to taffy never fails");
+    if let Some(anchor) = anchor {
+      anchor.set(this.clone(), root);
+    }
     Tree {
       this,
       taffy,
@@ -221,6 +248,8 @@ impl Tree {
       needs_layout: true,
       damage: Vec::new(),
       pointer: Pointer::default(),
+      popups: Vec::new(),
+      popup: None,
     }
   }
 
@@ -261,6 +290,14 @@ impl Tree {
     self.bind_opt(root, layer, "layer", |tree, _, value| {
       tree.surface.set(|s| &mut s.layer, value);
     });
+    self.mount_root(style, child);
+    self.surface.changed = true;
+  }
+
+  /// Applies the root's style and adds its child, as a panel's or a
+  /// popup's.
+  pub(crate) fn mount_root(&mut self, style: Option<Prop<Style>>, child: Option<Element>) {
+    let root = self.root;
     self.bind_opt(root, style, "style", set_style);
     if let Some(child) = child {
       let cx = self.node(root).map(|node| node.cx.clone());
@@ -268,7 +305,6 @@ impl Tree {
       let child = self.mount(child, &cx, root);
       self.set_group(root, 0, vec![child]);
     }
-    self.surface.changed = true;
   }
 
   /// Turns `element` and everything in it into nodes under a new child
@@ -287,7 +323,11 @@ impl Tree {
       None => format!("{parent_path}/{name}"),
     }
     .into();
-    let cx = parent_cx.child().named(path.to_string());
+    let anchor = Rc::new(Anchor::default());
+    let cx = parent_cx
+      .child()
+      .named(path.to_string())
+      .at(Rc::clone(&anchor));
 
     // The node starts with defaults; the properties are applied below.
     let node_kind = match &mut kind {
@@ -321,6 +361,7 @@ impl Tree {
         Node::new(name, Rc::clone(&path), cx.clone(), node_kind),
       )
       .expect("invariant: adding a leaf to taffy never fails");
+    anchor.set(self.this.clone(), id);
 
     self.bind_opt(id, style, "style", set_style);
     self.bind_kind(id, kind);
