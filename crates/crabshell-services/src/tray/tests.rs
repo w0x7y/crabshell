@@ -7,14 +7,18 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use crabshell_reactive::Runtime;
-use crabshell_ui::{Cx, IconPixels, IconSource};
+use crabshell_ui::Color;
+use crabshell_ui::{
+  Content, Cx, IconPixels, IconSource, NodeView, Output, PanelWindow, Point, PointerButton, Rect,
+  ScrollDelta, Size, Style, TextSystem, Window,
+};
 use zbus::export::futures_core::Stream;
 use zbus::message::Type as Kind;
 use zbus::{Connection, MessageStream, OwnedVariant, Variant};
 
 use super::menu::{Child, DBUSMENU, Layout, Props, entries, without_access_keys};
 use super::{
-  BUS, BUS_PATH, ITEM, ITEM_PATH, MenuEntry, MenuToggle, PROPERTIES, Properties, TrayItem,
+  BUS, BUS_PATH, ITEM, ITEM_PATH, MenuEntry, MenuToggle, PROPERTIES, Properties, Tray, TrayItem,
   TrayMenu, TrayStatus, WATCHER, WATCHER_PATH,
 };
 use crate::testing::{Harness, PrivateBus, capture_logs, offline};
@@ -1444,4 +1448,327 @@ fn a_huge_menu_keeps_its_first_entries() {
     (1..1100).map(leaf).collect(),
   ))];
   assert_eq!(entries(nested, &mut left)[0].children.len(), 1023);
+}
+
+/// A 400 by 30 bar holding a tray of 16 px icons, laid out.
+fn tray_bar(shell: &mut Harness, text: &mut TextSystem) -> Window {
+  let panel = PanelWindow::new(&Output::new("DP-1")).child(Tray::new().icon_size(16));
+  let window = Window::new(&shell.cx, panel);
+  window.set_size(Size::new(400.0, 30.0));
+  frame(&window, text);
+  window
+}
+
+/// Runs the bindings and lays `window` out if it needs it.
+fn frame(window: &Window, text: &mut TextSystem) {
+  Runtime::current().flush();
+  if window.needs_layout() {
+    window.layout(text);
+  }
+}
+
+/// The tray's item buttons: the bar holds the tray's row, which holds the
+/// row of items.
+fn tray_buttons(window: &Window) -> Vec<(Rect, Option<IconSource>)> {
+  let view = window.view();
+  let tray = view.root().children().next().expect("the tray");
+  let items = tray.children().next().expect("the tray's row of items");
+  items
+    .children()
+    .map(|button| {
+      let icon = button
+        .children()
+        .next()
+        .and_then(|icon| match icon.content() {
+          Content::Icon(icon) => Some(icon.source.clone()),
+          _ => None,
+        });
+      (button.rect(), icon)
+    })
+    .collect()
+}
+
+/// The rectangle of the button whose text is `label`, anywhere in `window`.
+fn labeled(window: &Window, label: &str) -> Option<Rect> {
+  fn find(node: NodeView<'_>, label: &str, button: Option<Rect>) -> Option<Rect> {
+    let button = if node.name() == "Button" {
+      Some(node.rect())
+    } else {
+      button
+    };
+    if let Content::Text(text) = node.content()
+      && text.content() == label
+    {
+      return button;
+    }
+    node.children().find_map(|child| find(child, label, button))
+  }
+  find(window.view().root(), label, None)
+}
+
+fn press(window: &Window, at: Rect, button: PointerButton) {
+  window.pointer_motion(Point::new(at.x + at.width / 2.0, at.y + at.height / 2.0));
+  window.pointer_button(button, true);
+  window.pointer_button(button, false);
+}
+
+#[test]
+fn the_tray_shows_each_item_and_passes_its_clicks_on() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let mut text = TextSystem::new();
+  let window = tray_bar(&mut shell, &mut text);
+  assert!(tray_buttons(&window).is_empty());
+
+  // An app that isn't only a menu, so a left click activates it.
+  let items = shell.cx.tray().items();
+  let name = item_name();
+  let properties = Properties {
+    item_is_menu: Some(false),
+    ..sample()
+  };
+  let app = FakeItem::start(&mut shell, &bus, &[name], ITEM_PATH, Some(properties));
+  app.register(&mut shell, name);
+  wait_for(&mut shell, "the item", || !items.get_untracked().is_empty());
+  frame(&window, &mut text);
+  let buttons = tray_buttons(&window);
+  assert_eq!(buttons.len(), 1);
+  let item = shell.cx.tray().items().get_untracked().remove(0);
+  assert_eq!(buttons[0].1, item.icon(32), "the item's icon");
+
+  let at = buttons[0].0;
+  press(&window, at, PointerButton::Left);
+  press(&window, at, PointerButton::Middle);
+  window.pointer_scroll(ScrollDelta::Wheel(-120));
+  let calls = || app.calls()[1..].to_vec();
+  wait_for(&mut shell, "three calls", || calls().len() == 3);
+  assert_eq!(
+    calls(),
+    [
+      "Activate(0, 0)",
+      "SecondaryActivate(0, 0)",
+      r#"Scroll(1, "vertical")"#
+    ]
+  );
+  assert!(
+    window.take_popups().is_empty(),
+    "the item isn't only a menu"
+  );
+
+  // The item leaves, and its button goes.
+  let connection = app.connection.clone();
+  shell
+    .block_on(connection.close())
+    .expect("the app leaves the bus");
+  wait_for(&mut shell, "the item to go", || {
+    items.get_untracked().is_empty()
+  });
+  frame(&window, &mut text);
+  assert!(tray_buttons(&window).is_empty());
+}
+
+#[test]
+fn a_click_opens_the_menu_and_an_entry_tells_the_app() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let mut text = TextSystem::new();
+  let window = tray_bar(&mut shell, &mut text);
+  let (app, _) = one_item(&mut shell, &bus);
+  frame(&window, &mut text);
+  let menu = shell.cx.tray().menu();
+  Runtime::current().flush();
+  let nodes = Runtime::current().node_count();
+
+  // The sample item is only a menu, so a left click opens it, as a right
+  // click does.
+  press(&window, tray_buttons(&window)[0].0, PointerButton::Left);
+  let popup = window.take_popups().pop().expect("the popup opens at once");
+  frame(&popup, &mut text);
+  assert_eq!(
+    popup.size(),
+    Size::new(1.0, 1.0),
+    "empty until the layout comes"
+  );
+  let background = |popup: &Window| {
+    let view = popup.view();
+    let menu = view.root().children().next().expect("the menu");
+    menu.style().background
+  };
+  assert_eq!(background(&popup), None, "and clear");
+
+  wait_for(&mut shell, "the menu", || menu.get_untracked().is_some());
+  frame(&popup, &mut text);
+  assert!(popup.size().height > 20.0, "{:?}", popup.size());
+  assert!(background(&popup).is_some(), "styled once it shows");
+  let connect = labeled(&popup, "Connect").expect("the Connect entry");
+  press(&popup, connect, PointerButton::Left);
+  let events = || {
+    let calls = app.calls().into_iter();
+    calls
+      .filter(|call| call.starts_with("Event"))
+      .collect::<Vec<_>>()
+  };
+  wait_for(&mut shell, "the event", || !events().is_empty());
+  assert_eq!(events(), [r#"Event(1, "clicked")"#]);
+  assert!(popup.wants_close());
+
+  // The platform drops the closed popup, and the tray stops following the
+  // app's menu.
+  drop(popup);
+  Runtime::current().flush();
+  assert_eq!(
+    Runtime::current().node_count(),
+    nodes,
+    "the popup's nodes went"
+  );
+  assert_eq!(menu.get_untracked(), None);
+  let service = shell.cx.tray().service.expect("the shell's tray");
+  assert!(!service.is_open(|_| true), "no menu is followed");
+}
+
+#[test]
+fn a_menu_opened_again_outlives_the_popup_it_replaced() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let mut text = TextSystem::new();
+  let window = tray_bar(&mut shell, &mut text);
+  one_item(&mut shell, &bus);
+  frame(&window, &mut text);
+  let menu = shell.cx.tray().menu();
+  let at = tray_buttons(&window)[0].0;
+
+  press(&window, at, PointerButton::Right);
+  let first = window.take_popups().pop().expect("a popup");
+  press(&window, at, PointerButton::Right);
+  let second = window.take_popups().pop().expect("another popup");
+  wait_for(&mut shell, "the menu", || menu.get_untracked().is_some());
+  // The platform drops the first popup for the second.
+  drop(first);
+  assert!(menu.get_untracked().is_some(), "the second opening stays");
+  drop(second);
+  assert_eq!(menu.get_untracked(), None);
+}
+
+#[test]
+fn a_menu_the_app_can_no_longer_give_closes_its_popup() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let mut text = TextSystem::new();
+  let window = tray_bar(&mut shell, &mut text);
+  let (app, _) = one_item(&mut shell, &bus);
+  frame(&window, &mut text);
+  let menu = shell.cx.tray().menu();
+
+  press(&window, tray_buttons(&window)[0].0, PointerButton::Right);
+  let popup = window.take_popups().pop().expect("a popup");
+  wait_for(&mut shell, "the menu", || menu.get_untracked().is_some());
+  frame(&popup, &mut text);
+  assert!(!popup.wants_close());
+  // The app stays, but its menu can't be read any more.
+  *app.layout.borrow_mut() = None;
+  FakeItem::menu_changed(&mut shell, &app.connection, None);
+  wait_for(&mut shell, "the popup to close", || popup.wants_close());
+  assert_eq!(tray_buttons(&window).len(), 1, "the item stays");
+}
+
+#[test]
+fn a_panicking_icon_size_or_menu_style_is_logged_and_the_tray_runs_on() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let mut text = TextSystem::new();
+  let (_app, _) = one_item(&mut shell, &bus);
+  let tray = Tray::new()
+    .icon_size(|| -> u32 { panic!("no size") })
+    .menu_style(|| -> Style { panic!("no style") });
+  let window = Window::new(
+    &shell.cx,
+    PanelWindow::new(&Output::new("DP-1")).child(tray),
+  );
+  window.set_size(Size::new(400.0, 30.0));
+  let logs = capture_logs(|| frame(&window, &mut text));
+  assert!(
+    logs.contains("PanelWindow[DP-1]/Row/Row[0]/Button[0]/Icon.size panicked"),
+    "{logs}"
+  );
+  assert_eq!(tray_buttons(&window).len(), 1, "the button is there");
+
+  let menu = shell.cx.tray().menu();
+  press(&window, tray_buttons(&window)[0].0, PointerButton::Right);
+  let popup = window.take_popups().pop().expect("a popup");
+  let logs = capture_logs(|| {
+    wait_for(&mut shell, "the menu", || menu.get_untracked().is_some());
+    frame(&popup, &mut text);
+  });
+  assert!(
+    logs.contains("PanelWindow[DP-1]/Row/Row[0]/Button[0]/PopupWindow/Menu.style panicked"),
+    "{logs}"
+  );
+  assert!(labeled(&popup, "Connect").is_some(), "the menu shows");
+}
+
+#[test]
+fn a_menu_whose_first_read_fails_closes_its_popup() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let mut text = TextSystem::new();
+  let window = tray_bar(&mut shell, &mut text);
+  let (app, _) = one_item(&mut shell, &bus);
+  frame(&window, &mut text);
+  *app.layout.borrow_mut() = None;
+  press(&window, tray_buttons(&window)[0].0, PointerButton::Right);
+  let popup = window.take_popups().pop().expect("a popup");
+  frame(&popup, &mut text);
+  assert!(!popup.wants_close());
+  // Clear and empty, it would hold the pointer grab until a click outside.
+  wait_for(&mut shell, "the popup to close", || popup.wants_close());
+}
+
+#[test]
+fn a_submenu_has_the_menus_style() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let mut text = TextSystem::new();
+  let window = tray_bar(&mut shell, &mut text);
+  one_item(&mut shell, &bus);
+  frame(&window, &mut text);
+  let menu = shell.cx.tray().menu();
+  press(&window, tray_buttons(&window)[0].0, PointerButton::Right);
+  let popup = window.take_popups().pop().expect("a popup");
+  wait_for(&mut shell, "the menu", || menu.get_untracked().is_some());
+  frame(&popup, &mut text);
+  let later = labeled(&popup, "Later").expect("the Later submenu entry");
+  press(&popup, later, PointerButton::Left);
+  let submenu = popup.take_popups().pop().expect("the submenu opens");
+  frame(&submenu, &mut text);
+  let view = submenu.view();
+  let column = view.root().children().next().expect("the submenu's menu");
+  assert_eq!(
+    column.style().background,
+    Some(Color::rgb(0x2b, 0x2b, 0x2b))
+  );
+}
+
+#[test]
+fn a_call_that_ends_leaves_no_timer_and_one_that_hangs_times_out() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  one_item(&mut shell, &bus);
+  let shared = Rc::clone(&shell.cx.tray().service.expect("the shell's tray").shared);
+  let limit = Duration::from_millis(300);
+
+  let answered = {
+    let shared = Rc::clone(&shared);
+    shell.block_on(async move { shared.timeout(limit, async { Ok(7) }).await })
+  };
+  assert_eq!(answered.expect("answered in time"), 7);
+  // Nothing wakes the loop when the limit would have ended.
+  let wakeups = shell.run_until(Instant::now() + limit * 2);
+  assert_eq!(wakeups, 1, "only the wait itself ends");
+
+  let hung = shell.block_on(async move {
+    let never = std::future::pending::<zbus::Result<()>>();
+    shared.timeout(limit, never).await
+  });
+  let error = hung.expect_err("no answer");
+  assert!(error.to_string().contains("no answer in time"), "{error}");
 }
