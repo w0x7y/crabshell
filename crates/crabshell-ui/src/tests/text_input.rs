@@ -252,3 +252,120 @@ fn line_breaks_from_outside_become_spaces() {
   let window = field(&mut h, text, |input| input);
   assert_eq!(shown(&window).0, "a b  c");
 }
+
+#[test]
+fn an_input_method_composes_commits_and_deletes_around_the_caret() {
+  use crate::Preedit;
+
+  let mut h = Harness::new();
+  let text = h.cx.signal(String::from("ab"));
+  let window = field(&mut h, text, |input| input.focus(true));
+  h.frame(&window);
+  let state = window.field().expect("a focused field");
+  assert_eq!(
+    (state.text.as_str(), state.cursor, state.anchor),
+    ("ab", 2, 2)
+  );
+
+  window.set_preedit(Some(Preedit {
+    text: String::from("ni"),
+    cursor: Some((1, 1)),
+  }));
+  h.frame(&window);
+  assert_eq!(shown(&window).0, "abni");
+  assert_eq!(text.get(), "ab", "composing writes nothing yet");
+  let underline = match node_at(window.view().root(), &[0, 0]).content() {
+    Content::Input(input) => input.underline.to_vec(),
+    _ => panic!("not a field"),
+  };
+  assert_eq!(underline.len(), 1);
+
+  window.set_preedit(None);
+  window.commit_text("你");
+  assert_eq!(text.get(), "ab你");
+  // Lengths are in bytes: one byte would split the character, so it is
+  // left alone; its three bytes go.
+  window.delete_around(1, 0);
+  assert_eq!(text.get(), "ab你");
+  window.delete_around(3, 0);
+  assert_eq!(text.get(), "ab");
+}
+
+#[test]
+fn input_methods_see_no_field_without_the_keyboard_or_in_a_password() {
+  let mut h = Harness::new();
+  let text = h.cx.signal(String::new());
+  let hidden = h.cx.signal(false);
+  let row = Row::new().child(
+    TextInput::new(text)
+      .focus(true)
+      .password(move || hidden.get()),
+  );
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+  assert_eq!(window.field(), None, "the keyboard is elsewhere");
+  window.keyboard_enter();
+  assert!(window.field().is_some());
+  hidden.set(true);
+  h.frame(&window);
+  assert_eq!(window.field(), None);
+}
+
+#[test]
+fn input_methods_count_from_the_selection_and_replace_it_with_a_preedit() {
+  use crate::Preedit;
+
+  let mut h = Harness::new();
+  let text = h.cx.signal(String::from("abcdef"));
+  let window = field(&mut h, text, |input| input.focus(true));
+  h.frame(&window);
+  // Select "cd", then delete one byte either side of it.
+  window.key(&key(Key::Left));
+  window.key(&key(Key::Left));
+  let shift = |key_: Key| KeyEvent {
+    modifiers: Modifiers {
+      shift: true,
+      ..Modifiers::default()
+    },
+    ..key(key_)
+  };
+  window.key(&shift(Key::Left));
+  window.key(&shift(Key::Left));
+  window.delete_around(1, 1);
+  assert_eq!(text.get(), "acdf");
+  let state = window.field().expect("a field");
+  assert_eq!((state.cursor, state.anchor), (1, 3), "the selection stays");
+  // A preedit replaces the selection.
+  window.set_preedit(Some(Preedit {
+    text: String::from("x"),
+    cursor: None,
+  }));
+  h.frame(&window);
+  assert_eq!(text.get(), "af");
+  assert_eq!(shown(&window).0, "axf");
+  assert_eq!(
+    shown(&window).2,
+    None,
+    "no caret when the input method hides it"
+  );
+}
+
+#[test]
+fn input_methods_leave_a_password_field_alone() {
+  use crate::Preedit;
+
+  let mut h = Harness::new();
+  let text = h.cx.signal(String::from("pw"));
+  let window = field(&mut h, text, |input| input.focus(true).password(true));
+  h.frame(&window);
+  window.commit_text("x");
+  assert_eq!(text.get(), "pw");
+  window.delete_around(1, 0);
+  assert_eq!(text.get(), "pw");
+  window.set_preedit(Some(Preedit {
+    text: String::from("y"),
+    cursor: None,
+  }));
+  h.frame(&window);
+  assert_eq!(text.get(), "pw");
+  assert_eq!(shown(&window).0, "••");
+}

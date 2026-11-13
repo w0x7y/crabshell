@@ -91,7 +91,7 @@ pub use region::Region;
 pub use scroll::{ListView, ScrollView};
 pub use style::{Border, Color, Font, Padding, Style};
 pub use text::TextSystem;
-pub use text_input::TextInput;
+pub use text_input::{FieldState, Preedit, TextInput};
 pub use view::{Content, IconView, ImageView, InputView, NodeView, TextView, WindowView};
 pub use widgets::{
   Align, Button, Column, Element, Fit, Icon, IconPixels, IconSource, Image, Justify, Row, Spacer,

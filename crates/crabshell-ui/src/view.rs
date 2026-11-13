@@ -124,9 +124,13 @@ impl<'a> NodeView<'a> {
             text: &input.text,
             color,
           },
-          caret: input.focused.then_some(input.caret),
+          // An input method may ask for no caret while it composes.
+          caret: (input.focused
+            && !matches!(&input.preedit, Some(preedit) if preedit.cursor.is_none()))
+          .then_some(input.caret),
           selection: if input.focused { &input.selection } else { &[] },
           area: input.area,
+          underline: &input.underline,
         })
       }
       NodeKind::Image(image) => match &image.source {
@@ -185,6 +189,8 @@ pub struct InputView<'a> {
   pub selection: &'a [Rect],
   /// The content box everything is cut to.
   pub area: Rect,
+  /// The line under text an input method is composing.
+  pub underline: &'a [Rect],
 }
 
 /// Laid-out text, ready to draw. Lines can stick out of the node's

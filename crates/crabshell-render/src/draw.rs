@@ -624,6 +624,13 @@ impl Painter<'_> {
       fill(pixmap, path, tint, FillRule::Winding);
     }
     self.text(pixmap, &input.text);
+    for line in input.underline {
+      if let Some(area) = self.grid.rect(*line) {
+        let mut path = PathBuilder::new();
+        path.push_rect(area);
+        fill(pixmap, path, color, FillRule::Winding);
+      }
+    }
     if let Some(caret) = input.caret {
       // At least one pixel wide whatever the scale.
       let left = self.grid.x(caret.x);

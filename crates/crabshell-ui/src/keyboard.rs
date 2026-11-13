@@ -197,6 +197,15 @@ impl Tree {
   pub(crate) fn focus(&mut self, id: Option<NodeId>) {
     let old = std::mem::replace(&mut self.keyboard.focused, id);
     if old != id {
+      // What an input method was composing there is dropped with it.
+      if let Some(old) = old
+        && matches!(self.node(old).map(|node| &node.kind), Some(NodeKind::Input(input)) if input.preedit.is_some())
+      {
+        self.update_input(old, |input| {
+          input.preedit = None;
+          input.refresh();
+        });
+      }
       self.show_focus(old, false);
       let entered = self.keyboard.entered;
       self.show_focus(id, entered);
