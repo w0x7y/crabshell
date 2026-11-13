@@ -97,4 +97,17 @@ impl Rect {
       self.bottom().max(other.bottom()) - y,
     )
   }
+
+  /// The area both cover, or an empty rectangle if they don't overlap.
+  pub fn intersect(&self, other: Rect) -> Rect {
+    let x = self.x.max(other.x);
+    let y = self.y.max(other.y);
+    let right = self.right().min(other.right());
+    let bottom = self.bottom().min(other.bottom());
+    if right > x && bottom > y {
+      Rect::new(x, y, right - x, bottom - y)
+    } else {
+      Rect::default()
+    }
+  }
 }

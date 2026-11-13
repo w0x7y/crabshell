@@ -94,6 +94,8 @@ pub(crate) struct Node {
   /// or resizing it repaints only this, since its children report their
   /// own; a spacer that grows repaints nothing.
   pub(crate) drawn: Rect,
+  /// Whether its style clipped its children at the last layout.
+  pub(crate) clips: bool,
   /// A layout property changed, so the node is repainted after the next
   /// layout even if it doesn't move.
   pub(crate) changed: bool,
@@ -201,6 +203,7 @@ impl Node {
       painted: Rect::default(),
       bounds: Rect::default(),
       drawn: Rect::default(),
+      clips: false,
       changed: true,
     }
   }

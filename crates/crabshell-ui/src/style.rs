@@ -125,8 +125,8 @@ pub struct Padding {
 /// [`Text`](crate::Text) takes `color` and `font` from the nearest widget
 /// that sets them, starting with itself and going up. Nothing else inherits.
 ///
-/// `font` and `padding` change the layout; the other fields only change how
-/// the widget is painted.
+/// `font`, `padding` and `clip` change the layout; the other fields only
+/// change how the widget is painted.
 ///
 /// ```
 /// use crabshell_ui::{Color, Font, Style};
@@ -155,6 +155,9 @@ pub struct Style {
   /// From 0.0 (invisible) to 1.0 (opaque), applied to the widget and
   /// everything inside it.
   pub opacity: Option<f32>,
+  /// Whether the children are cut to the inside of the border, following
+  /// the rounded corners, like CSS's `overflow: hidden`.
+  pub clip: Option<bool>,
 }
 
 impl Style {
@@ -168,6 +171,7 @@ impl Style {
       radius: None,
       border: None,
       opacity: None,
+      clip: None,
     }
   }
 
@@ -231,6 +235,15 @@ impl Style {
     }
   }
 
+  /// Sets whether the children are cut to the inside of the border,
+  /// following the rounded corners. Nothing is cut by default.
+  pub const fn clip(self, clip: bool) -> Style {
+    Style {
+      clip: Some(clip),
+      ..self
+    }
+  }
+
   /// This style with every field that `over` sets replaced by its value.
   /// Buttons use it to lay their hover and pressed styles over the normal
   /// one.
@@ -243,12 +256,19 @@ impl Style {
       radius: or(over.radius, self.radius),
       border: or(over.border, self.border),
       opacity: or(over.opacity, self.opacity),
+      clip: or(over.clip, self.clip),
     }
   }
 
-  /// Whether the two styles lay out the same: same font and padding.
+  /// Whether the children are cut to the widget's box.
+  pub fn clips(&self) -> bool {
+    self.clip == Some(true)
+  }
+
+  /// Whether the two styles lay out the same: same font, padding and
+  /// clipping, which changes how far the children's painting reaches.
   pub(crate) fn same_layout(&self, other: &Style) -> bool {
-    self.font == other.font && self.padding == other.padding
+    self.font == other.font && self.padding == other.padding && self.clips() == other.clips()
   }
 }
 

@@ -492,3 +492,23 @@ fn sibling_buttons_have_contexts_of_their_own() {
   assert_eq!(owners.len(), 2);
   assert_ne!(owners[0], owners[1]);
 }
+
+#[test]
+fn a_clip_hides_its_children_from_the_pointer_under_its_border() {
+  let mut h = Harness::new();
+  let clicks = Counter::default();
+  let c = clicks.clone();
+  // A button filling a clipping row whose 4-pixel border covers its
+  // edge.
+  let row = Row::new()
+    .align(Align::Start)
+    .style(Style::new().border(4.0, Color::rgb(9, 9, 9)).clip(true))
+    .child(Button::new(Icon::new("x").size(30)).on_click(move |_| c.hit()));
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+  window.pointer_motion(Point::new(10.0, 2.0));
+  click(&window, PointerButton::Left);
+  assert_eq!(clicks.get(), 0, "a click on the border");
+  window.pointer_motion(Point::new(10.0, 10.0));
+  click(&window, PointerButton::Left);
+  assert_eq!(clicks.get(), 1);
+}

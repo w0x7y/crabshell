@@ -364,3 +364,24 @@ fn bounds_cover_a_node_and_everything_it_paints() {
     text.rect()
   );
 }
+
+#[test]
+fn a_clipping_widget_cuts_its_childrens_reach_to_its_box() {
+  let mut h = Harness::new();
+  let clip = h.cx.signal(true);
+  // A 20-pixel icon in a 10-pixel-tall window overflows the row.
+  let row = Row::new()
+    .align(Align::Start)
+    .style(move || Style::new().clip(clip.get()))
+    .child(Icon::new("x").size(20));
+  let window = h.window(h.panel().child(row), 100.0, 10.0);
+  let bounds = || super::node_at(window.view().root(), &[0]).bounds();
+  assert_eq!(bounds(), Rect::new(0.0, 0.0, 100.0, 10.0));
+
+  // Turning the clip off is a layout change that lets the icon reach out.
+  clip.set(false);
+  h.runtime.flush();
+  assert!(window.needs_layout());
+  h.frame(&window);
+  assert_eq!(bounds(), Rect::new(0.0, 0.0, 100.0, 20.0));
+}

@@ -13,7 +13,7 @@ use std::rc::Rc;
 use crabshell_reactive::{Signal, untrack};
 
 use crate::cx::Cx;
-use crate::geometry::Point;
+use crate::geometry::{Point, Rect};
 use crate::keyboard::KeyHandler;
 use crate::tree::{ButtonNode, Change, NodeId, NodeKind, Tree, borrow};
 use crate::window::Window;
@@ -166,10 +166,21 @@ impl Tree {
   /// drawn on top, so they are tried first.
   fn hit(&self, id: NodeId, point: Point) -> Option<NodeId> {
     let node = self.node(id)?;
-    if !node.rect.is_some_and(|rect| rect.contains(point)) {
-      return None;
-    }
-    let children = self.taffy.children(id).unwrap_or_default();
+    let rect = node.rect.filter(|rect| rect.contains(point))?;
+    let style = node.effective_style();
+    // A clip hides its children under its border too.
+    let border = style.border.map_or(0.0, |border| border.width.max(0.0));
+    let inside = Rect::new(
+      rect.x + border,
+      rect.y + border,
+      rect.width - 2.0 * border,
+      rect.height - 2.0 * border,
+    );
+    let children = if style.clips() && !inside.contains(point) {
+      Vec::new()
+    } else {
+      self.taffy.children(id).unwrap_or_default()
+    };
     if let Some(hit) = children
       .into_iter()
       .rev()

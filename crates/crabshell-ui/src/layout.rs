@@ -178,7 +178,8 @@ impl Tree {
       return rect.union(children);
     };
     // What the node itself draws: its rectangle, and text or an icon
-    // that overflows it. Nothing is clipped, so overflow shows as in CSS.
+    // that overflows it. Only a clipping style cuts its children's
+    // overflow; otherwise it shows, as in CSS.
     let mut painted = rect;
     match &mut node.kind {
       NodeKind::Text(text) => {
@@ -205,7 +206,20 @@ impl Tree {
       Some(_) => {}
     }
     node.drawn = drawn;
+    let clips = node.effective_style().clips();
+    let children = if clips {
+      children.intersect(rect)
+    } else {
+      children
+    };
     let bounds = painted.union(children);
+    // A clip that came, went or changed shape shows or hides parts of
+    // children that themselves didn't change.
+    if (clips || node.clips) && node.rect.is_some() && (node.changed || node.bounds != bounds) {
+      add_damage(&mut self.damage, node.bounds);
+      add_damage(&mut self.damage, bounds);
+    }
+    node.clips = clips;
     node.rect = Some(rect);
     node.content = content;
     node.painted = painted;
