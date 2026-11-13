@@ -683,6 +683,19 @@ Measured on 2026-11-11 with `examples/bar.rs`: workspaces, the minute clock and 
 
 The counter bar, which uses no services, went from 13.4 to 15.5 MiB once `crabshell` linked libpulse. Its first frame didn't change.
 
+### Phase 4 results
+
+Measured on 2026-11-13 with `examples/bar.rs`, now with the tray: workspaces, the tray, the volume button and the minute clock. Release build on headless Sway, 1920×1080 at scale 1, with audio on a private pipewire-pulse and the tray running the watcher on a private session bus. Two runs.
+
+| Metric                       | Target                                           | v1 bar, headless Sway                                         |
+| ---------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
+| Startup to first frame       | 100 ms or less                                   | 14.3 and 15.8 ms                                              |
+| Idle memory (RSS) after 60 s | 30 MB or less, at most a quarter of Quickshell's | 18.7 and 18.8 MiB, 15% of Quickshell's 125.2 MiB              |
+| Idle wakeups                 | 1 per minute with a minute clock                 | 2 or 3 context switches at each minute boundary, none between |
+| Workspace switch to screen   | within one frame, 16 ms at 60 Hz                 | median 0.5 ms                                                 |
+
+The tray adds about 0.8 MiB. The counter bar, with no tray, stays at 15.4 to 15.5 MiB.
+
 ## Phases
 
 Seven phases totaling 16 to 26 weeks of focused work, all guesses. A phase is done only when its exit check passes. Phase 0 is a go/no-go gate for the whole project.
@@ -697,7 +710,7 @@ Seven phases totaling 16 to 26 weeks of focused work, all guesses. A phase is do
 4. **Phase 3, clock, workspaces and audio (2-4 weeks).**
    - Exit: a workspace switch repaints within one frame, per the log. Scrolling changes the volume, and `pactl get-sink-volume @DEFAULT_SINK@` agrees. After a suspend and resume, the clock is right within 1 s. You check that last one by hand. Passed on 2026-11-11 after a review per step, in commits 11dc5e7 to 7c66869. The switch and volume checks run as headless tests against a private Sway and a private pipewire-pulse, and the maintainer checked suspend and resume, workspaces and volume on the laptop's real session.
 5. **Phase 4, tray and popups (4-6 weeks).** Watcher, host, DBusMenu, `PopupWindow`, `Menu` and `Tray`.
-   - Exit: tests with a fake tray item pass on a private `dbus-daemon`. By hand, `nm-applet --indicator`, `blueman-applet`, KeePassXC and one Electron app such as Discord all show icons, their menus open, clicks reach the app, and all of them survive a reload.
+   - Exit: tests with a fake tray item pass on a private `dbus-daemon`. By hand, `nm-applet --indicator`, `blueman-applet`, KeePassXC and one Electron app such as Discord all show icons, their menus open, clicks reach the app, and all of them survive a reload. Passed on 2026-11-13, except surviving a reload, which needs Phase 5's supervisor and is checked with it: the fake-item tests pass, and the maintainer checked nm-applet, blueman-applet, KeePassXC and Discord on the laptop's session, beside Quickshell's watcher and as the watcher. Commits 59477fd to de5710a, after a review per step, with popups also tested on headless labwc.
 6. **Phase 5, CLI and reload (2-3 weeks).** `init`, `run`, `check`, the watcher, `cx.persist`, crash restarts and `last-good`.
    - Exit: a scripted test checks four cases. A syntax error leaves the old shell running and sends a notification. Fixing it brings up the new shell within build time plus 200 ms. After `kill -9` the shell is back within 2 s. A config that panics at startup three times falls back to `last-good`.
 7. **Phase 6, release (1-2 weeks).** Template, README, API docs on docs.rs, published crates, and measured numbers in the performance table.
