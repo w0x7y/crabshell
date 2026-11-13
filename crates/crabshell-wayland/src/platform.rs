@@ -38,7 +38,9 @@ use crate::pointer::Cursor;
 use crate::popups::{WM_BASE_VERSION, WmBase};
 use crate::scale::Scale;
 use crate::surface::{self, Role, Surface};
+use crate::text_input::SeatTextInput;
 use crate::windows::{Entry, WindowId, Windows};
+use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
 
 /// A new window's first shared-memory pool, in bytes: a 1920 by 30 bar.
 /// sctk grows it as buffers need.
@@ -306,6 +308,9 @@ pub struct Platform {
   pub(crate) windows: Windows<Surface, WlOutput>,
   pub(crate) pointers: Vec<SeatPointer>,
   pub(crate) keyboards: Vec<SeatKeyboard>,
+  /// Present when the compositor relays input methods.
+  pub(crate) text_inputs_manager: Option<ZwpTextInputManagerV3>,
+  pub(crate) text_inputs: Vec<SeatTextInput>,
   /// The seat and serial of the last button press or release on one of
   /// the windows, which a popup's grab needs.
   pub(crate) last_button: Option<(WlSeat, u32)>,
@@ -353,11 +358,13 @@ impl Platform {
         None
       }
     };
+    let text_inputs_manager = globals.bind(&qh, 1..=1, ()).ok();
     tracing::debug!(
       fractional = fractional.is_some(),
+      text_input = text_inputs_manager.is_some(),
       "bound the compositor's globals"
     );
-    Ok(Platform {
+    let mut platform = Platform {
       registry: RegistryState::new(globals),
       outputs: OutputState::new(globals, &qh),
       seats: SeatState::new(globals, &qh),
@@ -377,12 +384,20 @@ impl Platform {
       windows: Windows::new(),
       pointers: Vec::new(),
       keyboards: Vec::new(),
+      text_inputs_manager,
+      text_inputs: Vec::new(),
       last_button: None,
       renderer: Renderer::new(),
       icon_theme: None,
       text: TextSystem::new(),
       stats: Stats::default(),
-    })
+    };
+    // sctk tells `new_seat` only about seats that come later.
+    for seat in platform.seats.seats() {
+      let qh = platform.qh.clone();
+      platform.add_text_input(&qh, &seat);
+    }
+    Ok(platform)
   }
 
   /// The handle other sources are added with.
@@ -584,6 +599,7 @@ impl Platform {
         stats.commits += 1;
       }
     }
+    self.sync_text_inputs();
     if let Err(error) = self.connection.flush() {
       tracing::warn!(%error, "couldn't flush the Wayland connection");
     }

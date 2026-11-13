@@ -19,11 +19,11 @@ use std::time::Duration;
 
 use crabshell_reactive::{Runtime, Signal};
 use crabshell_ui::{
-  Align, Button, Color, Column, Cx, Edge, Key, KeyEvent, KeyboardFocus, Margins, Output,
-  PanelWindow, PopupWindow, Rect, Region, Row, Spacer, Style, Text, Window,
+  Align, Button, Color, Column, Content, Cx, Edge, Key, KeyEvent, KeyboardFocus, Margins, Output,
+  PanelWindow, PopupWindow, Rect, Region, Row, Spacer, Style, Text, TextInput, Window,
 };
 use crabshell_wayland::{Event, EventLoop, Platform, WindowId};
-use sway::{Image, Sway, VirtualKeyboard, VirtualPointer, keys, run_until, settle};
+use sway::{Image, InputMethod, Sway, VirtualKeyboard, VirtualPointer, keys, run_until, settle};
 
 /// Set in the child that [`sway_refuses_to_start_beside_a_swaysock`] runs.
 const GUARD_CHILD: &str = "CRABSHELL_GUARD_CHILD";
@@ -73,6 +73,8 @@ struct Setup {
   margins: Margins,
   /// When the bar takes the keyboard.
   keyboard: KeyboardFocus,
+  /// Whether the bar's text field takes the focus as it is built.
+  field: bool,
 }
 
 /// A bar across the top that opens nothing.
@@ -82,6 +84,7 @@ const PLAIN: Setup = Setup {
   edge: Edge::Top,
   margins: Margins::all(0),
   keyboard: KeyboardFocus::None,
+  field: false,
 };
 
 /// What the test bar's bindings read and write.
@@ -103,6 +106,8 @@ struct Knobs {
   keys: Signal<Vec<KeyEvent>>,
   /// When the bar takes the keyboard, from `setup.keyboard`.
   keyboard: Signal<KeyboardFocus>,
+  /// What the bar's text field holds.
+  typed: Signal<String>,
 }
 
 /// A popup with two entries: the first opens another menu beside it, and
@@ -204,6 +209,22 @@ fn bar(cx: &Cx, output: &str, knobs: Knobs) -> Window {
           },
         )
         .child(Spacer::new())
+        // Only some tests want a text field.
+        .children_keyed(
+          move || {
+            if knobs.setup.field {
+              vec![()]
+            } else {
+              Vec::new()
+            }
+          },
+          |_| (),
+          move |cx, _| {
+            Row::new()
+              .child(TextInput::new(knobs.typed).focus(true))
+              .child(TextInput::new(cx.signal(String::new())).password(true))
+          },
+        )
         .child(Text::new(move || label.get())),
     );
   Window::new(cx, panel)
@@ -237,6 +258,7 @@ impl Shell {
       masked: cx.signal(false),
       keys: cx.signal(Vec::new()),
       keyboard: cx.signal(setup.keyboard),
+      typed: cx.signal(String::new()),
     };
     let mut event_loop = sway.connect();
     let built = Rc::new(RefCell::new(Vec::new()));
@@ -746,6 +768,80 @@ fn a_key_held_as_the_keyboard_goes_stops_repeating() {
     started.elapsed()
   );
   assert_eq!(shell.event_loop.platform().stats().iterations, before + 1);
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn an_input_method_composes_and_commits_into_a_text_field() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let mut keyboard = VirtualKeyboard::new(&sway);
+  let mut method = InputMethod::new(&sway);
+  let setup = Setup {
+    keyboard: KeyboardFocus::Exclusive,
+    field: true,
+    ..PLAIN
+  };
+  let mut shell = Shell::build(&sway, setup);
+  let id = shell.wait_for_bar("HEADLESS-1");
+  run_until(
+    &mut shell.event_loop,
+    "the input method to activate",
+    |_| {
+      method.poll();
+      method.active()
+    },
+  );
+  // What the first text field in the bar shows.
+  fn field_text(node: crabshell_ui::NodeView<'_>) -> Option<String> {
+    match node.content() {
+      Content::Input(input) => Some(input.text.content().to_owned()),
+      _ => node.children().find_map(field_text),
+    }
+  }
+  let shown = |platform: &Platform| {
+    platform
+      .windows()
+      .find(|(held, _)| *held == id)
+      .and_then(|(_, window)| field_text(window.view().root()))
+  };
+  let before = method.dones();
+  method.preedit("ni", 2);
+  run_until(&mut shell.event_loop, "the preedit shown", |platform| {
+    shown(platform).as_deref() == Some("ni")
+  });
+  // Sway ignores a commit whose serial isn't the latest `done`, so wait
+  // for the one the field's answer brings.
+  run_until(&mut shell.event_loop, "the field's answer", |_| {
+    method.poll();
+    method.dones() > before
+  });
+  assert_eq!(
+    shell.knobs.typed.get_untracked(),
+    "",
+    "composing commits nothing"
+  );
+
+  method.commit("你");
+  let typed = shell.knobs.typed;
+  run_until(&mut shell.event_loop, "the committed text", |_| {
+    typed.get_untracked() == "你"
+  });
+  // The field tells the input method what it now holds.
+  run_until(&mut shell.event_loop, "the surrounding text", |_| {
+    method.poll();
+    method.surrounding() == "你"
+  });
+  // Tab moves to the password field, which input methods never see.
+  keyboard.tap(keys::TAB);
+  run_until(
+    &mut shell.event_loop,
+    "the input method to deactivate",
+    |_| {
+      method.poll();
+      !method.active()
+    },
+  );
 }
 
 /// The popups held, in the order they opened. Only one chain is ever

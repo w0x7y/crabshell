@@ -10,6 +10,7 @@ mod pointer;
 mod popups;
 mod scale;
 mod surface;
+mod text_input;
 mod windows;
 
 use std::io;

@@ -224,7 +224,9 @@ impl SeatHandler for Platform {
     &mut self.seats
   }
 
-  fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat) {}
+  fn new_seat(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: WlSeat) {
+    self.add_text_input(qh, &seat);
+  }
 
   fn new_capability(
     &mut self,
@@ -257,6 +259,7 @@ impl SeatHandler for Platform {
   fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: WlSeat) {
     self.drop_pointers(&seat);
     self.drop_keyboards(&seat);
+    self.drop_text_input(&seat);
   }
 }
 

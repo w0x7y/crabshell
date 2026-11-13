@@ -16,6 +16,10 @@ use smithay_client_toolkit::reexports::client::protocol::{wl_pointer, wl_registr
 use smithay_client_toolkit::reexports::client::{
   Connection, Dispatch, EventQueue, QueueHandle, delegate_noop,
 };
+use smithay_client_toolkit::reexports::protocols_misc::zwp_input_method_v2::client::{
+  zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+  zwp_input_method_v2::{self, ZwpInputMethodV2},
+};
 use smithay_client_toolkit::reexports::protocols_misc::zwp_virtual_keyboard_v1::client::{
   zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
   zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
@@ -555,5 +559,132 @@ impl VirtualKeyboard {
       .queue
       .roundtrip(&mut Helper)
       .expect("the helper's roundtrip");
+  }
+}
+
+/// What a test input method has heard from Sway.
+#[derive(Default)]
+pub struct MethodState {
+  /// Whether a text field is active, as of the last `done`.
+  active: bool,
+  /// Whether `activate` came since the last `done`.
+  activating: Option<bool>,
+  /// The field's text, as of the last `done`.
+  surrounding: String,
+  pending: String,
+  /// `done` events so far: the serial a commit sends.
+  dones: u32,
+}
+
+impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for MethodState {
+  fn event(
+    _: &mut MethodState,
+    _: &wl_registry::WlRegistry,
+    _: wl_registry::Event,
+    _: &GlobalListContents,
+    _: &Connection,
+    _: &QueueHandle<MethodState>,
+  ) {
+  }
+}
+
+delegate_noop!(MethodState: ignore wl_seat::WlSeat);
+delegate_noop!(MethodState: ZwpInputMethodManagerV2);
+
+impl Dispatch<ZwpInputMethodV2, ()> for MethodState {
+  fn event(
+    state: &mut MethodState,
+    _: &ZwpInputMethodV2,
+    event: zwp_input_method_v2::Event,
+    _: &(),
+    _: &Connection,
+    _: &QueueHandle<MethodState>,
+  ) {
+    match event {
+      zwp_input_method_v2::Event::Activate => state.activating = Some(true),
+      zwp_input_method_v2::Event::Deactivate => state.activating = Some(false),
+      zwp_input_method_v2::Event::SurroundingText { text, .. } => state.pending = text,
+      zwp_input_method_v2::Event::Done => {
+        state.dones += 1;
+        if let Some(active) = state.activating.take() {
+          state.active = active;
+        }
+        state.surrounding = std::mem::take(&mut state.pending);
+      }
+      _ => {}
+    }
+  }
+}
+
+/// A third client acting as the seat's input method, as a CJK input
+/// method does: it composes text and commits it into the focused field.
+#[allow(dead_code, reason = "crabshell's tests don't use it")]
+pub struct InputMethod {
+  queue: EventQueue<MethodState>,
+  state: MethodState,
+  method: ZwpInputMethodV2,
+}
+
+#[allow(dead_code, reason = "crabshell's tests don't use it")]
+impl InputMethod {
+  pub fn new(sway: &Sway) -> InputMethod {
+    let connection = sway.connection();
+    let (globals, mut queue) =
+      registry_queue_init::<MethodState>(&connection).expect("the input method's registry");
+    let seat: wl_seat::WlSeat = globals
+      .bind(&queue.handle(), 1..=1, ())
+      .expect("sway offers a seat");
+    let manager: ZwpInputMethodManagerV2 = globals
+      .bind(&queue.handle(), 1..=1, ())
+      .expect("sway offers zwp_input_method_manager_v2");
+    let method = manager.get_input_method(&seat, &queue.handle(), ());
+    let mut state = MethodState::default();
+    queue
+      .roundtrip(&mut state)
+      .expect("the input method's roundtrip");
+    InputMethod {
+      queue,
+      state,
+      method,
+    }
+  }
+
+  /// Reads what Sway sent so far.
+  pub fn poll(&mut self) {
+    self
+      .queue
+      .roundtrip(&mut self.state)
+      .expect("the input method's roundtrip");
+  }
+
+  /// How many `done` events came, which is the serial a commit sends.
+  pub fn dones(&self) -> u32 {
+    self.state.dones
+  }
+
+  /// Whether a text field is active.
+  pub fn active(&self) -> bool {
+    self.state.active
+  }
+
+  /// The active field's text, as Sway last passed it on.
+  pub fn surrounding(&self) -> &str {
+    &self.state.surrounding
+  }
+
+  /// Shows `text` composing in the field, with its caret at `cursor`.
+  pub fn preedit(&mut self, text: &str, cursor: i32) {
+    self
+      .method
+      .set_preedit_string(text.to_owned(), cursor, cursor);
+    self.method.commit(self.state.dones);
+    self.poll();
+  }
+
+  /// Commits `text` into the field, ending the composing.
+  pub fn commit(&mut self, text: &str) {
+    self.method.commit_string(text.to_owned());
+    self.method.commit(self.state.dones);
+    self.poll();
   }
 }
