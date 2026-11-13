@@ -12,9 +12,14 @@ members = [
 ]
 
 [workspace.package]
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/w0x7y/crabshell"
+readme = "README.md"
+keywords = ["wayland", "desktop-shell", "status-bar", "sway", "quickshell"]
+categories = ["gui", "os::linux-apis"]
 
 # Every external crate is pinned to one exact version here ("=x.y.z").
 # Member crates refer to them with `name.workspace = true`.
@@ -46,8 +51,8 @@ wayland-protocols = { version = "=0.32.13", default-features = false, features =
 zbus = { version = "=6.2.1", default-features = false, features = ["default-rt", "proxy"] }
 
 # The workspace's own crates.
-crabshell-reactive = { path = "crates/crabshell-reactive" }
-crabshell-render = { path = "crates/crabshell-render" }
-crabshell-services = { path = "crates/crabshell-services" }
-crabshell-ui = { path = "crates/crabshell-ui" }
-crabshell-wayland = { path = "crates/crabshell-wayland" }
+crabshell-reactive = { version = "=0.1.0", path = "crates/crabshell-reactive" }
+crabshell-render = { version = "=0.1.0", path = "crates/crabshell-render" }
+crabshell-services = { version = "=0.1.0", path = "crates/crabshell-services" }
+crabshell-ui = { version = "=0.1.0", path = "crates/crabshell-ui" }
+crabshell-wayland = { version = "=0.1.0", path = "crates/crabshell-wayland" }

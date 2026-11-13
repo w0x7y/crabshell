@@ -1,11 +1,14 @@
 [package]
 name = "crabshell-wayland"
-version = "0.0.0"
+version.workspace = true
 description = "Crabshell's Wayland platform: the event loop, layer-shell windows, outputs and pointer input"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 calloop.workspace = true

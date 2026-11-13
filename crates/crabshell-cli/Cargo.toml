@@ -1,15 +1,20 @@
 [package]
 name = "crabshell-cli"
-version = "0.0.0"
+version.workspace = true
 description = "The crabshell command: creates, checks and runs a Crabshell config"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [[bin]]
 name = "crabshell"
 path = "src/main.rs"
+# Named like the crabshell library, so its docs would overwrite the library's.
+doc = false
 
 [dependencies]
 calloop.workspace = true

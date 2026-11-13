@@ -40,7 +40,8 @@ fn init_writes_the_template_once_and_never_overwrites() {
   let done = home.run(&["init"]);
   assert!(done.status.success(), "{}", text(&done.stderr));
   assert!(text(&done.stdout).contains("created a config in"));
-  assert!(text(&done.stderr).contains("isn't on crates.io yet"));
+  // Published on crates.io, so the plain init has nothing to warn about.
+  assert!(done.stderr.is_empty(), "{}", text(&done.stderr));
   let manifest = std::fs::read_to_string(home.config().join("Cargo.toml")).expect("written");
   assert!(manifest.contains("crabshell = \"0.1\""), "{manifest}");
   let main = std::fs::read_to_string(home.config().join("src/main.rs")).expect("written");

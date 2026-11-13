@@ -1,11 +1,14 @@
 [package]
 name = "crabshell"
-version = "0.0.0"
+version.workspace = true
 description = "A full Rust replacement for Quickshell, where your whole shell is a Rust crate"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 # For the supervisor's control socket on the loop.

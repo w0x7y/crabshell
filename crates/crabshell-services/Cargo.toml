@@ -1,11 +1,14 @@
 [package]
 name = "crabshell-services"
-version = "0.0.0"
+version.workspace = true
 description = "Crabshell's services, so far the clock, Sway workspaces, audio and the tray"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 calloop.workspace = true

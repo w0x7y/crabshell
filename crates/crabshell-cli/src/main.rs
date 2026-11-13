@@ -162,12 +162,6 @@ fn init(path: Option<&Path>) -> Result<(), String> {
     "created a config in {}\nedit src/main.rs there, and check it with `crabshell check`",
     dir.display()
   );
-  if path.is_none() {
-    eprintln!(
-      "crabshell isn't on crates.io yet, so this config builds only once it is; \
-       `crabshell init --path <checkout>` builds against a local checkout instead"
-    );
-  }
   Ok(())
 }
 

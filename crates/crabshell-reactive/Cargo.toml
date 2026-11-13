@@ -1,11 +1,14 @@
 [package]
 name = "crabshell-reactive"
-version = "0.0.0"
+version.workspace = true
 description = "Single-threaded signals, memos, effects and owners for Crabshell"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 slotmap.workspace = true
