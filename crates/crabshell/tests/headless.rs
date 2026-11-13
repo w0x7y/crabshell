@@ -1260,17 +1260,20 @@ fn losing_the_compositor_exits_2() {
   );
 }
 
-/// A private session bus, for the v0.1 bar's tray: `dbus-daemon --session`
-/// on an address of its own. It stops on drop.
+/// A private session bus, for the v0.1 bar's tray: a `dbus-daemon` on an
+/// address of its own, which starts no services. It stops on drop.
 struct PrivateBus {
   daemon: Child,
   address: String,
+  config: PathBuf,
 }
 
 impl PrivateBus {
   fn start() -> PrivateBus {
+    let config = private_bus_config();
     let mut daemon = Command::new("dbus-daemon")
-      .args(["--session", "--nofork", "--print-address"])
+      .arg(format!("--config-file={}", config.display()))
+      .args(["--nofork", "--print-address"])
       .stdout(Stdio::piped())
       .spawn()
       .expect("dbus-daemon starts (it comes with dbus)");
@@ -1280,7 +1283,11 @@ impl PrivateBus {
       .read_line(&mut address)
       .expect("dbus-daemon prints its address");
     let address = address.trim().to_owned();
-    PrivateBus { daemon, address }
+    PrivateBus {
+      daemon,
+      address,
+      config,
+    }
   }
 }
 
@@ -1288,7 +1295,29 @@ impl Drop for PrivateBus {
   fn drop(&mut self) {
     let _ = self.daemon.kill();
     let _ = self.daemon.wait();
+    let _ = std::fs::remove_file(&self.config);
   }
+}
+
+/// A session bus's config with no service directories, written to a file
+/// of its own. `dbus-daemon --session` would read the system's, and start
+/// real services, such as the desktop's notification daemon, on demand.
+fn private_bus_config() -> PathBuf {
+  use std::sync::atomic::{AtomicU32, Ordering};
+  static BUSES: AtomicU32 = AtomicU32::new(0);
+  let path = std::env::temp_dir().join(format!(
+    "crabshell-bus-{}-{}.conf",
+    std::process::id(),
+    BUSES.fetch_add(1, Ordering::Relaxed)
+  ));
+  std::fs::write(
+    &path,
+    "<busconfig><type>session</type><listen>unix:tmpdir=/tmp</listen>\
+     <policy context=\"default\"><allow send_destination=\"*\" eavesdrop=\"true\"/>\
+     <allow eavesdrop=\"true\"/><allow own=\"*\"/></policy></busconfig>",
+  )
+  .expect("the bus's config");
+  path
 }
 
 /// Waits for a shell to connect to `listener` and say it is ready; gives
