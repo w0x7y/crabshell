@@ -9,6 +9,8 @@ use crabshell_reactive::{Owner, untrack};
 
 use crate::cx::{Anchor, Cx};
 use crate::geometry::{Rect, Size};
+use crate::input::Handler;
+use crate::keyboard::{KeyEvent, KeyHandler};
 use crate::prop::{IntoProp, Prop};
 use crate::region::Region;
 use crate::style::Style;
@@ -209,6 +211,7 @@ pub struct PanelWindow {
   pub(crate) keyboard_focus: Option<Prop<KeyboardFocus>>,
   pub(crate) namespace: Option<Prop<String>>,
   pub(crate) mask: Option<Prop<Option<Region>>>,
+  pub(crate) on_key: Option<KeyHandler>,
   pub(crate) style: Option<Prop<Style>>,
   pub(crate) child: Option<Box<dyn Widget>>,
 }
@@ -227,6 +230,7 @@ impl PanelWindow {
       keyboard_focus: None,
       namespace: None,
       mask: None,
+      on_key: None,
       style: None,
       child: None,
     }
@@ -297,6 +301,15 @@ impl PanelWindow {
   /// and [`Region::empty`] lets every click through.
   pub fn mask(mut self, mask: impl IntoProp<Option<Region>>) -> PanelWindow {
     self.mask = Some(mask.into_prop());
+    self
+  }
+
+  /// Runs `handler` for each key the window gets that its focused button
+  /// didn't use. It returns `true` when it used the key; otherwise Tab,
+  /// Enter and Space do what they do by default. The window gets keys
+  /// only with a [`keyboard_focus`](Self::keyboard_focus).
+  pub fn on_key(mut self, handler: impl Fn(&Cx, &KeyEvent) -> bool + 'static) -> PanelWindow {
+    self.on_key = Some(Rc::new(Handler::new(handler)));
     self
   }
 

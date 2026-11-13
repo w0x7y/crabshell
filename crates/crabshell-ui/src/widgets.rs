@@ -12,6 +12,7 @@ use crabshell_reactive::Memo;
 
 use crate::cx::Cx;
 use crate::input::{Handler, Handlers};
+use crate::keyboard::KeyEvent;
 use crate::keyed::{self, KeyedMount};
 use crate::prop::{IntoProp, Prop};
 use crate::style::Style;
@@ -112,6 +113,7 @@ pub(crate) struct IconProps {
 pub(crate) struct ButtonProps {
   pub(crate) hover_style: Option<Prop<Style>>,
   pub(crate) pressed_style: Option<Prop<Style>>,
+  pub(crate) focus_style: Option<Prop<Style>>,
   pub(crate) handlers: Handlers,
 }
 
@@ -497,6 +499,7 @@ impl Button {
       button: ButtonProps {
         hover_style: None,
         pressed_style: None,
+        focus_style: None,
         handlers: Handlers::default(),
       },
       style: None,
@@ -514,6 +517,22 @@ impl Button {
   /// down.
   pub fn pressed_style(mut self, style: impl IntoProp<Style>) -> Button {
     self.button.pressed_style = Some(style.into_prop());
+    self
+  }
+
+  /// Sets the style laid over the normal one while the button has the
+  /// keyboard focus, which Tab moves between buttons.
+  pub fn focus_style(mut self, style: impl IntoProp<Style>) -> Button {
+    self.button.focus_style = Some(style.into_prop());
+    self
+  }
+
+  /// Runs `handler` for each key pressed while the button has the
+  /// keyboard focus. It returns `true` when it used the key; otherwise the
+  /// window's `on_key` gets it, and then Tab, Enter and Space do what
+  /// they do by default.
+  pub fn on_key(mut self, handler: impl Fn(&Cx, &KeyEvent) -> bool + 'static) -> Button {
+    self.button.handlers.key = Some(Rc::new(Handler::new(handler)));
     self
   }
 

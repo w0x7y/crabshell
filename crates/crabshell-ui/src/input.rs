@@ -14,6 +14,7 @@ use crabshell_reactive::{Signal, untrack};
 
 use crate::cx::Cx;
 use crate::geometry::Point;
+use crate::keyboard::KeyHandler;
 use crate::tree::{ButtonNode, Change, NodeId, NodeKind, Tree, borrow};
 use crate::window::Window;
 
@@ -48,6 +49,7 @@ pub(crate) struct Handlers {
   pub(crate) right_click: Option<ClickHandler>,
   pub(crate) middle_click: Option<ClickHandler>,
   pub(crate) scroll: Option<ScrollHandler>,
+  pub(crate) key: Option<KeyHandler>,
 }
 
 /// A pointer button.
@@ -285,6 +287,11 @@ impl Tree {
     self.call(target, Action::Scroll(down.saturating_neg()))
   }
 
+  /// A click on button `id`, as from the keyboard.
+  pub(crate) fn click(&self, id: NodeId) -> Option<Call> {
+    self.call(id, Action::Click)
+  }
+
   fn call(&self, id: NodeId, action: Action) -> Option<Call> {
     let node = self.node(id)?;
     let NodeKind::Button(button) = &node.kind else {
@@ -308,7 +315,7 @@ enum Action {
 }
 
 /// A handler to run once the tree is released.
-struct Call {
+pub(crate) struct Call {
   cx: Cx,
   path: Rc<str>,
   handlers: Signal<Handlers>,
@@ -316,7 +323,7 @@ struct Call {
 }
 
 impl Call {
-  fn run(self) {
+  pub(crate) fn run(self) {
     // Reading the handlers doesn't make anything depend on them.
     let handlers = untrack(|| {
       self.handlers.try_with(|handlers| match self.action {
@@ -352,25 +359,36 @@ enum Either {
 }
 
 /// Calls `handler` through `call` unless it was disabled, and disables it if
-/// it panics. The handler is dropped here too, isolated the same way: if the
-/// call freed its button, this was the last reference.
-fn run_isolated<F: ?Sized>(path: &str, name: &str, handler: Rc<Handler<F>>, call: impl FnOnce(&F)) {
+/// it panics. Returns what it returned, or `None` if it didn't run or
+/// panicked. The handler is dropped here too, isolated the same way: if
+/// the call freed its button, this was the last reference.
+pub(crate) fn run_isolated<F: ?Sized, R>(
+  path: &str,
+  name: &str,
+  handler: Rc<Handler<F>>,
+  call: impl FnOnce(&F) -> R,
+) -> Option<R> {
   if handler.disabled.get() {
-    return;
+    return None;
   }
-  if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| call(&handler.f))) {
-    handler.disabled.set(true);
-    tracing::error!(
-      "handler {path}.{name} panicked and is disabled: {}",
-      panic_message(payload.as_ref())
-    );
-  }
+  let result = match panic::catch_unwind(AssertUnwindSafe(|| call(&handler.f))) {
+    Ok(result) => Some(result),
+    Err(payload) => {
+      handler.disabled.set(true);
+      tracing::error!(
+        "handler {path}.{name} panicked and is disabled: {}",
+        panic_message(payload.as_ref())
+      );
+      None
+    }
+  };
   if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(move || drop(handler))) {
     tracing::error!(
       "dropping handler {path}.{name} panicked: {}",
       panic_message(payload.as_ref())
     );
   }
+  result
 }
 
 pub(crate) fn panic_message(payload: &(dyn Any + Send)) -> &str {

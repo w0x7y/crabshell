@@ -7,6 +7,7 @@
 
 mod input;
 mod invalidation;
+mod keyboard;
 mod keyed;
 mod layout;
 mod menu;

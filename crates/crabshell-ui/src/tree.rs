@@ -19,6 +19,7 @@ use taffy::TaffyTree;
 use crate::cx::{Anchor, Cx};
 use crate::geometry::{Rect, Size};
 use crate::input::{Handlers, Pointer};
+use crate::keyboard::Keyboard;
 use crate::keyed::KeyedSlot;
 use crate::prop::{Prop, PropKind};
 use crate::region::Region;
@@ -44,6 +45,7 @@ pub(crate) struct Tree {
   /// Areas to repaint, gathered since the renderer last took them.
   pub(crate) damage: Vec<Rect>,
   pub(crate) pointer: Pointer,
+  pub(crate) keyboard: Keyboard,
   /// Popups its widgets opened, until the platform takes them.
   pub(crate) popups: Vec<Window>,
   /// Set for a popup's own tree.
@@ -127,11 +129,14 @@ pub(crate) struct IconNode {
 pub(crate) struct ButtonNode {
   pub(crate) hover_style: Style,
   pub(crate) pressed_style: Style,
+  pub(crate) focus_style: Style,
   /// Kept in the reactive runtime, which drops the user's closures when
   /// the button's owner goes.
   pub(crate) handlers: Signal<Handlers>,
   pub(crate) hovered: bool,
   pub(crate) pressed: bool,
+  /// Focused while its window has the keyboard.
+  pub(crate) focused: bool,
 }
 
 /// The layer-surface settings of the window.
@@ -200,20 +205,23 @@ impl Node {
     }
   }
 
-  /// The style in effect: a button's hover and pressed styles laid over
-  /// its own.
+  /// The style in effect: a button's focus, hover and pressed styles laid
+  /// over its own, in that order.
   pub(crate) fn effective_style(&self) -> Style {
-    match &self.kind {
-      NodeKind::Button(button) if button.hovered => {
-        let hovered = self.style.merge(button.hover_style);
-        if button.pressed {
-          hovered.merge(button.pressed_style)
-        } else {
-          hovered
-        }
-      }
-      _ => self.style,
+    let NodeKind::Button(button) = &self.kind else {
+      return self.style;
+    };
+    let mut style = self.style;
+    if button.focused {
+      style = style.merge(button.focus_style);
     }
+    if button.hovered {
+      style = style.merge(button.hover_style);
+      if button.pressed {
+        style = style.merge(button.pressed_style);
+      }
+    }
+    style
   }
 
   /// Whether the node draws anything itself, in its style in effect. The
@@ -271,6 +279,7 @@ impl Tree {
       needs_layout: true,
       damage: Vec::new(),
       pointer: Pointer::default(),
+      keyboard: Keyboard::default(),
       popups: Vec::new(),
       popup: None,
     }
@@ -299,9 +308,11 @@ impl Tree {
       keyboard_focus,
       namespace,
       mask,
+      on_key,
       style,
       child: _,
     } = panel;
+    self.keyboard.handler = on_key;
     self.bind_opt(root, anchors, "anchors", |tree, _, value| {
       tree.surface.set(|s| &mut s.anchors, value);
     });
@@ -389,9 +400,11 @@ impl Tree {
       ElementKind::Button(props) => NodeKind::Button(ButtonNode {
         hover_style: Style::new(),
         pressed_style: Style::new(),
+        focus_style: Style::new(),
         handlers: cx.signal(std::mem::take(&mut props.handlers)),
         hovered: false,
         pressed: false,
+        focused: false,
       }),
     };
     let id = self
@@ -471,6 +484,9 @@ impl Tree {
             tree.update_button_style(id, |button| button.pressed_style = value);
           },
         );
+        self.bind_opt(id, props.focus_style, "focus_style", |tree, id, value| {
+          tree.update_button_style(id, |button| button.focus_style = value);
+        });
       }
       ElementKind::Stack | ElementKind::Spacer => {}
     }
@@ -552,6 +568,7 @@ impl Tree {
       }
     }
     self.pointer.forget(&removed);
+    self.keyboard.forget(&removed);
     for node in removed.into_iter().rev() {
       // `remove` only fails for a node that isn't in the tree.
       let _ = self.taffy.remove(node);
