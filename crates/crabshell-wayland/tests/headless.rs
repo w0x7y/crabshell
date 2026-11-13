@@ -1,7 +1,7 @@
 //! The platform on a real compositor: headless Sway, one per test.
 //!
-//! They need `sway`, `swaymsg` and `grim`, so they are ignored by
-//! default. Run them without the session's `SWAYSOCK`, which
+//! They need `sway`, `swaymsg` and `grim`, and `labwc` for the one test
+//! on another wlroots compositor, so they are ignored by default. Run them without the session's `SWAYSOCK`, which
 //! `Sway::start()` refuses:
 //!
 //! ```text
@@ -638,6 +638,34 @@ impl Menus {
     }
   }
 
+  /// On a labwc from [`Sway::start_labwc`], at its output's own size and
+  /// scale 1.
+  fn start_on_labwc(labwc: &Sway) -> Menus {
+    let setup = Setup {
+      popups: true,
+      ..PLAIN
+    };
+    let mut shell = Shell::build(labwc, setup);
+    let pointer = VirtualPointer::new(labwc);
+    let bar = shell.wait_for_bar("HEADLESS-1");
+    let output = shell
+      .event_loop
+      .platform()
+      .outputs()
+      .find(|output| output.name == "HEADLESS-1")
+      .cloned()
+      .expect("labwc announced HEADLESS-1");
+    let mode = output.mode.expect("a headless output has a mode");
+    assert_eq!(output.scale, 1, "{output:?}");
+    Menus {
+      shell,
+      pointer,
+      bar,
+      offset: (0.0, 0.0),
+      layout: (mode.width, mode.height),
+    }
+  }
+
   /// Clicks at `(x, y)` in logical pixels from the bar's top left.
   fn click(&mut self, (x, y): (f32, f32)) {
     let (x, y) = (self.offset.0 + x, self.offset.1 + y);
@@ -1055,4 +1083,40 @@ fn an_open_menu_commits_nothing_while_idle() {
     now.wayland_wakeups, stats.wayland_wakeups,
     "the compositor sent nothing in two idle seconds"
   );
+}
+
+/// The grab and the popup rules on another wlroots compositor: menus,
+/// submenus, a sibling submenu and a new menu from the bar replace the
+/// open chain without a protocol error, and a click outside dismisses it.
+#[test]
+#[ignore = "needs labwc"]
+fn on_labwc_menus_open_close_and_a_click_outside_dismisses_them() {
+  let labwc = Sway::start_labwc();
+  let mut menus = Menus::start_on_labwc(&labwc);
+  menus.shell.runtime.flush();
+  let nodes = menus.shell.runtime.node_count();
+  let first = menus.open_from_bar();
+  let button = button_rect(menus.shell.event_loop.platform(), menus.bar);
+  let below = (
+    button.x.floor() as i32,
+    (button.y + button.height).ceil() as i32,
+  );
+  assert_eq!(menus.info(first).position, Some(below));
+
+  menus.click_entry(first, 0);
+  let chain = menus.wait_for("a submenu", |open| open.len() == 2);
+  menus.click_entry(first, 0);
+  menus.wait_for("a new submenu", |open| {
+    open.len() == 2 && open[1] != chain[1]
+  });
+  let menu = menus.open_from_bar();
+  menus.click_entry(menu, 0);
+  menus.wait_for("a submenu", |open| open.len() == 2);
+
+  // The grab: labwc dismisses the whole chain on a click outside it.
+  let (width, height) = menus.layout;
+  menus.click((width as f32 / 2.0, height as f32 / 2.0));
+  menus.wait_for("labwc to dismiss the menus", <[_]>::is_empty);
+  menus.shell.runtime.flush();
+  assert_eq!(menus.shell.runtime.node_count(), nodes);
 }

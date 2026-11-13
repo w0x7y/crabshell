@@ -114,6 +114,58 @@ impl Sway {
     sway
   }
 
+  /// Starts a headless labwc instead, to check the platform on another
+  /// wlroots compositor. It gets its own runtime directory, an empty
+  /// config and one output, HEADLESS-1. `msg` doesn't apply to it.
+  #[allow(dead_code, reason = "crabshell's tests don't use it")]
+  pub fn start_labwc() -> Sway {
+    let run = RUNS.fetch_add(1, Ordering::Relaxed);
+    let dir = PathBuf::from(format!("/tmp/csl-{}-{run}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("config")).expect("create the runtime directory");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+      .expect("make the runtime directory private");
+    let log = std::fs::File::create(dir.join("sway.log")).expect("create the log");
+    let child = Command::new("labwc")
+      .env_clear()
+      .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+      .env("HOME", &dir)
+      .env("XDG_RUNTIME_DIR", &dir)
+      .env("XDG_CONFIG_HOME", dir.join("config"))
+      .env("WLR_BACKENDS", "headless")
+      .env("WLR_LIBINPUT_NO_DEVICES", "1")
+      .env("WLR_RENDERER", "pixman")
+      .stdin(Stdio::null())
+      .stdout(log.try_clone().expect("share the log file"))
+      .stderr(log)
+      .spawn()
+      .expect("labwc is installed");
+    let mut labwc = Sway {
+      dir,
+      child,
+      display: String::new(),
+    };
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+      if let Ok(Some(status)) = labwc.child.try_wait() {
+        panic!("labwc exited with {status}:\n{}", labwc.log());
+      }
+      if let Some(display) = wayland_socket(&labwc.dir)
+        && UnixStream::connect(labwc.dir.join(&display)).is_ok()
+      {
+        labwc.display = display;
+        break;
+      }
+      assert!(
+        Instant::now() < deadline,
+        "labwc didn't start:\n{}",
+        labwc.log()
+      );
+      std::thread::sleep(Duration::from_millis(20));
+    }
+    labwc
+  }
+
   /// Whether Sway answers `swaymsg -t get_version`.
   fn answers(&self) -> bool {
     Command::new("swaymsg")
