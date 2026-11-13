@@ -283,3 +283,75 @@ fn images() {
     )
   });
 }
+
+/// Three fields: one focused with "world" selected and the caret before
+/// it, an empty one showing its placeholder, and a password.
+#[test]
+fn input() {
+  for (scale, suffix) in SCALES {
+    let mut scene = Scene::new();
+    let typed = scene.cx.signal(String::from("hello world"));
+    let empty = scene.cx.signal(String::new());
+    let secret = scene.cx.signal(String::from("hunter2"));
+    let field = |text| {
+      crabshell_ui::TextInput::new(text).style(
+        Style::new()
+          .width(70.0)
+          .padding(2, 4)
+          .background(Color::hex("#313244"))
+          .radius(4.0),
+      )
+    };
+    let panel = scene.panel().style(BAR).child(
+      Row::new()
+        .padding(4, 4)
+        .gap(4)
+        .align(Align::Center)
+        .child(field(typed).focus(true))
+        .child(field(empty).placeholder("Search"))
+        .child(field(secret).password(true)),
+    );
+    let window = scene.window(panel, 230.0, 30.0);
+    window.keyboard_enter();
+    let shift = crabshell_ui::Modifiers {
+      ctrl: true,
+      shift: true,
+      ..crabshell_ui::Modifiers::default()
+    };
+    window.key(&crabshell_ui::KeyEvent {
+      key: crabshell_ui::Key::Left,
+      text: None,
+      modifiers: shift,
+      repeat: false,
+    });
+    scene.frame(&window);
+    let buffer = scene.full(&window, scale);
+    assert_golden(&format!("input@{suffix}"), &buffer);
+  }
+}
+
+#[test]
+fn a_field_draws_only_inside_its_content_box() {
+  let mut scene = Scene::new();
+  let text = scene.cx.signal(String::from("a long text that scrolls"));
+  let panel = scene.panel().style(BAR).child(
+    Row::new().padding(4, 10).align(Align::Center).child(
+      crabshell_ui::TextInput::new(text)
+        .focus(true)
+        .style(Style::new().width(60.0).padding(2, 6)),
+    ),
+  );
+  let window = scene.window(panel, 100.0, 30.0);
+  window.keyboard_enter();
+  scene.frame(&window);
+  let buffer = scene.full(&window, 1.0);
+  // The field runs from x 10 to 70 and its text from 16 to 64: anything
+  // outside that is the bar's background.
+  let background = [0x1e, 0x1e, 0x2e];
+  for x in (0..16).chain(64..100) {
+    for y in 0..30 {
+      let at = ((y * buffer.width + x) * 4) as usize;
+      assert_eq!(&buffer.pixels[at..at + 3], &background, "pixel {x},{y}");
+    }
+  }
+}

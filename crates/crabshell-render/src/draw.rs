@@ -8,8 +8,8 @@
 
 use cosmic_text::{FontSystem, SwashCache, SwashContent, SwashImage};
 use crabshell_ui::{
-  Color, Content, IconView, ImageView, NodeView, Rect, Size, Style, TextSystem, TextView,
-  WindowView,
+  Color, Content, IconView, ImageView, InputView, NodeView, Rect, Size, Style, TextSystem,
+  TextView, WindowView,
 };
 use tiny_skia::{FillRule, Mask, Paint, PathBuilder, Pixmap, PixmapMut, PixmapPaint, Transform};
 
@@ -411,8 +411,8 @@ impl Painter<'_> {
       Content::Text(text) => self.text(pixmap, &text),
       Content::Icon(icon) => self.icon(pixmap, &icon),
       Content::Image(image) => self.image(pixmap, &image),
-      // Drawn from the next commit on.
-      Content::Input(_) | Content::None => {}
+      Content::Input(input) => self.input(pixmap, &input),
+      Content::None => {}
     }
     if node.clips() {
       self.clipped_children(pixmap, node, style);
@@ -440,14 +440,29 @@ impl Painter<'_> {
     ) else {
       return;
     };
-    if !visible(pixmap, inside) {
+    let radius = (radius - width).max(0.0);
+    self.through_mask(pixmap, node.rect(), (inside, radius), |painter, layer| {
+      for child in node.children() {
+        painter.node(layer, child);
+      }
+    });
+  }
+
+  /// What `draw` paints within `cover`, a logical rectangle, blended in
+  /// through a mask of `shape`, a pixel rectangle with rounded corners.
+  fn through_mask(
+    &mut self,
+    pixmap: &mut PixmapMut<'_>,
+    cover: Rect,
+    (shape, radius): (tiny_skia::Rect, f32),
+    draw: impl FnOnce(&mut Painter<'_>, &mut PixmapMut<'_>),
+  ) {
+    if !visible(pixmap, shape) {
       return;
     }
     let (Some(mut mask), Some((x, y, layer_width, layer_height))) = (
       Mask::new(pixmap.width(), pixmap.height()),
-      self
-        .grid
-        .cover(node.rect(), pixmap.width(), pixmap.height()),
+      self.grid.cover(cover, pixmap.width(), pixmap.height()),
     ) else {
       return;
     };
@@ -462,11 +477,9 @@ impl Painter<'_> {
       fonts: &mut *self.fonts,
       work: &mut *self.work,
     };
-    for child in node.children() {
-      inner.node(&mut layer.as_mut(), child);
-    }
+    draw(&mut inner, &mut layer.as_mut());
     let mut path = PathBuilder::new();
-    rounded_rect(&mut path, inside, (radius - width).max(0.0));
+    rounded_rect(&mut path, shape, radius);
     let Some(path) = path.finish() else {
       return;
     };
@@ -583,6 +596,47 @@ impl Painter<'_> {
           // Not requested: there is no subpixel antialiasing.
           SwashContent::SubpixelMask => {}
         }
+      }
+    }
+  }
+
+  /// A text field, cut to its content box.
+  fn input(&mut self, pixmap: &mut PixmapMut<'_>, input: &InputView<'_>) {
+    let Some(area) = self.grid.rect(input.area) else {
+      return;
+    };
+    self.through_mask(pixmap, input.area, (area, 0.0), |painter, layer| {
+      painter.input_contents(layer, input);
+    });
+  }
+
+  /// A field's selection in a third of the text's color, the text, and a
+  /// caret in the text's color.
+  fn input_contents(&mut self, pixmap: &mut PixmapMut<'_>, input: &InputView<'_>) {
+    let color = input.text.color();
+    for selection in input.selection {
+      let Some(area) = self.grid.rect(*selection) else {
+        continue;
+      };
+      let mut path = PathBuilder::new();
+      path.push_rect(area);
+      let tint = Color::rgba(color.r, color.g, color.b, color.a / 3);
+      fill(pixmap, path, tint, FillRule::Winding);
+    }
+    self.text(pixmap, &input.text);
+    if let Some(caret) = input.caret {
+      // At least one pixel wide whatever the scale.
+      let left = self.grid.x(caret.x);
+      let right = self.grid.x(caret.right()).max(left + 1.0);
+      if let Some(area) = tiny_skia::Rect::from_ltrb(
+        left,
+        self.grid.y(caret.y),
+        right,
+        self.grid.y(caret.bottom()),
+      ) {
+        let mut path = PathBuilder::new();
+        path.push_rect(area);
+        fill(pixmap, path, color, FillRule::Winding);
       }
     }
   }
