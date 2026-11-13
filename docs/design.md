@@ -773,6 +773,7 @@ Seven phases to v0.1, totaling 16 to 26 weeks of focused work, all guesses, then
    - Passed on 2026-11-13: `crates/crabshell-cli/tests/exit_check.rs` checks all four cases on headless Sway, with the numbers in "Phase 5 results". Built in the commits from 0b603c2 on, after a review per step. With it, Phase 4's tray apps were checked surviving a reload.
 7. **Phase 6, the v0.1 release (1-2 weeks).** Template, README, API docs on docs.rs, published crates, and measured numbers in the performance table.
    - Exit: on a clean user account, you go from `cargo install crabshell-cli` to a running bar in under 15 minutes by following the README.
+   - Marked done on 2026-11-13 without the clean-account run, which the maintainer skipped for now. All seven crates are on crates.io at 0.1.0, tagged `v0.1.0`, and docs.rs built every library's docs. With an empty cargo cache, `cargo install --locked crabshell-cli`, `crabshell init`, `crabshell check` and the first build of the template bar took 2 min 54 s on 12 cores. Commits 0ebf76e to b862f0f.
 
 ### Beyond v0.1
 
