@@ -618,9 +618,11 @@ fn unplugging_an_output_drops_its_bar_and_frees_its_nodes() {
     platform.windows().count() == 1 && platform.outputs().all(|output| output.name != "HEADLESS-2")
   });
   runtime.flush();
+  // All but HEADLESS-2's persisted click count, which the shell keeps for
+  // when it comes back.
   assert_eq!(
     runtime.node_count(),
-    nodes,
+    nodes + 1,
     "per_output's owner for HEADLESS-2 was disposed"
   );
 }
@@ -1287,4 +1289,79 @@ impl Drop for PrivateBus {
     let _ = self.daemon.kill();
     let _ = self.daemon.wait();
   }
+}
+
+/// Waits for a shell to connect to `listener` and say it is ready; gives
+/// the connection back.
+fn accept_ready(listener: &std::os::unix::net::UnixListener) -> std::os::unix::net::UnixStream {
+  use std::io::Read;
+
+  listener
+    .set_nonblocking(true)
+    .expect("a non-blocking listener");
+  let deadline = Instant::now() + Duration::from_secs(10);
+  let mut stream = loop {
+    match listener.accept() {
+      Ok((stream, _)) => break stream,
+      Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+        assert!(Instant::now() < deadline, "the shell never connected");
+        std::thread::sleep(Duration::from_millis(20));
+      }
+      Err(error) => panic!("accept the shell: {error}"),
+    }
+  };
+  stream.set_nonblocking(false).expect("a blocking stream");
+  stream
+    .set_read_timeout(Some(Duration::from_secs(10)))
+    .expect("a read timeout");
+  let mut said = [0_u8; 6];
+  stream
+    .read_exact(&mut said)
+    .expect("the shell says something");
+  assert_eq!(&said, b"ready\n");
+  stream
+}
+
+/// The shell's half of a reload: it says `ready` on the supervisor's
+/// socket once its bar has drawn, saves its persisted values and exits
+/// with 0 on `save`, and the next shell starts from them.
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_reload_saves_the_count_and_the_next_shell_starts_from_it() {
+  use std::io::Write;
+
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let socket = sway.runtime_dir().join("control.sock");
+  let listener = std::os::unix::net::UnixListener::bind(&socket).expect("the control socket");
+  let control = socket.to_str().expect("a UTF-8 path");
+  let state = sway.runtime_dir().join("crabshell").join("state.json");
+  let saved_count = || -> u64 {
+    let text = std::fs::read_to_string(&state).expect("the saved values");
+    let values: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+    values["clicks on HEADLESS-1"].as_u64().expect("a count")
+  };
+  let mut pointer = VirtualPointer::new(&sway);
+
+  let mut first = ExampleBar::start(&sway, "counter", false, &[("CRABSHELL_CONTROL", control)]);
+  let mut supervisor = accept_ready(&listener);
+  // The button starts at the bar's left padding.
+  pointer.move_to(30, 15, (1920, 1080));
+  pointer.click();
+  std::thread::sleep(Duration::from_millis(500));
+  supervisor.write_all(b"save\n").expect("told to save");
+  let status = first.exit_status().expect("the shell exits");
+  assert_eq!(status.code(), Some(0));
+  assert_eq!(saved_count(), 1);
+
+  let mut second = ExampleBar::start(&sway, "counter", false, &[("CRABSHELL_CONTROL", control)]);
+  let mut supervisor = accept_ready(&listener);
+  assert!(
+    !state.exists(),
+    "the next shell read the file and removed it"
+  );
+  supervisor.write_all(b"save\n").expect("told to save");
+  let status = second.exit_status().expect("the shell exits");
+  assert_eq!(status.code(), Some(0));
+  assert_eq!(saved_count(), 1, "it started from the saved count");
 }

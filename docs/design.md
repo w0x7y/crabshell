@@ -50,7 +50,7 @@ Your config compiles into the shell; `crabshell run` rebuilds and restarts it. T
 +---------------------------------+               | last-good                       |
                 |                                 +---------------------------------+
                 | compiled into the binary                        |
-                |                                                 | starts it, pipe: save and ready
+                |                                                 | starts it, socket: save, ready
 +---------------|-------------------------------------------------|-----------------+
 | Shell process,| built from the config crate                     |                 |
 |               v                                                 v                 |
@@ -220,6 +220,15 @@ API rules settled while building `crabshell` (Phase 3, step 4):
 - The headless suites run under `env -u SWAYSOCK`, and the test helper refuses otherwise. Every shell a test starts gets the private `SWAYSOCK` and a `PULSE_SERVER` that is private or doesn't exist. No in-process test shell calls `cx.sway()` or `cx.audio()`.
 - Sway deletes an empty workspace once it isn't shown, so a test that needs two workspaces uses two outputs.
 
+API rules settled while building `crabshell` (Phase 5, step 1):
+
+- `cx.persist` comes from `ShellExt`. Its signal lives under the root owner, so it outlasts the context that asked and any output. The same key gives the same signal. The same key with another type is logged and gets a signal under the asking context that isn't kept.
+- `run` reads `$XDG_RUNTIME_DIR/crabshell/state.json` before `root` and removes it, so a shell started later, as after a crash, starts fresh. Without `XDG_RUNTIME_DIR`, nothing is saved, and that is logged.
+- On `save`, the values are written to a new file beside `state.json` that then replaces it, in a directory only the user can read (a looser one is tightened, a symlink refused), and the shell exits with 0. A value whose `Serialize` fails or panics is logged and left out. A saved value whose `Deserialize` fails or panics is logged, and the default is used.
+- The shell sends `ready` once every panel it shows has committed a frame. A panel waiting for its output, or refused by layer-shell, isn't waited for, and a shell that shows no panel never says `ready`. An unknown command is logged and skipped. If the supervisor hangs up, the shell runs on alone.
+- `Shell::new` starts with no saved values. Only `run` reads the file and follows the supervisor.
+- The counter example persists each output's count, so a reload keeps it.
+
 ## Process model and reload
 
 Two processes run. The `crabshell` CLI, installed once per machine, is the supervisor. The shell is the user's own compiled binary, which links the `crabshell` library.
@@ -233,10 +242,10 @@ v1 has three CLI commands:
 What `crabshell run` does:
 
 1. Sets `CARGO_TARGET_DIR=~/.cache/crabshell/target` and runs `cargo build` in the config directory.
-2. Starts the built binary and passes it a control pipe in `CRABSHELL_CONTROL_FD`. The shell writes `ready` to the pipe once every output has committed its first frame.
-3. Watches `src/` and `Cargo.toml` with the `notify` crate, debounced by 300 ms.
+2. Listens on a Unix socket in `$XDG_RUNTIME_DIR/crabshell/`, then starts the built binary with the socket's path in `CRABSHELL_CONTROL`. The shell connects and writes `ready` once every panel it shows has committed its first frame. (A path rather than an inherited descriptor: adopting a raw descriptor number is `unsafe` in Rust, and the crates forbid `unsafe`.)
+3. Watches `src/` and `Cargo.toml` with the `inotify` crate, debounced by 300 ms. (`notify` is CC0-1.0, which the license policy doesn't allow.)
 4. On a change, runs `cargo build` again. If the build fails, the running shell stays up. The supervisor prints the full error and sends the first error line as a desktop notification over `org.freedesktop.Notifications`.
-5. If the build succeeds, the supervisor writes `save` to the pipe. The shell writes every `cx.persist` value to `$XDG_RUNTIME_DIR/crabshell/state.json` and exits with code 0. The supervisor then starts the new binary, which reads that file on startup.
+5. If the build succeeds, the supervisor writes `save` to the socket. The shell writes every `cx.persist` value to `$XDG_RUNTIME_DIR/crabshell/state.json` and exits with code 0. The supervisor then starts the new binary, which reads that file on startup.
 6. If the shell exits with any other code or dies from a signal, the supervisor restarts it after 1 s, doubling the wait each time up to 30 s. Three crashes within 60 s of a new build make it start `~/.cache/crabshell/last-good` instead and send a notification.
 7. A binary that has run for 60 s without crashing is copied to `last-good`.
 
@@ -612,7 +621,7 @@ One Cargo workspace with seven crates. Each crate owns one area, so an agent can
 | `crabshell-wayland`  | Event loop, windows, popups, outputs, pointer, shm buffers            | reactive, ui, render | `smithay-client-toolkit`, `calloop`, `wayland-protocols`             |
 | `crabshell-services` | Workspaces, tray, audio, clock                                        | reactive, ui         | `zbus`, `serde_json`, `libpulse-binding`, `jiff`, `calloop`, `serde` |
 | `crabshell`          | Public API, `run()`, `prelude`, `cx.persist`                          | all of the above     | `serde`, `serde_json`, tracing-subscriber                            |
-| `crabshell-cli`      | The `crabshell` binary with `init`, `run`, `check` and the supervisor | none                 | `notify`, `zbus`                                                     |
+| `crabshell-cli`      | The `crabshell` binary with `init`, `run`, `check` and the supervisor | none                 | `inotify`, `zbus`                                                    |
 
 `Cx` lives in `crabshell-ui` and carries a map of services keyed by type. `crabshell-services` adds `cx.sway()`, `cx.audio()`, `cx.tray()` and `cx.clock()` through an extension trait, so `crabshell-ui` never depends on services.
 

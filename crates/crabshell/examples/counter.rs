@@ -1,5 +1,6 @@
 //! An example bar: one panel per output, with a button that counts its
-//! clicks and the output's name at the right. No clock, no services.
+//! clicks and the output's name at the right. No clock, no services. The
+//! counts survive a reload under `crabshell run`.
 //!
 //! Run it inside Sway with `cargo run -p crabshell --example counter`.
 
@@ -20,7 +21,7 @@ fn main() {
 
 /// The bar for one output. Each output's bar counts its own clicks.
 pub fn bar(cx: &Cx, output: &Output) -> PanelWindow {
-  let count = cx.signal(0_u32);
+  let count = cx.persist(&format!("clicks on {}", output.name()), 0_u32);
   PanelWindow::new(output)
     .anchors(Edge::Top | Edge::Left | Edge::Right)
     .height(30)
