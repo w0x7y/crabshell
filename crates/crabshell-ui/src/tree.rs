@@ -21,10 +21,13 @@ use crate::geometry::{Rect, Size};
 use crate::input::{Handlers, Pointer};
 use crate::keyed::KeyedSlot;
 use crate::prop::{Prop, PropKind};
+use crate::region::Region;
 use crate::style::{Padding, Style};
 use crate::text::TextNode;
 use crate::widgets::{Align, Element, ElementChild, ElementKind, IconSource, Justify};
-use crate::window::{Anchors, Layer, Output, PanelWindow, Window};
+use crate::window::{
+  Anchors, DEFAULT_NAMESPACE, KeyboardFocus, Layer, Margins, Output, PanelWindow, Window,
+};
 
 pub(crate) type NodeId = taffy::NodeId;
 
@@ -132,15 +135,35 @@ pub(crate) struct ButtonNode {
 }
 
 /// The layer-surface settings of the window.
-#[derive(Default)]
 pub(crate) struct Surface {
   pub(crate) anchors: Anchors,
   pub(crate) width: u32,
   pub(crate) height: u32,
   pub(crate) exclusive_zone: Option<i32>,
   pub(crate) layer: Layer,
+  pub(crate) margins: Margins,
+  pub(crate) keyboard_focus: KeyboardFocus,
+  pub(crate) namespace: String,
+  pub(crate) mask: Option<Region>,
   /// Something changed since the platform last read the settings.
   pub(crate) changed: bool,
+}
+
+impl Default for Surface {
+  fn default() -> Surface {
+    Surface {
+      anchors: Anchors::NONE,
+      width: 0,
+      height: 0,
+      exclusive_zone: None,
+      layer: Layer::Top,
+      margins: Margins::default(),
+      keyboard_focus: KeyboardFocus::None,
+      namespace: String::from(DEFAULT_NAMESPACE),
+      mask: None,
+      changed: false,
+    }
+  }
 }
 
 /// What a property change invalidates.
@@ -272,6 +295,10 @@ impl Tree {
       height,
       exclusive_zone,
       layer,
+      margins,
+      keyboard_focus,
+      namespace,
+      mask,
       style,
       child: _,
     } = panel;
@@ -289,6 +316,18 @@ impl Tree {
     });
     self.bind_opt(root, layer, "layer", |tree, _, value| {
       tree.surface.set(|s| &mut s.layer, value);
+    });
+    self.bind_opt(root, margins, "margins", |tree, _, value| {
+      tree.surface.set(|s| &mut s.margins, value);
+    });
+    self.bind_opt(root, keyboard_focus, "keyboard_focus", |tree, _, value| {
+      tree.surface.set(|s| &mut s.keyboard_focus, value);
+    });
+    self.bind_opt(root, namespace, "namespace", |tree, _, value| {
+      tree.surface.set(|s| &mut s.namespace, value);
+    });
+    self.bind_opt(root, mask, "mask", |tree, _, value| {
+      tree.surface.set(|s| &mut s.mask, value);
     });
     self.mount_root(style, child);
     self.surface.changed = true;

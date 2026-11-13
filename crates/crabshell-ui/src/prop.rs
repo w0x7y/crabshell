@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use crate::menu::MenuEntry;
+use crate::region::Region;
 use crate::style::Style;
 use crate::widgets::{Align, IconSource, Justify};
-use crate::window::{Anchors, Edge, Layer};
+use crate::window::{Anchors, Edge, KeyboardFocus, Layer, Margins};
 
 /// A widget property: either a value set once, or a binding that reruns
 /// whenever a signal it read changes.
@@ -83,6 +84,9 @@ value_props!(
   Justify,
   Anchors,
   Layer,
+  Margins,
+  KeyboardFocus,
+  Option<Region>,
   IconSource,
   Vec<MenuEntry>,
 );
@@ -90,6 +94,12 @@ value_props!(
 impl IntoProp<String> for &str {
   fn into_prop(self) -> Prop<String> {
     Prop(PropKind::Value(self.to_owned()))
+  }
+}
+
+impl IntoProp<Option<Region>> for Region {
+  fn into_prop(self) -> Prop<Option<Region>> {
+    Prop(PropKind::Value(Some(self)))
   }
 }
 

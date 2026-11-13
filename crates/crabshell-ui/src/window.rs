@@ -10,6 +10,7 @@ use crabshell_reactive::{Owner, untrack};
 use crate::cx::{Anchor, Cx};
 use crate::geometry::{Rect, Size};
 use crate::prop::{IntoProp, Prop};
+use crate::region::Region;
 use crate::style::Style;
 use crate::text::TextSystem;
 use crate::tree::{Tree, borrow};
@@ -126,10 +127,67 @@ pub enum Layer {
   Overlay,
 }
 
+/// Whether and when a window takes the keyboard.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum KeyboardFocus {
+  /// Never. The default.
+  #[default]
+  None,
+  /// Always, while the window is in the top or overlay layer: nothing
+  /// else gets keys. For launchers and other windows that hold the
+  /// keyboard until they close.
+  Exclusive,
+  /// When the user clicks it, like an ordinary window. A compositor older
+  /// than layer-shell version 4 can't do this, and the window then takes
+  /// no keyboard focus.
+  OnDemand,
+}
+
+/// Space between a window and the output edges it is anchored to, in
+/// logical pixels. Edges the window isn't anchored to ignore theirs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Margins {
+  /// From the top edge.
+  pub top: i32,
+  /// From the right edge.
+  pub right: i32,
+  /// From the bottom edge.
+  pub bottom: i32,
+  /// From the left edge.
+  pub left: i32,
+}
+
+impl Margins {
+  /// The same margin on every edge.
+  pub const fn all(margin: i32) -> Margins {
+    Margins::new(margin, margin, margin, margin)
+  }
+
+  /// Each edge's margin, clockwise from the top, as in CSS.
+  pub const fn new(top: i32, right: i32, bottom: i32, left: i32) -> Margins {
+    Margins {
+      top,
+      right,
+      bottom,
+      left,
+    }
+  }
+
+  /// The margin on `edge`.
+  pub const fn on(self, edge: Edge) -> i32 {
+    match edge {
+      Edge::Top => self.top,
+      Edge::Right => self.right,
+      Edge::Bottom => self.bottom,
+      Edge::Left => self.left,
+    }
+  }
+}
+
 /// A bar: a layer-shell surface on one output with one child.
 ///
-/// This is a description; [`Window::new`] builds it. It takes no keyboard
-/// focus. Every property takes a value or a closure.
+/// This is a description; [`Window::new`] builds it. By default it takes
+/// no keyboard focus. Every property takes a value or a closure.
 ///
 /// ```
 /// use crabshell_ui::{Edge, Output, PanelWindow, Text};
@@ -147,6 +205,10 @@ pub struct PanelWindow {
   pub(crate) height: Option<Prop<u32>>,
   pub(crate) exclusive_zone: Option<Prop<i32>>,
   pub(crate) layer: Option<Prop<Layer>>,
+  pub(crate) margins: Option<Prop<Margins>>,
+  pub(crate) keyboard_focus: Option<Prop<KeyboardFocus>>,
+  pub(crate) namespace: Option<Prop<String>>,
+  pub(crate) mask: Option<Prop<Option<Region>>>,
   pub(crate) style: Option<Prop<Style>>,
   pub(crate) child: Option<Box<dyn Widget>>,
 }
@@ -161,6 +223,10 @@ impl PanelWindow {
       height: None,
       exclusive_zone: None,
       layer: None,
+      margins: None,
+      keyboard_focus: None,
+      namespace: None,
+      mask: None,
       style: None,
       child: None,
     }
@@ -189,7 +255,10 @@ impl PanelWindow {
 
   /// Sets how much space, in logical pixels, other windows keep clear
   /// along the anchored edge. The default is the window's height for a top
-  /// or bottom bar and its width for a left or right one.
+  /// or bottom bar and its width for a left or right one. wlroots
+  /// compositors add the margin on that edge to the zone. 0 keeps clear
+  /// of other windows' zones without reserving any; -1 ignores them and
+  /// covers them.
   pub fn exclusive_zone(mut self, zone: impl IntoProp<i32>) -> PanelWindow {
     self.exclusive_zone = Some(zone.into_prop());
     self
@@ -198,6 +267,36 @@ impl PanelWindow {
   /// Sets the layer.
   pub fn layer(mut self, layer: impl IntoProp<Layer>) -> PanelWindow {
     self.layer = Some(layer.into_prop());
+    self
+  }
+
+  /// Sets the space between the window and the edges it is anchored to.
+  pub fn margins(mut self, margins: impl IntoProp<Margins>) -> PanelWindow {
+    self.margins = Some(margins.into_prop());
+    self
+  }
+
+  /// Sets whether the window takes the keyboard. The default is never.
+  pub fn keyboard_focus(mut self, focus: impl IntoProp<KeyboardFocus>) -> PanelWindow {
+    self.keyboard_focus = Some(focus.into_prop());
+    self
+  }
+
+  /// Sets the layer-shell namespace, which compositors use to tell
+  /// windows apart, as in Sway's `layer_effects`. The default is
+  /// `"crabshell"`, which also replaces a name holding a NUL byte.
+  /// Compositors read it once, so a change after the window is shown
+  /// applies only when it is shown again, as on a new output.
+  pub fn namespace(mut self, namespace: impl IntoProp<String>) -> PanelWindow {
+    self.namespace = Some(namespace.into_prop());
+    self
+  }
+
+  /// Sets the part of the window that takes pointer input; clicks outside
+  /// it reach whatever is below. `None`, the default, is the whole window,
+  /// and [`Region::empty`] lets every click through.
+  pub fn mask(mut self, mask: impl IntoProp<Option<Region>>) -> PanelWindow {
+    self.mask = Some(mask.into_prop());
     self
   }
 
@@ -216,7 +315,7 @@ impl PanelWindow {
 }
 
 /// What the platform needs to set up the window's layer surface.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SurfaceConfig {
   /// The anchored edges.
   pub anchors: Anchors,
@@ -228,7 +327,36 @@ pub struct SurfaceConfig {
   pub exclusive_zone: i32,
   /// The layer.
   pub layer: Layer,
+  /// The margins from the anchored edges.
+  pub margins: Margins,
+  /// Whether the window takes the keyboard.
+  pub keyboard_focus: KeyboardFocus,
+  /// The layer-shell namespace.
+  pub namespace: String,
+  /// The part that takes pointer input; `None` is all of it.
+  pub mask: Option<Region>,
 }
+
+impl Default for SurfaceConfig {
+  /// A layer-shell surface's defaults: no anchors, sizes or zone, in the
+  /// top layer, without the keyboard.
+  fn default() -> SurfaceConfig {
+    SurfaceConfig {
+      anchors: Anchors::NONE,
+      width: 0,
+      height: 0,
+      exclusive_zone: 0,
+      layer: Layer::Top,
+      margins: Margins::default(),
+      keyboard_focus: KeyboardFocus::None,
+      namespace: String::from(DEFAULT_NAMESPACE),
+      mask: None,
+    }
+  }
+}
+
+/// The layer-shell namespace unless a window sets its own.
+pub(crate) const DEFAULT_NAMESPACE: &str = "crabshell";
 
 /// A live window: the tree of nodes built from a [`PanelWindow`].
 ///
@@ -298,6 +426,10 @@ impl Window {
       height: surface.height,
       exclusive_zone,
       layer: surface.layer,
+      margins: surface.margins,
+      keyboard_focus: surface.keyboard_focus,
+      namespace: surface.namespace.clone(),
+      mask: surface.mask.clone(),
     }
   }
 

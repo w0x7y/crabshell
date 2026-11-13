@@ -4,8 +4,8 @@ use crabshell_reactive::Runtime;
 
 use super::{Harness, capture_logs, paths};
 use crate::{
-  Anchors, Button, Cx, Edge, Icon, Layer, Output, PanelWindow, Row, Spacer, Stack, Style, Text,
-  Window,
+  Anchors, Button, Cx, Edge, Icon, KeyboardFocus, Layer, Margins, Output, PanelWindow, Region, Row,
+  Spacer, Stack, Style, SurfaceConfig, Text, Window,
 };
 
 #[test]
@@ -110,7 +110,56 @@ fn surface_settings_have_layer_shell_defaults() {
   assert_eq!((surface.width, surface.height), (0, 0));
   assert_eq!(surface.exclusive_zone, 0);
   assert_eq!(surface.layer, Layer::Top);
+  assert_eq!(surface.margins, Margins::default());
+  assert_eq!(surface.keyboard_focus, KeyboardFocus::None);
+  assert_eq!(surface.namespace, "crabshell");
+  assert_eq!(surface.mask, None);
+  assert_eq!(surface, SurfaceConfig::default());
   assert_eq!(window.output(), Output::new("DP-1"));
+}
+
+#[test]
+fn margins_focus_namespace_and_mask_reach_the_surface_settings() {
+  let mut h = Harness::new();
+  let launcher = h.cx.signal(false);
+  let panel = h
+    .panel()
+    .anchors(Edge::Top | Edge::Left | Edge::Right)
+    .height(30)
+    .margins(Margins::new(8, 4, 0, 4))
+    .keyboard_focus(move || {
+      if launcher.get() {
+        KeyboardFocus::Exclusive
+      } else {
+        KeyboardFocus::OnDemand
+      }
+    })
+    .namespace("bar")
+    .mask(move || (!launcher.get()).then(|| Region::rect(0, 0, 40, 30)));
+  let window = h.window(panel, 200.0, 30.0);
+  let surface = window.surface();
+  assert_eq!(surface.margins, Margins::new(8, 4, 0, 4));
+  assert_eq!(surface.keyboard_focus, KeyboardFocus::OnDemand);
+  assert_eq!(surface.namespace, "bar");
+  assert_eq!(surface.mask, Some(Region::rect(0, 0, 40, 30)));
+  assert!(window.take_surface_changed());
+
+  launcher.set(true);
+  h.frame(&window);
+  assert!(window.take_surface_changed());
+  assert_eq!(window.surface().keyboard_focus, KeyboardFocus::Exclusive);
+  assert_eq!(window.surface().mask, None);
+}
+
+#[test]
+fn the_default_zone_leaves_out_the_margin() {
+  // wlroots adds the margin on the anchored edge to the zone itself.
+  let mut h = Harness::new();
+  let panel = PanelWindow::new(&Output::new("DP-1"))
+    .anchors(Edge::Top | Edge::Left | Edge::Right)
+    .height(30)
+    .margins(Margins::new(8, 4, 0, 4));
+  assert_eq!(h.window(panel, 200.0, 30.0).surface().exclusive_zone, 30);
 }
 
 #[test]

@@ -11,6 +11,7 @@ mod keyed;
 mod layout;
 mod menu;
 mod popup;
+mod region;
 mod services;
 mod style;
 mod text;

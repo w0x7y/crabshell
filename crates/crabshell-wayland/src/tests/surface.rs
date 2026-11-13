@@ -63,6 +63,7 @@ fn a_zero_side_needs_anchors_on_both_edges_across_it() {
     height,
     exclusive_zone: 0,
     layer: Layer::Top,
+    ..SurfaceConfig::default()
   };
   assert_eq!(
     size_problem(&config(Edge::Top | Edge::Left | Edge::Right, 0, 30)),

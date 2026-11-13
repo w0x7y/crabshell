@@ -65,6 +65,7 @@ mod layout;
 mod menu;
 mod popup;
 mod prop;
+mod region;
 mod style;
 mod text;
 mod tree;
@@ -81,6 +82,7 @@ pub use input::{CursorShape, PointerButton, ScrollDelta};
 pub use menu::{Menu, MenuEntry, MenuToggle};
 pub use popup::PopupWindow;
 pub use prop::{IntoProp, Prop};
+pub use region::Region;
 pub use style::{Border, Color, Font, Padding, Style};
 pub use text::TextSystem;
 pub use view::{Content, IconView, NodeView, TextView, WindowView};
@@ -88,7 +90,9 @@ pub use widgets::{
   Align, Button, Column, Element, Icon, IconPixels, IconSource, Justify, Row, Spacer, Stack, Text,
   Widget,
 };
-pub use window::{Anchors, Edge, Layer, Output, PanelWindow, SurfaceConfig, Window};
+pub use window::{
+  Anchors, Edge, KeyboardFocus, Layer, Margins, Output, PanelWindow, SurfaceConfig, Window,
+};
 
 /// What a bar's code needs, in one `use`.
 pub mod prelude {
