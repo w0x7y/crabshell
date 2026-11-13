@@ -46,6 +46,7 @@ type ScrollHandler = Rc<Handler<dyn Fn(&Cx, i32)>>;
 pub(crate) struct Handlers {
   pub(crate) click: Option<ClickHandler>,
   pub(crate) right_click: Option<ClickHandler>,
+  pub(crate) middle_click: Option<ClickHandler>,
   pub(crate) scroll: Option<ScrollHandler>,
 }
 
@@ -56,7 +57,7 @@ pub enum PointerButton {
   Left,
   /// The secondary button; it runs `on_right_click`.
   Right,
-  /// The middle button; buttons ignore it.
+  /// The middle button; it runs `on_middle_click`.
   Middle,
 }
 
@@ -127,7 +128,8 @@ impl Window {
   }
 
   /// A pointer button went down or up. Releasing it over the button it
-  /// went down on runs that button's `on_click` or `on_right_click`.
+  /// went down on runs that button's `on_click`, `on_right_click` or
+  /// `on_middle_click`.
   pub fn pointer_button(&self, button: PointerButton, pressed: bool) {
     let call = borrow(&self.tree).button(button, pressed);
     if let Some(call) = call {
@@ -232,9 +234,6 @@ impl Tree {
   }
 
   fn button(&mut self, button: PointerButton, pressed: bool) -> Option<Call> {
-    if button == PointerButton::Middle {
-      return None;
-    }
     if pressed {
       if self.pointer.pressed.is_none()
         && let Some(target) = self.pointer.hovered
@@ -253,7 +252,8 @@ impl Tree {
     }
     let action = match button {
       PointerButton::Left => Action::Click,
-      _ => Action::RightClick,
+      PointerButton::Right => Action::RightClick,
+      PointerButton::Middle => Action::MiddleClick,
     };
     self.call(target, action)
   }
@@ -303,6 +303,7 @@ impl Tree {
 enum Action {
   Click,
   RightClick,
+  MiddleClick,
   Scroll(i32),
 }
 
@@ -321,6 +322,7 @@ impl Call {
       self.handlers.try_with(|handlers| match self.action {
         Action::Click => handlers.click.clone().map(Either::Click),
         Action::RightClick => handlers.right_click.clone().map(Either::Click),
+        Action::MiddleClick => handlers.middle_click.clone().map(Either::Click),
         Action::Scroll(_) => handlers.scroll.clone().map(Either::Scroll),
       })
     });
@@ -331,6 +333,7 @@ impl Call {
       (Either::Click(handler), action) => {
         let name = match action {
           Action::RightClick => "on_right_click",
+          Action::MiddleClick => "on_middle_click",
           _ => "on_click",
         };
         run_isolated(&self.path, name, handler, |f| f(&self.cx));

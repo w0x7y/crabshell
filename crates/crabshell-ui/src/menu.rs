@@ -2,14 +2,13 @@
 //! tray item's DBusMenu, with separators, checkmarks, radio buttons and
 //! submenus that open as nested popups.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 
 use crabshell_reactive::Memo;
 
 use crate::cx::Cx;
 use crate::popup::PopupWindow;
-use crate::prop::{IntoProp, Prop, PropKind};
+use crate::prop::{IntoProp, Prop};
 use crate::style::{Color, Style};
 use crate::widgets::{
   Align, Button, Column, Element, ElementKind, Row, Spacer, Stack, Text, Widget,
@@ -165,17 +164,9 @@ type Shared<T> = Rc<dyn Fn() -> T>;
 /// A handler that gets an entry's id.
 type EntryHandler = Rc<dyn Fn(&Cx, i32)>;
 
-/// A property as a closure that submenus can share. A binding stays one:
-/// whatever calls it subscribes to the signals it reads.
+/// A property as a closure that submenus can share, or `default`.
 fn shared<T: Clone + 'static>(prop: Option<Prop<T>>, default: T) -> Shared<T> {
-  match prop.map(|prop| prop.0) {
-    None => Rc::new(move || default.clone()),
-    Some(PropKind::Value(value)) => Rc::new(move || value.clone()),
-    Some(PropKind::Binding(compute)) => {
-      let compute = RefCell::new(compute);
-      Rc::new(move || (compute.borrow_mut())())
-    }
-  }
+  prop.map_or_else(|| Rc::new(move || default.clone()), Prop::shared)
 }
 
 impl Widget for Menu {

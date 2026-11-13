@@ -175,24 +175,31 @@ fn right_and_middle_buttons() {
   let mut h = Harness::new();
   let left = Counter::default();
   let right = Counter::default();
-  let (l, r) = (left.clone(), right.clone());
+  let middle = Counter::default();
+  let (l, r, m) = (left.clone(), right.clone(), middle.clone());
   let window = two_buttons(
     &mut h,
     Button::new(square())
       .on_click(move |_| l.hit())
-      .on_right_click(move |_| r.hit()),
+      .on_right_click(move |_| r.hit())
+      .on_middle_click(move |_| m.hit()),
     Button::new(square()),
   );
   window.pointer_motion(center(&window, &[0, 0]));
   click(&window, PointerButton::Right);
   click(&window, PointerButton::Middle);
-  assert_eq!((left.get(), right.get()), (0, 1));
+  assert_eq!((left.get(), right.get(), middle.get()), (0, 1, 1));
 
   // A right press doesn't end with a left release.
   window.pointer_button(PointerButton::Right, true);
   window.pointer_button(PointerButton::Left, false);
   window.pointer_button(PointerButton::Right, false);
-  assert_eq!((left.get(), right.get()), (0, 2));
+  assert_eq!((left.get(), right.get(), middle.get()), (0, 2, 1));
+
+  // A button without a middle handler ignores the middle button.
+  window.pointer_motion(center(&window, &[0, 1]));
+  click(&window, PointerButton::Middle);
+  assert_eq!((left.get(), right.get(), middle.get()), (0, 2, 1));
 }
 
 #[test]
@@ -323,6 +330,25 @@ fn a_panicking_handler_is_logged_and_disabled() {
     "{logs}"
   );
   assert!(logs.contains("handler failure"), "{logs}");
+}
+
+#[test]
+fn a_panicking_middle_click_handler_is_logged_with_its_name() {
+  let mut h = Harness::new();
+  let window = two_buttons(
+    &mut h,
+    Button::new(square()).on_middle_click(|_| panic!("middle failure")),
+    Button::new(square()),
+  );
+  let logs = capture_logs(|| {
+    window.pointer_motion(center(&window, &[0, 0]));
+    click(&window, PointerButton::Middle);
+  });
+  assert!(
+    logs
+      .contains("handler PanelWindow[DP-1]/Row/Button[0].on_middle_click panicked and is disabled"),
+    "{logs}"
+  );
 }
 
 #[test]

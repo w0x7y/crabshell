@@ -1,6 +1,8 @@
 //! Widget properties that take either a plain value or a closure.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use crate::menu::MenuEntry;
 use crate::style::Style;
@@ -13,6 +15,22 @@ use crate::window::{Anchors, Edge, Layer};
 /// You never build one yourself. Widget methods take `impl IntoProp<T>`, so
 /// `.height(30)` sets a value and `.height(move || ...)` makes a binding.
 pub struct Prop<T>(pub(crate) PropKind<T>);
+
+impl<T: Clone + 'static> Prop<T> {
+  /// The property as a closure that can be called again and shared, as a
+  /// widget built from other widgets hands one property to many of them.
+  /// A binding stays one: whatever calls it subscribes to the signals it
+  /// reads.
+  pub fn shared(self) -> Rc<dyn Fn() -> T> {
+    match self.0 {
+      PropKind::Value(value) => Rc::new(move || value.clone()),
+      PropKind::Binding(compute) => {
+        let compute = RefCell::new(compute);
+        Rc::new(move || (compute.borrow_mut())())
+      }
+    }
+  }
+}
 
 pub(crate) enum PropKind<T> {
   Value(T),

@@ -531,6 +531,13 @@ impl Button {
     self
   }
 
+  /// Runs `handler` when the middle button is pressed and released over
+  /// this button.
+  pub fn on_middle_click(mut self, handler: impl Fn(&Cx) + 'static) -> Button {
+    self.button.handlers.middle_click = Some(Rc::new(Handler::new(handler)));
+    self
+  }
+
   /// Runs `handler` with whole scroll steps while the pointer is over this
   /// button: positive for up, negative for down. A mouse wheel gives one
   /// step per notch; touchpad scrolling gives one step per 15 logical
