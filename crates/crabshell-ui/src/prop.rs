@@ -7,7 +7,7 @@ use std::rc::Rc;
 use crate::menu::MenuEntry;
 use crate::region::Region;
 use crate::style::Style;
-use crate::widgets::{Align, IconSource, Justify};
+use crate::widgets::{Align, Fit, IconSource, Justify};
 use crate::window::{Anchors, Edge, KeyboardFocus, Layer, Margins};
 
 /// A widget property: either a value set once, or a binding that reruns
@@ -87,6 +87,8 @@ value_props!(
   Margins,
   KeyboardFocus,
   Option<Region>,
+  PathBuf,
+  Fit,
   IconSource,
   Vec<MenuEntry>,
 );
@@ -120,6 +122,24 @@ impl IntoProp<IconSource> for &str {
 impl IntoProp<IconSource> for String {
   fn into_prop(self) -> Prop<IconSource> {
     Prop(PropKind::Value(IconSource::Name(self)))
+  }
+}
+
+impl IntoProp<PathBuf> for &Path {
+  fn into_prop(self) -> Prop<PathBuf> {
+    Prop(PropKind::Value(self.to_owned()))
+  }
+}
+
+impl IntoProp<PathBuf> for &str {
+  fn into_prop(self) -> Prop<PathBuf> {
+    Prop(PropKind::Value(PathBuf::from(self)))
+  }
+}
+
+impl IntoProp<PathBuf> for String {
+  fn into_prop(self) -> Prop<PathBuf> {
+    Prop(PropKind::Value(PathBuf::from(self)))
   }
 }
 

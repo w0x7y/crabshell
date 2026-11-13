@@ -22,7 +22,7 @@ use taffy::{
 use crate::geometry::{Point, Rect};
 use crate::style::Font;
 use crate::text::TextSystem;
-use crate::tree::{Node, NodeId, NodeKind, Tree, add_damage, icon_rect};
+use crate::tree::{Node, NodeId, NodeKind, Tree, add_damage, centered, icon_rect};
 use crate::widgets::{Align, Justify};
 
 /// The kind of container a node sits in, which decides how it is placed.
@@ -187,6 +187,9 @@ impl Tree {
         painted = painted.union(text.ink_box());
       }
       NodeKind::Icon(icon) => painted = painted.union(icon_rect(content, icon.size)),
+      NodeKind::Image(image) => {
+        painted = painted.union(centered(content, image.width, image.height));
+      }
       _ => {}
     }
     // Repaint what the node drew where it was and draws where it is
@@ -229,7 +232,8 @@ impl Tree {
   }
 }
 
-/// Measures a leaf: text through its buffer, an icon as a square.
+/// Measures a leaf: text through its buffer, an icon as a square, an
+/// image at its size.
 fn measure(
   node: Option<&mut Node>,
   fonts: &mut FontSystem,
@@ -238,6 +242,10 @@ fn measure(
 ) -> taffy::Size<f32> {
   match node.map(|node| &mut node.kind) {
     Some(NodeKind::Text(text)) => text.measure(fonts, known, available),
+    Some(NodeKind::Image(image)) => taffy::Size {
+      width: known.width.unwrap_or(image.width as f32),
+      height: known.height.unwrap_or(image.height as f32),
+    },
     Some(NodeKind::Icon(icon)) => {
       let side = icon.size as f32;
       taffy::Size {
@@ -309,7 +317,7 @@ fn taffy_style(node: &Node, parent: Parent, size: crate::Size) -> taffy::Style {
       style.align_items = AlignItems::CENTER;
       style.justify_content = JustifyContent::CENTER;
     }
-    NodeKind::Text(_) | NodeKind::Icon(_) => {}
+    NodeKind::Text(_) | NodeKind::Icon(_) | NodeKind::Image(_) => {}
   }
   if parent != Parent::Flex {
     let cell = Line {

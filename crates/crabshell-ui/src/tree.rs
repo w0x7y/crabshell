@@ -11,6 +11,7 @@
 //! live in the reactive runtime rather than here, so the runtime drops them.
 
 use std::cell::{RefCell, RefMut};
+use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 
 use crabshell_reactive::Signal;
@@ -25,7 +26,7 @@ use crate::prop::{Prop, PropKind};
 use crate::region::Region;
 use crate::style::{Padding, Style};
 use crate::text::TextNode;
-use crate::widgets::{Align, Element, ElementChild, ElementKind, IconSource, Justify};
+use crate::widgets::{Align, Element, ElementChild, ElementKind, Fit, IconSource, Justify};
 use crate::window::{
   Anchors, DEFAULT_NAMESPACE, KeyboardFocus, Layer, Margins, Output, PanelWindow, Window,
 };
@@ -109,6 +110,7 @@ pub(crate) enum NodeKind {
   Spacer,
   Text(TextNode),
   Icon(IconNode),
+  Image(ImageNode),
   Button(ButtonNode),
 }
 
@@ -120,6 +122,13 @@ pub(crate) struct Flex {
   pub(crate) padding_horizontal: Option<u32>,
   pub(crate) align: Align,
   pub(crate) justify: Justify,
+}
+
+pub(crate) struct ImageNode {
+  pub(crate) source: Option<PathBuf>,
+  pub(crate) width: u32,
+  pub(crate) height: u32,
+  pub(crate) fit: Fit,
 }
 
 pub(crate) struct IconNode {
@@ -233,7 +242,7 @@ impl Node {
     let style = self.effective_style();
     matches!(
       self.kind,
-      NodeKind::Root | NodeKind::Text(_) | NodeKind::Icon(_)
+      NodeKind::Root | NodeKind::Text(_) | NodeKind::Icon(_) | NodeKind::Image(_)
     ) || style.background.is_some()
       || style.border.is_some()
   }
@@ -396,6 +405,12 @@ impl Tree {
       ElementKind::Stack => NodeKind::Stack,
       ElementKind::Spacer => NodeKind::Spacer,
       ElementKind::Text(_) => NodeKind::Text(TextNode::new()),
+      ElementKind::Image(_) => NodeKind::Image(ImageNode {
+        source: None,
+        width: crate::Image::DEFAULT_SIZE,
+        height: crate::Image::DEFAULT_SIZE,
+        fit: Fit::default(),
+      }),
       ElementKind::Icon(_) => NodeKind::Icon(IconNode {
         source: None,
         size: crate::Icon::DEFAULT_SIZE,
@@ -461,6 +476,27 @@ impl Tree {
         });
         self.bind_opt(id, props.max_lines, "max_lines", |tree, id, value| {
           tree.update_text(id, |text| text.set_max_lines(value))
+        });
+      }
+      ElementKind::Image(props) => {
+        self.bind(id, props.source, "image", |tree, id, value| {
+          tree.update_image(id, |image| match replace(&mut image.source, Some(value)) {
+            // A new picture of the same size only needs a repaint.
+            Change::None => Change::None,
+            _ => Change::Paint,
+          })
+        });
+        self.bind_opt(id, props.width, "width", |tree, id, value| {
+          tree.update_image(id, |image| replace(&mut image.width, value))
+        });
+        self.bind_opt(id, props.height, "height", |tree, id, value| {
+          tree.update_image(id, |image| replace(&mut image.height, value))
+        });
+        self.bind_opt(id, props.fit, "fit", |tree, id, value| {
+          tree.update_image(id, |image| match replace(&mut image.fit, value) {
+            Change::None => Change::None,
+            _ => Change::Paint,
+          })
         });
       }
       ElementKind::Icon(props) => {
@@ -671,6 +707,13 @@ impl Tree {
     });
   }
 
+  fn update_image(&mut self, id: NodeId, f: impl FnOnce(&mut ImageNode) -> Change) {
+    self.update(id, |node| match &mut node.kind {
+      NodeKind::Image(image) => f(image),
+      _ => Change::None,
+    });
+  }
+
   fn update_icon(&mut self, id: NodeId, f: impl FnOnce(&mut IconNode) -> Change) {
     self.update(id, |node| match &mut node.kind {
       NodeKind::Icon(icon) => f(icon),
@@ -735,12 +778,18 @@ fn set_style(tree: &mut Tree, id: NodeId, style: Style) {
 /// Where an icon of `size` logical pixels is drawn in its node's `content`
 /// box: a square, centered, on whole pixels. It overflows a smaller box.
 pub(crate) fn icon_rect(content: Rect, size: u32) -> Rect {
-  let side = size as f32;
+  centered(content, size, size)
+}
+
+/// A `width` by `height` box centered in `content`, on whole logical
+/// pixels.
+pub(crate) fn centered(content: Rect, width: u32, height: u32) -> Rect {
+  let (width, height) = (width as f32, height as f32);
   Rect::new(
-    content.x + ((content.width - side) / 2.0).round(),
-    content.y + ((content.height - side) / 2.0).round(),
-    side,
-    side,
+    content.x + ((content.width - width) / 2.0).round(),
+    content.y + ((content.height - height) / 2.0).round(),
+    width,
+    height,
   )
 }
 

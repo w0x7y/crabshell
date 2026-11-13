@@ -87,10 +87,10 @@ pub use prop::{IntoProp, Prop};
 pub use region::Region;
 pub use style::{Border, Color, Font, Padding, Style};
 pub use text::TextSystem;
-pub use view::{Content, IconView, NodeView, TextView, WindowView};
+pub use view::{Content, IconView, ImageView, NodeView, TextView, WindowView};
 pub use widgets::{
-  Align, Button, Column, Element, Icon, IconPixels, IconSource, Justify, Row, Spacer, Stack, Text,
-  Widget,
+  Align, Button, Column, Element, Fit, Icon, IconPixels, IconSource, Image, Justify, Row, Spacer,
+  Stack, Text, Widget,
 };
 pub use window::{
   Anchors, Edge, KeyboardFocus, Layer, Margins, Output, PanelWindow, SurfaceConfig, Window,

@@ -3,7 +3,9 @@
 
 use super::{Harness, node_at, rect_at};
 use crate::text::TextNode;
-use crate::{Align, Button, Column, Content, Icon, Justify, Rect, Row, Spacer, Stack, Style, Text};
+use crate::{
+  Align, Button, Column, Content, Fit, Icon, Image, Justify, Rect, Row, Spacer, Stack, Style, Text,
+};
 
 #[test]
 fn the_window_child_fills_the_window() {
@@ -384,4 +386,43 @@ fn a_clipping_widget_cuts_its_childrens_reach_to_its_box() {
   assert!(window.needs_layout());
   h.frame(&window);
   assert_eq!(bounds(), Rect::new(0.0, 0.0, 100.0, 20.0));
+}
+
+#[test]
+fn an_image_is_its_size_and_a_new_picture_only_repaints() {
+  let mut h = Harness::new();
+  let path = h.cx.signal(String::from("a.png"));
+  let wide = h.cx.signal(false);
+  let row = Row::new()
+    .align(Align::Start)
+    .child(Image::new("default.png"))
+    .child(
+      Image::new(move || std::path::PathBuf::from(path.get()))
+        .width(move || if wide.get() { 50 } else { 30 })
+        .height(20)
+        .fit(Fit::Cover),
+    );
+  let window = h.window(h.panel().child(row), 200.0, 100.0);
+  assert_eq!(rect_at(&window, &[0, 0]), Rect::new(0.0, 0.0, 64.0, 64.0));
+  assert_eq!(rect_at(&window, &[0, 1]), Rect::new(64.0, 0.0, 30.0, 20.0));
+  match node_at(window.view().root(), &[0, 1]).content() {
+    Content::Image(image) => {
+      assert_eq!(image.path, std::path::Path::new("a.png"));
+      assert_eq!(image.rect, Rect::new(64.0, 0.0, 30.0, 20.0));
+      assert_eq!(image.fit, Fit::Cover);
+    }
+    _ => panic!("not an image"),
+  }
+
+  window.take_damage();
+  path.set(String::from("b.png"));
+  h.runtime.flush();
+  assert!(!window.needs_layout());
+  assert_eq!(window.take_damage(), vec![Rect::new(64.0, 0.0, 30.0, 20.0)]);
+
+  wide.set(true);
+  h.runtime.flush();
+  assert!(window.needs_layout());
+  h.frame(&window);
+  assert_eq!(rect_at(&window, &[0, 1]).width, 50.0);
 }

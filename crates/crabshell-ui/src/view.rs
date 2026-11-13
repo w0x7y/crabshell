@@ -1,6 +1,7 @@
 //! A read-only view of a laid-out window, for drawing it.
 
 use std::cell::Ref;
+use std::path::Path;
 
 use cosmic_text::{Buffer, LayoutRun};
 use taffy::TraversePartialTree;
@@ -8,8 +9,8 @@ use taffy::TraversePartialTree;
 use crate::geometry::{Point, Rect, Size};
 use crate::style::{Color, Style};
 use crate::text::TextNode;
-use crate::tree::{Node, NodeId, NodeKind, Tree, icon_rect};
-use crate::widgets::IconSource;
+use crate::tree::{Node, NodeId, NodeKind, Tree, centered, icon_rect};
+use crate::widgets::{Fit, IconSource};
 
 /// The color text uses when no ancestor sets one.
 const DEFAULT_TEXT_COLOR: Color = Color::rgb(0, 0, 0);
@@ -105,6 +106,14 @@ impl<'a> NodeView<'a> {
         }),
         None => Content::None,
       },
+      NodeKind::Image(image) => match &image.source {
+        Some(path) => Content::Image(ImageView {
+          path,
+          rect: centered(self.node.content, image.width, image.height),
+          fit: image.fit,
+        }),
+        None => Content::None,
+      },
       _ => Content::None,
     }
   }
@@ -135,6 +144,8 @@ pub enum Content<'a> {
   Text(TextView<'a>),
   /// An icon.
   Icon(IconView<'a>),
+  /// An image.
+  Image(ImageView<'a>),
 }
 
 /// Laid-out text, ready to draw. Lines can stick out of the node's
@@ -180,4 +191,14 @@ pub struct IconView<'a> {
   pub source: &'a IconSource,
   /// Where: a square of the icon's size, centered in the node.
   pub rect: Rect,
+}
+
+/// An image, ready to draw.
+pub struct ImageView<'a> {
+  /// The file to show.
+  pub path: &'a Path,
+  /// Where: a box of the image's size, centered in the node.
+  pub rect: Rect,
+  /// How the picture fills the box.
+  pub fit: Fit,
 }

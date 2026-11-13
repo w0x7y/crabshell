@@ -59,6 +59,7 @@ pub(crate) enum ElementKind {
   Spacer,
   Text(TextProps),
   Icon(IconProps),
+  Image(ImageProps),
   Button(ButtonProps),
 }
 
@@ -108,6 +109,27 @@ pub(crate) struct TextProps {
 pub(crate) struct IconProps {
   pub(crate) source: Prop<IconSource>,
   pub(crate) size: Option<Prop<u32>>,
+}
+
+pub(crate) struct ImageProps {
+  pub(crate) source: Prop<PathBuf>,
+  pub(crate) width: Option<Prop<u32>>,
+  pub(crate) height: Option<Prop<u32>>,
+  pub(crate) fit: Option<Prop<Fit>>,
+}
+
+/// How an [`Image`] fills its box when their shapes differ, as CSS's
+/// `object-fit`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Fit {
+  /// Stretched to the box. The default.
+  #[default]
+  Fill,
+  /// As large as fits whole, centered, keeping its shape.
+  Contain,
+  /// Covering the whole box, centered, keeping its shape; what sticks out
+  /// is cut off.
+  Cover,
 }
 
 pub(crate) struct ButtonProps {
@@ -466,6 +488,63 @@ impl Icon {
   }
 
   style_method!();
+}
+
+/// A picture from a PNG, JPEG, GIF (its first frame), WebP or SVG file,
+/// drawn at a fixed size.
+pub struct Image {
+  image: ImageProps,
+  style: Option<Prop<Style>>,
+}
+
+impl Image {
+  /// The default width and height in logical pixels.
+  pub const DEFAULT_SIZE: u32 = 64;
+
+  /// An image of the file at `source`: a path (`&str`, `String`, `&Path`
+  /// or `PathBuf`) or a closure that returns one.
+  pub fn new(source: impl IntoProp<PathBuf>) -> Image {
+    Image {
+      image: ImageProps {
+        source: source.into_prop(),
+        width: None,
+        height: None,
+        fit: None,
+      },
+      style: None,
+    }
+  }
+
+  /// Sets the width in logical pixels.
+  pub fn width(mut self, width: impl IntoProp<u32>) -> Image {
+    self.image.width = Some(width.into_prop());
+    self
+  }
+
+  /// Sets the height in logical pixels.
+  pub fn height(mut self, height: impl IntoProp<u32>) -> Image {
+    self.image.height = Some(height.into_prop());
+    self
+  }
+
+  /// Sets how the picture fills the image's box when their shapes differ.
+  pub fn fit(mut self, fit: impl IntoProp<Fit>) -> Image {
+    self.image.fit = Some(fit.into_prop());
+    self
+  }
+
+  style_method!();
+}
+
+impl Widget for Image {
+  fn into_element(self: Box<Self>) -> Element {
+    Element {
+      name: "Image",
+      style: self.style,
+      kind: ElementKind::Image(self.image),
+      children: Vec::new(),
+    }
+  }
 }
 
 impl Widget for Icon {

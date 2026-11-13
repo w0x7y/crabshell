@@ -409,7 +409,8 @@ impl Painter<'_> {
     match node.content() {
       Content::Text(text) => self.text(pixmap, &text),
       Content::Icon(icon) => self.icon(pixmap, &icon),
-      Content::None => {}
+      // Drawn from the next commit on, once the decoders are in.
+      Content::Image(_) | Content::None => {}
     }
     if style.clips() {
       self.clipped_children(pixmap, node, style);
