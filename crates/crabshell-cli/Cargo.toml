@@ -17,3 +17,9 @@ inotify.workspace = true
 rustix.workspace = true
 serde_json.workspace = true
 zbus.workspace = true
+
+[dev-dependencies]
+# The exit check's headless Sway, through crabshell-wayland's test helper.
+crabshell-wayland.workspace = true
+png.workspace = true
+smithay-client-toolkit.workspace = true

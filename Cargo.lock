@@ -189,9 +189,12 @@ name = "crabshell-cli"
 version = "0.0.0"
 dependencies = [
  "calloop",
+ "crabshell-wayland",
  "inotify",
+ "png",
  "rustix",
  "serde_json",
+ "smithay-client-toolkit",
  "zbus",
 ]
 

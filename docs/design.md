@@ -736,6 +736,21 @@ Measured on 2026-11-13 with `examples/bar.rs`, now with the tray: workspaces, th
 
 The tray adds about 0.8 MiB. The counter bar, with no tray, stays at 15.4 to 15.5 MiB.
 
+### Phase 5 results
+
+Measured on 2026-11-13 by `crates/crabshell-cli/tests/exit_check.rs`. It makes the template's bar with `crabshell init --path` and runs it under `crabshell run` on one 1280×720 headless Sway output, with a private session bus for the tray and the notifications and no audio server. The config builds with the template's dev profile. Three runs gave the same numbers to within 5 ms.
+
+| Metric                                          | Target         | Template bar, headless Sway           |
+| ----------------------------------------------- | -------------- | ------------------------------------- |
+| Rebuild after a one-line edit                   | 10 s or less   | 0.7 s                                 |
+| Reload gap, old shell's exit to the new `ready` | 200 ms or less | 13 ms                                 |
+| New shell ready after its build ends            | 200 ms or less | 65 ms                                 |
+| Back after `kill -9`                            | 2 s or less    | 1.02 to 1.03 s, the 1 s wait included |
+| Three startup panics to `last-good` ready       | none           | 4.7 s from the edit                   |
+| Supervisor RSS with the shell up                | none           | 5.3 to 5.5 MiB                        |
+
+The time from the build's end to the new shell's `ready` is mostly the old shell saving and exiting: the gap itself is 13 ms.
+
 ## Phases
 
 Seven phases to v0.1, totaling 16 to 26 weeks of focused work, all guesses, then the phases in "Beyond v0.1". A phase is done only when its exit check passes. Phase 0 is a go/no-go gate for the whole project.
@@ -753,6 +768,7 @@ Seven phases to v0.1, totaling 16 to 26 weeks of focused work, all guesses, then
    - Exit: tests with a fake tray item pass on a private `dbus-daemon`. By hand, `nm-applet --indicator`, `blueman-applet`, KeePassXC and one Electron app such as Discord all show icons, their menus open, clicks reach the app, and all of them survive a reload. Passed on 2026-11-13, except surviving a reload, which needs Phase 5's supervisor and is checked with it: the fake-item tests pass, and the maintainer checked nm-applet, blueman-applet, KeePassXC and Discord on the laptop's session, beside Quickshell's watcher and as the watcher. Commits 59477fd to de5710a, after a review per step, with popups also tested on headless labwc.
 6. **Phase 5, CLI and reload (2-3 weeks).** `init`, `run`, `check`, the watcher, `cx.persist`, crash restarts and `last-good`.
    - Exit: a scripted test checks four cases. A syntax error leaves the old shell running and sends a notification. Fixing it brings up the new shell within build time plus 200 ms. After `kill -9` the shell is back within 2 s. A config that panics at startup three times falls back to `last-good`.
+   - Passed on 2026-11-13: `crates/crabshell-cli/tests/exit_check.rs` checks all four cases on headless Sway, with the numbers in "Phase 5 results". Built in the commits from 0b603c2 on, after a review per step. Phase 4's "all of them survive a reload" with real tray apps still waits for a check by hand on the laptop's session.
 7. **Phase 6, the v0.1 release (1-2 weeks).** Template, README, API docs on docs.rs, published crates, and measured numbers in the performance table.
    - Exit: on a clean user account, you go from `cargo install crabshell-cli` to a running bar in under 15 minutes by following the README.
 
