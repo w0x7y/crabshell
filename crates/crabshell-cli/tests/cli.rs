@@ -214,9 +214,11 @@ fn a_new_config_checks_clean_and_a_mistake_fails_the_check() {
 
 /// A config with no dependencies that builds in a moment. Each start
 /// appends `build` or `last-good`, its process id and the time in
-/// milliseconds to `starts`, then says `ready`. The word in `mode` picks
+/// milliseconds to `starts` once it said `ready`. The word in `mode` picks
 /// what it does next: `crash` exits 1, `logout` exits 2 as with no
-/// compositor, anything else stays up.
+/// compositor, `deaf` stays up and ignores the supervisor, and anything
+/// else stays up until told to save, when it appends its process id to
+/// `saves` and exits 0.
 const FAKE_SHELL: &str = r#"
 use std::io::Write;
 
@@ -228,6 +230,12 @@ fn main() {
     .duration_since(std::time::UNIX_EPOCH)
     .expect("after 1970")
     .as_millis();
+  let control = std::env::var_os("CRABSHELL_CONTROL").map(|path| {
+    let mut stream = std::os::unix::net::UnixStream::connect(path).expect("the supervisor");
+    stream.write_all(b"ready\n").expect("ready");
+    stream
+  });
+  // After connecting, so a test that sees the start can reload it.
   let mut starts = std::fs::OpenOptions::new()
     .append(true)
     .create(true)
@@ -236,16 +244,26 @@ fn main() {
   // One write, so a reader never sees half a line.
   let line = format!("{name} {} {now}\n", std::process::id());
   starts.write_all(line.as_bytes()).expect("written");
-  let _control = std::env::var_os("CRABSHELL_CONTROL").map(|path| {
-    let mut stream = std::os::unix::net::UnixStream::connect(path).expect("the supervisor");
-    stream.write_all(b"ready\n").expect("ready");
-    stream
-  });
   match std::fs::read_to_string(dir.join("mode")).unwrap_or_default().trim() {
     "crash" => std::process::exit(1),
     "logout" => std::process::exit(2),
-    _ => std::thread::sleep(std::time::Duration::from_secs(3600)),
+    "deaf" => {}
+    _ => {
+      use std::io::BufRead;
+      for line in control.iter().flat_map(|stream| std::io::BufReader::new(stream).lines()) {
+        if line.as_deref().ok() == Some("save") {
+          let mut saves = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(dir.join("saves"))
+            .expect("saves");
+          saves.write_all(format!("{}\n", std::process::id()).as_bytes()).expect("written");
+          std::process::exit(0);
+        }
+      }
+    }
   }
+  std::thread::sleep(std::time::Duration::from_secs(3600));
 }
 "#;
 
@@ -307,15 +325,131 @@ impl Home {
 
   /// `crabshell run` in its own process group, ended with the group.
   fn supervise(&self) -> Supervised {
+    self.supervise_on(None)
+  }
+
+  /// [`supervise`](Self::supervise) with `bus` as the session bus.
+  fn supervise_on(&self, bus: Option<&PrivateBus>) -> Supervised {
     use std::os::unix::process::CommandExt;
     let config_home = self.0.join("config");
-    let child = self
-      .command(&["run"], config_home.to_str().expect("UTF-8"))
+    let mut command = self.command(&["run"], config_home.to_str().expect("UTF-8"));
+    if let Some(bus) = bus {
+      command.env("DBUS_SESSION_BUS_ADDRESS", &bus.address);
+    }
+    let child = command
       .process_group(0)
       .stderr(Stdio::piped())
       .spawn()
       .expect("crabshell run starts");
     Supervised(Some(child))
+  }
+}
+
+/// A private session bus that starts no services, so nothing on it
+/// reaches the desktop, and a `dbus-monitor` logging the notifications
+/// sent on it. Both stop on drop.
+struct PrivateBus {
+  daemon: Child,
+  monitor: Child,
+  address: String,
+  log: PathBuf,
+}
+
+impl PrivateBus {
+  fn start(home: &Home) -> PrivateBus {
+    use std::io::BufRead;
+    let config = home.0.join("bus.conf");
+    std::fs::write(
+      &config,
+      "<busconfig><type>session</type><listen>unix:tmpdir=/tmp</listen>\
+       <policy context=\"default\"><allow send_destination=\"*\" eavesdrop=\"true\"/>\
+       <allow eavesdrop=\"true\"/><allow own=\"*\"/></policy></busconfig>",
+    )
+    .expect("written");
+    let mut daemon = Command::new("dbus-daemon")
+      .arg(format!("--config-file={}", config.display()))
+      .args(["--nofork", "--print-address"])
+      .stdout(Stdio::piped())
+      .spawn()
+      .expect("dbus-daemon starts (it comes with dbus)");
+    let mut address = String::new();
+    std::io::BufReader::new(daemon.stdout.take().expect("its stdout"))
+      .read_line(&mut address)
+      .expect("its address");
+    let address = address.trim().to_owned();
+    let log = home.0.join("monitor.log");
+    let monitor = Command::new("dbus-monitor")
+      .args([
+        "--address",
+        &address,
+        "interface='org.freedesktop.Notifications'",
+      ])
+      .stdout(std::fs::File::create(&log).expect("the monitor's log"))
+      .stderr(Stdio::null())
+      .spawn();
+    let monitor = monitor.unwrap_or_else(|error| {
+      let _ = daemon.kill();
+      let _ = daemon.wait();
+      panic!("dbus-monitor didn't start: {error}");
+    });
+    // Built at once, so a failed wait below stops both.
+    let bus = PrivateBus {
+      daemon,
+      monitor,
+      address,
+      log,
+    };
+    // It prints the name it got once it listens.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while std::fs::read_to_string(&bus.log)
+      .unwrap_or_default()
+      .is_empty()
+    {
+      assert!(Instant::now() < deadline, "dbus-monitor didn't start");
+      std::thread::sleep(Duration::from_millis(20));
+    }
+    bus
+  }
+
+  /// Each notification sent so far, as its summary and body.
+  fn notifications(&self) -> Vec<(String, String)> {
+    let log = std::fs::read_to_string(&self.log).unwrap_or_default();
+    let mut found = Vec::new();
+    for call in log.split("member=Notify").skip(1) {
+      // The strings in order: the app's name, its icon, the summary and
+      // the body.
+      let strings: Vec<String> = call
+        .lines()
+        .take_while(|line| !line.starts_with("method call") && !line.starts_with("signal"))
+        .filter_map(|line| line.trim().strip_prefix("string \""))
+        .map(|rest| rest.trim_end_matches('"').to_owned())
+        .collect();
+      if strings.len() >= 4 {
+        found.push((strings[2].clone(), strings[3].clone()));
+      }
+    }
+    found
+  }
+
+  /// Waits up to `limit` for `count` notifications.
+  fn wait_for(&self, count: usize, limit: Duration) -> Vec<(String, String)> {
+    let deadline = Instant::now() + limit;
+    loop {
+      let found = self.notifications();
+      if found.len() >= count || Instant::now() > deadline {
+        return found;
+      }
+      std::thread::sleep(Duration::from_millis(50));
+    }
+  }
+}
+
+impl Drop for PrivateBus {
+  fn drop(&mut self) {
+    for child in [&mut self.monitor, &mut self.daemon] {
+      let _ = child.kill();
+      let _ = child.wait();
+    }
   }
 }
 
@@ -373,13 +507,20 @@ fn alive(pid: u32) -> bool {
     .is_ok_and(|stat| !stat.rsplit(") ").next().unwrap_or("").starts_with('Z'))
 }
 
-/// The supervisor's context switches so far, voluntary and not.
+/// The context switches of every thread of `pid` so far, voluntary and
+/// not.
 fn switches(pid: u32) -> u64 {
-  let status = std::fs::read_to_string(format!("/proc/{pid}/status")).expect("its status");
-  status
-    .lines()
-    .filter(|line| line.contains("ctxt_switches"))
-    .filter_map(|line| line.split_whitespace().nth(1)?.parse::<u64>().ok())
+  let tasks = std::fs::read_dir(format!("/proc/{pid}/task")).expect("its threads");
+  tasks
+    .flatten()
+    .filter_map(|task| std::fs::read_to_string(task.path().join("status")).ok())
+    .flat_map(|status| {
+      status
+        .lines()
+        .filter(|line| line.contains("ctxt_switches"))
+        .filter_map(|line| line.split_whitespace().nth(1)?.parse::<u64>().ok())
+        .collect::<Vec<_>>()
+    })
     .sum()
 }
 
@@ -435,7 +576,8 @@ fn three_quick_crashes_fall_back_to_last_good() {
   let home = Home::new("run-fallback");
   home.fake_config("crash");
   home.fake_last_good();
-  let supervised = home.supervise();
+  let bus = PrivateBus::start(&home);
+  let supervised = home.supervise_on(Some(&bus));
   let starts = home.wait_for_starts(4, Duration::from_secs(60));
   let names: Vec<&str> = starts.iter().map(|(name, ..)| name.as_str()).collect();
   assert_eq!(names, ["build", "build", "build", "last-good"]);
@@ -447,6 +589,9 @@ fn three_quick_crashes_fall_back_to_last_good() {
   assert_eq!(code, Some(0), "{log}");
   assert!(log.contains("keeps crashing, so last-good starts"), "{log}");
   assert!(!alive(last_good), "the shell is ended with the supervisor");
+  let notes = bus.notifications();
+  assert_eq!(notes.len(), 1, "{notes:?}");
+  assert_eq!(notes[0].0, "Your Crabshell config keeps crashing");
 }
 
 #[test]
@@ -456,17 +601,31 @@ fn a_config_that_doesnt_build_runs_last_good_or_fails() {
   std::fs::write(home.config().join("src/main.rs"), "fn main() {").expect("broken");
   let (code, log) = home.supervise().wait(Duration::from_secs(60));
   assert_eq!(code, Some(1), "{log}");
-  assert!(log.contains("crabshell: the config didn't build"), "{log}");
+  assert!(
+    log.contains("crabshell: the config didn't build: "),
+    "{log}"
+  );
 
   home.fake_last_good();
-  let supervised = home.supervise();
+  let bus = PrivateBus::start(&home);
+  let supervised = home.supervise_on(Some(&bus));
   let starts = home.wait_for_starts(1, Duration::from_secs(60));
   assert_eq!(starts.len(), 1);
   assert_eq!(starts[0].0, "last-good");
+  let notes = bus.wait_for(1, Duration::from_secs(5));
   supervised.signal("-INT");
   let (code, log) = supervised.wait(Duration::from_secs(5));
   assert_eq!(code, Some(0), "{log}");
   assert!(log.contains("; starting last-good"), "{log}");
+  assert_eq!(notes.len(), 1, "{notes:?}");
+  assert_eq!(notes[0].0, "Your Crabshell config didn't build");
+  assert!(notes[0].1.contains("unclosed delimiter"), "{notes:?}");
+  assert!(
+    notes[0]
+      .1
+      .contains("; the last config that worked runs instead"),
+    "{notes:?}"
+  );
 }
 
 #[test]
@@ -565,4 +724,219 @@ fn a_shell_that_keeps_crashing_is_never_kept_as_last_good() {
   supervised.signal("-TERM");
   let (code, log) = supervised.wait(Duration::from_secs(5));
   assert_eq!(code, Some(0), "{log}");
+}
+
+impl Home {
+  /// Edits the config's `src/main.rs`.
+  fn edit(&self, change: impl FnOnce(String) -> String) {
+    let main = self.config().join("src/main.rs");
+    let code = std::fs::read_to_string(&main).expect("the fake");
+    std::fs::write(&main, change(code)).expect("edited");
+  }
+
+  /// The process ids the fake wrote when told to save.
+  fn saves(&self) -> Vec<u32> {
+    let text = std::fs::read_to_string(self.config().join("saves")).unwrap_or_default();
+    text
+      .lines()
+      .map(|line| line.parse().expect("a pid"))
+      .collect()
+  }
+}
+
+#[test]
+fn an_edit_saves_the_old_shell_and_starts_the_new_build() {
+  let home = Home::new("reload");
+  home.fake_config("stay");
+  let supervised = home.supervise();
+  let first = home.wait_for_starts(1, Duration::from_secs(60))[0].1;
+  // Two saves close together build once.
+  home.edit(|code| code + "// an edit\n");
+  std::thread::sleep(Duration::from_millis(100));
+  home.edit(|code| code + "// another\n");
+  let starts = home.wait_for_starts(2, Duration::from_secs(60));
+  assert_eq!(starts.len(), 2, "{starts:?}");
+  assert_eq!(starts[1].0, "build");
+  assert_eq!(home.saves(), [first], "the old shell saved");
+  assert!(!alive(first));
+  std::thread::sleep(Duration::from_millis(300));
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(5));
+  assert_eq!(code, Some(0), "{log}");
+  assert!(log.contains("asking the shell to save and exit"), "{log}");
+  assert_eq!(log.matches("the build took").count(), 2, "{log}");
+  assert!(log.contains("reloaded with"), "{log}");
+}
+
+#[test]
+fn a_broken_edit_keeps_the_shell_and_says_why() {
+  let home = Home::new("broken-edit");
+  home.fake_config("stay");
+  let bus = PrivateBus::start(&home);
+  let supervised = home.supervise_on(Some(&bus));
+  let first = home.wait_for_starts(1, Duration::from_secs(60))[0].1;
+  home.edit(|code| code + "fn broken() {\n");
+  let notes = bus.wait_for(1, Duration::from_secs(60));
+  assert_eq!(notes.len(), 1, "{notes:?}");
+  assert_eq!(notes[0].0, "Your Crabshell config didn't build");
+  assert_eq!(notes[0].1, "this file contains an unclosed delimiter");
+  assert!(alive(first), "the old shell runs on");
+  assert_eq!(home.starts().len(), 1);
+  // Sending it left nothing that wakes the supervisor.
+  std::thread::sleep(Duration::from_millis(500));
+  let before = switches(supervised.pid());
+  std::thread::sleep(Duration::from_secs(2));
+  assert_eq!(switches(supervised.pid()), before, "it woke while idle");
+
+  home.edit(|code| code.replace("fn broken() {\n", ""));
+  let starts = home.wait_for_starts(2, Duration::from_secs(60));
+  assert_eq!(starts.len(), 2, "fixing it reloads");
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(5));
+  assert_eq!(code, Some(0), "{log}");
+  assert!(log.contains("the running shell stays"), "{log}");
+}
+
+#[test]
+fn edits_that_change_nothing_dont_reload() {
+  let home = Home::new("no-change");
+  home.fake_config("stay");
+  let supervised = home.supervise();
+  home.wait_for_starts(1, Duration::from_secs(60));
+  // Not the config's sources: no build at all.
+  std::fs::write(home.config().join("notes.txt"), "mine").expect("written");
+  std::fs::write(home.config().join("src/.main.rs.swp"), "vim").expect("written");
+  std::thread::sleep(Duration::from_secs(1));
+  // A new directory builds, and so does a file in it once that build is
+  // done, but the program stays the same.
+  std::fs::create_dir(home.config().join("src/more")).expect("a directory");
+  std::thread::sleep(Duration::from_millis(1500));
+  std::fs::write(home.config().join("src/more/unused.rs"), "// mine").expect("written");
+  std::thread::sleep(Duration::from_millis(1500));
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(5));
+  assert_eq!(code, Some(0), "{log}");
+  assert_eq!(
+    log.matches("the config changed; building it").count(),
+    2,
+    "{log}"
+  );
+  assert_eq!(
+    log.matches("nothing in the build changed").count(),
+    2,
+    "{log}"
+  );
+  assert_eq!(home.starts().len(), 1);
+}
+
+#[test]
+fn a_shell_that_ignores_save_is_killed_after_5_s() {
+  let home = Home::new("deaf");
+  home.fake_config("deaf");
+  let supervised = home.supervise();
+  let first = home.wait_for_starts(1, Duration::from_secs(60))[0].1;
+  home.edit(|code| code + "// an edit\n");
+  // A second edit while the first reload waits doesn't put off the kill.
+  std::thread::sleep(Duration::from_millis(2500));
+  home.edit(|code| code + "// another\n");
+  let starts = home.wait_for_starts(2, Duration::from_secs(60));
+  assert_eq!(starts.len(), 2, "{starts:?}");
+  let waited = starts[1].2 - starts[0].2;
+  assert!((5000..7500).contains(&waited), "{waited} ms");
+  assert!(!alive(first));
+  assert!(home.saves().is_empty());
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(5));
+  assert_eq!(code, Some(0), "{log}");
+  assert!(log.contains("didn't end within 5 s; killing it"), "{log}");
+  assert_eq!(log.matches("asking the shell to save").count(), 1, "{log}");
+  assert_eq!(log.matches("the build took").count(), 3, "{log}");
+}
+
+#[test]
+fn an_edit_replaces_a_crashing_shell_at_once() {
+  let home = Home::new("fix-crash");
+  home.fake_config("crash");
+  let supervised = home.supervise();
+  let starts = home.wait_for_starts(3, Duration::from_secs(60));
+  assert_eq!(starts.len(), 3, "{starts:?}");
+  // The next restart is due 4 s after the third start. The fix ignores
+  // the mode, so its build stays up.
+  home.edit(|code| code.replace("\"crash\" =>", "\"crashes\" =>"));
+  let starts = home.wait_for_starts(4, Duration::from_secs(60));
+  assert_eq!(starts.len(), 4, "{starts:?}");
+  let gap = starts[3].2 - starts[2].2;
+  // The restart that was due doesn't start another.
+  std::thread::sleep(Duration::from_millis(4500 - gap.min(4500) as u64 + 500));
+  assert_eq!(home.starts().len(), 4, "{:?}", home.starts());
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(5));
+  assert_eq!(code, Some(0), "{log}");
+}
+
+/// Reloads just before the old shell turns 60 s old, so its healthy
+/// timer fires after the new build replaced it on disk.
+#[test]
+#[ignore = "waits 60 s"]
+fn a_reload_never_keeps_the_new_build_before_it_runs() {
+  let home = Home::new("reload-at-60");
+  home.fake_config("deaf");
+  let supervised = home.supervise();
+  home.wait_for_starts(1, Duration::from_secs(60));
+  let program = home.0.join("cache/crabshell/target/debug/fake-shell");
+  let old = std::fs::read(&program).expect("built");
+  std::thread::sleep(Duration::from_secs(57));
+  // A change to the program's bytes, which a comment wouldn't make.
+  home.edit(|code| code.replace("expect(\"starts\")", "expect(\"the starts file\")"));
+  let starts = home.wait_for_starts(2, Duration::from_secs(60));
+  assert_eq!(starts.len(), 2, "{starts:?}");
+  let kept = std::fs::read(home.0.join("cache/crabshell/last-good")).expect("kept");
+  assert!(kept == old, "last-good is the program that ran 60 s");
+  assert!(kept != std::fs::read(&program).expect("rebuilt"));
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(5));
+  assert_eq!(code, Some(0), "{log}");
+}
+
+#[test]
+fn stopping_during_a_reload_ends_both() {
+  let home = Home::new("stop-reload");
+  home.fake_config("deaf");
+  let supervised = home.supervise();
+  let first = home.wait_for_starts(1, Duration::from_secs(60))[0].1;
+  home.edit(|code| code + "// an edit\n");
+  // The build is done and the reload waits on a shell that won't save.
+  std::thread::sleep(Duration::from_millis(2000));
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(2));
+  assert_eq!(code, Some(0), "{log}");
+  assert!(log.contains("asking the shell to save"), "{log}");
+  assert!(!alive(first));
+  assert_eq!(home.starts().len(), 1, "the new build never started");
+}
+
+#[test]
+fn a_write_through_a_symlink_rebuilds() {
+  let home = Home::new("symlink");
+  home.fake_config("stay");
+  let elsewhere = home.0.join("elsewhere");
+  std::fs::create_dir(&elsewhere).expect("a directory");
+  std::fs::write(elsewhere.join("linked.rs"), "// mine").expect("written");
+  std::os::unix::fs::symlink(
+    elsewhere.join("linked.rs"),
+    home.config().join("src/linked.rs"),
+  )
+  .expect("a link");
+  let supervised = home.supervise();
+  home.wait_for_starts(1, Duration::from_secs(60));
+  std::fs::write(elsewhere.join("linked.rs"), "// changed").expect("written");
+  std::thread::sleep(Duration::from_millis(1500));
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(5));
+  assert_eq!(code, Some(0), "{log}");
+  assert_eq!(
+    log.matches("the config changed; building it").count(),
+    1,
+    "{log}"
+  );
 }
