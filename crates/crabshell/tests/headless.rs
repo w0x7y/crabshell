@@ -44,6 +44,13 @@ mod counter;
 #[path = "../examples/bar.rs"]
 mod v0_1;
 
+#[allow(
+  dead_code,
+  reason = "the example's launcher is tested; its main isn't run here"
+)]
+#[path = "../examples/launcher.rs"]
+mod launcher;
+
 #[allow(dead_code, reason = "the services' own tests use the rest")]
 #[path = "../../crabshell-services/tests/pipewire/mod.rs"]
 mod pipewire;
@@ -63,7 +70,7 @@ use crabshell_reactive::Runtime;
 use crabshell_ui::{Content, NodeView, Rect};
 use crabshell_wayland::{EventLoop, Platform, WindowId};
 use pipewire::PrivateServer;
-use sway::{Image, Sway, VirtualPointer};
+use sway::{Image, Sway, VirtualKeyboard, VirtualPointer, keys};
 
 /// How long any wait may take before the test fails.
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -1393,4 +1400,238 @@ fn a_reload_saves_the_count_and_the_next_shell_starts_from_it() {
   let status = second.exit_status().expect("the shell exits");
   assert_eq!(status.code(), Some(0));
   assert_eq!(saved_count(), 1, "it started from the saved count");
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn cx_floating_shows_a_window_while_its_context_lives() {
+  use crabshell::prelude::*;
+
+  let sway = Sway::start();
+  let runtime = Runtime::current();
+  let kept: std::rc::Rc<std::cell::RefCell<Option<(Cx, usize)>>> = Default::default();
+  let hold = std::rc::Rc::clone(&kept);
+  let mut shell = Shell::new(sway.connect(), move |cx| {
+    let before = Runtime::current().node_count();
+    let child = cx.child();
+    child.floating(
+      FloatingWindow::new()
+        .title("crabshell-cx-floating")
+        .child(Text::new("hello")),
+    );
+    *hold.borrow_mut() = Some((child, before));
+  })
+  .expect("the root closure runs");
+  run_until(&mut shell, "the floating window", |platform| {
+    platform.windows().any(|(id, _)| {
+      platform
+        .window_info(id)
+        .is_some_and(|info| info.commits > 0)
+    })
+  });
+  assert!(
+    sway
+      .msg(&["-t", "get_tree"])
+      .contains("crabshell-cx-floating")
+  );
+  let (child, before) = kept.borrow_mut().take().expect("the root ran");
+  child.owner().dispose();
+  run_until(&mut shell, "the window to go", |platform| {
+    platform.windows().count() == 0
+  });
+  runtime.flush();
+  assert_eq!(
+    runtime.node_count(),
+    before,
+    "everything the window made is freed"
+  );
+}
+
+/// 500 apps: the example's names, numbered.
+fn many_apps() -> Vec<String> {
+  (0..500)
+    .map(|n| {
+      let name = [
+        "firefox", "files", "foot", "gimp", "kitty", "mpv", "obs", "vlc",
+      ][n % 8];
+      format!("{name} {}", n / 8 + 1)
+    })
+    .collect()
+}
+
+/// A shell showing the launcher example on every output, with its about
+/// window, and the virtual keyboard it took.
+fn start_launcher(sway: &Sway) -> (Shell, VirtualKeyboard) {
+  // A layer surface gets the keyboard if one exists as it maps.
+  let keyboard = VirtualKeyboard::new(sway);
+  let shell = Shell::new(sway.connect(), |cx| {
+    let about = cx.signal(false);
+    cx.floating(launcher::about_window(about));
+    cx.per_output(move |cx, output| launcher::launcher(cx, output, many_apps(), about));
+  })
+  .expect("the root closure runs");
+  (shell, keyboard)
+}
+
+/// The launcher's window: the one panel.
+fn launcher_window(platform: &Platform) -> Option<WindowId> {
+  platform
+    .windows()
+    .find(|(_, window)| window.floating_config().is_none() && !window.is_popup())
+    .map(|(id, _)| id)
+}
+
+/// The names of the launcher's rows that are built, in order.
+fn launcher_rows(platform: &Platform) -> Vec<String> {
+  let Some(id) = launcher_window(platform) else {
+    return Vec::new();
+  };
+  let (_, window) = platform
+    .windows()
+    .find(|(held, _)| *held == id)
+    .expect("the launcher is held");
+  fn texts(node: NodeView<'_>, out: &mut Vec<String>) {
+    if let Content::Text(text) = node.content() {
+      out.push(text.content().to_owned());
+    }
+    for child in node.children() {
+      texts(child, out);
+    }
+  }
+  let view = window.view();
+  // The box's column, then the list after the search row.
+  let list = view
+    .root()
+    .children()
+    .next()
+    .and_then(|column| column.children().nth(1))
+    .expect("the launcher has a list");
+  let mut out = Vec::new();
+  texts(list, &mut out);
+  out
+}
+
+/// The part of `shot` the launcher covers, centered on a `width` by
+/// `height` output.
+fn launcher_part(shot: &Image, factor: f32) -> Image {
+  let (width, height) = (
+    (420.0 * factor).round() as u32,
+    (360.0 * factor).round() as u32,
+  );
+  let (x, y) = ((shot.width - width) / 2, (shot.height - height) / 2);
+  let rgba = (y..y + height)
+    .flat_map(|row| {
+      let start = ((row * shot.width + x) * 4) as usize;
+      shot.rgba[start..start + width as usize * 4].to_vec()
+    })
+    .collect();
+  Image {
+    rgba,
+    width,
+    height,
+  }
+}
+
+/// Phase 7's exit check: the launcher matches its goldens at each scale,
+/// typing filters 500 rows within a frame a key, the wheel scrolls, Down
+/// picks, the about window opens and closes from the compositor, and the
+/// open launcher wakes nothing while idle.
+#[test]
+#[ignore = "needs headless Sway"]
+fn the_launcher_types_scrolls_opens_windows_and_matches_its_goldens() {
+  for (scale, factor, suffix) in [("1", 1.0, "1x"), ("1.5", 1.5, "1.5x"), ("2", 2.0, "2x")] {
+    let sway = Sway::start();
+    sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", scale]);
+    let (mut shell, _keyboard) = start_launcher(&sway);
+    run_until(&mut shell, "the launcher", |platform| {
+      launcher_window(platform)
+        .and_then(|id| platform.window_info(id))
+        .is_some_and(|info| info.commits > 0)
+    });
+    settle(&mut shell);
+    check_golden(
+      &format!("launcher@{suffix}"),
+      &launcher_part(&sway.screenshot("HEADLESS-1"), factor),
+      (360.0 * factor).round() as u32,
+    );
+  }
+
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let runtime = Runtime::current();
+  let (mut shell, mut keyboard) = start_launcher(&sway);
+  let mut pointer = VirtualPointer::new(&sway);
+  run_until(&mut shell, "the launcher", |platform| {
+    launcher_window(platform)
+      .and_then(|id| platform.window_info(id))
+      .is_some_and(|info| info.commits > 0)
+  });
+  settle(&mut shell);
+  assert_eq!(
+    launcher_rows(shell.platform()).first().map(String::as_str),
+    Some("firefox 1")
+  );
+
+  // Typing filters within one frame a key.
+  let commits = shell.platform().stats().commits;
+  for key in [keys::F, keys::I, keys::R] {
+    keyboard.tap(key);
+  }
+  run_until(&mut shell, "the filtered list", |platform| {
+    let rows = launcher_rows(platform);
+    !rows.is_empty() && rows.iter().all(|row| row.starts_with("firefox"))
+  });
+  settle(&mut shell);
+  assert!(
+    shell.platform().stats().commits <= commits + 3,
+    "{} frames for three keys",
+    shell.platform().stats().commits - commits
+  );
+
+  // The wheel scrolls the list: its first rows go.
+  pointer.move_to(960, 600, (1920, 1080));
+  pointer.scroll(5);
+  run_until(&mut shell, "the list to scroll", |platform| {
+    launcher_rows(platform).first().map(String::as_str) != Some("firefox 1")
+  });
+
+  // Down picks the next row and keeps it in view.
+  keyboard.tap(keys::DOWN);
+  settle(&mut shell);
+
+  // The about button opens the floating window; the compositor closes it.
+  runtime.flush();
+  let nodes = runtime.node_count();
+  let (x, y) = (960 + 210 - 12 - 30, 540 - 180 + 12 + 14);
+  let (x, y) = (x.to_string(), y.to_string());
+  sway.msg(&["seat", "-", "cursor", "set", &x, &y]);
+  sway.msg(&["seat", "-", "cursor", "press", "button1"]);
+  sway.msg(&["seat", "-", "cursor", "release", "button1"]);
+  run_until(&mut shell, "the about window", |_| {
+    sway.msg(&["-t", "get_tree"]).contains("about crabshell")
+  });
+  sway.msg(&["[title=\"about crabshell\"]", "kill"]);
+  run_until(&mut shell, "the about window to close", |_| {
+    !sway.msg(&["-t", "get_tree"]).contains("about crabshell")
+  });
+  settle(&mut shell);
+  runtime.flush();
+  assert_eq!(
+    runtime.node_count(),
+    nodes,
+    "closing the window freed nothing it shouldn't"
+  );
+
+  // Idle with the field focused: one dispatch sleeps the whole time.
+  let before = shell.platform().stats().iterations;
+  let started = Instant::now();
+  shell
+    .dispatch(Some(Duration::from_secs(2)))
+    .expect("the connection works");
+  assert!(
+    started.elapsed() >= Duration::from_millis(1900),
+    "{:?}",
+    started.elapsed()
+  );
+  assert_eq!(shell.platform().stats().iterations, before + 1);
 }

@@ -495,10 +495,13 @@ pub mod keys {
   pub const ESC: u32 = 1;
   pub const TAB: u32 = 15;
   pub const E: u32 = 18;
+  pub const R: u32 = 19;
+  pub const I: u32 = 23;
   pub const O: u32 = 24;
   pub const ENTER: u32 = 28;
   pub const LEFT_CTRL: u32 = 29;
   pub const A: u32 = 30;
+  pub const F: u32 = 33;
   pub const H: u32 = 35;
   pub const L: u32 = 38;
   pub const LEFT_SHIFT: u32 = 42;
@@ -506,6 +509,8 @@ pub mod keys {
   pub const C: u32 = 46;
   pub const V: u32 = 47;
   pub const SPACE: u32 = 57;
+  pub const UP: u32 = 103;
+  pub const DOWN: u32 = 108;
 }
 
 /// A second client with a virtual keyboard, so the seat has a keyboard:
