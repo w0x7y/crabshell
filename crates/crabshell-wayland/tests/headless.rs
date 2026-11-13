@@ -11,8 +11,10 @@
 mod sway;
 
 use std::cell::RefCell;
+use std::io;
 use std::process::Command;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crabshell_reactive::{Runtime, Signal};
@@ -57,6 +59,25 @@ fn sway_refuses_to_start_beside_a_swaysock() {
     );
 }
 
+/// How the test bar is built.
+#[derive(Clone, Copy)]
+struct Setup {
+  /// Whether the bar's button opens a [`menu`].
+  popups: bool,
+  /// Whether the bar opens a menu as it is built, before it draws or any
+  /// button is pressed.
+  at_start: bool,
+  /// The edge the bar runs along.
+  edge: Edge,
+}
+
+/// A bar across the top that opens nothing.
+const PLAIN: Setup = Setup {
+  popups: false,
+  at_start: false,
+  edge: Edge::Top,
+};
+
 /// What the test bar's bindings read and write.
 #[derive(Clone, Copy)]
 struct Knobs {
@@ -64,9 +85,8 @@ struct Knobs {
   clicks: Signal<u32>,
   /// The first entry of every [`menu`].
   entry: Signal<String>,
-  /// Whether the bar's button opens a [`menu`].
-  popups: bool,
-  /// Whether it opens it from an effect, which runs in a flush, as a
+  setup: Setup,
+  /// Whether the button opens its menu from an effect, which runs in a flush, as a
   /// menu waiting on its app's reply would. The effect opens another each
   /// time `reopen` changes.
   from_effect: Signal<bool>,
@@ -98,13 +118,20 @@ fn menu(knobs: Knobs) -> PopupWindow {
     )
 }
 
-/// A 30-pixel bar across the top of `output`: a button at the left and a
-/// label at the right, on an opaque background.
+/// A bar along one edge of `output`, 30 pixels tall or 100 wide: a
+/// button at the start and a label at the end, on an opaque background.
 fn bar(cx: &Cx, output: &str, knobs: Knobs) -> Window {
   let Knobs { label, clicks, .. } = knobs;
+  let (anchors, width, height) = match knobs.setup.edge {
+    Edge::Top => (Edge::Top | Edge::Left | Edge::Right, 0, 30),
+    Edge::Bottom => (Edge::Bottom | Edge::Left | Edge::Right, 0, 30),
+    Edge::Left => (Edge::Left | Edge::Top | Edge::Bottom, 100, 0),
+    Edge::Right => (Edge::Right | Edge::Top | Edge::Bottom, 100, 0),
+  };
   let panel = PanelWindow::new(&Output::new(output))
-    .anchors(Edge::Top | Edge::Left | Edge::Right)
-    .height(30)
+    .anchors(anchors)
+    .width(width)
+    .height(height)
     .style(
       Style::new()
         .background(Color::hex("#1e1e2e"))
@@ -125,7 +152,7 @@ fn bar(cx: &Cx, output: &str, knobs: Knobs) -> Window {
             )
             .on_click(move |cx| {
               clicks.update(|count| *count += 1);
-              if !knobs.popups {
+              if !knobs.setup.popups {
               } else if knobs.from_effect.get_untracked() {
                 let opener = cx.clone();
                 cx.effect(move || {
@@ -136,6 +163,21 @@ fn bar(cx: &Cx, output: &str, knobs: Knobs) -> Window {
                 cx.open_popup(move |_| menu(knobs));
               }
             }),
+        )
+        .children_keyed(
+          move || {
+            if knobs.setup.at_start {
+              vec![()]
+            } else {
+              Vec::new()
+            }
+          },
+          |_| (),
+          move |cx, _| {
+            let opener = cx.clone();
+            cx.effect(move || opener.open_popup(move |_| menu(knobs)));
+            Spacer::new()
+          },
         )
         .child(Spacer::new())
         .child(Text::new(move || label.get())),
@@ -155,22 +197,17 @@ struct Shell {
 
 impl Shell {
   fn new(sway: &Sway) -> Shell {
-    Shell::build(sway, false)
+    Shell::build(sway, PLAIN)
   }
 
-  /// A shell whose bars' buttons open a [`menu`].
-  fn with_popups(sway: &Sway) -> Shell {
-    Shell::build(sway, true)
-  }
-
-  fn build(sway: &Sway, popups: bool) -> Shell {
+  fn build(sway: &Sway, setup: Setup) -> Shell {
     let runtime = Runtime::current();
     let cx = Cx::new(runtime.new_owner());
     let knobs = Knobs {
       label: cx.signal(String::from("12:34")),
       clicks: cx.signal(0),
       entry: cx.signal(String::from("more")),
-      popups,
+      setup,
       from_effect: cx.signal(false),
       reopen: cx.signal(0),
     };
@@ -516,6 +553,40 @@ fn origin(platform: &Platform, popup: WindowId) -> (f32, f32) {
   panic!("{popup:?} isn't open")
 }
 
+/// What this thread logs while the guard lives.
+fn capture_logs() -> (Logs, tracing::subscriber::DefaultGuard) {
+  let logs = Logs::default();
+  let writer = logs.clone();
+  let subscriber = tracing_subscriber::fmt()
+    .with_writer(move || writer.clone())
+    .finish();
+  (logs, tracing::subscriber::set_default(subscriber))
+}
+
+#[derive(Clone, Default)]
+struct Logs(Arc<Mutex<Vec<u8>>>);
+
+impl Logs {
+  fn text(&self) -> String {
+    String::from_utf8_lossy(&self.0.lock().expect("log buffer lock")).into_owned()
+  }
+}
+
+impl io::Write for Logs {
+  fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+    self
+      .0
+      .lock()
+      .expect("log buffer lock")
+      .extend_from_slice(bytes);
+    Ok(bytes.len())
+  }
+
+  fn flush(&mut self) -> io::Result<()> {
+    Ok(())
+  }
+}
+
 fn center(rect: Rect, (x, y): (f32, f32)) -> (f32, f32) {
   (
     x + rect.x + rect.width / 2.0,
@@ -536,19 +607,34 @@ struct Menus {
 }
 
 impl Menus {
-  /// HEADLESS-1, 1920 by 1080 pixels at `scale`.
+  /// HEADLESS-1, 1920 by 1080 pixels at `scale`, with a bar across the
+  /// top.
   fn start(sway: &Sway, scale: &str) -> Menus {
+    let setup = Setup {
+      popups: true,
+      ..PLAIN
+    };
+    Menus::start_with(sway, scale, setup)
+  }
+
+  fn start_with(sway: &Sway, scale: &str, setup: Setup) -> Menus {
     sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", scale]);
     let factor: f32 = scale.parse().expect("a scale");
-    let mut shell = Shell::with_popups(sway);
+    let mut shell = Shell::build(sway, setup);
     let pointer = VirtualPointer::new(sway);
     let bar = shell.wait_for_bar("HEADLESS-1");
+    let layout = ((1920.0 / factor) as u32, (1080.0 / factor) as u32);
+    let offset = match setup.edge {
+      Edge::Bottom => (0.0, layout.1 as f32 - 30.0),
+      Edge::Right => (layout.0 as f32 - 100.0, 0.0),
+      Edge::Top | Edge::Left => (0.0, 0.0),
+    };
     Menus {
       shell,
       pointer,
       bar,
-      offset: (0.0, 0.0),
-      layout: ((1920.0 / factor) as u32, (1080.0 / factor) as u32),
+      offset,
+      layout,
     }
   }
 
@@ -708,6 +794,7 @@ fn clicking_outside_a_menu_dismisses_it_and_frees_its_nodes() {
 #[test]
 #[ignore = "needs headless Sway"]
 fn submenus_open_beside_their_entry_and_only_one_chain_stays_open() {
+  let (logs, _logging) = capture_logs();
   let sway = Sway::start();
   let mut menus = Menus::start(&sway, "1");
   menus.shell.runtime.flush();
@@ -739,6 +826,94 @@ fn submenus_open_beside_their_entry_and_only_one_chain_stays_open() {
   menus.wait_for("every menu to close", <[_]>::is_empty);
   menus.shell.runtime.flush();
   assert_eq!(menus.shell.runtime.node_count(), nodes);
+  // A popup has no layer-shell settings to refuse.
+  assert!(!logs.text().contains("isn't shown"), "{}", logs.text());
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn menus_open_toward_the_output_from_bars_on_the_other_edges() {
+  for edge in [Edge::Bottom, Edge::Left, Edge::Right] {
+    let sway = Sway::start();
+    let setup = Setup {
+      popups: true,
+      edge,
+      ..PLAIN
+    };
+    let mut menus = Menus::start_with(&sway, "1", setup);
+    // Too wide to fit beside the button in a bar on the right.
+    menus
+      .shell
+      .knobs
+      .entry
+      .set(String::from("a much longer first entry"));
+    let popup = menus.open_from_bar();
+    let platform = menus.shell.event_loop.platform();
+    let button = button_rect(platform, menus.bar);
+    let (_, window) = platform
+      .windows()
+      .find(|(id, _)| *id == popup)
+      .expect("held");
+    let size = window.size();
+    let (width, height) = (size.width as i32, size.height as i32);
+    let (left, top) = (button.x.floor() as i32, button.y.floor() as i32);
+    let right = (button.x + button.width).ceil() as i32;
+    let expected = match edge {
+      // Below would leave the output, so it flips above the button.
+      Edge::Bottom => (left, top - height),
+      Edge::Left => (right, top),
+      // Beside would leave the output, so it flips to the left.
+      Edge::Right => (left - width, top),
+      Edge::Top => unreachable!("tested above"),
+    };
+    assert_eq!(menus.info(popup).position, Some(expected), "{edge:?}");
+  }
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_menu_opened_before_the_bar_draws_waits_for_it_and_grabs_nothing() {
+  let sway = Sway::start();
+  let setup = Setup {
+    popups: true,
+    at_start: true,
+    ..PLAIN
+  };
+  let mut menus = Menus::start_with(&sway, "1", setup);
+  let open = menus.wait_for("the menu opened at start", |open| open.len() == 1);
+  assert_eq!(menus.info(open[0]).commits, 1);
+  // No button was pressed, so it took no grab, and a submenu may take
+  // none either: a grab under it would end the connection.
+  menus.click_entry(open[0], 0);
+  let chain = menus.wait_for("a submenu", |open| open.len() == 2);
+  // With no grab, a click outside dismisses nothing.
+  menus.click((900.0, 600.0));
+  settle(&mut menus.shell.event_loop);
+  assert_eq!(popups(menus.shell.event_loop.platform()), chain);
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_menu_opened_after_the_seat_loses_its_pointer_grabs_nothing() {
+  let sway = Sway::start();
+  let mut menus = Menus::start(&sway, "1");
+  menus.shell.knobs.from_effect.set(true);
+  let first = menus.open_from_bar();
+  // The only pointer goes, and the last button's serial with it.
+  menus.pointer.unplug();
+  settle(&mut menus.shell.event_loop);
+  menus.shell.knobs.reopen.update(|count| *count += 1);
+  let open = menus.wait_for("the reopened menu", |open| {
+    open.len() == 1 && open[0] != first
+  });
+  menus.pointer = VirtualPointer::new(&sway);
+  menus.click((900.0, 600.0));
+  settle(&mut menus.shell.event_loop);
+  assert_eq!(
+    popups(menus.shell.event_loop.platform()),
+    open,
+    "with no grab, a click outside dismisses nothing"
+  );
 }
 
 #[test]

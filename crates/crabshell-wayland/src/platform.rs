@@ -534,7 +534,7 @@ impl Platform {
       ..
     } = self;
     for entry in windows.entries.iter_mut() {
-      if entry.opener.is_none() && entry.surface.is_some() && entry.window.take_surface_changed() {
+      if entry.surface.is_some() && entry.window.take_surface_changed() {
         // Settings layer-shell would refuse are never sent; the
         // surface keeps the last good ones.
         let config = entry.window.surface();

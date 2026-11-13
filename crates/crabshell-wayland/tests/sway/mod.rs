@@ -373,6 +373,16 @@ impl VirtualPointer {
       .expect("the helper's roundtrip");
   }
 
+  /// Removes the virtual pointer, so the seat has none.
+  #[allow(dead_code, reason = "crabshell's tests don't use it")]
+  pub fn unplug(&mut self) {
+    self.pointer.destroy();
+    self
+      .queue
+      .roundtrip(&mut Helper)
+      .expect("the helper's roundtrip");
+  }
+
   /// Presses and releases the left button.
   pub fn click(&mut self) {
     const BTN_LEFT: u32 = 0x110;
