@@ -19,7 +19,7 @@ mod sway;
 
 use std::time::{Duration, Instant};
 
-use common::{Home, PrivateBus, Supervised, alive, checkout};
+use common::{Home, PrivateBus, Supervised, alive, checkout, is_compiler_error};
 use sway::Sway;
 
 /// Waits up to `limit` for the `count`th line of the log holding `needle`,
@@ -140,7 +140,11 @@ fn phase_5_exit_check() {
   let notes = bus.wait_for(1, Duration::from_secs(300));
   assert_eq!(notes.len(), 1, "{notes:?}");
   assert_eq!(notes[0].0, "Your Crabshell config didn't build");
-  assert_eq!(notes[0].1, "this file contains an unclosed delimiter");
+  assert!(
+    is_compiler_error(&supervised.log(), &notes[0].1),
+    "{notes:?}\n{}",
+    supervised.log()
+  );
   assert!(alive(first), "the old shell runs on");
   assert_eq!(supervised.log().matches("the shell is ready").count(), 1);
 

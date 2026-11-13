@@ -280,6 +280,15 @@ impl Drop for Supervised {
   }
 }
 
+/// Whether `message` is a compiler error in `log`, as rustc printed it, so
+/// a test doesn't depend on rustc's wording.
+pub(crate) fn is_compiler_error(log: &str, message: &str) -> bool {
+  !message.is_empty()
+    && log
+      .lines()
+      .any(|line| line.starts_with("error") && line.ends_with(&format!(": {message}")))
+}
+
 /// Whether process `pid` still runs.
 pub(crate) fn alive(pid: u32) -> bool {
   std::fs::read_to_string(format!("/proc/{pid}/stat"))

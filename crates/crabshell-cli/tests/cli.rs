@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use common::{Home, PrivateBus, alive, checkout, switches, text};
+use common::{Home, PrivateBus, alive, checkout, is_compiler_error, switches, text};
 
 /// The fenced block of `language` after `heading` in the design doc.
 fn doc_block(heading: &str, language: &str) -> String {
@@ -355,13 +355,11 @@ fn a_config_that_doesnt_build_runs_last_good_or_fails() {
   assert!(log.contains("; starting last-good"), "{log}");
   assert_eq!(notes.len(), 1, "{notes:?}");
   assert_eq!(notes[0].0, "Your Crabshell config didn't build");
-  assert!(notes[0].1.contains("unclosed delimiter"), "{notes:?}");
-  assert!(
-    notes[0]
-      .1
-      .contains("; the last config that worked runs instead"),
-    "{notes:?}"
-  );
+  let problem = notes[0]
+    .1
+    .strip_suffix("; the last config that worked runs instead")
+    .expect("it says last-good runs");
+  assert!(is_compiler_error(&log, problem), "{notes:?}\n{log}");
 }
 
 #[test]
@@ -515,7 +513,7 @@ fn a_broken_edit_keeps_the_shell_and_says_why() {
   let notes = bus.wait_for(1, Duration::from_secs(60));
   assert_eq!(notes.len(), 1, "{notes:?}");
   assert_eq!(notes[0].0, "Your Crabshell config didn't build");
-  assert_eq!(notes[0].1, "this file contains an unclosed delimiter");
+  let problem = notes[0].1.clone();
   assert!(alive(first), "the old shell runs on");
   assert_eq!(home.starts().len(), 1);
   // Sending it left nothing that wakes the supervisor.
@@ -531,6 +529,7 @@ fn a_broken_edit_keeps_the_shell_and_says_why() {
   let (code, log) = supervised.wait(Duration::from_secs(5));
   assert_eq!(code, Some(0), "{log}");
   assert!(log.contains("the running shell stays"), "{log}");
+  assert!(is_compiler_error(&log, &problem), "{problem:?}\n{log}");
 }
 
 #[test]
@@ -675,4 +674,52 @@ fn a_write_through_a_symlink_rebuilds() {
     1,
     "{log}"
   );
+}
+
+#[test]
+fn an_edit_during_the_first_build_rebuilds() {
+  let home = Home::new("edit-while-building");
+  home.fake_config("stay");
+  // A build script that holds the first build up for 3 s.
+  std::fs::write(
+    home.config().join("build.rs"),
+    "fn main() {\n  println!(\"cargo::rerun-if-changed=build.rs\");\n  \
+     std::thread::sleep(std::time::Duration::from_secs(3));\n}\n",
+  )
+  .expect("written");
+  let supervised = home.supervise();
+  std::thread::sleep(Duration::from_millis(1500));
+  home.edit(|code| code + "// an edit\n");
+  let starts = home.wait_for_starts(1, Duration::from_secs(60));
+  assert_eq!(starts.len(), 1);
+  std::thread::sleep(Duration::from_millis(1500));
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(5));
+  assert_eq!(code, Some(0), "{log}");
+  assert!(
+    log.contains("the config changed; building it"),
+    "the edit was missed: {log}"
+  );
+}
+
+#[test]
+fn a_new_build_that_crashes_before_ready_isnt_a_reload() {
+  let home = Home::new("crash-before-ready");
+  home.fake_config("stay");
+  let supervised = home.supervise();
+  home.wait_for_starts(1, Duration::from_secs(60));
+  let crash = "fn main() {\n  std::process::exit(3);";
+  home.edit(|code| code.replacen("fn main() {", crash, 1));
+  // The old shell saves, the new build exits 3 before `ready`, and its
+  // restart waits 1 s; the fix starts at once.
+  std::thread::sleep(Duration::from_millis(1500));
+  home.edit(|code| code.replacen(crash, "fn main() {", 1));
+  let starts = home.wait_for_starts(2, Duration::from_secs(60));
+  assert_eq!(starts.len(), 2, "{starts:?}");
+  std::thread::sleep(Duration::from_millis(300));
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(5));
+  assert_eq!(code, Some(0), "{log}");
+  assert!(log.contains("exit status: 3"), "{log}");
+  assert!(!log.contains("reloaded with"), "{log}");
 }
