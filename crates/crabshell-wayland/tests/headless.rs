@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crabshell_reactive::{Runtime, Signal};
+use crabshell_ui::FloatingWindow;
 use crabshell_ui::{
   Align, Button, Color, Column, Content, Cx, Edge, Key, KeyEvent, KeyboardFocus, Margins, Output,
   PanelWindow, PopupWindow, Rect, Region, Row, Spacer, Style, Text, TextInput, Window,
@@ -911,6 +912,98 @@ fn ctrl_c_copies_a_field_to_other_programs_and_ctrl_v_pastes_from_them() {
   });
   let _ = copy.kill();
   let _ = copy.wait();
+}
+
+/// The `fullscreen_mode` Sway gives the window titled `title`: it comes
+/// after the window's name in its object.
+fn fullscreen_mode(tree: &str, title: &str) -> Option<String> {
+  let view = &tree[tree.find(&format!("\"name\":\"{title}\""))?..];
+  let mode = &view[view.find("\"fullscreen_mode\":")? + "\"fullscreen_mode\":".len()..];
+  Some(mode.chars().take_while(char::is_ascii_digit).collect())
+}
+
+/// Sway's tree, without whitespace, for looking up windows in.
+fn sway_tree(sway: &Sway) -> String {
+  sway.msg(&["-t", "get_tree"]).split_whitespace().collect()
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_floating_window_shows_closes_comes_back_and_opens_popups() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let mut pointer = VirtualPointer::new(&sway);
+  let mut shell = Shell::new(&sway);
+  shell.wait_for_bar("HEADLESS-1");
+  let cx = Cx::new(shell.runtime.new_owner());
+  let (open, full) = (cx.signal(true), cx.signal(false));
+  let floating = FloatingWindow::new()
+    .title("crabshell-floating")
+    .width(300)
+    .height(200)
+    .visible(move || open.get())
+    .fullscreen(move || full.get())
+    .on_close(move |_| open.set(false))
+    .style(Style::new().background(Color::hex("#313244")))
+    .child(Button::new(Text::new("menu")).on_click(|cx| {
+      cx.open_popup(|_| {
+        PopupWindow::new()
+          .edges(Edge::Top)
+          .gravity(Edge::Top)
+          .child(Text::new("up"))
+      })
+    }));
+  let id = shell
+    .event_loop
+    .platform()
+    .add_window(Window::floating(&cx, floating));
+  run_until(&mut shell.event_loop, "the floating window", |platform| {
+    platform
+      .window_info(id)
+      .is_some_and(|info| info.commits > 0)
+  });
+  assert!(sway_tree(&sway).contains("\"name\":\"crabshell-floating\""));
+
+  // The window fills the workspace below the bar; its button fills it.
+  // A virtual pointer's clicks never reached a toplevel on Sway, so
+  // Sway's own cursor clicks.
+  pointer.move_to(960, 600, (1920, 1080));
+  settle(&mut shell.event_loop);
+  sway.msg(&["seat", "-", "cursor", "set", "960", "600"]);
+  sway.msg(&["seat", "-", "cursor", "press", "button1"]);
+  sway.msg(&["seat", "-", "cursor", "release", "button1"]);
+  run_until(
+    &mut shell.event_loop,
+    "a popup from the floating window",
+    |platform| {
+      popups(platform)
+        .first()
+        .and_then(|popup| platform.window_info(*popup))
+        .is_some_and(|info| info.commits > 0)
+    },
+  );
+
+  full.set(true);
+  run_until(&mut shell.event_loop, "fullscreen", |_| {
+    fullscreen_mode(&sway_tree(&sway), "crabshell-floating").as_deref() == Some("1")
+  });
+  full.set(false);
+  settle(&mut shell.event_loop);
+
+  // Sway's kill asks the window to close; on_close hides it.
+  sway.msg(&["[title=crabshell-floating]", "kill"]);
+  run_until(&mut shell.event_loop, "the window to close", |_| {
+    !open.get_untracked()
+  });
+  settle(&mut shell.event_loop);
+  assert!(!sway_tree(&sway).contains("crabshell-floating"));
+  open.set(true);
+  run_until(&mut shell.event_loop, "the window again", |platform| {
+    platform
+      .window_info(id)
+      .is_some_and(|info| info.commits > 0)
+      && sway_tree(&sway).contains("crabshell-floating")
+  });
 }
 
 /// The popups held, in the order they opened. Only one chain is ever

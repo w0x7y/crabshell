@@ -19,6 +19,7 @@ use smithay_client_toolkit::shell::wlr_layer::{
 };
 use smithay_client_toolkit::shell::xdg::XdgPositioner;
 use smithay_client_toolkit::shell::xdg::popup::Popup;
+use smithay_client_toolkit::shell::xdg::window::Window as ToplevelWindow;
 use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1::WpFractionalScaleV1;
 use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
@@ -134,6 +135,8 @@ pub(crate) enum Role {
   Layer(LayerSurface),
   /// A popup.
   Popup(PopupRole),
+  /// A floating window's `xdg_toplevel`.
+  Toplevel(ToplevelWindow),
 }
 
 /// A popup's `xdg_popup` and how it was placed.
@@ -172,6 +175,10 @@ pub(crate) struct Surface {
   pub(crate) buffer_size: Option<(u32, u32)>,
   /// A panel's layer-shell namespace, which can't change once sent.
   pub(crate) namespace: String,
+  /// The size the last configure gave, 0 where it left a side free.
+  pub(crate) given: (u32, u32),
+  /// A floating window's settings last sent.
+  pub(crate) floating: Option<crabshell_ui::FloatingConfig>,
   /// The input mask last sent and the size it was cut to.
   mask_sent: Option<(Option<Region>, (u32, u32))>,
 }
@@ -195,6 +202,8 @@ impl Surface {
       last_damage: Vec::new(),
       buffer_size: None,
       namespace: String::new(),
+      given: (0, 0),
+      floating: None,
       mask_sent: None,
     }
   }
@@ -203,6 +212,7 @@ impl Surface {
     match &self.role {
       Role::Layer(layer) => layer.wl_surface(),
       Role::Popup(popup) => popup.popup.wl_surface(),
+      Role::Toplevel(window) => window.wl_surface(),
     }
   }
 
@@ -210,7 +220,7 @@ impl Surface {
   pub(crate) fn popup(&self) -> Option<&PopupRole> {
     match &self.role {
       Role::Popup(popup) => Some(popup),
-      Role::Layer(_) => None,
+      Role::Layer(_) | Role::Toplevel(_) => None,
     }
   }
 
@@ -384,6 +394,7 @@ impl Surface {
     let surface = match &self.role {
       Role::Layer(layer) => layer.wl_surface(),
       Role::Popup(popup) => popup.popup.wl_surface(),
+      Role::Toplevel(window) => window.wl_surface(),
     };
     if let Err(error) = slot.buffer.shm.attach_to(surface) {
       tracing::warn!(%error, "couldn't attach a buffer");

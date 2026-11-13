@@ -7,7 +7,6 @@ use crabshell_reactive::Runtime;
 use crabshell_render::{BufferAge, Canvas, DamageHistory, PixelFormat, PixelRect, Renderer};
 use crabshell_ui::{CursorShape, TextSystem, Window};
 use smithay_client_toolkit::compositor::CompositorState;
-use smithay_client_toolkit::globals::GlobalData;
 use smithay_client_toolkit::output::OutputState;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::reexports::client::globals::{GlobalList, registry_queue_init};
@@ -36,13 +35,13 @@ use crate::events::{self, Event, Listener};
 use crate::keyboard::SeatKeyboard;
 use crate::outputs::OutputInfo;
 use crate::pointer::Cursor;
-use crate::popups::{WM_BASE_VERSION, WmBase};
 use crate::scale::Scale;
 use crate::surface::{self, Role, Surface};
 use crate::text_input::SeatTextInput;
 use crate::windows::{Entry, WindowId, Windows};
 use smithay_client_toolkit::data_device_manager::DataDeviceManagerState;
 use smithay_client_toolkit::data_device_manager::data_device::DataDevice;
+use smithay_client_toolkit::shell::xdg::XdgShell;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
 
 /// A new window's first shared-memory pool, in bytes: a 1920 by 30 bar.
@@ -299,7 +298,7 @@ pub struct Platform {
   pub(crate) registry: RegistryState,
   pub(crate) compositor: CompositorState,
   layer_shell: LayerShell,
-  pub(crate) xdg: WmBase,
+  pub(crate) xdg: XdgShell,
   pub(crate) shm: Shm,
   pub(crate) outputs: OutputState,
   pub(crate) seats: SeatState,
@@ -322,6 +321,8 @@ pub struct Platform {
   /// The seat and serial of the last button press or release on one of
   /// the windows, which a popup's grab needs.
   pub(crate) last_button: Option<(WlSeat, u32)>,
+  /// Whether that last button event was a press, still held.
+  pub(crate) button_held: bool,
   renderer: Renderer,
   /// The icon theme set, for snapshots' renderers.
   icon_theme: Option<String>,
@@ -347,10 +348,8 @@ impl Platform {
     let layer_shell =
       LayerShell::bind(globals, &qh).map_err(|_| Error::Missing("zwlr_layer_shell_v1"))?;
     let shm = Shm::bind(globals, &qh).map_err(|_| Error::Missing("wl_shm"))?;
-    let xdg = globals
-      .bind(&qh, 1..=WM_BASE_VERSION, GlobalData)
-      .map(WmBase)
-      .map_err(|_| Error::Missing("xdg_wm_base"))?;
+    // With the decoration manager, for floating windows' title bars.
+    let xdg = XdgShell::bind(globals, &qh).map_err(|_| Error::Missing("xdg_wm_base"))?;
     // Fractional scaling needs both; without either, whole scales.
     let manager = globals.bind::<WpFractionalScaleManagerV1, _, _>(&qh, 1..=1, ());
     let viewporter = globals.bind::<WpViewporter, _, _>(&qh, 1..=1, ());
@@ -399,6 +398,7 @@ impl Platform {
       offered: None,
       text_inputs: Vec::new(),
       last_button: None,
+      button_held: false,
       renderer: Renderer::new(),
       icon_theme: None,
       text: TextSystem::new(),
@@ -560,6 +560,7 @@ impl Platform {
       .windows
       .remove_where(|entry| entry.window.wants_close());
     self.create_surfaces();
+    self.update_toplevels();
     let Platform {
       windows,
       pointers,
@@ -629,6 +630,10 @@ impl Platform {
       }
       if entry.opener.is_some() {
         self.create_popup(index);
+        continue;
+      }
+      if let Some(config) = entry.window.floating_config() {
+        self.create_toplevel(index, &config);
         continue;
       }
       let name = entry.window.output().name();

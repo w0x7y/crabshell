@@ -96,6 +96,11 @@ impl<S, O: PartialEq> Windows<S, O> {
     ids.len()
   }
 
+  /// Drops the popups `id` opened, and theirs, keeping `id`.
+  pub(crate) fn remove_popups_of(&mut self, id: WindowId) -> usize {
+    self.remove_where(|entry| entry.opener == Some(id))
+  }
+
   pub(crate) fn get(&self, id: WindowId) -> Option<&Entry<S, O>> {
     self.entries.iter().find(|entry| entry.id == id)
   }

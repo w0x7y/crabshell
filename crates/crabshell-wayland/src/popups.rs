@@ -1,39 +1,17 @@
 //! Popups: taking the ones widgets opened, placing each next to its
 //! widget with `xdg_positioner`, and what the compositor says about them.
 
-use crabshell_ui::{Edge, Rect};
-use smithay_client_toolkit::error::GlobalError;
-use smithay_client_toolkit::globals::ProvidesBoundGlobal;
+use crabshell_ui::{Adjust, Anchors, Edge, Placement, Rect};
 use smithay_client_toolkit::reexports::client::{Connection, QueueHandle};
-use smithay_client_toolkit::shell::xdg::XdgPositioner;
 use smithay_client_toolkit::shell::xdg::popup::{Popup, PopupConfigure, PopupHandler};
+use smithay_client_toolkit::shell::xdg::{XdgPositioner, XdgShell, XdgSurface};
 use smithay_client_toolkit::shm::slot::SlotPool;
 use wayland_protocols::xdg::shell::client::xdg_positioner::{
   Anchor, ConstraintAdjustment, Gravity,
 };
-use wayland_protocols::xdg::shell::client::xdg_wm_base::XdgWmBase;
 
 use crate::platform::{INITIAL_POOL_BYTES, Platform};
 use crate::surface::{PopupRole, Role, Surface};
-
-/// The newest `xdg_wm_base` sctk's popups know.
-pub(crate) const WM_BASE_VERSION: u32 = 6;
-
-/// `xdg_wm_base`, for sctk's popups. sctk's own `XdgShell` binds the
-/// window decoration manager too, which a shell has no use for.
-pub(crate) struct WmBase(pub(crate) XdgWmBase);
-
-impl ProvidesBoundGlobal<XdgWmBase, 5> for WmBase {
-  fn bound_global(&self) -> Result<XdgWmBase, GlobalError> {
-    Ok(self.0.clone())
-  }
-}
-
-impl ProvidesBoundGlobal<XdgWmBase, WM_BASE_VERSION> for WmBase {
-  fn bound_global(&self) -> Result<XdgWmBase, GlobalError> {
-    Ok(self.0.clone())
-  }
-}
 
 /// Which side of the widget that opened it a popup goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,7 +86,9 @@ impl Platform {
     let (layer, parent_xdg, may_grab) = match &parent_surface.role {
       Role::Layer(layer) => (Some(layer.clone()), None, true),
       Role::Popup(popup) => (None, Some(popup.popup.xdg_surface().clone()), popup.grabbed),
+      Role::Toplevel(window) => (None, Some(window.xdg_surface().clone()), true),
     };
+    let placement = entry.window.placement();
     let grab = self.last_button.clone().filter(|_| may_grab);
     let scale = parent_surface.frames.scale;
     entry.window.layout(&mut self.text);
@@ -120,7 +100,13 @@ impl Platform {
         return tracing::warn!(%error, "couldn't create a shared-memory pool");
       }
     };
-    let positioner = positioner(&self.xdg, size, anchor_rect(rect, parent_size), side);
+    let positioner = positioner(
+      &self.xdg,
+      size,
+      anchor_rect(rect, parent_size),
+      side,
+      placement,
+    );
     let wl_surface = self.compositor.create_surface(&self.qh);
     let popup = Popup::from_surface(
       parent_xdg.as_ref(),
@@ -164,16 +150,17 @@ impl Platform {
   }
 }
 
-/// sctk fails only when the global isn't bound, and `WmBase` always is.
-const BOUND: &str = "invariant: WmBase holds a bound xdg_wm_base";
+/// sctk fails only when the global isn't bound, and `XdgShell` always is.
+const BOUND: &str = "invariant: XdgShell holds a bound xdg_wm_base";
 
-/// A positioner for a popup of `size` next to `anchor`, flipped or slid
-/// to stay on the output.
+/// A positioner for a popup of `size` next to `anchor`: where `placement`
+/// says, or on `side` of it, flipped or slid to stay on the output.
 fn positioner(
-  xdg: &WmBase,
+  xdg: &XdgShell,
   (width, height): (u32, u32),
   [x, y, anchor_width, anchor_height]: [i32; 4],
   side: Side,
+  placement: Placement,
 ) -> XdgPositioner {
   let positioner = XdgPositioner::new(xdg).expect(BOUND);
   let [width, height] = [width, height].map(|side| i32::try_from(side).unwrap_or(i32::MAX));
@@ -183,15 +170,51 @@ fn positioner(
     Side::Below => (Anchor::BottomLeft, Gravity::BottomRight),
     Side::Beside => (Anchor::TopRight, Gravity::BottomRight),
   };
-  positioner.set_anchor(anchor);
-  positioner.set_gravity(gravity);
-  positioner.set_constraint_adjustment(
-    ConstraintAdjustment::FlipX
-      | ConstraintAdjustment::FlipY
-      | ConstraintAdjustment::SlideX
-      | ConstraintAdjustment::SlideY,
-  );
+  positioner.set_anchor(placement.edges.map_or(anchor, |edges| corner(edges).0));
+  positioner.set_gravity(placement.gravity.map_or(gravity, |edges| corner(edges).1));
+  positioner.set_constraint_adjustment(adjustment(
+    placement.adjustment.unwrap_or(Adjust::FLIP | Adjust::SLIDE),
+  ));
   positioner
+}
+
+/// The `xdg_positioner` anchor and gravity for `edges`; opposite edges
+/// cancel.
+pub(crate) fn corner(edges: Anchors) -> (Anchor, Gravity) {
+  let vertical = match (edges.contains(Edge::Top), edges.contains(Edge::Bottom)) {
+    (true, false) => -1,
+    (false, true) => 1,
+    _ => 0,
+  };
+  let horizontal = match (edges.contains(Edge::Left), edges.contains(Edge::Right)) {
+    (true, false) => -1,
+    (false, true) => 1,
+    _ => 0,
+  };
+  match (vertical, horizontal) {
+    (-1, -1) => (Anchor::TopLeft, Gravity::TopLeft),
+    (-1, 0) => (Anchor::Top, Gravity::Top),
+    (-1, _) => (Anchor::TopRight, Gravity::TopRight),
+    (0, -1) => (Anchor::Left, Gravity::Left),
+    (0, 0) => (Anchor::None, Gravity::None),
+    (0, _) => (Anchor::Right, Gravity::Right),
+    (_, -1) => (Anchor::BottomLeft, Gravity::BottomLeft),
+    (_, 0) => (Anchor::Bottom, Gravity::Bottom),
+    _ => (Anchor::BottomRight, Gravity::BottomRight),
+  }
+}
+
+/// The `xdg_positioner` constraint adjustment for `adjust`.
+pub(crate) fn adjustment(adjust: Adjust) -> ConstraintAdjustment {
+  [
+    (Adjust::SLIDE_X, ConstraintAdjustment::SlideX),
+    (Adjust::SLIDE_Y, ConstraintAdjustment::SlideY),
+    (Adjust::FLIP_X, ConstraintAdjustment::FlipX),
+    (Adjust::FLIP_Y, ConstraintAdjustment::FlipY),
+  ]
+  .into_iter()
+  .filter(|(ours, _)| adjust.contains(*ours))
+  .fold(ConstraintAdjustment::None, |all, (_, theirs)| all | theirs)
 }
 
 /// The anchor rectangle for a widget at `rect` in a parent `width` by

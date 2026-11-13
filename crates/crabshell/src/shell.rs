@@ -1,7 +1,7 @@
 //! The shell: the platform's event loop, the root context and its
 //! services, and what `cx` can ask of the shell.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::os::unix::net::UnixStream;
 use std::panic::{self, AssertUnwindSafe, Location};
 use std::rc::Rc;
@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use crabshell_reactive::{Runtime, Signal};
 use crabshell_services::Sway;
-use crabshell_ui::{Cx, Output, Window};
+use crabshell_ui::{Cx, FloatingWindow, Output, Window};
 use crabshell_wayland::{Event, EventLoop, LoopSignal, Platform, WindowId};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -420,6 +420,11 @@ pub trait ShellExt {
   #[track_caller]
   fn per_output<W: IntoPanels>(&self, f: impl Fn(&Cx, &Output) -> W + 'static);
 
+  /// Shows `window`, a floating window, for as long as this context
+  /// lives: when its owner is disposed, the window goes. Its `visible`
+  /// shows and hides it meanwhile.
+  fn floating(&self, window: FloatingWindow);
+
   /// Looks icon names up in `theme`, such as `"Adwaita"`, instead of
   /// `hicolor`. Every window is repainted.
   fn set_icon_theme(&self, theme: impl Into<String>);
@@ -474,6 +479,43 @@ impl ShellExt for Cx {
     });
   }
 
+  fn floating(&self, window: FloatingWindow) {
+    let Some(service) = self.service::<Service>() else {
+      return tracing::error!(
+        "cx.floating needs the shell crabshell::run starts; nothing is shown"
+      );
+    };
+    // Building under a context that is gone panics; that is logged here.
+    let Ok(window) = panic::catch_unwind(AssertUnwindSafe(|| Window::floating(self, window)))
+    else {
+      return tracing::warn!(
+        "cx.floating was called with a context that is gone; nothing is shown"
+      );
+    };
+    let id = Rc::new(Cell::new(None));
+    // Removed soon after this context's owner goes, which also frees it.
+    let (idle, signal, held) = (
+      Rc::clone(&service.idle),
+      service.signal.clone(),
+      Rc::clone(&id),
+    );
+    let gone = OnDispose(Some(Box::new(move || {
+      schedule(&idle, &signal, "cx.floating's cleanup", move |platform| {
+        if let Some(id) = held.take() {
+          platform.remove_window(id);
+        }
+      });
+    })));
+    if panic::catch_unwind(AssertUnwindSafe(|| self.owner().signal(gone))).is_err() {
+      return tracing::warn!(
+        "cx.floating was called with a context that is gone; nothing is shown"
+      );
+    }
+    service.with_platform("cx.floating", move |platform| {
+      id.set(Some(platform.add_window(window)));
+    });
+  }
+
   fn persist<T>(&self, key: &str, default: T) -> Signal<T>
   where
     T: Serialize + DeserializeOwned + 'static,
@@ -504,6 +546,18 @@ impl ShellExt for Cx {
     service.with_platform("set_icon_theme", move |platform| {
       platform.set_icon_theme(theme);
     });
+  }
+}
+
+/// Runs its closure when dropped, as when the owner keeping it is
+/// disposed.
+struct OnDispose(Option<Box<dyn FnOnce()>>);
+
+impl Drop for OnDispose {
+  fn drop(&mut self) {
+    if let Some(f) = self.0.take() {
+      f();
+    }
   }
 }
 

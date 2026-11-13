@@ -354,6 +354,7 @@ impl PointerHandler for Platform {
         PointerEventKind::Leave { .. } => ours.cursor.leave(),
         PointerEventKind::Press { serial, .. } | PointerEventKind::Release { serial, .. } => {
           self.last_button = Some((ours.seat.clone(), serial));
+          self.button_held = matches!(event.kind, PointerEventKind::Press { .. });
         }
         _ => {}
       }
