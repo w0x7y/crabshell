@@ -1,0 +1,771 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>
+/* What the artifact viewer's page skeleton adds, so the file looks the same opened on its own. */
+:root { color-scheme: light; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+body { margin: 0; font-size: 14px; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+img { max-width: 100%; }
+[hidden] { display: none !important; }
+</style>
+<title>Crabshell Status Board</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap">
+<style>
+/* Layout: one reading column with four bands (compare, architecture, roadmap, parity), a sticky section bar on top. */
+:root {
+  --bg: #f2f4f6;
+  --surface: #ffffff;
+  --surface-2: #e9edf1;
+  --ink: #12161b;
+  --ink-2: #49525e;
+  --ink-3: #737d8a;
+  --line: #d6dce3;
+  --rust: #c24a1c;
+  --crab: #d4572a;
+  --qs: #2a78d6;
+  --good: #1d8a4a;
+  --good-bg: #e2f3e8;
+  --part: #a86a00;
+  --part-bg: #f7ecd6;
+  --bad: #be3a2f;
+  --bad-bg: #f8e3e0;
+  --na: #66707d;
+  --na-bg: #e7eaee;
+  --shadow: 0 1px 2px rgb(18 22 27 / 0.06), 0 4px 16px rgb(18 22 27 / 0.05);
+  --display: "Space Grotesk", "Inter", system-ui, sans-serif;
+  --body: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1216; --surface: #161a20; --surface-2: #1d232b; --ink: #e6eaef; --ink-2: #a9b2be; --ink-3: #7b8592;
+    --line: #29303a; --rust: #e8743f; --crab: #e0693a; --qs: #4a8fe0;
+    --good: #45b874; --good-bg: #16301f; --part: #e0a84a; --part-bg: #33270f; --bad: #ec6a5e; --bad-bg: #3a1a17;
+    --na: #8d97a3; --na-bg: #232931; --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 6px 20px rgb(0 0 0 / 0.25);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1216; --surface: #161a20; --surface-2: #1d232b; --ink: #e6eaef; --ink-2: #a9b2be; --ink-3: #7b8592;
+  --line: #29303a; --rust: #e8743f; --crab: #e0693a; --qs: #4a8fe0;
+  --good: #45b874; --good-bg: #16301f; --part: #e0a84a; --part-bg: #33270f; --bad: #ec6a5e; --bad-bg: #3a1a17;
+  --na: #8d97a3; --na-bg: #232931; --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 6px 20px rgb(0 0 0 / 0.25);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.55; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--surface); }
+.wrap { max-width: 1080px; margin-inline: auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+h1, h2, h3 { font-family: var(--display); letter-spacing: -0.015em; text-wrap: balance; margin: 0; }
+h2 { font-size: 1.75rem; line-height: 1.2; }
+h3 { font-size: 1.05rem; }
+p { margin: 0; }
+code, .mono { font-family: var(--mono); font-size: 0.88em; }
+a { color: var(--rust); }
+:focus-visible { outline: 2px solid var(--rust); outline-offset: 2px; border-radius: 4px; }
+.eyebrow { font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
+.lede { color: var(--ink-2); max-width: 65ch; margin-top: 10px; }
+
+/* Header */
+header.top { background: var(--surface); border-bottom: 1px solid var(--line); }
+header.top .wrap { padding-block: 32px 24px; display: grid; gap: 18px; }
+.brand { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+.brand h1 { font-size: 2.5rem; line-height: 1; }
+.brand h1 span { color: var(--rust); }
+.brand p { color: var(--ink-2); max-width: 60ch; }
+.facts { display: flex; flex-wrap: wrap; gap: 8px; }
+.fact { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px; font-size: 0.85rem; color: var(--ink-2); background: var(--bg); }
+.fact b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+nav.bar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: color-mix(in oklab, var(--surface) 92%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+nav.bar .wrap { display: flex; gap: 4px; overflow-x: auto; padding-block: 8px; }
+nav.bar a { color: var(--ink-2); text-decoration: none; padding: 6px 12px; border-radius: 6px; font-size: 0.9rem; white-space: nowrap; }
+nav.bar a:hover { background: var(--surface-2); color: var(--ink); }
+
+section.band { padding-block: 56px; border-bottom: 1px solid var(--line); }
+section.band > .wrap > header { margin-bottom: 28px; }
+
+/* Comparison chart */
+.chart { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 22px; box-shadow: var(--shadow); }
+.chart-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+.legend { display: flex; gap: 16px; font-size: 0.85rem; color: var(--ink-2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.sw.c { background: var(--crab); } .sw.q { background: var(--qs); }
+.metric { display: grid; grid-template-columns: minmax(150px, 220px) 1fr; gap: 6px 18px; padding-block: 12px; border-top: 1px solid var(--line); }
+.metric:first-of-type { border-top: 0; }
+.metric .name { font-weight: 600; font-size: 0.92rem; }
+.metric .name small { display: block; font-weight: 400; color: var(--ink-3); font-size: 0.8rem; }
+.bars { display: grid; gap: 4px; min-width: 0; }
+.barrow { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.bar { height: 14px; border-radius: 0 4px 4px 0; min-width: 3px; cursor: default; transition: filter 0.15s; }
+.bar.c { background: var(--crab); } .bar.q { background: var(--qs); }
+.bar:hover, .bar:focus-visible { filter: brightness(1.12); }
+.val { font-family: var(--mono); font-size: 0.8rem; color: var(--ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ratio { grid-column: 2; font-size: 0.8rem; color: var(--good); font-weight: 600; }
+.chart-note { margin-top: 14px; font-size: 0.82rem; color: var(--ink-3); max-width: 80ch; }
+#tip { position: fixed; z-index: 20; pointer-events: none; background: var(--ink); color: var(--bg); padding: 6px 10px; border-radius: 6px; font-size: 0.8rem; max-width: 260px; }
+
+.panels { display: grid; gap: 20px; margin-top: 24px; }
+@media (min-width: 768px) { .panels { grid-template-columns: 1fr 1fr; } }
+.panel { border: 1px solid var(--line); border-radius: 12px; padding: 22px; background: var(--surface); }
+.panel.behind { background: var(--surface-2); }
+.panel h3 { margin-top: 6px; }
+.panel ul { list-style: none; padding: 0; margin: 18px 0 0; display: grid; gap: 12px; }
+.panel li { display: flex; gap: 10px; align-items: flex-start; color: var(--ink-2); }
+.panel li svg { flex: none; width: 20px; height: 20px; margin-top: 2px; }
+.panel.ahead li svg { color: var(--good); } .panel.behind li svg { color: var(--bad); }
+.panel li b { color: var(--ink); font-weight: 600; }
+
+/* Architecture */
+.arch { display: grid; gap: 20px; }
+@media (min-width: 960px) { .arch { grid-template-columns: minmax(0, 1fr) 300px; align-items: start; } }
+.diagram { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px; overflow-x: auto; box-shadow: var(--shadow); }
+.diagram svg { display: block; width: 100%; min-width: 640px; height: auto; }
+.node { cursor: pointer; }
+.node rect.box { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; transition: stroke 0.15s, fill 0.15s, opacity 0.15s; }
+.node.crate rect.box { fill: var(--surface-2); }
+.node.proc rect.box { stroke: var(--rust); stroke-dasharray: 0; }
+.node text { fill: var(--ink); font-family: var(--display); font-size: 14px; font-weight: 600; }
+.node text.sub { fill: var(--ink-3); font-family: var(--mono); font-size: 10.5px; font-weight: 400; }
+.node:hover rect.box, .node:focus-visible rect.box { stroke: var(--rust); }
+.node.on rect.box { stroke: var(--rust); stroke-width: 2.5; fill: color-mix(in oklab, var(--rust) 10%, var(--surface)); }
+.node:focus { outline: none; }
+.dim .node:not(.on):not(.near) { opacity: 0.35; }
+.dim .edge:not(.near) { opacity: 0.18; }
+.edge path { fill: none; stroke: var(--ink-3); stroke-width: 1.5; transition: stroke 0.15s; }
+.edge text { fill: var(--ink-3); font-family: var(--mono); font-size: 10px; }
+.edge.near path { stroke: var(--rust); stroke-width: 2; }
+.edge.near text { fill: var(--rust); }
+.shellbox { fill: none; stroke: var(--ink-3); stroke-width: 1.2; stroke-dasharray: 6 5; }
+.shelllabel { fill: var(--ink-3); font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; }
+.arrowhead { fill: var(--ink-3); }
+.details { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px; position: sticky; top: calc(env(safe-area-inset-top, 0px) + 64px); }
+.details h3 { font-size: 1.25rem; }
+.details .path { font-family: var(--mono); font-size: 0.8rem; color: var(--ink-3); margin-top: 4px; overflow-wrap: anywhere; }
+.details p.what { margin-top: 12px; color: var(--ink-2); }
+.details dl { margin: 14px 0 0; display: grid; gap: 10px; }
+.details dt { font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
+.details dd { margin: 2px 0 0; font-size: 0.9rem; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font-family: var(--mono); font-size: 0.75rem; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line); color: var(--ink-2); }
+.hint { font-size: 0.82rem; color: var(--ink-3); margin-top: 10px; }
+
+/* Roadmap */
+.progress { display: grid; gap: 14px; margin-bottom: 28px; }
+@media (min-width: 720px) { .progress { grid-template-columns: 1fr 1fr; } }
+.meter { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+.meter .row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.meter .big { font-family: var(--display); font-size: 1.6rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.track { display: flex; gap: 3px; margin-top: 12px; }
+.track i { flex: 1; height: 10px; border-radius: 3px; background: var(--surface-2); border: 1px solid var(--line); }
+.track i.done { background: var(--good); border-color: var(--good); }
+.track i.next { background: var(--part-bg); border-color: var(--part); }
+.phases { display: grid; gap: 14px; }
+@media (min-width: 720px) { .phases { grid-template-columns: 1fr 1fr; } }
+.milestone { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+.milestone::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.milestone span { font-family: var(--mono); font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-2); }
+.phase { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; display: grid; gap: 10px; align-content: start; }
+.phase.state-done { border-left: 4px solid var(--good); }
+.phase.state-next { border-left: 4px solid var(--part); box-shadow: var(--shadow); }
+.phase.state-later { border-left: 4px solid var(--line); }
+.phase-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.phase-head .num { font-family: var(--mono); font-size: 0.75rem; color: var(--ink-3); }
+.pill { font-size: 0.72rem; font-weight: 600; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+.pill.done { background: var(--good-bg); color: var(--good); }
+.pill.next { background: var(--part-bg); color: var(--part); }
+.pill.later { background: var(--na-bg); color: var(--na); }
+.checks { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.checks li { display: flex; gap: 8px; align-items: flex-start; font-size: 0.88rem; color: var(--ink-2); }
+.mark { flex: none; width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center; margin-top: 1px; }
+.mark svg { width: 12px; height: 12px; }
+.mark.yes { background: var(--good); color: var(--surface); }
+.mark.part { background: var(--part-bg); color: var(--part); border: 1px solid var(--part); }
+.mark.no { border: 1.5px solid var(--ink-3); background: var(--surface); }
+.mark.fail { background: var(--bad); color: var(--surface); }
+.mark.na { background: var(--na-bg); color: var(--na); }
+.phase .meta { font-size: 0.78rem; color: var(--ink-3); font-family: var(--mono); }
+.open { background: var(--surface); border: 1px dashed var(--line); border-radius: 12px; padding: 18px; margin-top: 18px; }
+.open ul { margin: 10px 0 0; padding-left: 18px; color: var(--ink-2); display: grid; gap: 6px; font-size: 0.9rem; }
+
+/* Parity */
+.parity-top { display: grid; gap: 16px; margin-bottom: 20px; }
+.stack { display: flex; height: 14px; border-radius: 4px; overflow: hidden; gap: 2px; background: var(--surface); }
+.stack i { display: block; height: 100%; }
+.counts { display: flex; flex-wrap: wrap; gap: 8px; }
+.filter { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--ink-2); font: inherit; font-size: 0.85rem; cursor: pointer; }
+.filter[aria-pressed="true"] { border-color: var(--ink); color: var(--ink); background: var(--surface-2); }
+.filter b { font-variant-numeric: tabular-nums; color: var(--ink); }
+.search { padding: 7px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font: inherit; font-size: 0.9rem; min-width: 0; width: 220px; max-width: 100%; }
+.toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; justify-content: space-between; }
+.modules { display: grid; gap: 14px; }
+@media (min-width: 720px) { .modules { grid-template-columns: 1fr 1fr; } }
+.module { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; min-width: 0; }
+.module-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.module-head h3 { font-family: var(--mono); font-size: 0.92rem; font-weight: 500; overflow-wrap: anywhere; }
+.module-head .tally { font-size: 0.78rem; color: var(--ink-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.module .mini { display: flex; height: 6px; border-radius: 3px; overflow: hidden; gap: 1px; margin-top: 10px; background: var(--surface-2); }
+.module .mini i { height: 100%; }
+.types { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 2px; }
+.type { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 8px; padding: 5px 6px; border-radius: 6px; align-items: start; }
+.type:hover { background: var(--surface-2); }
+.type .tname { font-family: var(--mono); font-size: 0.84rem; }
+.type .note { display: block; font-size: 0.8rem; color: var(--ink-3); }
+.type.st-yes .tname { color: var(--ink); }
+.type.st-no .tname { color: var(--ink-2); }
+.c-yes { background: var(--good); } .c-part { background: var(--part); } .c-no { background: var(--line); } .c-fail { background: var(--bad); } .c-na { background: var(--na); }
+.empty { color: var(--ink-3); padding: 16px; }
+.key { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+.key h3 { font-size: 0.95rem; }
+.key ul { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 10px 24px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.key li { display: flex; gap: 10px; align-items: flex-start; font-size: 0.88rem; color: var(--ink-2); }
+.key li b { color: var(--ink); font-weight: 600; }
+footer { padding-block: 32px 48px; color: var(--ink-3); font-size: 0.85rem; }
+
+@media (max-width: 560px) {
+  .brand h1 { font-size: 2rem; }
+  .metric { grid-template-columns: 1fr; }
+  .ratio { grid-column: 1; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <div class="brand">
+      <h1>Crab<span>shell</span></h1>
+      <p>A Rust replacement for Quickshell. Your desktop shell is a Rust crate, and a supervisor rebuilds and reloads it when you save.</p>
+    </div>
+    <div class="facts">
+      <span class="fact">Phase 5 of 6 done toward <b>v0.1</b></span>
+      <span class="fact">Last push <b class="mono">3ec1d89</b> on 2026-11-13</span>
+      <span class="fact">Quickshell 0.3.2 types covered <b id="fact-cover">–</b></span>
+      <span class="fact">Runs on <b>Sway</b> and wlroots, tested on labwc</span>
+    </div>
+  </div>
+</header>
+
+<nav class="bar" aria-label="Sections">
+  <div class="wrap">
+    <a href="#compare">Against Quickshell</a>
+    <a href="#architecture">How it fits together</a>
+    <a href="#roadmap">Roadmap</a>
+    <a href="#parity">Quickshell features</a>
+  </div>
+</nav>
+
+<main>
+<section class="band" id="compare">
+  <div class="wrap">
+    <header>
+      <p class="eyebrow">Measured, same bar</p>
+      <h2>Crabshell against Quickshell</h2>
+      <p class="lede">Both drew the same static text bar on the same laptop under SwayFX, 1920×1080 at scale 1, median of three runs. Shorter bars are better.</p>
+    </header>
+    <div class="chart" role="figure" aria-labelledby="chart-title">
+      <div class="chart-head">
+        <h3 id="chart-title">Cost of the same bar</h3>
+        <div class="legend"><span><i class="sw c"></i>Crabshell</span><span><i class="sw q"></i>Quickshell 0.3.2</span></div>
+      </div>
+      <div id="metrics"></div>
+      <p class="chart-note">Phase 0, 2026-11-10. The full v0.1 bar, with workspaces, tray, volume and a clock, measures 18.8 MiB (15% of Quickshell's 125.2 MiB) and a 14 ms first frame on headless Sway. Quickshell drew on the GPU through OpenGL, its default.</p>
+    </div>
+
+    <div class="panels">
+      <div class="panel ahead">
+        <p class="eyebrow">Where Crabshell is ahead</p>
+        <h3>Things the numbers don't show</h3>
+        <ul>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l4 4L19 6"/></svg><span><b>One bad binding stays contained.</b> A panic in a config closure is logged with its widget path, that binding turns off, and the rest of the shell keeps running.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l4 4L19 6"/></svg><span><b>Crashes recover on their own.</b> The supervisor restarts a dead shell in about a second, and after three quick crashes it runs the last build that worked.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l4 4L19 6"/></svg><span><b>Mistakes show up before the shell runs.</b> The compiler checks every config, and rust-analyzer gives completion and inline errors in your editor.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l4 4L19 6"/></svg><span><b>Idle means asleep.</b> A bar with a minute clock wakes once a minute and does nothing in between, and every test suite checks that.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l4 4L19 6"/></svg><span><b>A failed edit keeps your bar up.</b> The old shell stays on screen and a desktop notification shows the first compiler error.</span></li>
+        </ul>
+      </div>
+      <div class="panel behind">
+        <p class="eyebrow">Where Crabshell is behind</p>
+        <h3>The price of compiled configs, and the gaps</h3>
+        <ul>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"/></svg><span><b>Configs have to compile.</b> Quickshell reloads QML without a build. Here the first build takes minutes and each edit rebuilds: 0.7 s for a one-line change to the template bar.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"/></svg><span><b>Every user needs a Rust toolchain</b>, and has to learn closures and <code>move</code> to write a config.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"/></svg><span><b>A reload restarts the shell.</b> The bar is gone for 13 to 19 ms, and every color change is a rebuild.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"/></svg><span><b>Sway and wlroots only.</b> No Hyprland, niri or i3 yet.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"/></svg><span><b>No animation, blur or shadows yet</b>, and text uses grayscale antialiasing where Qt uses subpixel.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"/></svg><span><b>Most of Quickshell isn't built yet</b>: <span id="missing-count">many</span> of its types are still missing, and there are no existing configs to copy.</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="architecture">
+  <div class="wrap">
+    <header>
+      <p class="eyebrow">Two processes, one thread each</p>
+      <h2>How it fits together</h2>
+      <p class="lede">Your config compiles into the shell. The supervisor rebuilds and restarts it. Inside the shell, everything runs on one event loop. Select a box to see what it owns.</p>
+    </header>
+    <div class="arch">
+      <div class="diagram">
+        <svg id="diagram" viewBox="0 0 960 610" role="group" aria-label="Crabshell architecture diagram">
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0 0 L10 5 L0 10 z"/></marker>
+          </defs>
+          <rect class="shellbox" x="20" y="120" width="660" height="470" rx="14"/>
+          <text class="shelllabel" x="470" y="142">SHELL PROCESS · ONE THREAD</text>
+          <g id="edges"></g>
+          <g id="nodes"></g>
+        </svg>
+      </div>
+      <aside class="details" id="details" aria-live="polite"></aside>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="roadmap">
+  <div class="wrap">
+    <header>
+      <p class="eyebrow">Fourteen phases to full parity</p>
+      <h2>What's done and what's left</h2>
+      <p class="lede">A phase is done only when its exit check passes. Phases 0 to 6 reach v0.1, a bar for Sway. Phases 7 to 13 bring the rest of Quickshell.</p>
+    </header>
+    <div class="progress">
+      <div class="meter">
+        <div class="row"><span class="eyebrow">To v0.1</span><span class="big" id="m-v01">–</span></div>
+        <div class="track" id="t-v01"></div>
+      </div>
+      <div class="meter">
+        <div class="row"><span class="eyebrow">To full Quickshell parity</span><span class="big" id="m-all">–</span></div>
+        <div class="track" id="t-all"></div>
+      </div>
+    </div>
+    <div class="phases" id="phases"></div>
+    <div class="open">
+      <h3>Decisions still open</h3>
+      <ul>
+        <li>Which other wlroots compositors to test (river, labwc, Wayfire), and which implement <code>ext-workspace-v1</code>.</li>
+        <li>Start the new shell before stopping the old one on reload, to remove the blink. Both bars would reserve space for a moment.</li>
+        <li>Stay on libpulse after v0.1, or move to native PipeWire.</li>
+        <li>When to add Hyprland and niri, and in which order.</li>
+        <li>Exit with status 1 when every output's builder panics at startup, so the fallback to last-good can fire.</li>
+        <li>Add cargo-deny and a <code>deny.toml</code>; licenses are checked by hand until then.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="parity">
+  <div class="wrap">
+    <header>
+      <p class="eyebrow">Every type in Quickshell 0.3.2's public docs</p>
+      <h2>Quickshell features, one by one</h2>
+      <p class="lede">Each Quickshell type, grouped by module, with what Crabshell has today. A dash marks QML plumbing that plain Rust already covers. The phase number says when a missing type is planned.</p>
+    </header>
+    <div class="parity-top">
+      <div class="key">
+        <h3>What the marks mean</h3>
+        <ul>
+          <li><span class="mark yes"></span><span><b>Green check</b>: built and working in Crabshell.</span></li>
+          <li><span class="mark part"></span><span><b>Amber bar</b>: partly built. The note says what's there.</span></li>
+          <li><span class="mark no"></span><span><b>Empty box</b>: not built yet. The note gives the phase it's planned for.</span></li>
+          <li><span class="mark fail"></span><span><b>Red cross</b>: tried, and it failed. Nothing has so far.</span></li>
+          <li><span class="mark na"></span><span><b>Gray dash</b>: QML plumbing that plain Rust already covers.</span></li>
+        </ul>
+        <p class="hint">The roadmap cards above use the same marks.</p>
+      </div>
+      <div class="stack" id="stack" aria-hidden="true"></div>
+      <div class="toolbar">
+        <div class="counts" id="filters" role="group" aria-label="Filter by status"></div>
+        <label><span class="eyebrow" style="display:block;margin-bottom:4px">Find a type</span><input class="search" id="search" type="search" placeholder="e.g. Mpris, Popup" autocomplete="off"></label>
+      </div>
+    </div>
+    <div class="modules" id="modules"></div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">Sources: <code>docs/design.md</code> in the Crabshell repo at <code>3ec1d89</code>, and <a href="https://quickshell.org/docs/v0.3.2/types" rel="noopener">Quickshell 0.3.2's type list</a>. Quickshell's source stays unread.</div>
+</footer>
+
+<div id="tip" hidden></div>
+
+<script>
+const SVGNS = "http://www.w3.org/2000/svg";
+const ICON = {
+  yes: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l4 4L19 6"/></svg>',
+  part: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"><path d="M6 12h12"/></svg>',
+  no: '',
+  fail: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m7 7 10 10M7 17 17 7"/></svg>',
+  na: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M8 12h8"/></svg>',
+  todo: ''
+};
+
+document.querySelectorAll(".key .mark").forEach((m) => { m.innerHTML = ICON[m.classList[1]]; });
+
+/* ---------- Comparison chart ---------- */
+const METRICS = [
+  { name: "Memory (RSS)", unit: "MiB", c: 13.2, q: 125.2, why: "Resident memory 10 s after the first frame" },
+  { name: "Proportional memory (PSS)", unit: "MiB", c: 6.2, q: 56.5, why: "Shared libraries split between processes" },
+  { name: "Private dirty memory", unit: "MiB", c: 1.3, q: 30.3, why: "Memory only this process holds" },
+  { name: "Launch to first frame", unit: "ms", c: 22, q: 219, why: "From starting the program to its first frame" },
+  { name: "Threads", unit: "", c: 2, q: 20, why: "Threads running in the process" }
+];
+const tip = document.getElementById("tip");
+function showTip(e, text) {
+  tip.textContent = text; tip.hidden = false;
+  const r = e.target.getBoundingClientRect();
+  const x = Math.min(window.innerWidth - 270, Math.max(8, r.left));
+  tip.style.left = x + "px"; tip.style.top = (r.top - 36) + "px";
+}
+function hideTip() { tip.hidden = true; }
+const metricsEl = document.getElementById("metrics");
+for (const m of METRICS) {
+  const max = Math.max(m.c, m.q);
+  const fmt = (v) => v + (m.unit ? " " + m.unit : "");
+  const pct = (m.c / m.q * 100);
+  const ratio = m.unit === "ms" ? Math.round(m.q / m.c) + "× faster" : (pct < 10 ? pct.toFixed(1) : Math.round(pct)) + "% of Quickshell";
+  const row = document.createElement("div");
+  row.className = "metric";
+  row.innerHTML = `<div class="name">${m.name}<small>${m.why}</small></div>
+    <div class="bars">
+      <div class="barrow"><div class="bar c" tabindex="0" style="width:${m.c / max * 82}%"></div><span class="val">${fmt(m.c)}</span></div>
+      <div class="barrow"><div class="bar q" tabindex="0" style="width:${m.q / max * 82}%"></div><span class="val">${fmt(m.q)}</span></div>
+    </div>
+    <div class="ratio">${ratio}</div>`;
+  const [bc, bq] = row.querySelectorAll(".bar");
+  for (const [el, who, v] of [[bc, "Crabshell", m.c], [bq, "Quickshell 0.3.2", m.q]]) {
+    const t = `${who}: ${fmt(v)} ${m.name.toLowerCase()}`;
+    el.setAttribute("aria-label", t);
+    el.addEventListener("mouseenter", (e) => showTip(e, t));
+    el.addEventListener("focus", (e) => showTip(e, t));
+    el.addEventListener("mouseleave", hideTip);
+    el.addEventListener("blur", hideTip);
+  }
+  metricsEl.appendChild(row);
+}
+window.addEventListener("scroll", hideTip, { passive: true });
+
+/* ---------- Architecture diagram ---------- */
+const NODES = [
+  { id: "config", x: 20, y: 20, w: 230, h: 64, kind: "proc", title: "Your config crate", sub: "~/.config/crabshell",
+    path: "~/.config/crabshell/src/main.rs",
+    what: "A normal Cargo project whose main calls crabshell::run. crabshell init creates it from the template, and it builds into ~/.cache/crabshell/target.",
+    owns: ["main.rs", "Cargo.toml", "typed Style constants"], deps: ["crabshell"], ext: [], status: "Template matches the design doc word for word; a test keeps them in sync." },
+  { id: "cli", x: 710, y: 20, w: 230, h: 64, kind: "proc", title: "crabshell run", sub: "crabshell-cli · supervisor",
+    path: "crates/crabshell-cli",
+    what: "Builds the config, starts the shell and supervises it. Watches src/ and Cargo.toml, rebuilds 300 ms after you save, asks the old shell to save its state, and starts the new build. Restarts a crash after 1 s, doubling to 30 s, and falls back to last-good after three quick crashes.",
+    owns: ["init", "check", "run", "inotify watcher", "restart policy", "last-good", "notifications"], deps: ["none of the other crates"], ext: ["calloop", "rustix", "serde_json", "inotify", "zbus"],
+    status: "Phase 5. 0.7 s rebuild, 13 to 19 ms reload gap, back 1.02 s after kill -9. 5.4 MiB RSS." },
+  { id: "code", x: 50, y: 170, w: 180, h: 60, kind: "code", title: "Config code", sub: "builders and closures",
+    path: "your src/main.rs, compiled in",
+    what: "Builder calls create widgets. Every property takes a value or a closure; closures that read signals become bindings. Each binding runs inside catch_unwind, so a panic disables only that binding.",
+    owns: ["PanelWindow trees", "bindings", "event handlers"], deps: ["crabshell prelude"], ext: [], status: "Rule 4 of the project: one bad binding never takes the shell down." },
+  { id: "crabshell", x: 260, y: 170, w: 180, h: 60, kind: "crate", title: "crabshell", sub: "run · per_output · persist",
+    path: "crates/crabshell",
+    what: "The public API. run() starts the loop, per_output builds a bar for each monitor as it appears, cx.persist keeps values across a reload, and the control socket answers the supervisor with ready and save.",
+    owns: ["run", "Shell", "ShellExt", "prelude", "control socket", "state.json"], deps: ["every crate below"], ext: ["serde", "serde_json", "tracing-subscriber"],
+    status: "Exit codes: 0 after save, 1 when the root closure panics, 2 with no compositor." },
+  { id: "services", x: 470, y: 170, w: 180, h: 60, kind: "crate", title: "crabshell-services", sub: "sway · tray · audio · clock",
+    path: "crates/crabshell-services",
+    what: "Talks to the rest of the system and hands out read-only signals: Sway workspaces over IPC, the system tray over D-Bus (watcher, host and DBusMenu), audio over libpulse, and a clock that wakes only on the minute.",
+    owns: ["Sway", "TrayHost", "Tray widget", "Audio", "Clock"], deps: ["reactive", "ui"], ext: ["zbus", "libpulse-binding", "jiff", "serde_json", "calloop"],
+    status: "Each service starts on first use, so an unused one costs nothing." },
+  { id: "reactive", x: 260, y: 280, w: 180, h: 60, kind: "crate", title: "crabshell-reactive", sub: "signals · memos · effects",
+    path: "crates/crabshell-reactive",
+    what: "A small single-threaded signal system. Signals are Copy handles, memos cache derived values, effects re-run when what they read changes, and owners free everything inside them at once. One flush per loop turn.",
+    owns: ["Signal", "ReadSignal", "Memo", "Effect", "Owner", "flush"], deps: ["none"], ext: ["slotmap"],
+    status: "Releases every RefCell borrow before it runs user code, so a caught panic never leaves it borrowed." },
+  { id: "ui", x: 260, y: 380, w: 180, h: 60, kind: "crate", title: "crabshell-ui", sub: "widgets · layout · text",
+    path: "crates/crabshell-ui",
+    what: "Turns widgets into a taffy layout with cosmic-text text, does hit testing, and records which areas need repainting. Holds Cx, the context every builder and handler receives.",
+    owns: ["Cx", "PanelWindow", "PopupWindow", "Row", "Stack", "Text", "Icon", "Button", "Menu", "Style"], deps: ["reactive"], ext: ["taffy", "cosmic-text", "fontconfig"],
+    status: "Loads only the fonts fontconfig matches, which keeps startup fast." },
+  { id: "render", x: 260, y: 480, w: 180, h: 60, kind: "crate", title: "crabshell-render", sub: "tiny-skia · damage · icons",
+    path: "crates/crabshell-render",
+    what: "Draws only the damaged area, in 64 px tiles, with tiny-skia into a scratch pixmap, then copies it into the shared-memory buffer. Looks up icon themes in-house and draws PNG and SVG icons.",
+    owns: ["drawing", "damage history", "glyph cache", "icon theme lookup"], deps: ["ui"], ext: ["tiny-skia", "resvg", "png", "swash"],
+    status: "Golden screenshots at scales 1, 1.25, 1.5, 1.75 and 2 guard every pixel change." },
+  { id: "wayland", x: 470, y: 480, w: 180, h: 60, kind: "crate", title: "crabshell-wayland", sub: "calloop · layer-shell · popups",
+    path: "crates/crabshell-wayland",
+    what: "Owns the event loop and the connection to the compositor: layer-shell bars, xdg popups, shm buffers, fractional scale, pointer input and monitors coming and going.",
+    owns: ["EventLoop", "windows", "popups", "buffers", "outputs", "pointer"], deps: ["reactive", "ui", "render"], ext: ["smithay-client-toolkit", "calloop", "wayland-protocols"],
+    status: "Tested on a private headless Sway, and popups also on headless labwc." },
+  { id: "bus", x: 710, y: 160, w: 230, h: 100, kind: "ext", title: "The rest of the system", sub: "D-Bus · Sway IPC · PulseAudio",
+    path: "outside the shell",
+    what: "Tray apps and their menus on the session bus, logind and timedated on the system bus for resume and time zone changes, Sway's IPC socket, and pipewire-pulse for volume.",
+    owns: [], deps: [], ext: [], status: "Bad replies from other programs are logged and skipped, never trusted." },
+  { id: "compositor", x: 710, y: 480, w: 230, h: 80, kind: "ext", title: "Sway compositor", sub: "or another wlroots one",
+    path: "outside the shell",
+    what: "Shows the bars and popups, sends input and tells the shell when a monitor appears or goes. Hyprland, niri and i3 come in phase 12.",
+    owns: [], deps: [], ext: [], status: "Needs layer-shell, xdg popups, shm and fractional scale." }
+];
+const EDGES = [
+  { a: "config", b: "cli", d: "M250,52 H708", label: "on save: rebuild", lx: 420, ly: 44 },
+  { a: "config", b: "code", d: "M135,84 V168", label: "compiled in", lx: 143, ly: 106 },
+  { a: "cli", b: "crabshell", d: "M825,84 V102 H350 V168", label: "socket: save, ready", lx: 560, ly: 96, both: true },
+  { a: "code", b: "reactive", d: "M140,230 V310 H258", label: "bindings", lx: 150, ly: 300 },
+  { a: "services", b: "reactive", d: "M560,230 V310 H442", label: "set() on updates", lx: 452, ly: 300 },
+  { a: "crabshell", b: "reactive", d: "M350,230 V278", label: "drives the loop", lx: 358, ly: 258 },
+  { a: "reactive", b: "ui", d: "M350,340 V378", label: "marks dirty", lx: 358, ly: 363 },
+  { a: "ui", b: "render", d: "M350,440 V478", label: "dirty areas", lx: 358, ly: 463 },
+  { a: "render", b: "wayland", d: "M440,510 H468", label: "buffers", lx: 434, ly: 560 },
+  { a: "wayland", b: "ui", d: "M560,480 V410 H442", label: "pointer events", lx: 470, ly: 400 },
+  { a: "wayland", b: "compositor", d: "M650,520 H708", label: "Wayland", lx: 656, ly: 512, both: true },
+  { a: "services", b: "bus", d: "M650,200 H708", label: "IPC, D-Bus", lx: 652, ly: 192, both: true }
+];
+const edgesG = document.getElementById("edges");
+const nodesG = document.getElementById("nodes");
+const svgEl = document.getElementById("diagram");
+const edgeEls = EDGES.map((e) => {
+  const g = document.createElementNS(SVGNS, "g");
+  g.setAttribute("class", "edge");
+  const p = document.createElementNS(SVGNS, "path");
+  p.setAttribute("d", e.d);
+  p.setAttribute("marker-end", "url(#arrow)");
+  if (e.both) p.setAttribute("marker-start", "url(#arrow)");
+  const t = document.createElementNS(SVGNS, "text");
+  t.setAttribute("x", e.lx); t.setAttribute("y", e.ly); t.textContent = e.label;
+  g.append(p, t); edgesG.appendChild(g);
+  return { e, g };
+});
+const nodeEls = {};
+for (const n of NODES) {
+  const g = document.createElementNS(SVGNS, "g");
+  g.setAttribute("class", "node " + n.kind);
+  g.setAttribute("tabindex", "0");
+  g.setAttribute("role", "button");
+  g.setAttribute("aria-label", n.title + ", " + n.sub);
+  const r = document.createElementNS(SVGNS, "rect");
+  r.setAttribute("class", "box");
+  Object.entries({ x: n.x, y: n.y, width: n.w, height: n.h, rx: 10 }).forEach(([k, v]) => r.setAttribute(k, v));
+  const t1 = document.createElementNS(SVGNS, "text");
+  t1.setAttribute("x", n.x + 14); t1.setAttribute("y", n.y + (n.h > 70 ? 30 : 26)); t1.textContent = n.title;
+  const t2 = document.createElementNS(SVGNS, "text");
+  t2.setAttribute("class", "sub");
+  t2.setAttribute("x", n.x + 14); t2.setAttribute("y", n.y + (n.h > 70 ? 50 : 45)); t2.textContent = n.sub;
+  g.append(r, t1, t2);
+  g.addEventListener("click", () => select(n.id));
+  g.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); select(n.id); } });
+  nodesG.appendChild(g);
+  nodeEls[n.id] = g;
+}
+const detailsEl = document.getElementById("details");
+const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+function select(id) {
+  const n = NODES.find((x) => x.id === id);
+  svgEl.classList.add("dim");
+  const near = new Set([id]);
+  for (const { e, g } of edgeEls) {
+    const on = e.a === id || e.b === id;
+    g.classList.toggle("near", on);
+    if (on) { near.add(e.a); near.add(e.b); }
+  }
+  for (const [nid, g] of Object.entries(nodeEls)) {
+    g.classList.toggle("on", nid === id);
+    g.classList.toggle("near", near.has(nid) && nid !== id);
+  }
+  const chips = (xs) => xs.length ? `<div class="chips">${xs.map((x) => `<span class="chip">${esc(x)}</span>`).join("")}</div>` : "<span class=\"hint\">none</span>";
+  detailsEl.innerHTML = `<p class="eyebrow">${n.kind === "crate" ? "Crate" : n.kind === "ext" ? "Outside Crabshell" : n.kind === "proc" ? "Process" : "Inside the shell"}</p>
+    <h3>${esc(n.title)}</h3>
+    <p class="path">${esc(n.path)}</p>
+    <p class="what">${esc(n.what)}</p>
+    <dl>
+      ${n.owns.length ? `<div><dt>Owns</dt><dd>${chips(n.owns)}</dd></div>` : ""}
+      ${n.deps.length ? `<div><dt>Uses</dt><dd>${esc(n.deps.join(", "))}</dd></div>` : ""}
+      ${n.ext.length ? `<div><dt>External crates</dt><dd>${chips(n.ext)}</dd></div>` : ""}
+      <div><dt>Worth knowing</dt><dd>${esc(n.status)}</dd></div>
+    </dl>
+    <p class="hint">Highlighted lines show what this part talks to.</p>`;
+}
+select("crabshell");
+
+/* ---------- Roadmap ---------- */
+const PHASES = [
+  { n: 0, title: "Spike", state: "done", when: "Passed 2026-11-10", items: [["yes", "Static text bar on Sway from one layer-shell surface"], ["yes", "RSS at 10.5% of Quickshell's, the go/no-go gate"], ["yes", "One zbus call on calloop's executor"]] },
+  { n: 1, title: "Reactive core", state: "done", when: "Passed 2026-11-10", items: [["yes", "Signals, memos, effects and owners"], ["yes", "All 11 required tests"]] },
+  { n: 2, title: "Widgets, layout and rendering", state: "done", when: "Passed 2026-11-11", items: [["yes", "Widgets, styles and damage tracking"], ["yes", "Fractional scale and pointer input"], ["yes", "per_output with monitor hotplug"], ["yes", "Goldens at scales 1, 1.5 and 2; zero idle wakeups"]] },
+  { n: 3, title: "Clock, workspaces and audio", state: "done", when: "Passed 2026-11-11", items: [["yes", "Workspace switch on screen within one frame"], ["yes", "Scrolling changes the volume, and pactl agrees"], ["yes", "Clock right after suspend and resume"]] },
+  { n: 4, title: "Tray and popups", state: "done", when: "Passed 2026-11-13", items: [["yes", "Tray watcher, host and DBusMenu"], ["yes", "PopupWindow, Menu and Tray widgets"], ["yes", "nm-applet, blueman, KeePassXC and Discord work"], ["yes", "All of them survive a reload"]] },
+  { n: 5, title: "CLI and reload", state: "done", when: "Passed 2026-11-13", items: [["yes", "crabshell init, check and run"], ["yes", "Rebuild and reload on save, state kept with cx.persist"], ["yes", "Crash restarts and the last-good fallback"], ["yes", "Exit check: all four cases on headless Sway"]] },
+  { n: 6, title: "The v0.1 release", state: "next", when: "Next · 1 to 2 weeks", items: [["yes", "Config template, pinned to the design doc"], ["part", "Measured numbers in the performance table"], ["no", "README that takes a new user from install to bar"], ["no", "API docs on docs.rs"], ["no", "Crates published on crates.io"], ["no", "Clean account: cargo install to a running bar in under 15 minutes"]] },
+  { n: 7, title: "Windows and input", state: "later", when: "After v0.1", items: [["no", "Floating windows and more layer-shell options"], ["no", "Input regions and masks"], ["no", "Keyboard and text input"], ["no", "Scrolling lists, images, clipping and wrapper widgets"]] },
+  { n: 8, title: "Animation and effects", state: "later", when: "After v0.1", items: [["no", "Animations that run only while something moves"], ["no", "Gradients, shadows and background blur"], ["no", "A GPU backend if the CPU renderer can't keep up"]] },
+  { n: 9, title: "Desktop services", state: "later", when: "After v0.1", items: [["no", "Notification server and media players"], ["no", "PipeWire nodes and levels"], ["no", "Battery and power profiles"], ["no", "Bluetooth and networking"], ["no", "Idle monitor and inhibitor"]] },
+  { n: 10, title: "Launchers and system integration", state: "later", when: "After v0.1", items: [["no", "Desktop entries and their actions"], ["no", "Processes, files, sockets and JSON files"], ["no", "IPC handler driven from the command line"], ["no", "Color quantizing, screencopy and toplevel management"]] },
+  { n: 11, title: "Lock screen, greeter and polkit", state: "later", when: "After v0.1", items: [["no", "Session lock surfaces with PAM"], ["no", "A greetd greeter"], ["no", "A polkit agent"]] },
+  { n: 12, title: "More compositors", state: "later", when: "After v0.1", items: [["no", "Hyprland: workspaces, monitors, focus grab, global shortcuts"], ["no", "i3 and niri"], ["no", "Generic window-manager protocols"]] },
+  { n: 13, title: "Parity check", state: "later", when: "Last", items: [["no", "Every Quickshell 0.3.2 type built, or written down with a reason"]] }
+];
+const phasesEl = document.getElementById("phases");
+const STATE_LABEL = { done: "Done", next: "Up next", later: "Planned" };
+function track(el, list) {
+  el.innerHTML = list.map((p) => `<i class="${p.state === "done" ? "done" : p.state === "next" ? "next" : ""}" title="Phase ${p.n}: ${p.title}"></i>`).join("");
+}
+const v01 = PHASES.filter((p) => p.n <= 6);
+document.getElementById("m-v01").textContent = `${v01.filter((p) => p.state === "done").length} of ${v01.length}`;
+document.getElementById("m-all").textContent = `${PHASES.filter((p) => p.state === "done").length} of ${PHASES.length}`;
+track(document.getElementById("t-v01"), v01);
+track(document.getElementById("t-all"), PHASES);
+let html = `<div class="milestone"><span>Milestone v0.1 · a bar for Sway</span></div>`;
+for (const p of PHASES) {
+  if (p.n === 7) html += `<div class="milestone"><span>Beyond v0.1 · the rest of Quickshell</span></div>`;
+  html += `<article class="phase state-${p.state}">
+    <div class="phase-head"><div><div class="num">Phase ${p.n}</div><h3>${p.title}</h3></div><span class="pill ${p.state}">${STATE_LABEL[p.state]}</span></div>
+    <ul class="checks">${p.items.map(([s, t]) => `<li><span class="mark ${s}" aria-label="${s === "yes" ? "done" : s === "part" ? "partly done" : s === "fail" ? "tried and failed" : "not done"}">${ICON[s]}</span><span>${t}</span></li>`).join("")}</ul>
+    <div class="meta">${p.when}</div>
+  </article>`;
+}
+phasesEl.innerHTML = html;
+
+/* ---------- Quickshell parity ---------- */
+// [type, status, note]; status: yes, part, no, na. A number in the note is the planned phase.
+const Q = {
+  "Quickshell": [
+    ["BoundComponent", "na", "QML component plumbing; Rust closures build widgets"],
+    ["ColorQuantizer", "no", 10], ["DesktopAction", "no", 10], ["DesktopEntries", "no", 10], ["DesktopEntry", "no", 10],
+    ["EasingCurve", "no", 8],
+    ["Edges", "yes", "Edge and Anchors"],
+    ["ElapsedTimer", "na", "std::time::Instant"],
+    ["ExclusionMode", "part", "exclusive_zone sets a size; no Ignore or Auto mode"],
+    ["FloatingWindow", "no", 7], ["Intersection", "no", 7], ["LazyLoader", "no", 7],
+    ["ObjectComparison", "na", "PartialEq"],
+    ["ObjectModel", "na", "a signal holding a Vec"],
+    ["PanelWindow", "yes", "PanelWindow: anchors, size, exclusive zone, layer"],
+    ["PersistentProperties", "yes", "cx.persist"],
+    ["PopupAdjustment", "yes", "popups flip and slide on both axes"],
+    ["PopupAnchor", "yes", "anchored to the opening widget"],
+    ["PopupWindow", "yes", "PopupWindow, opened with cx.open_popup"],
+    ["QsMenuAnchor", "yes", "tray menus open beside their icon"],
+    ["QsMenuButtonType", "yes", "MenuToggle: checkbox and radio"],
+    ["QsMenuEntry", "yes", "MenuEntry"],
+    ["QsMenuHandle", "yes", "TrayMenu"],
+    ["QsMenuOpener", "yes", "the Tray opens and follows menus"],
+    ["QsWindow", "part", "panels and popups; no floating windows"],
+    ["Quickshell", "part", "monitors through per_output; reload through the supervisor"],
+    ["QuickshellSettings", "part", "CRABSHELL_LOG; the supervisor watches the files"],
+    ["Region", "no", 7], ["RegionShape", "no", 7],
+    ["Reloadable", "yes", "state survives a reload with cx.persist"],
+    ["Retainable", "no", 8], ["RetainableLock", "no", 8],
+    ["Scope", "yes", "Cx contexts and owners"],
+    ["ScriptModel", "yes", "children_keyed reuses children by key"],
+    ["ShellRoot", "yes", "crabshell::run"],
+    ["ShellScreen", "part", "Output: its name; no geometry or model yet"],
+    ["Singleton", "na", "a Rust static, or a service from cx.service"],
+    ["SystemClock", "yes", "cx.clock(Precision)"],
+    ["TransformWatcher", "no", 7],
+    ["Variants", "yes", "cx.per_output and children_keyed"]
+  ],
+  "Quickshell.Bluetooth": [["Bluetooth", "no", 9], ["BluetoothAdapter", "no", 9], ["BluetoothAdapterState", "no", 9], ["BluetoothDevice", "no", 9], ["BluetoothDeviceState", "no", 9]],
+  "Quickshell.DBusMenu": [["DBusMenuHandle", "yes", "tray menus over DBusMenu"], ["DBusMenuItem", "yes", "MenuEntry, read from DBusMenu items"]],
+  "Quickshell.Hyprland": [["GlobalShortcut", "no", 12], ["Hyprland", "no", 12], ["HyprlandEvent", "no", 12], ["HyprlandFocusGrab", "no", 12], ["HyprlandMonitor", "no", 12], ["HyprlandToplevel", "no", 12], ["HyprlandWindow", "no", 12], ["HyprlandWorkspace", "no", 12]],
+  "Quickshell.I3": [
+    ["I3", "part", "cx.sway(): workspaces and focus over the i3-compatible IPC"],
+    ["I3Event", "no", 12], ["I3IpcListener", "no", 12],
+    ["I3Monitor", "part", "a workspace's output name"],
+    ["I3Workspace", "yes", "Workspace"]
+  ],
+  "Quickshell.Io": [["DataStream", "no", 10], ["DataStreamParser", "no", 10], ["FileView", "no", 10], ["FileViewAdapter", "no", 10], ["FileViewError", "no", 10], ["IpcHandler", "no", 10], ["JsonAdapter", "no", 10], ["JsonObject", "no", 10], ["Process", "no", 10], ["Socket", "no", 10], ["SocketServer", "no", 10], ["SplitParser", "no", 10], ["StdioCollector", "no", 10]],
+  "Quickshell.Networking": [["ConnectionFailReason", "no", 9], ["ConnectionState", "no", 9], ["DeviceType", "no", 9], ["NMSettings", "no", 9], ["Network", "no", 9], ["NetworkBackendType", "no", 9], ["NetworkConnectivity", "no", 9], ["NetworkDevice", "no", 9], ["Networking", "no", 9], ["WifiDevice", "no", 9], ["WifiDeviceMode", "no", 9], ["WifiNetwork", "no", 9], ["WifiSecurityType", "no", 9], ["WiredDevice", "no", 9]],
+  "Quickshell.Services.Greetd": [["Greetd", "no", 11], ["GreetdState", "no", 11]],
+  "Quickshell.Services.Mpris": [["Mpris", "no", 9], ["MprisLoopState", "no", 9], ["MprisPlaybackState", "no", 9], ["MprisPlayer", "no", 9]],
+  "Quickshell.Services.Notifications": [["Notification", "no", 9], ["NotificationAction", "no", 9], ["NotificationCloseReason", "no", 9], ["NotificationServer", "no", 9], ["NotificationUrgency", "no", 9]],
+  "Quickshell.Services.Pam": [["PamContext", "no", 11], ["PamError", "no", 11], ["PamResult", "no", 11]],
+  "Quickshell.Services.Pipewire": [
+    ["Pipewire", "part", "the default sink, through pipewire-pulse"],
+    ["PwAudioChannel", "no", 9], ["PwLink", "no", 9], ["PwLinkGroup", "no", 9], ["PwLinkState", "no", 9],
+    ["PwNode", "part", "Sink: the default output only"],
+    ["PwNodeAudio", "part", "volume and mute"],
+    ["PwNodeLinkTracker", "no", 9], ["PwNodePeakMonitor", "no", 9], ["PwNodeType", "no", 9], ["PwObjectTracker", "no", 9]
+  ],
+  "Quickshell.Services.Polkit": [["AuthFlow", "no", 11], ["PolkitAgent", "no", 11]],
+  "Quickshell.Services.SystemTray": [
+    ["Category", "no", "the item's category isn't read yet"],
+    ["Status", "yes", "TrayStatus"],
+    ["SystemTray", "yes", "TrayHost and the Tray widget"],
+    ["SystemTrayItem", "yes", "TrayItem: icon, pixmaps, tooltip, menu"]
+  ],
+  "Quickshell.Services.UPower": [["PerformanceDegradationReason", "no", 9], ["PowerProfile", "no", 9], ["PowerProfiles", "no", 9], ["UPower", "no", 9], ["UPowerDevice", "no", 9], ["UPowerDeviceState", "no", 9], ["UPowerDeviceType", "no", 9]],
+  "Quickshell.Wayland": [
+    ["BackgroundEffect", "no", 8], ["IdleInhibitor", "no", 9], ["IdleMonitor", "no", 9], ["ScreencopyView", "no", 10], ["ShortcutInhibitor", "no", 12],
+    ["Toplevel", "no", 10], ["ToplevelManager", "no", 10], ["WlSessionLock", "no", 11], ["WlSessionLockSurface", "no", 11], ["WlrKeyboardFocus", "no", 7],
+    ["WlrLayer", "yes", "Layer: background, bottom, top, overlay"],
+    ["WlrLayershell", "part", "anchors, size, exclusive zone, layer; no margins or keyboard focus"]
+  ],
+  "Quickshell.Widgets": [
+    ["ClippingRectangle", "no", 7], ["ClippingWrapperRectangle", "no", 7],
+    ["IconImage", "yes", "Icon: theme names and pixmaps"],
+    ["MarginWrapperManager", "part", "padding on Row and Stack"],
+    ["WrapperItem", "part", "containers size to their children"],
+    ["WrapperManager", "na", "Rust containers take a child directly"],
+    ["WrapperMouseArea", "part", "Button: clicks, scroll and hover style"],
+    ["WrapperRectangle", "part", "Style: background, border and radius"]
+  ],
+  "Quickshell.WindowManager": [["ScreenProjection", "no", 12], ["WindowManager", "no", 12], ["Windowset", "no", 12], ["WindowsetProjection", "no", 12]]
+};
+const STATUS = {
+  yes: { label: "Have it", cls: "c-yes" },
+  part: { label: "Partly", cls: "c-part" },
+  no: { label: "Not built yet", cls: "c-no" },
+  fail: { label: "Tried and failed", cls: "c-fail" },
+  na: { label: "Rust covers it", cls: "c-na" }
+};
+const all = Object.values(Q).flat();
+const count = (s, list = all) => list.filter((t) => t[1] === s).length;
+const total = all.length;
+document.getElementById("fact-cover").textContent = `${count("yes")} + ${count("part")} partly, of ${total}`;
+document.getElementById("missing-count").textContent = `${count("no")} of ${total}`;
+document.getElementById("stack").innerHTML = ["yes", "part", "na", "no", "fail"].filter((s) => count(s)).map((s) => `<i class="${STATUS[s].cls}" style="flex:${count(s)}" title="${STATUS[s].label}: ${count(s)}"></i>`).join("");
+
+let filter = "all";
+let query = "";
+const filtersEl = document.getElementById("filters");
+function renderFilters() {
+  const opts = [["all", "All", total], ...["yes", "part", "no", "fail", "na"].filter((s) => count(s)).map((s) => [s, STATUS[s].label, count(s)])];
+  filtersEl.innerHTML = opts.map(([k, label, n]) =>
+    `<button class="filter" type="button" data-k="${k}" aria-pressed="${filter === k}">${k !== "all" ? `<span class="mark ${k}">${ICON[k]}</span>` : ""}${label} <b>${n}</b></button>`).join("");
+}
+filtersEl.addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  filter = b.dataset.k;
+  try { localStorage.setItem("crabshell-parity-filter", filter); } catch (_) {}
+  renderFilters(); renderModules();
+});
+document.getElementById("search").addEventListener("input", (e) => { query = e.target.value.trim().toLowerCase(); renderModules(); });
+try { const saved = localStorage.getItem("crabshell-parity-filter"); if (saved && (saved === "all" || STATUS[saved])) filter = saved; } catch (_) {}
+
+const modulesEl = document.getElementById("modules");
+function noteText(t) {
+  if (typeof t[2] === "number") return `planned for phase ${t[2]}`;
+  return t[2];
+}
+function renderModules() {
+  let out = "";
+  for (const [mod, types] of Object.entries(Q)) {
+    const shown = types.filter((t) => (filter === "all" || t[1] === filter) && (!query || t[0].toLowerCase().includes(query) || mod.toLowerCase().includes(query)));
+    if (!shown.length) continue;
+    const have = count("yes", types), part = count("part", types);
+    out += `<div class="module">
+      <div class="module-head"><h3>${mod}</h3><span class="tally">${have}${part ? ` + ${part} partly` : ""} of ${types.length}</span></div>
+      <div class="mini" aria-hidden="true">${["yes", "part", "na", "no", "fail"].map((s) => count(s, types) ? `<i class="${STATUS[s].cls}" style="flex:${count(s, types)}"></i>` : "").join("")}</div>
+      <ul class="types">${shown.map((t) => `<li class="type st-${t[1]}"><span class="mark ${t[1]}" aria-label="${STATUS[t[1]].label}">${ICON[t[1]]}</span><span><span class="tname">${t[0]}</span><span class="note">${esc(noteText(t))}</span></span></li>`).join("")}</ul>
+    </div>`;
+  }
+  modulesEl.innerHTML = out || `<p class="empty">No type matches “${esc(query)}”.</p>`;
+}
+renderFilters();
+renderModules();
+</script>
+</body>
+</html>
