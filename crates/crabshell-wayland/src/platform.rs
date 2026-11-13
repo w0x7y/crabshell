@@ -394,13 +394,14 @@ impl Platform {
     self.windows.add(window)
   }
 
-  /// Drops a window, with its owner and its surface. Returns whether it
-  /// was there.
+  /// Drops a window, with its owner, its surface and the popups it
+  /// opened. Returns whether it was there.
   pub fn remove_window(&mut self, id: WindowId) -> bool {
     self.windows.remove(id)
   }
 
-  /// The windows held, in the order they were added.
+  /// The windows held, panels and the popups their widgets opened, in the
+  /// order they were added.
   pub fn windows(&self) -> impl Iterator<Item = (WindowId, &Window)> {
     self
       .windows
@@ -489,12 +490,18 @@ impl Platform {
     self.stats
   }
 
-  /// The work after the sources are dispatched: flush, set up new
-  /// surfaces, apply changed settings, lay out, draw, flush the
-  /// connection.
+  /// The work after the sources are dispatched: flush, take new popups
+  /// and close the ones that asked, set up new surfaces, apply changed
+  /// settings, lay out, draw, flush the connection.
   pub(crate) fn after_dispatch(&mut self) {
     self.stats.iterations += 1;
+    // Effects created in a flush run in it, so every popup opened so far,
+    // by a handler or an effect, has its bindings run.
     self.runtime.flush();
+    self.take_popups();
+    self
+      .windows
+      .remove_where(|entry| entry.window.wants_close());
     self.create_surfaces();
     let Platform {
       windows,
@@ -506,7 +513,7 @@ impl Platform {
       ..
     } = self;
     for entry in windows.entries.iter_mut() {
-      if entry.surface.is_some() && entry.window.take_surface_changed() {
+      if entry.opener.is_none() && entry.surface.is_some() && entry.window.take_surface_changed() {
         // Settings layer-shell would refuse are never sent; the
         // surface keeps the last good ones.
         let config = entry.window.surface();
@@ -544,13 +551,13 @@ impl Platform {
     }
   }
 
-  /// Creates layer surfaces for windows whose output is known. Called
+  /// Creates layer surfaces for panels whose output is known. Called
   /// after a flush, since a window's settings are bindings that first
-  /// run then.
+  /// run then. Popups aren't shown yet.
   fn create_surfaces(&mut self) {
     for index in 0..self.windows.entries.len() {
       let entry = &mut self.windows.entries[index];
-      if entry.surface.is_some() {
+      if entry.surface.is_some() || entry.opener.is_some() {
         continue;
       }
       let name = entry.window.output().name();
