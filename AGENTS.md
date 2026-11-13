@@ -113,7 +113,8 @@ Everything runs on one thread. A calloop loop dispatches ready sources, runs `ru
 - `crates/crabshell-ui`: `Cx`, widgets, styles, layout, text, hit testing and invalidation.
 - `crates/crabshell-render`: drawing, damage history, glyphs, icons and the in-house icon theme lookup. Goldens are in `tests/golden`.
 - `crates/crabshell-wayland`: the event loop, layer-shell windows, shm buffers, scale, pointer and outputs. The headless tests and shared Sway helper are in `tests/`.
-- `crates/crabshell`: `run`, `Shell`, `ShellExt::per_output`, the prelude and `examples/counter.rs`. Its headless tests, goldens and exit-code tests are in `tests/`.
+- `crates/crabshell`: `run`, `Shell`, `ShellExt::per_output`, `cx.persist`, the prelude and `examples/counter.rs`. Its headless tests, goldens and exit-code tests are in `tests/`.
+- `crates/crabshell-cli`: the `crabshell` command (`init`, `check`, and `run` with the supervisor) and the config template in `template/`, which must match the design doc's "Writing a config".
 - `spike/` and `baseline/`: the frozen Phase 0 prototype, the Quickshell bar it was measured against, and `baseline/harness.py`, which measured both.
 
 ## Taste

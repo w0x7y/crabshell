@@ -1,0 +1,12 @@
+[package]
+name = "crabshell-cli"
+version = "0.0.0"
+description = "The crabshell command: creates, checks and runs a Crabshell config"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "crabshell"
+path = "src/main.rs"

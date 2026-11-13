@@ -79,6 +79,7 @@ v0.1 is a bar with workspaces, the clock, the tray and the volume, plus `crabshe
 ~ [crabshell-render](crates/crabshell-render/), drawing on the cpu with tiny-skia, damage tracking, glyphs and icons\
 ~ [crabshell-wayland](crates/crabshell-wayland/), the event loop, layer-shell windows and popups, buffers, scaling, the pointer and monitors\
 ~ [crabshell-services](crates/crabshell-services/), the clock, sway's workspaces, audio and the tray so far\
+~ [crabshell-cli](crates/crabshell-cli/), the `crabshell` command: `init` makes a config from the template and `check` checks it\
 ~ [spike](spike/) and [baseline](baseline/), the phase 0 prototype and the quickshell bar it was measured against
 
 ### tests

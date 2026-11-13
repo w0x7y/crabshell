@@ -8,6 +8,7 @@ members = [
     "crates/crabshell-wayland",
     "crates/crabshell-services",
     "crates/crabshell",
+    "crates/crabshell-cli",
 ]
 
 [workspace.package]
