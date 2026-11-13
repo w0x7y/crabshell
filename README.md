@@ -17,7 +17,7 @@ you need
 ~ rust 1.99 or newer\
 ~ sway, or another wlroots compositor with layer-shell, like labwc. only sway shows workspaces for now\
 ~ linux 5.3 or newer\
-~ pkg-config, fontconfig and libpulse with their development files, like `pkg-config libfontconfig1-dev libpulse-dev` on debian or ubuntu\
+~ pkg-config, fontconfig, libpulse and libxkbcommon with their development files, like `pkg-config libfontconfig1-dev libpulse-dev libxkbcommon-dev` on debian or ubuntu\
 ~ pulseaudio or pipewire-pulse running, for the volume\
 ~ a d-bus session bus for the tray, and a notification daemon like mako or dunst for build errors
 
