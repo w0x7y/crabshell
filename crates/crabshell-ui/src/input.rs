@@ -47,6 +47,7 @@ type ScrollHandler = Rc<Handler<dyn Fn(&Cx, i32)>>;
 #[derive(Default)]
 pub(crate) struct Handlers {
   pub(crate) click: Option<ClickHandler>,
+  pub(crate) press: Option<ClickHandler>,
   pub(crate) right_click: Option<ClickHandler>,
   pub(crate) middle_click: Option<ClickHandler>,
   pub(crate) scroll: Option<ScrollHandler>,
@@ -266,10 +267,11 @@ impl Tree {
       if self.pointer.pressed.is_none()
         && let Some(target) = self.pointer.hovered
       {
+        self.set_pressed(Some((target, button)));
         if button == PointerButton::Left {
           self.press_field(target);
+          return self.call(target, Action::Press);
         }
-        self.set_pressed(Some((target, button)));
       }
       return None;
     }
@@ -421,6 +423,7 @@ enum Scrolled {
 #[derive(Clone, Copy)]
 enum Action {
   Click,
+  Press,
   RightClick,
   MiddleClick,
   Scroll(i32),
@@ -440,6 +443,7 @@ impl Call {
     let handlers = untrack(|| {
       self.handlers.try_with(|handlers| match self.action {
         Action::Click => handlers.click.clone().map(Either::Click),
+        Action::Press => handlers.press.clone().map(Either::Click),
         Action::RightClick => handlers.right_click.clone().map(Either::Click),
         Action::MiddleClick => handlers.middle_click.clone().map(Either::Click),
         Action::Scroll(_) => handlers.scroll.clone().map(Either::Scroll),
@@ -452,6 +456,7 @@ impl Call {
       (Either::Click(handler), action) => {
         let name = match action {
           Action::RightClick => "on_right_click",
+          Action::Press => "on_press",
           Action::MiddleClick => "on_middle_click",
           _ => "on_click",
         };

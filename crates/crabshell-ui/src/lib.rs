@@ -59,6 +59,7 @@
 
 mod cx;
 mod edit;
+mod floating;
 mod geometry;
 mod input;
 mod keyboard;
@@ -81,11 +82,12 @@ mod window;
 mod tests;
 
 pub use cx::Cx;
+pub use floating::{FloatingConfig, FloatingWindow, WindowRequest};
 pub use geometry::{Point, Rect, Size};
 pub use input::{CursorShape, PointerButton, ScrollDelta};
 pub use keyboard::{Clipboard, Key, KeyEvent, Modifiers};
 pub use menu::{Menu, MenuEntry, MenuToggle};
-pub use popup::PopupWindow;
+pub use popup::{Adjust, Placement, PopupWindow};
 pub use prop::{IntoProp, Prop};
 pub use region::Region;
 pub use scroll::{ListView, ScrollView};

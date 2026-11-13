@@ -242,3 +242,31 @@ fn a_popup_is_anchored_where_its_widget_was_at_the_last_layout() {
   h.frame(&window);
   assert_eq!(popup.anchor(), Some(Rect::new(30.0, 0.0, 20.0, 20.0)));
 }
+
+#[test]
+fn a_popup_carries_the_placement_its_config_set() {
+  use crate::{Adjust, Edge, Placement};
+
+  let mut h = Harness::new();
+  let window = opener(&mut h, |_| {
+    PopupWindow::new()
+      .edges(Edge::Top | Edge::Right)
+      .gravity(Edge::Top)
+      .adjustment(Adjust::FLIP | Adjust::SLIDE_Y)
+      .child(square())
+  });
+  let popup = open(&mut h, &window);
+  assert_eq!(
+    popup.placement(),
+    Placement {
+      edges: Some(Edge::Top | Edge::Right),
+      gravity: Some(Edge::Top.into()),
+      adjustment: Some(Adjust::FLIP | Adjust::SLIDE_Y),
+    }
+  );
+  assert!(Adjust::ALL.contains(Adjust::SLIDE));
+  assert!(!Adjust::FLIP.contains(Adjust::SLIDE_X));
+  // Unset, the platform picks.
+  let plain = opener(&mut h, |_| PopupWindow::new().child(square()));
+  assert_eq!(open(&mut h, &plain).placement(), Placement::default());
+}

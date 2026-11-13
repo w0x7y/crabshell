@@ -620,6 +620,14 @@ impl Button {
     self
   }
 
+  /// Runs `handler` as soon as the left button goes down over this
+  /// button, while it is held: the time to call
+  /// [`Cx::start_move`](crate::Cx::start_move), as a title bar does.
+  pub fn on_press(mut self, handler: impl Fn(&Cx) + 'static) -> Button {
+    self.button.handlers.press = Some(Rc::new(Handler::new(handler)));
+    self
+  }
+
   /// Runs `handler` when the left button is pressed and released over this
   /// button.
   pub fn on_click(mut self, handler: impl Fn(&Cx) + 'static) -> Button {

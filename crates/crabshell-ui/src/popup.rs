@@ -14,7 +14,7 @@ use crate::prop::{IntoProp, Prop};
 use crate::style::Style;
 use crate::tree::{PopupState, Tree, borrow};
 use crate::widgets::Widget;
-use crate::window::Window;
+use crate::window::{Anchors, Window};
 
 /// A popup: a window next to the widget that opened it, sized to fit its
 /// one child. Open one with [`Cx::open_popup`].
@@ -30,6 +30,61 @@ use crate::window::Window;
 pub struct PopupWindow {
   style: Option<Prop<Style>>,
   child: Option<Box<dyn Widget>>,
+  edges: Option<Prop<Anchors>>,
+  gravity: Option<Prop<Anchors>>,
+  adjustment: Option<Prop<Adjust>>,
+}
+
+/// How a popup may move to stay on its output, combined with `|`, as
+/// `xdg_positioner`'s constraint adjustments.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Adjust(u8);
+
+impl Adjust {
+  /// Never moved: it may leave the output.
+  pub const NONE: Adjust = Adjust(0);
+  /// Slid sideways.
+  pub const SLIDE_X: Adjust = Adjust(1);
+  /// Slid up or down.
+  pub const SLIDE_Y: Adjust = Adjust(2);
+  /// Flipped to the other side.
+  pub const FLIP_X: Adjust = Adjust(4);
+  /// Flipped to above or below.
+  pub const FLIP_Y: Adjust = Adjust(8);
+  /// Slid either way.
+  pub const SLIDE: Adjust = Adjust(1 | 2);
+  /// Flipped either way.
+  pub const FLIP: Adjust = Adjust(4 | 8);
+  /// Any of them, flipping first, then sliding. A popup is never resized:
+  /// it is the size of its content.
+  pub const ALL: Adjust = Adjust(15);
+
+  /// Whether every adjustment in `other` is allowed.
+  pub const fn contains(self, other: Adjust) -> bool {
+    self.0 & other.0 == other.0
+  }
+}
+
+impl std::ops::BitOr for Adjust {
+  type Output = Adjust;
+
+  fn bitor(self, other: Adjust) -> Adjust {
+    Adjust(self.0 | other.0)
+  }
+}
+
+/// Where a popup goes next to the widget that opened it. Unset parts
+/// keep the defaults: below the widget from a horizontal bar, beside it
+/// from a vertical bar or another popup, flipped or slid to stay on the
+/// output.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Placement {
+  /// The edge or corner of the widget's rectangle the popup hangs from.
+  pub edges: Option<Anchors>,
+  /// Which way the popup extends from there.
+  pub gravity: Option<Anchors>,
+  /// How it may move to stay on the output.
+  pub adjustment: Option<Adjust>,
 }
 
 impl PopupWindow {
@@ -49,6 +104,28 @@ impl PopupWindow {
   /// to be, plus the style's padding.
   pub fn child(mut self, child: impl Widget) -> PopupWindow {
     self.child = Some(Box::new(child));
+    self
+  }
+
+  /// Sets the edge or corner of the widget the popup hangs from, such as
+  /// `Edge::Bottom | Edge::Left`; opposite edges cancel. Read when it
+  /// opens, as the compositor places a popup once.
+  pub fn edges(mut self, edges: impl IntoProp<Anchors>) -> PopupWindow {
+    self.edges = Some(edges.into_prop());
+    self
+  }
+
+  /// Sets which way the popup extends from its edges, such as
+  /// `Edge::Bottom | Edge::Right`. Read when it opens.
+  pub fn gravity(mut self, gravity: impl IntoProp<Anchors>) -> PopupWindow {
+    self.gravity = Some(gravity.into_prop());
+    self
+  }
+
+  /// Sets how the popup may move to stay on its output. Read when it
+  /// opens.
+  pub fn adjustment(mut self, adjustment: impl IntoProp<Adjust>) -> PopupWindow {
+    self.adjustment = Some(adjustment.into_prop());
     self
   }
 }
@@ -92,10 +169,14 @@ impl Cx {
       untrack(|| {
         let popup = build(&cx);
         let child = popup.child.map(|child| child.into_element());
-        (popup.style, child)
+        (
+          popup.style,
+          child,
+          (popup.edges, popup.gravity, popup.adjustment),
+        )
       })
     }));
-    let (style, child) = match built {
+    let (style, child, placement) = match built {
       Ok(built) => built,
       Err(payload) => {
         tracing::error!(
@@ -114,10 +195,31 @@ impl Cx {
         opener: anchor,
         close: false,
         alive,
+        placement: Placement::default(),
       });
       RefCell::new(tree)
     });
-    borrow(&popup).mount_root(style, child);
+    {
+      let mut tree = borrow(&popup);
+      tree.mount_root(style, child);
+      let (edges, gravity, adjustment) = placement;
+      let root = tree.root;
+      tree.bind_opt(root, edges, "edges", |tree, _, value| {
+        if let Some(popup) = tree.popup.as_mut() {
+          popup.placement.edges = Some(value);
+        }
+      });
+      tree.bind_opt(root, gravity, "gravity", |tree, _, value| {
+        if let Some(popup) = tree.popup.as_mut() {
+          popup.placement.gravity = Some(value);
+        }
+      });
+      tree.bind_opt(root, adjustment, "adjustment", |tree, _, value| {
+        if let Some(popup) = tree.popup.as_mut() {
+          popup.placement.adjustment = Some(value);
+        }
+      });
+    }
     borrow(&tree).popups.push(Window { tree: popup, owner });
   }
 
@@ -169,6 +271,17 @@ impl Window {
     let (tree, node) = opener.get()?;
     let tree = tree.borrow();
     tree.node(node)?.rect
+  }
+
+  /// Where this popup goes, as its config set it; the defaults for a
+  /// panel.
+  pub fn placement(&self) -> Placement {
+    let tree = self.tree.borrow();
+    tree
+      .popup
+      .as_ref()
+      .map(|popup| popup.placement)
+      .unwrap_or_default()
   }
 
   /// Whether this window is a popup.

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use crate::menu::MenuEntry;
+use crate::popup::Adjust;
 use crate::region::Region;
 use crate::style::Style;
 use crate::widgets::{Align, Fit, IconSource, Justify};
@@ -90,6 +91,8 @@ value_props!(
   PathBuf,
   Fit,
   Option<usize>,
+  (u32, u32),
+  Adjust,
   IconSource,
   Vec<MenuEntry>,
 );

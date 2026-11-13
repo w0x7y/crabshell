@@ -18,6 +18,7 @@ use crabshell_reactive::Signal;
 use taffy::TaffyTree;
 
 use crate::cx::{Anchor, Cx};
+use crate::floating::FloatingState;
 use crate::geometry::{Rect, Size};
 use crate::input::{Handlers, Pointer};
 use crate::keyboard::Keyboard;
@@ -52,6 +53,8 @@ pub(crate) struct Tree {
   pub(crate) popups: Vec<Window>,
   /// Set for a popup's own tree.
   pub(crate) popup: Option<PopupState>,
+  /// Set for a floating window's own tree.
+  pub(crate) floating: Option<FloatingState>,
 }
 
 /// What only a popup's tree has.
@@ -63,6 +66,8 @@ pub(crate) struct PopupState {
   /// Lives under the popup's owner, so it is gone once the widget that
   /// opened the popup is.
   pub(crate) alive: Signal<()>,
+  /// Where it goes, as the config set it.
+  pub(crate) placement: crate::popup::Placement,
 }
 
 pub(crate) struct Node {
@@ -318,6 +323,7 @@ impl Tree {
       keyboard: Keyboard::default(),
       popups: Vec::new(),
       popup: None,
+      floating: None,
     }
   }
 
@@ -728,7 +734,7 @@ impl Tree {
     }
   }
 
-  fn bind_opt<T: 'static>(
+  pub(crate) fn bind_opt<T: 'static>(
     &mut self,
     id: NodeId,
     prop: Option<Prop<T>>,

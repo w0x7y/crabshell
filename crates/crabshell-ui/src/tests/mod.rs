@@ -6,6 +6,7 @@
 //! fontconfig picks depends on the machine.
 
 mod edit;
+mod floating;
 mod input;
 mod invalidation;
 mod keyboard;
