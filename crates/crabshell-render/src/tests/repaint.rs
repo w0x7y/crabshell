@@ -515,3 +515,60 @@ fn a_repaint_whose_edge_cuts_a_rounded_corner_matches_drawing_everything() {
     }
   }
 }
+
+#[test]
+fn repainting_inside_a_clip_matches_drawing_everything() {
+  let mut scene = Scene::new();
+  let label = scene.cx.signal(String::from("short"));
+  let tall = scene.cx.signal(false);
+  let clipped = scene.cx.signal(true);
+  // The clipping row is inset from the window, so what it cuts off would
+  // show around it, and draws nothing itself, so only its children
+  // report damage.
+  let panel = scene
+    .panel()
+    .style(Style::new().background(Color::rgb(30, 30, 46)))
+    .child(
+      Row::new().padding(8, 20).child(
+        Row::new()
+          .padding(3, 3)
+          .gap(4)
+          .align(Align::Start)
+          .style(move || Style::new().radius(10.0).clip(clipped.get()))
+          .child(Row::new().style(move || {
+            Style::new()
+              .background(Color::hex("#f38ba8"))
+              .padding(if tall.get() { 30 } else { 4 }, 12)
+          }))
+          .child(Text::new(move || label.get())),
+      ),
+    );
+  let window = scene.window(panel, 160.0, 40.0);
+  let changes: [Box<dyn Fn()>; 5] = [
+    Box::new(move || label.set(String::from("a label far too long to fit here"))),
+    Box::new(move || tall.set(true)),
+    Box::new(move || clipped.set(false)),
+    Box::new(move || clipped.set(true)),
+    Box::new(move || {
+      label.set(String::from("short"));
+      tall.set(false);
+    }),
+  ];
+  for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+    let mut history = DamageHistory::new();
+    let mut buffer = Buffer::new(&window, scale);
+    repaint(&mut scene, &window, &[], &mut history, &mut buffer);
+    window.take_damage();
+    for change in &changes {
+      change();
+      scene.frame(&window);
+      let damage = window.take_damage();
+      repaint(&mut scene, &window, &damage, &mut history, &mut buffer);
+      let full = scene.full(&window, scale);
+      assert!(
+        buffer.pixels == full.pixels,
+        "a repaint inside the clip at scale {scale} differs from a full draw"
+      );
+    }
+  }
+}

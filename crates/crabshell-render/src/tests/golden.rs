@@ -227,3 +227,37 @@ fn menu() {
       .child(Menu::new(entries.clone()).style(Style::new().padding(4, 0)))
   });
 }
+
+/// A rounded box with a border that clips: a taller box inside is cut
+/// inside the border along the bottom corners, and a label running past
+/// the right side is cut mid-glyph.
+fn clipping_panel(scene: &Scene, label: String) -> crabshell_ui::PanelWindow {
+  scene.panel().style(BAR).child(
+    Row::new()
+      .padding(3, 3)
+      .gap(4)
+      .align(Align::Start)
+      .style(
+        Style::new()
+          .background(Color::hex("#313244"))
+          .border(2.0, Color::hex("#fab387"))
+          .radius(10.0)
+          .clip(true),
+      )
+      .child(
+        Row::new().style(
+          Style::new()
+            .background(Color::hex("#f38ba8"))
+            .padding(30, 12),
+        ),
+      )
+      .child(Text::new(label)),
+  )
+}
+
+#[test]
+fn clip() {
+  check("clip", 160.0, 40.0, |scene| {
+    clipping_panel(scene, String::from("a label far too long to fit here"))
+  });
+}

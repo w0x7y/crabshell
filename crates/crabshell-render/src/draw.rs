@@ -10,7 +10,7 @@ use cosmic_text::{FontSystem, SwashCache, SwashContent, SwashImage};
 use crabshell_ui::{
   Color, Content, IconView, NodeView, Rect, Size, Style, TextSystem, TextView, WindowView,
 };
-use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, PixmapMut, PixmapPaint, Transform};
+use tiny_skia::{FillRule, Mask, Paint, PathBuilder, Pixmap, PixmapMut, PixmapPaint, Transform};
 
 use crate::damage::{BufferAge, DamageHistory, PixelRect};
 use crate::icons::Icons;
@@ -411,8 +411,95 @@ impl Painter<'_> {
       Content::Icon(icon) => self.icon(pixmap, &icon),
       Content::None => {}
     }
+    if style.clips() {
+      self.clipped_children(pixmap, node, style);
+    } else {
+      for child in node.children() {
+        self.node(pixmap, child);
+      }
+    }
+  }
+
+  /// `node`'s children, drawn into a layer that is blended in through a
+  /// mask of the inside of the node's border. The mask is drawn in the
+  /// area's own pixels, on the same fixed grid as everything else, so a
+  /// repaint cuts every edge exactly as a full draw does.
+  fn clipped_children(&mut self, pixmap: &mut PixmapMut<'_>, node: NodeView<'_>, style: &Style) {
+    let Some((area, radius)) = self.box_shape(node.rect(), style) else {
+      return;
+    };
+    let width = self.border_width(style);
+    let Some(inside) = tiny_skia::Rect::from_ltrb(
+      area.left() + width,
+      area.top() + width,
+      area.right() - width,
+      area.bottom() - width,
+    ) else {
+      return;
+    };
+    if !visible(pixmap, inside) {
+      return;
+    }
+    let (Some(mut mask), Some((x, y, layer_width, layer_height))) = (
+      Mask::new(pixmap.width(), pixmap.height()),
+      self
+        .grid
+        .cover(node.rect(), pixmap.width(), pixmap.height()),
+    ) else {
+      return;
+    };
+    let Some(mut layer) = Pixmap::new(layer_width, layer_height) else {
+      return;
+    };
+    self.work.layer_pixels += u64::from(layer_width) * u64::from(layer_height);
+    let mut inner = Painter {
+      grid: self.grid.moved(x, y),
+      glyphs: &mut *self.glyphs,
+      icons: &mut *self.icons,
+      fonts: &mut *self.fonts,
+      work: &mut *self.work,
+    };
     for child in node.children() {
-      self.node(pixmap, child);
+      inner.node(&mut layer.as_mut(), child);
+    }
+    let mut path = PathBuilder::new();
+    rounded_rect(&mut path, inside, (radius - width).max(0.0));
+    let Some(path) = path.finish() else {
+      return;
+    };
+    mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
+    pixmap.draw_pixmap(
+      x as i32,
+      y as i32,
+      layer.as_ref(),
+      &PixmapPaint::default(),
+      Transform::identity(),
+      Some(&mask),
+    );
+  }
+
+  /// A widget's rectangle on the pixel grid and its corner radius in
+  /// pixels, clamped to half the shorter side. `None` if it covers no
+  /// pixel.
+  fn box_shape(&self, rect: Rect, style: &Style) -> Option<(tiny_skia::Rect, f32)> {
+    let area = self.grid.rect(rect)?;
+    let radius = (style.radius.unwrap_or(0.0) * self.grid.scale)
+      .clamp(0.0, area.width().min(area.height()) / 2.0);
+    let radius = if radius.is_nan() { 0.0 } else { radius };
+    Some((area, radius))
+  }
+
+  /// The border's width in pixels: as in CSS, rounded down to whole
+  /// pixels, but at least one. 0 without a border.
+  fn border_width(&self, style: &Style) -> f32 {
+    let Some(border) = style.border else {
+      return 0.0;
+    };
+    let width = (border.width * self.grid.scale).floor();
+    if border.width > 0.0 {
+      width.max(1.0)
+    } else {
+      width.max(0.0)
     }
   }
 
@@ -421,15 +508,12 @@ impl Painter<'_> {
     if style.background.is_none() && style.border.is_none() {
       return;
     }
-    let Some(area) = self.grid.rect(rect) else {
+    let Some((area, radius)) = self.box_shape(rect, style) else {
       return;
     };
     if !visible(pixmap, area) {
       return;
     }
-    let radius = (style.radius.unwrap_or(0.0) * self.grid.scale)
-      .clamp(0.0, area.width().min(area.height()) / 2.0);
-    let radius = if radius.is_nan() { 0.0 } else { radius };
 
     if let Some(color) = style.background {
       let mut path = PathBuilder::new();
@@ -437,13 +521,7 @@ impl Painter<'_> {
       fill(pixmap, path, color, FillRule::Winding);
     }
     if let Some(border) = style.border {
-      // As in CSS: rounded down to whole pixels, but at least one.
-      let width = (border.width * self.grid.scale).floor();
-      let width = if border.width > 0.0 {
-        width.max(1.0)
-      } else {
-        width
-      };
+      let width = self.border_width(style);
       if width >= 1.0 {
         // A ring: the outer shape with the inner one cut out.
         let mut path = PathBuilder::new();
