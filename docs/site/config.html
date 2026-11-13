@@ -225,8 +225,38 @@ Button::new(Text::new(move || format!("clicked {}", count.get())))
             <tr>
               <td><code>Button</code></td>
               <td>
-                wraps a child and takes clicks and scrolling, with
-                <code>hover_style</code> and <code>pressed_style</code>
+                wraps a child and takes clicks, presses, scrolling and keys,
+                with <code>hover_style</code>, <code>pressed_style</code> and
+                <code>focus_style</code>
+              </td>
+            </tr>
+            <tr>
+              <td><code>Image</code></td>
+              <td>
+                a png, jpeg, gif, webp or svg file at a <code>width</code> and
+                <code>height</code>, with a <code>fit</code>
+              </td>
+            </tr>
+            <tr>
+              <td><code>ScrollView</code></td>
+              <td>
+                shows part of a taller child and scrolls it with the wheel, its
+                <code>offset</code> in a signal
+              </td>
+            </tr>
+            <tr>
+              <td><code>ListView</code></td>
+              <td>
+                a scrolling list of rows of one height that builds only the rows
+                in view, with a <code>current</code> row kept in view
+              </td>
+            </tr>
+            <tr>
+              <td><code>TextInput</code></td>
+              <td>
+                a one-line text field editing a signal, with a placeholder,
+                password dots, the clipboard, input methods and
+                <code>on_accept</code>
               </td>
             </tr>
             <tr>
@@ -254,6 +284,14 @@ Button::new(Text::new(move || format!("clicked {}", count.get())))
                 <code>on_activate</code>
               </td>
             </tr>
+            <tr>
+              <td><code>FloatingWindow</code></td>
+              <td>
+                an ordinary window with a title, size limits, maximized,
+                fullscreen and <code>visible</code>, shown with
+                <code>cx.floating(...)</code>
+              </td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -268,10 +306,24 @@ Button::new(Text::new(move || format!("clicked {}", count.get())))
 
       <h2 id="events">events</h2>
       <p>
-        <code>on_click</code>, <code>on_right_click</code> and
-        <code>on_middle_click</code> get <code>&amp;Cx</code>.
-        <code>on_scroll</code> also gets the steps, up positive. all of them run
-        on the main thread.
+        <code>on_click</code>, <code>on_right_click</code>,
+        <code>on_middle_click</code> and <code>on_press</code> get
+        <code>&amp;Cx</code>. <code>on_scroll</code> also gets the steps, up
+        positive. all of them run on the main thread.
+      </p>
+      <p>
+        a window with a <code>keyboard_focus</code> gets keys. they go to the
+        focused text field, then the focused button's <code>on_key</code>, then
+        the window's; a handler returns <code>true</code> when it used the key.
+        after that, tab moves the focus and enter or space clicks the focused
+        button. the
+        <a
+          href="https://github.com/w0x7y/crabshell/blob/main/crates/crabshell/examples/launcher.rs"
+          target="_blank"
+          rel="noopener"
+          >launcher example</a
+        >
+        puts it together.
       </p>
 
       <h2 id="styles">styles</h2>

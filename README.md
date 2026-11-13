@@ -1,16 +1,14 @@
-<p align="center"><img src="docs/site/logo.svg" width="150" alt="the crabshell logo, a hermit crab in a snail shell"></p>
+<p align="center"><img src="docs/site/logo.svg" width="150" alt="the crabshell logo, a pixel snail shell"></p>
 
 # crabshell
 
 a full rust replacement for quickshell: everything quickshell does, crabshell will do. your whole desktop shell is a rust crate, with bars, popups, notifications, launchers, lock screens, osds and the rest. the first milestone, v0.1, is a bar for sway and other wlroots compositors, a checkpoint that proves the approach works before the rest of quickshell's features follow
 
-![the counter example bar at scale 2](crates/crabshell/tests/golden/counter@2x.png)
+status: v0.1 is on crates.io, and phase 7 is done on main. bars draw, take clicks, follow monitors as they come and go, and show the clock, sway's workspaces, the volume and the tray with its menus. `crabshell run` rebuilds your bar when you save it and swaps the running one in about a second. on main, windows also take the keyboard, with text fields, input methods and the clipboard, and there are floating windows, scrolling lists, images and clipping
 
-the counter example, drawn at scale 2
+### ai disclosure
 
-status: v0.1. bars draw, take clicks, follow monitors as they come and go, and show the clock, sway's workspaces, the volume and the tray with its menus. `crabshell run` rebuilds your bar when you save it and swaps the running one in about a second
-
-vibe coded: ai coding agents write the code, and other agents review each step against [a design doc](docs/design.md)
+this project makes heavy use of ai agents. they write the code, the tests and most of the docs, and other agents review each step against [the design doc](docs/design.md). a person sets the direction, makes the design calls, reads the reviews and checks the results by hand on a real desktop
 
 ### get started
 
@@ -81,7 +79,10 @@ to try the examples without a config, from a clone of this repository
 ```sh
 cargo run --release -p crabshell --example counter
 cargo run --release -p crabshell --example bar
+cargo run --release -p crabshell --example launcher
 ```
+
+the launcher is an overlay with a search field over a scrolling list of apps and an about window: type to filter, up and down to pick, enter to launch
 
 ### docs
 
@@ -100,15 +101,15 @@ for comparison, quickshell drawing the [phase 0 test bar](spike/RESULTS.md) uses
 
 ### where it's going
 
-v0.1 is the template bar plus `crabshell run`, on crates.io. after it come floating windows and keyboard input, animations and effects, a notifications server, media players, battery, bluetooth and networking, launchers and ipc, lock screens and greeters, then hyprland, niri and more compositors, until every quickshell feature is covered. the plan is in [the design doc](docs/design.md#beyond-v01), and [docs/site/roadmap.html](docs/site/roadmap.html) shows where each phase stands
+v0.1 is the template bar plus `crabshell run`, on crates.io. phase 7 added floating windows and keyboard input. after it come animations and effects, a notifications server, media players, battery, bluetooth and networking, launchers and ipc, lock screens and greeters, then hyprland, niri and more compositors, until every quickshell feature is covered. the plan is in [the design doc](docs/design.md#beyond-v01), and [docs/site/roadmap.html](docs/site/roadmap.html) shows where each phase stands
 
 ### what's in it
 
-~ [crabshell](crates/crabshell/), `run()`, `per_output`, `cx.persist`, the prelude and the examples\
+~ [crabshell](crates/crabshell/), `run()`, `per_output`, `cx.floating`, `cx.persist`, the prelude and the examples\
 ~ [crabshell-reactive](crates/crabshell-reactive/), signals, memos, effects and owners\
-~ [crabshell-ui](crates/crabshell-ui/), widgets, styles, layout, text and hit testing\
-~ [crabshell-render](crates/crabshell-render/), drawing on the cpu with tiny-skia, damage tracking, glyphs and icons\
-~ [crabshell-wayland](crates/crabshell-wayland/), the event loop, layer-shell windows and popups, buffers, scaling, the pointer and monitors\
+~ [crabshell-ui](crates/crabshell-ui/), widgets, styles, layout, text, text editing, focus and hit testing\
+~ [crabshell-render](crates/crabshell-render/), drawing on the cpu with tiny-skia, damage tracking, clipping, glyphs, icons and images\
+~ [crabshell-wayland](crates/crabshell-wayland/), the event loop, layer-shell and floating windows, popups, buffers, scaling, the pointer, the keyboard, input methods, the clipboard and monitors\
 ~ [crabshell-services](crates/crabshell-services/), the clock, sway's workspaces, audio and the tray so far\
 ~ [crabshell-cli](crates/crabshell-cli/), the `crabshell` command: `init`, `check`, and `run`, which rebuilds and supervises your bar\
 ~ [spike](spike/) and [baseline](baseline/), the phase 0 prototype and the quickshell bar it was measured against
@@ -129,15 +130,15 @@ env -u SWAYSOCK cargo test -p crabshell --test headless -- --ignored --test-thre
 env -u SWAYSOCK cargo test -p crabshell-cli --test exit_check -- --ignored --nocapture
 ```
 
-they need `sway`, `swaymsg`, `grim` and `labwc`, plus `pipewire` and `pactl` for the audio ones. each test runs its own private sway from a copy of `sway`. the copy drops swayfx's `cap_sys_nice`, so it never goes realtime and a realtime cpu limit of 0 can't kill it. the audio ones also run their own pipewire-pulse, so your volume never moves. the last one builds a config from the template and checks reloads, crashes and the fallback to the last good build. `CRABSHELL_BLESS=1` rewrites the golden images
+they need `sway`, `swaymsg`, `grim` and `labwc`, `wl-copy` and `wl-paste` for the clipboard, plus `pipewire` and `pactl` for the audio ones. each test runs its own private sway from a copy of `sway`. the copy drops swayfx's `cap_sys_nice`, so it never goes realtime and a realtime cpu limit of 0 can't kill it. the audio ones also run their own pipewire-pulse, so your volume never moves. the last one builds a config from the template and checks reloads, crashes and the fallback to the last good build. `CRABSHELL_BLESS=1` rewrites the golden images
 
 ### formatting
 
-2 spaces everywhere. `cargo fmt --all` reads it from [rustfmt.toml](rustfmt.toml), and the python, markdown and yaml get
+2 spaces everywhere. `cargo fmt --all` reads it from [rustfmt.toml](rustfmt.toml), and the python, markdown, yaml and the docs site get
 
 ```sh
 ruff format --config indent-width=2 baseline/
-prettier --tab-width 2 --write $(git ls-files '*.md' '*.yml')
+prettier --tab-width 2 --write $(git ls-files '*.md' '*.yml' '*.html' '*.css' '*.js')
 ```
 
 _license: [mit](./LICENSE-MIT) or [apache-2.0](./LICENSE-APACHE), your choice_
