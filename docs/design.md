@@ -499,6 +499,8 @@ env -u SWAYSOCK cargo test -p crabshell --test headless -- --ignored --test-thre
 
 The `crabshell` suite runs the same way with `-p crabshell` and shares the wayland test helper. `CRABSHELL_BLESS=1` rewrites its goldens, and `CRABSHELL_MEASURE=1` runs the 60 s measurement. Its goldens need Noto Sans as fontconfig's `sans-serif`, and the test checks that first.
 
+One wayland test runs on a headless labwc instead of Sway, to check popups and the pointer grab on another wlroots compositor, so the suite needs `labwc` installed too. The helper starts it like Sway: in a private runtime directory, with an empty config and a cleared environment.
+
 Rules settled while building `crabshell-wayland` (Phase 2, step 3):
 
 - A side of 0 needs anchors on both edges across it, as layer-shell requires. Otherwise the window is refused and logged once with its path, and the other windows keep running. A settings change that breaks the rule keeps the last valid settings.
