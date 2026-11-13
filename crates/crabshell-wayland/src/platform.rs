@@ -232,6 +232,9 @@ pub struct WindowInfo {
   pub buffer_size: Option<(u32, u32)>,
   /// Frames committed.
   pub commits: u64,
+  /// Whether it has a surface: false while it waits for its output, or
+  /// when layer-shell would refuse its settings.
+  pub shown: bool,
   /// The rectangles the last frame reported with `damage_buffer`.
   pub last_damage: Vec<PixelRect>,
   /// For a popup, where the compositor placed it, relative to the window
@@ -440,6 +443,7 @@ impl Platform {
       fractional: surface.is_some_and(|surface| surface.fractional.is_some()),
       buffer_size: surface.and_then(|surface| surface.buffer_size),
       commits: surface.map_or(0, |surface| surface.commits),
+      shown: surface.is_some(),
       last_damage: surface
         .map(|surface| surface.last_damage.clone())
         .unwrap_or_default(),

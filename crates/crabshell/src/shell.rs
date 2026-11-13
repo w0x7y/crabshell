@@ -2,17 +2,22 @@
 //! services, and what `cx` can ask of the shell.
 
 use std::cell::RefCell;
+use std::os::unix::net::UnixStream;
 use std::panic::{self, AssertUnwindSafe, Location};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use crabshell_reactive::Runtime;
+use crabshell_reactive::{Runtime, Signal};
 use crabshell_services::Sway;
 use crabshell_ui::{Cx, Output, Window};
 use crabshell_wayland::{Event, EventLoop, LoopSignal, Platform, WindowId};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use tracing::level_filters::LevelFilter;
 
+use crate::control;
 use crate::per_output::{self, Host, IntoPanels, PerOutput};
+use crate::persist::{self, Persisted};
 use crate::switch_log::SwitchLog;
 
 /// The exit status when the root closure panicked: the config is broken.
@@ -38,6 +43,12 @@ pub const EXIT_NO_COMPOSITOR: i32 = 2;
 /// any other value is warned about). The time from this call to the first
 /// committed frame is logged at `info`, and so is the time from each of
 /// Sway's workspace events to the commit that shows it.
+///
+/// Under the supervisor, `CRABSHELL_CONTROL` names its socket. The shell
+/// says `ready` there once each window has drawn, and on `save` writes its
+/// [`persist`](ShellExt::persist)ed values to
+/// `$XDG_RUNTIME_DIR/crabshell/state.json` and exits with 0. It starts from
+/// that file, if there is one, and removes it.
 pub fn run(root: impl FnOnce(&Cx)) -> ! {
   let started = Instant::now();
   init_logging();
@@ -48,7 +59,9 @@ pub fn run(root: impl FnOnce(&Cx)) -> ! {
       std::process::exit(EXIT_NO_COMPOSITOR);
     }
   };
-  let mut shell = match Shell::new(event_loop, root) {
+  let file = persist::state_file();
+  let saved = file.as_deref().map(persist::load).unwrap_or_default();
+  let mut shell = match Shell::build(event_loop, saved, root) {
     Ok(shell) => shell,
     Err(error) => {
       tracing::error!(%error, "the shell couldn't start");
@@ -56,6 +69,9 @@ pub fn run(root: impl FnOnce(&Cx)) -> ! {
     }
   };
   shell.started = started;
+  if let Some(stream) = control::connect() {
+    shell.follow_supervisor(stream, file);
+  }
   shell.run()
 }
 
@@ -117,6 +133,8 @@ pub struct Shell {
   pub(crate) started: Instant,
   first_frame: bool,
   switches: SwitchLog,
+  /// The supervisor's socket, until the shell has said it is ready.
+  control: Option<UnixStream>,
   cx: Cx,
 }
 
@@ -129,13 +147,23 @@ impl Shell {
   /// # Errors
   ///
   /// If `root` panics. The panic is logged too.
-  pub fn new(mut event_loop: EventLoop, root: impl FnOnce(&Cx)) -> Result<Shell, Error> {
+  pub fn new(event_loop: EventLoop, root: impl FnOnce(&Cx)) -> Result<Shell, Error> {
+    Shell::build(event_loop, serde_json::Map::new(), root)
+  }
+
+  /// [`new`](Self::new), with `cx.persist` values starting from `saved`.
+  pub(crate) fn build(
+    mut event_loop: EventLoop,
+    saved: serde_json::Map<String, serde_json::Value>,
+    root: impl FnOnce(&Cx),
+  ) -> Result<Shell, Error> {
     let runtime = Runtime::current();
     let cx = Cx::new(runtime.new_owner().named("root"));
     // Nothing starts here: each service connects when root first asks.
     crabshell_services::provide(&cx, &event_loop.handle());
     let state = Rc::new(RefCell::new(PerOutput::new()));
     cx.provide(Service {
+      persisted: Rc::new(Persisted::new(cx.owner(), saved)),
       per_output: Rc::clone(&state),
       idle: idle_inserter(&event_loop),
       signal: event_loop.signal(),
@@ -164,6 +192,7 @@ impl Shell {
       started: Instant::now(),
       first_frame: false,
       switches: SwitchLog::default(),
+      control: None,
       cx,
     };
     if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| root(&shell.cx))) {
@@ -196,7 +225,51 @@ impl Shell {
       );
     }
     self.log_switch(commits);
+    self.tell_ready();
     Ok(())
+  }
+
+  /// Follows the supervisor on `stream`: tells it when the shell is
+  /// ready, and on `save` writes the persisted values to `file` and exits
+  /// with 0.
+  pub(crate) fn follow_supervisor(&mut self, stream: UnixStream, file: Option<std::path::PathBuf>) {
+    match stream.try_clone() {
+      Ok(writer) => self.control = Some(writer),
+      Err(error) => tracing::warn!(%error, "can't answer the supervisor"),
+    }
+    let persisted = self
+      .cx
+      .service::<Service>()
+      .map(|service| Rc::clone(&service.persisted));
+    control::listen(&self.event_loop.handle(), stream, move || {
+      let values = persisted.as_ref().map(|persisted| persisted.save());
+      if let (Some(values), Some(file)) = (values, &file)
+        && let Err(error) = persist::write(file, &values)
+      {
+        tracing::error!(path = %file.display(), %error, "can't save the persisted values");
+      }
+      tracing::info!("the supervisor asked for a reload; exiting");
+      std::process::exit(0);
+    });
+  }
+
+  /// Says `ready` to the supervisor once every panel shown has drawn a
+  /// frame. A shell that shows no panel never says it.
+  fn tell_ready(&mut self) {
+    if self.control.is_none() {
+      return;
+    }
+    let platform = self.event_loop.platform();
+    let panels = platform
+      .windows()
+      .filter(|(_, window)| !window.is_popup())
+      .filter_map(|(id, _)| platform.window_info(id))
+      .map(|info| (info.shown, info.commits));
+    if control::ready(panels)
+      && let Some(mut stream) = self.control.take()
+    {
+      control::send_ready(&mut stream);
+    }
   }
 
   /// Logs how long a workspace switch took to reach the screen, once a
@@ -261,6 +334,8 @@ impl Drop for Shell {
 /// What the shell keeps in the root context's services, so `cx` can reach
 /// the platform from anywhere.
 struct Service {
+  /// What `cx.persist` hands out, and saves on reload.
+  persisted: Rc<Persisted>,
   per_output: Rc<RefCell<PerOutput<WindowId>>>,
   /// Puts a request in an idle callback, which gets the platform, while
   /// the loop is there. It holds the loop weakly, so a context kept
@@ -348,6 +423,16 @@ pub trait ShellExt {
   /// Looks icon names up in `theme`, such as `"Adwaita"`, instead of
   /// `hicolor`. Every window is repainted.
   fn set_icon_theme(&self, theme: impl Into<String>);
+
+  /// A signal whose value survives a reload. `key` names it: asking again
+  /// with the same key gives the same signal, which lives as long as the
+  /// shell, not this context, so it outlasts an output unplugged and
+  /// plugged back in. On a reload the shell saves it, and the next shell
+  /// starts from the saved value. If that no longer fits `T`, as after an
+  /// edit changed the type, `default` is used and that is logged once.
+  fn persist<T>(&self, key: &str, default: T) -> Signal<T>
+  where
+    T: Serialize + DeserializeOwned + 'static;
 }
 
 impl ShellExt for Cx {
@@ -387,6 +472,24 @@ impl ShellExt for Cx {
         .collect();
       per_output::existing(&state, &mut Shown(platform), builder, &outputs);
     });
+  }
+
+  fn persist<T>(&self, key: &str, default: T) -> Signal<T>
+  where
+    T: Serialize + DeserializeOwned + 'static,
+  {
+    let Some(service) = self.service::<Service>() else {
+      tracing::error!(
+        key,
+        "cx.persist needs the shell crabshell::run starts; the value isn't kept"
+      );
+      return self.signal(default);
+    };
+    // One that isn't kept is under this context, so it goes with it.
+    service
+      .persisted
+      .signal(key, default)
+      .unwrap_or_else(|default| self.signal(default))
   }
 
   fn set_icon_theme(&self, theme: impl Into<String>) {

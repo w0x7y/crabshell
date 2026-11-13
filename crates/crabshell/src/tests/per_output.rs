@@ -3,15 +3,13 @@
 //! what is dropped when an output goes or a window is closed.
 
 use std::cell::{Cell, RefCell};
-use std::io;
 use std::panic::{self, AssertUnwindSafe};
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 
 use crabshell_reactive::{Runtime, Signal};
 use crabshell_ui::{Cx, Output, PanelWindow, Text, Window};
 
-use super::Register;
+use super::{Register, capture_logs};
 use crate::per_output::{self, Build, Host, IntoPanels, PerOutput};
 
 /// Holds windows by number, as the platform holds them by id. Removing
@@ -252,36 +250,6 @@ fn per_output_without_a_shell_logs_and_builds_nothing() {
   );
   assert!(logs.contains("cx.set_icon_theme needs the shell"), "{logs}");
   assert!(!built.get());
-}
-
-/// Runs `f` and returns everything it logged through `tracing`.
-fn capture_logs(f: impl FnOnce()) -> String {
-  #[derive(Clone, Default)]
-  struct Logs(Arc<Mutex<Vec<u8>>>);
-
-  impl io::Write for Logs {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-      self
-        .0
-        .lock()
-        .expect("log buffer lock")
-        .extend_from_slice(bytes);
-      Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-      Ok(())
-    }
-  }
-
-  let logs = Logs::default();
-  let writer = logs.clone();
-  let subscriber = tracing_subscriber::fmt()
-    .with_writer(move || writer.clone())
-    .finish();
-  tracing::subscriber::with_default(subscriber, f);
-  let bytes = logs.0.lock().expect("log buffer lock").clone();
-  String::from_utf8(bytes).expect("log output is UTF-8")
 }
 
 /// `f` calls `cx.per_output` (what ShellExt::per_output does: register with

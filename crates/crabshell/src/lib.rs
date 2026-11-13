@@ -61,7 +61,9 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod control;
 mod per_output;
+mod persist;
 mod shell;
 mod switch_log;
 
