@@ -668,14 +668,16 @@ One Cargo workspace with seven crates. Each crate owns one area, so an agent can
 
 Every target is a guess until Phase 0 measures it. The baseline is Quickshell running the same bar, with workspaces, tray, volume and clock, on the same machine and output. Use Quickshell's `Quickshell.I3` module for workspaces, and check that it connects to Sway's socket. Don't compare against numbers found online.
 
-| Metric                                          | Target                                                     | How to measure                                                                  |
-| ----------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| Idle memory (RSS), v0.1 bar on one 1080p output | 30 MB or less, and at most a quarter of Quickshell's       | `ps -o rss= -p <pid>` after 60 s idle                                           |
-| Idle wakeups                                    | 1 per minute with a minute clock and nothing else changing | `perf stat -e 'syscalls:sys_exit_epoll_wait' -p <pid> -- sleep 300`             |
-| Startup to first frame                          | 100 ms or less                                             | The shell logs the time from `main` to its first committed buffer               |
-| Workspace switch to screen                      | Within one frame, 16 ms at 60 Hz                           | The shell logs the time from the IPC event to the commit                        |
-| Rebuild after a one-line edit                   | 10 s or less                                               | The supervisor logs each build's duration                                       |
-| Reload gap with nothing on screen               | 200 ms or less                                             | The supervisor logs the time from the old shell's exit to the new one's `ready` |
+| Metric                                          | Target                                                     | v0.1, measured                                          | How to measure                                                                  |
+| ----------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Idle memory (RSS), v0.1 bar on one 1080p output | 30 MB or less, and at most a quarter of Quickshell's       | 18.7 MiB, 15% of Quickshell's 125.2 MiB                 | `ps -o rss= -p <pid>` after 60 s idle                                           |
+| Idle wakeups                                    | 1 per minute with a minute clock and nothing else changing | 2 context switches at the minute boundary, none between | `perf stat -e 'syscalls:sys_exit_epoll_wait' -p <pid> -- sleep 300`             |
+| Startup to first frame                          | 100 ms or less                                             | 10.8 ms                                                 | The shell logs the time from `main` to its first committed buffer               |
+| Workspace switch to screen                      | Within one frame, 16 ms at 60 Hz                           | median 0.5 ms, slowest 0.6 ms                           | The shell logs the time from the IPC event to the commit                        |
+| Rebuild after a one-line edit                   | 10 s or less                                               | 0.7 s                                                   | The supervisor logs each build's duration                                       |
+| Reload gap with nothing on screen               | 200 ms or less                                             | 18 ms                                                   | The supervisor logs the time from the old shell's exit to the new one's `ready` |
+
+Measured on 2026-11-13 for v0.1, on headless Sway. The first four rows are `examples/bar.rs` with workspaces, the tray, the volume and the minute clock, release build on one 1920×1080 output at scale 1, from `measure_the_counter_bar`. The counter example, with no services, used 15.8 MiB and woke 0 times. The last two rows are the template bar under `crabshell run` on one 1280×720 output, from the Phase 5 exit check. Each phase's own numbers follow.
 
 Record each measured number in this table next to its target when a phase finishes.
 

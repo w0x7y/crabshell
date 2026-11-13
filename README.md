@@ -94,8 +94,8 @@ cargo run --release -p crabshell --example bar
 
 measured on headless sway, from [the design doc](docs/design.md#performance-targets)
 
-~ the v0.1 bar, one 1920×1080 output: 18.7 to 18.8 MiB of memory, first frame in 14 to 16 ms\
-~ the counter example: 15.4 to 15.5 MiB, zero wakeups while idle\
+~ the v0.1 bar, one 1920×1080 output: 18.7 MiB of memory, first frame in 10.8 ms\
+~ the counter example: 15.8 MiB, zero wakeups while idle\
 ~ a reload, one 1280×720 output: 0.7 s to rebuild after a one-line edit, then 13 to 19 ms with no bar
 
 for comparison, quickshell drawing the [phase 0 test bar](spike/RESULTS.md) uses 125 MiB and needs 219 ms to its first frame
