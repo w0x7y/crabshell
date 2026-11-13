@@ -45,6 +45,7 @@ serde_json = "=1.0.154"
 slotmap = "=1.1.1"
 smithay-client-toolkit = { version = "=0.21.1", default-features = false, features = ["calloop", "xkbcommon"] }
 taffy = { version = "=0.15.1", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid"] }
+unicode-segmentation = "=1.13.3"
 tiny-skia = { version = "=0.12.0", default-features = false, features = ["std", "simd"] }
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["fmt", "std"] }

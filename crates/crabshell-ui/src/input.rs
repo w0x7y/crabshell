@@ -82,6 +82,8 @@ pub enum CursorShape {
   Default,
   /// A pointing hand, over a button.
   Pointer,
+  /// An I-beam, over a text field.
+  Text,
 }
 
 /// Where the pointer is and what it is doing.
@@ -195,11 +197,17 @@ impl Tree {
     {
       return Some(hit);
     }
-    matches!(node.kind, NodeKind::Button(_)).then_some(id)
+    matches!(node.kind, NodeKind::Button(_) | NodeKind::Input(_)).then_some(id)
   }
 
   fn cursor(&self) -> CursorShape {
-    match self.pointer.hovered {
+    match self
+      .pointer
+      .hovered
+      .and_then(|id| self.node(id))
+      .map(|node| &node.kind)
+    {
+      Some(NodeKind::Input(_)) => CursorShape::Text,
       Some(_) => CursorShape::Pointer,
       None => CursorShape::Default,
     }
@@ -258,6 +266,9 @@ impl Tree {
       if self.pointer.pressed.is_none()
         && let Some(target) = self.pointer.hovered
       {
+        if button == PointerButton::Left {
+          self.press_field(target);
+        }
         self.set_pressed(Some((target, button)));
       }
       return None;
@@ -308,6 +319,23 @@ impl Tree {
     self
       .call(target, Action::Scroll(down.saturating_neg()))
       .map(Scrolled::Button)
+  }
+
+  /// A press on field `id` focuses it and puts the caret under the
+  /// pointer. Anything else is left alone.
+  fn press_field(&mut self, id: NodeId) {
+    let Some(position) = self.pointer.position else {
+      return;
+    };
+    let Some(NodeKind::Input(input)) = self.node(id).map(|node| &node.kind) else {
+      return;
+    };
+    let at = input.hit(position);
+    self.focus(Some(id));
+    self.update_input(id, |input| {
+      input.edit.cursor = at;
+      input.edit.anchor = None;
+    });
   }
 
   /// Whether button `id` has an `on_scroll`.

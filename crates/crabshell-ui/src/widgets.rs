@@ -17,6 +17,7 @@ use crate::keyed::{self, KeyedMount};
 use crate::prop::{IntoProp, Prop};
 use crate::scroll::ScrollProps;
 use crate::style::Style;
+use crate::text_input::InputProps;
 
 /// Something that can be placed in a window: one of this crate's widgets, or
 /// a type of your own that is made of them.
@@ -64,6 +65,7 @@ pub(crate) enum ElementKind {
   // Boxed: a button's handlers make it the largest by far.
   Button(Box<ButtonProps>),
   Scroll(ScrollProps),
+  Input(Box<InputProps>),
 }
 
 /// One entry of a container's child list: a single widget, or a keyed list

@@ -15,6 +15,7 @@ cosmic-text.workspace = true
 crabshell-reactive.workspace = true
 fontconfig.workspace = true
 taffy.workspace = true
+unicode-segmentation.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

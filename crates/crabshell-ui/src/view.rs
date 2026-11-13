@@ -112,6 +112,23 @@ impl<'a> NodeView<'a> {
         }),
         None => Content::None,
       },
+      NodeKind::Input(input) => {
+        let color = self.inherited_color();
+        let color = if input.showing_placeholder() {
+          Color::rgba(color.r, color.g, color.b, color.a / 2)
+        } else {
+          color
+        };
+        Content::Input(InputView {
+          text: TextView {
+            text: &input.text,
+            color,
+          },
+          caret: input.focused.then_some(input.caret),
+          selection: if input.focused { &input.selection } else { &[] },
+          area: input.area,
+        })
+      }
       NodeKind::Image(image) => match &image.source {
         Some(path) => Content::Image(ImageView {
           path,
@@ -152,6 +169,22 @@ pub enum Content<'a> {
   Icon(IconView<'a>),
   /// An image.
   Image(ImageView<'a>),
+  /// A text field.
+  Input(InputView<'a>),
+}
+
+/// A text field, ready to draw: the selection behind the text, then the
+/// text, then the caret.
+pub struct InputView<'a> {
+  /// What the field shows; a placeholder comes in half its color.
+  pub text: TextView<'a>,
+  /// The caret, while the field has the keyboard.
+  pub caret: Option<Rect>,
+  /// The selection, while the field has the keyboard: one span, or more
+  /// where right-to-left and left-to-right text mix.
+  pub selection: &'a [Rect],
+  /// The content box everything is cut to.
+  pub area: Rect,
 }
 
 /// Laid-out text, ready to draw. Lines can stick out of the node's

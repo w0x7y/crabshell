@@ -22,6 +22,7 @@ use taffy::{
 use crate::geometry::{Point, Rect};
 use crate::style::Font;
 use crate::text::TextSystem;
+use crate::text_input::DEFAULT_WIDTH;
 use crate::tree::{Node, NodeId, NodeKind, Tree, add_damage, centered, icon_rect};
 use crate::widgets::{Align, Justify};
 
@@ -126,8 +127,10 @@ impl Tree {
     };
     let font = node.effective_style().font.unwrap_or(font);
     let mut reshaped = false;
-    if let NodeKind::Text(text_node) = &mut node.kind {
-      reshaped = text_node.prepare(font, text);
+    match &mut node.kind {
+      NodeKind::Text(text_node) => reshaped = text_node.prepare(font, text),
+      NodeKind::Input(input) => reshaped = input.text.prepare(font, text),
+      _ => {}
     }
     let changed = node.changed;
     let style = taffy_style(node, parent, size);
@@ -215,6 +218,12 @@ impl Tree {
         text.finish(content, fonts);
         painted = painted.union(text.ink_box());
       }
+      // A field's text is cut to its content box, so it paints only its
+      // own rectangle.
+      NodeKind::Input(input) => {
+        input.text.finish(content, fonts);
+        input.place(content);
+      }
       NodeKind::Icon(icon) => painted = painted.union(icon_rect(content, icon.size)),
       NodeKind::Image(image) => {
         painted = painted.union(centered(content, image.width, image.height));
@@ -271,6 +280,14 @@ fn measure(
 ) -> taffy::Size<f32> {
   match node.map(|node| &mut node.kind) {
     Some(NodeKind::Text(text)) => text.measure(fonts, known, available),
+    // A field is as tall as a line and doesn't grow as it is typed in.
+    Some(NodeKind::Input(input)) => {
+      let line = input.text.measure(fonts, known, available);
+      taffy::Size {
+        width: known.width.unwrap_or(DEFAULT_WIDTH),
+        height: line.height,
+      }
+    }
     Some(NodeKind::Image(image)) => taffy::Size {
       width: known.width.unwrap_or(image.width as f32),
       height: known.height.unwrap_or(image.height as f32),
@@ -355,7 +372,7 @@ fn taffy_style(node: &Node, parent: Parent, size: crate::Size) -> taffy::Style {
       style.align_items = AlignItems::CENTER;
       style.justify_content = JustifyContent::CENTER;
     }
-    NodeKind::Text(_) | NodeKind::Icon(_) | NodeKind::Image(_) => {}
+    NodeKind::Text(_) | NodeKind::Icon(_) | NodeKind::Image(_) | NodeKind::Input(_) => {}
   }
   // A size the style sets wins over the content's, but never over the
   // window's own.

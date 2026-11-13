@@ -26,6 +26,7 @@ use crate::prop::{IntoProp, Prop, PropKind};
 use crate::region::Region;
 use crate::style::{Padding, Style};
 use crate::text::TextNode;
+use crate::text_input::InputNode;
 use crate::widgets::{Align, Element, ElementChild, ElementKind, Fit, IconSource, Justify};
 use crate::window::{
   Anchors, DEFAULT_NAMESPACE, KeyboardFocus, Layer, Margins, Output, PanelWindow, Window,
@@ -112,6 +113,7 @@ pub(crate) enum NodeKind {
   Icon(IconNode),
   Image(ImageNode),
   Scroll(ScrollNode),
+  Input(Box<InputNode>),
   Button(ButtonNode),
 }
 
@@ -251,7 +253,7 @@ impl Node {
   /// Whether the node cuts its children to the inside of its border: a
   /// clipping style or a scroll view.
   pub(crate) fn clips(&self) -> bool {
-    self.effective_style().clips() || matches!(self.kind, NodeKind::Scroll(_))
+    self.effective_style().clips() || matches!(self.kind, NodeKind::Scroll(_) | NodeKind::Input(_))
   }
 
   /// Whether the node draws anything itself, in its style in effect. The
@@ -260,7 +262,11 @@ impl Node {
     let style = self.effective_style();
     matches!(
       self.kind,
-      NodeKind::Root | NodeKind::Text(_) | NodeKind::Icon(_) | NodeKind::Image(_)
+      NodeKind::Root
+        | NodeKind::Text(_)
+        | NodeKind::Icon(_)
+        | NodeKind::Image(_)
+        | NodeKind::Input(_)
     ) || style.background.is_some()
       || style.border.is_some()
   }
@@ -423,6 +429,10 @@ impl Tree {
       ElementKind::Stack => NodeKind::Stack,
       ElementKind::Spacer => NodeKind::Spacer,
       ElementKind::Text(_) => NodeKind::Text(TextNode::new()),
+      ElementKind::Input(props) => NodeKind::Input(Box::new(InputNode::new(
+        props.text,
+        cx.signal(props.on_accept.take()),
+      ))),
       ElementKind::Scroll(props) => NodeKind::Scroll(ScrollNode {
         signal: props.offset.unwrap_or_else(|| cx.signal(0.0)),
         offset: 0.0,
@@ -500,6 +510,37 @@ impl Tree {
         });
         self.bind_opt(id, props.max_lines, "max_lines", |tree, id, value| {
           tree.update_text(id, |text| text.set_max_lines(value))
+        });
+      }
+      ElementKind::Input(props) => {
+        let signal = props.text;
+        self.bind(
+          id,
+          (move || signal.get()).into_prop(),
+          "text",
+          |tree, id, value| {
+            tree.update_input(id, |input| {
+              input.edit.set_text(value);
+              input.refresh();
+            });
+          },
+        );
+        self.bind_opt(id, props.placeholder, "placeholder", |tree, id, value| {
+          tree.update_input(id, |input| {
+            input.placeholder = value;
+            input.refresh();
+          });
+        });
+        self.bind_opt(id, props.password, "password", |tree, id, value| {
+          tree.update_input(id, |input| {
+            input.password = value;
+            input.refresh();
+          });
+        });
+        self.bind_opt(id, props.focus, "focus", |tree, id, value| {
+          if value {
+            tree.focus(Some(id));
+          }
         });
       }
       ElementKind::Scroll(_) => {
@@ -742,6 +783,18 @@ impl Tree {
         } else {
           Change::None
         }
+      }
+      _ => Change::None,
+    });
+  }
+
+  /// Changes a field; anything about it may move the caret, so it is laid
+  /// out again.
+  pub(crate) fn update_input(&mut self, id: NodeId, f: impl FnOnce(&mut InputNode)) {
+    self.update(id, |node| match &mut node.kind {
+      NodeKind::Input(input) => {
+        f(input);
+        Change::Layout
       }
       _ => Change::None,
     });

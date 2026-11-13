@@ -5,6 +5,7 @@
 //! Text tests compare sizes with each other instead, since the font
 //! fontconfig picks depends on the machine.
 
+mod edit;
 mod input;
 mod invalidation;
 mod keyboard;
@@ -17,6 +18,7 @@ mod scroll;
 mod services;
 mod style;
 mod text;
+mod text_input;
 mod window;
 
 use std::cell::Cell;

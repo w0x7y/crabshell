@@ -275,6 +275,7 @@ impl SeatPointer {
         match shape {
           CursorShape::Default => Shape::Default,
           CursorShape::Pointer => Shape::Pointer,
+          CursorShape::Text => Shape::Text,
         },
       );
     }

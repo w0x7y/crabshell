@@ -270,6 +270,7 @@ dependencies = [
  "taffy",
  "tracing",
  "tracing-subscriber",
+ "unicode-segmentation",
 ]
 
 [[package]]

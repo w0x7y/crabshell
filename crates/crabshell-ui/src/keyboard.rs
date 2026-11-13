@@ -10,11 +10,13 @@
 
 use std::rc::Rc;
 
-use crabshell_reactive::untrack;
+use crabshell_reactive::{Signal, untrack};
 
 use crate::cx::Cx;
+use crate::edit::Keyed;
 use crate::input::{Handler, run_isolated};
-use crate::tree::{NodeId, NodeKind, Tree, borrow};
+use crate::text_input::AcceptHandler;
+use crate::tree::{Change, NodeId, NodeKind, Tree, borrow};
 use crate::window::Window;
 
 /// A key press, or a repeat of a key held down.
@@ -88,7 +90,9 @@ pub(crate) type KeyHandler = Rc<Handler<dyn Fn(&Cx, &KeyEvent) -> bool>>;
 /// Who has the keyboard in a window.
 #[derive(Default)]
 pub(crate) struct Keyboard {
-  /// The focused button, kept while the keyboard is elsewhere.
+  /// The window has the keyboard.
+  pub(crate) entered: bool,
+  /// The focused button or field, kept while the keyboard is elsewhere.
   pub(crate) focused: Option<NodeId>,
   /// The window's own `on_key`.
   pub(crate) handler: Option<KeyHandler>,
@@ -108,6 +112,7 @@ impl Window {
   /// style again.
   pub fn keyboard_enter(&self) {
     let mut tree = borrow(&self.tree);
+    tree.keyboard.entered = true;
     let focused = tree.keyboard.focused;
     tree.show_focus(focused, true);
   }
@@ -116,15 +121,31 @@ impl Window {
   /// when it comes back.
   pub fn keyboard_leave(&self) {
     let mut tree = borrow(&self.tree);
+    tree.keyboard.entered = false;
     let focused = tree.keyboard.focused;
     tree.show_focus(focused, false);
   }
 
-  /// A key was pressed or repeated. The focused button's `on_key` gets it
-  /// first, then the window's; a handler returns `true` when it used the
-  /// key. Otherwise Tab and Shift+Tab move the focus between buttons, and
-  /// Enter or Space clicks the focused one.
+  /// A key was pressed or repeated. A focused text field edits with it
+  /// first. Then the focused button's `on_key` gets it, then the
+  /// window's; a handler returns `true` when it used the key. Otherwise
+  /// Tab and Shift+Tab move the focus between buttons and fields, and
+  /// Enter or Space clicks the focused button.
   pub fn key(&self, event: &KeyEvent) {
+    let typed = borrow(&self.tree).input_key(event);
+    match typed {
+      Some(Typed::Edited(signal, text)) => {
+        // A signal whose owner is gone just isn't written.
+        signal.try_set(text);
+        return;
+      }
+      Some(Typed::Moved) => return,
+      Some(Typed::Accept(call)) => {
+        call.run();
+        return;
+      }
+      None => {}
+    }
     let (button, window) = {
       let tree = self.tree.borrow();
       (tree.focused_key_call(), tree.window_key_call())
@@ -149,33 +170,80 @@ impl Window {
 }
 
 impl Tree {
-  /// Marks `id`, a button, as showing focus or not. Unlike a hover
-  /// change, a layout this causes checks the hover again: buttons may
-  /// have moved under the pointer.
+  /// Marks `id`, a button or field, as showing focus or not. Unlike a
+  /// hover change, a layout this causes checks the hover again: buttons
+  /// may have moved under the pointer.
   fn show_focus(&mut self, id: Option<NodeId>, shown: bool) {
-    if let Some(id) = id {
+    let Some(id) = id else {
+      return;
+    };
+    if matches!(
+      self.node(id).map(|node| &node.kind),
+      Some(NodeKind::Input(_))
+    ) {
+      self.update(id, |node| match &mut node.kind {
+        NodeKind::Input(input) if input.focused != shown => {
+          input.focused = shown;
+          Change::Paint
+        }
+        _ => Change::None,
+      });
+    } else {
       self.update_button_style(id, |button| button.focused = shown);
     }
   }
 
-  /// Moves the focus to `id`. Keys, which move it, come only while the
-  /// window has the keyboard, so the new focus shows.
-  fn focus(&mut self, id: Option<NodeId>) {
+  /// Moves the focus to `id`. It shows once the window has the keyboard.
+  pub(crate) fn focus(&mut self, id: Option<NodeId>) {
     let old = std::mem::replace(&mut self.keyboard.focused, id);
     if old != id {
       self.show_focus(old, false);
-      self.show_focus(id, true);
+      let entered = self.keyboard.entered;
+      self.show_focus(id, entered);
     }
   }
 
-  /// The buttons in the order they are laid out: depth first, in child
-  /// order.
+  /// What `event` does to the focused text field, if one is focused and
+  /// uses the key.
+  fn input_key(&mut self, event: &KeyEvent) -> Option<Typed> {
+    let id = self.keyboard.focused?;
+    let NodeKind::Input(input) = &mut self.node_mut(id)?.kind else {
+      return None;
+    };
+    let keyed = input.edit.key(event);
+    let typed = match keyed {
+      Keyed::Unused => return None,
+      Keyed::Moved => Typed::Moved,
+      Keyed::Edited => Typed::Edited(input.signal, input.edit.text.clone()),
+      Keyed::Accept => {
+        let handler = untrack(|| input.on_accept.try_with(Option::clone)).flatten();
+        let text = input.edit.text.clone();
+        let node = self.node(id)?;
+        // Without its own `on_accept`, Enter goes on to the window.
+        Typed::Accept(AcceptCall {
+          cx: node.cx.clone(),
+          path: Rc::clone(&node.path),
+          handler: handler?,
+          text,
+        })
+      }
+    };
+    if keyed != Keyed::Accept {
+      self.update_input(id, |input| {
+        input.refresh();
+      });
+    }
+    Some(typed)
+  }
+
+  /// The buttons and fields in the order they are laid out: depth first,
+  /// in child order.
   fn focusable(&self) -> Vec<NodeId> {
     let mut found = Vec::new();
     let mut pending = vec![self.root];
     while let Some(id) = pending.pop() {
       if let Some(node) = self.node(id)
-        && matches!(node.kind, NodeKind::Button(_))
+        && matches!(node.kind, NodeKind::Button(_) | NodeKind::Input(_))
       {
         found.push(id);
       }
@@ -234,6 +302,32 @@ impl Tree {
       Key::Enter | Key::Character(' ') => self.click(self.keyboard.focused?),
       _ => None,
     }
+  }
+}
+
+/// What a key did in a text field, once the tree is released.
+enum Typed {
+  /// The text changed; the signal gets it.
+  Edited(Signal<String>, String),
+  /// Only the caret or selection moved, already in the tree.
+  Moved,
+  /// Enter: the field's `on_accept` runs.
+  Accept(AcceptCall),
+}
+
+/// A field's `on_accept`, to run once the tree is released.
+struct AcceptCall {
+  cx: Cx,
+  path: Rc<str>,
+  handler: AcceptHandler,
+  text: String,
+}
+
+impl AcceptCall {
+  fn run(self) {
+    run_isolated(&self.path, "on_accept", self.handler, |f| {
+      f(&self.cx, &self.text)
+    });
   }
 }
 

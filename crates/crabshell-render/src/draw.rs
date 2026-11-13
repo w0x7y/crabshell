@@ -411,7 +411,8 @@ impl Painter<'_> {
       Content::Text(text) => self.text(pixmap, &text),
       Content::Icon(icon) => self.icon(pixmap, &icon),
       Content::Image(image) => self.image(pixmap, &image),
-      Content::None => {}
+      // Drawn from the next commit on.
+      Content::Input(_) | Content::None => {}
     }
     if node.clips() {
       self.clipped_children(pixmap, node, style);

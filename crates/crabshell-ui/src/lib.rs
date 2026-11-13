@@ -58,6 +58,7 @@
 #![warn(missing_docs)]
 
 mod cx;
+mod edit;
 mod geometry;
 mod input;
 mod keyboard;
@@ -70,6 +71,7 @@ mod region;
 mod scroll;
 mod style;
 mod text;
+mod text_input;
 mod tree;
 mod view;
 mod widgets;
@@ -89,7 +91,8 @@ pub use region::Region;
 pub use scroll::{ListView, ScrollView};
 pub use style::{Border, Color, Font, Padding, Style};
 pub use text::TextSystem;
-pub use view::{Content, IconView, ImageView, NodeView, TextView, WindowView};
+pub use text_input::TextInput;
+pub use view::{Content, IconView, ImageView, InputView, NodeView, TextView, WindowView};
 pub use widgets::{
   Align, Button, Column, Element, Fit, Icon, IconPixels, IconSource, Image, Justify, Row, Spacer,
   Stack, Text, Widget,
