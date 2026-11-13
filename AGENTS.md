@@ -1,6 +1,6 @@
 # Crabshell
 
-Crabshell is a full Rust replacement for Quickshell. A user's whole desktop shell is a Rust crate: bars first, then popups, menus, the tray and the rest. v1 targets Sway and other wlroots compositors.
+Crabshell is a full Rust replacement for Quickshell: every feature Quickshell has, Crabshell gets. A user's whole desktop shell is a Rust crate. The first milestone, v0.1, is a bar for Sway and other wlroots compositors, a checkpoint that proves the approach; the design doc's "Beyond v0.1" phases bring the rest, from notifications and lock screens to Hyprland. Don't design anything as if a bar were the whole scope.
 
 The spec is the design doc, [docs/design.md](docs/design.md). Before changing a crate, read the doc's Overview, "Writing a config", and that crate's section with its "Rules settled while building …" list. When the doc and the code disagree, stop and ask.
 
@@ -16,7 +16,7 @@ This is the point of the project. Idle RSS stays at or under 30 MB on one 1080p 
 
 ### 2. Idle means asleep
 
-Nothing dirty means no commit and no wakeup. A clock ticking once a minute is the only periodic wakeup a v1 bar gets. A timer, poll or animation that fires while nothing changes is a bug.
+Nothing dirty means no commit and no wakeup. A clock ticking once a minute is the only periodic wakeup a v0.1 bar gets. A timer, poll or animation that fires while nothing changes is a bug.
 
 **Check.** Any change under `crates/` runs the `crabshell` headless suite, where `an_idle_counter_bar_wakes_nothing` counts the bar's context switches over a minute. A new wakeup source the counter bar doesn't use, such as a timer, a socket or a D-Bus match, gets its own idle test.
 

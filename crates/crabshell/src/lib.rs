@@ -37,8 +37,8 @@
 //! including [`ServicesExt`](crabshell_services::ServicesExt) for
 //! `cx.clock(Precision::Minute)`, `cx.sway()`, `cx.audio()` and
 //! `cx.tray()`, and the [`Tray`](crabshell_services::Tray) widget.
-//! `examples/bar.rs` is the v1 bar, with each output's workspaces, the
-//! tray, the volume and the clock.
+//! `examples/bar.rs` is the v0.1 milestone's bar, with each output's
+//! workspaces, the tray, the volume and the clock.
 //!
 //! # How it works
 //!

@@ -2,32 +2,32 @@
 
 Nov 10, 2026 · @Idan Gilboa
 
-Build a new shell toolkit in Rust instead of porting Quickshell. Configs are compiled Rust crates, the toolkit draws on the CPU, and the first release is a bar for Sway and other wlroots compositors. The overview is for you. Every section after it is the spec that AI agents build from.
+Build a new shell toolkit in Rust instead of porting Quickshell, and make it a full replacement: everything Quickshell can do, Crabshell does. Configs are compiled Rust crates and the toolkit draws on the CPU. The first milestone, v0.1, is a bar for Sway and other wlroots compositors. It is a checkpoint that proves the approach works, not the scope; the phases after it bring the rest of Quickshell's features (see "Beyond v0.1"). The overview is for you. Every section after it is the spec that AI agents build from.
 
 ## Overview
 
 Nothing from Quickshell carries over. Users write their shell as a Rust crate that links the toolkit, and a supervisor rebuilds and restarts the shell when they save. The project is called Crabshell. The `crabshell` crate and every `crabshell-*` name were free on crates.io and the AUR on 2026-11-10.
 
-| Decision           | Choice                                     | What it costs                                                                        |
-| ------------------ | ------------------------------------------ | ------------------------------------------------------------------------------------ |
-| Config language    | Plain Rust, compiled                       | First build takes 1-5 min, then 2-10 s per edit. Every user needs a Rust toolchain.  |
-| Config API         | Builder methods and fine-grained signals   | Users learn closures and `move`. Signals are `Copy`, so nobody clones handles.       |
-| Reload             | Supervisor rebuilds, saves state, restarts | The bar blinks for about 100 ms per reload.                                          |
-| Styling            | Typed Rust styles only                     | Every color change is a rebuild.                                                     |
-| Rendering          | Own CPU renderer, GPU later                | No blur or shadows in v1.                                                            |
-| v1 scope           | Bar with workspaces, clock, tray, volume   | No notifications, launcher, lock screen or OSDs.                                     |
-| Compositors        | Sway and other wlroots compositors         | No Hyprland, niri, KDE or X11 in v1.                                                 |
-| C libraries        | Fine when the system ships them            | Links libpulse and fontconfig at runtime. Wayland itself is pure Rust.               |
-| Quickshell configs | No compatibility, no migration             | Users rewrite their configs by hand.                                                 |
-| License            | MIT or Apache-2.0                          | Agents write fresh code and never translate Quickshell's LGPL-3.0 source.            |
-| Team               | You plus AI agents, you new to Rust        | The spec spells out every rule, and each phase ends in a check you can run yourself. |
+| Decision           | Choice                                     | What it costs                                                                                                                                 |
+| ------------------ | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Config language    | Plain Rust, compiled                       | First build takes 1-5 min, then 2-10 s per edit. Every user needs a Rust toolchain.                                                           |
+| Config API         | Builder methods and fine-grained signals   | Users learn closures and `move`. Signals are `Copy`, so nobody clones handles.                                                                |
+| Reload             | Supervisor rebuilds, saves state, restarts | The shell blinks for about 100 ms per reload.                                                                                                 |
+| Styling            | Typed Rust styles only                     | Every color change is a rebuild.                                                                                                              |
+| Rendering          | Own CPU renderer, GPU later                | No blur or shadows in v0.1.                                                                                                                   |
+| Scope              | Everything Quickshell does, in milestones  | v0.1 is a bar with workspaces, clock, tray and volume. Notifications, launchers, lock screens, OSDs and the rest come in the phases after it. |
+| Compositors        | Sway and other wlroots compositors first   | Hyprland and the rest come after v0.1.                                                                                                        |
+| C libraries        | Fine when the system ships them            | Links libpulse and fontconfig at runtime. Wayland itself is pure Rust.                                                                        |
+| Quickshell configs | No compatibility, no migration             | Users rewrite their configs by hand.                                                                                                          |
+| License            | MIT or Apache-2.0                          | Agents write fresh code and never translate Quickshell's LGPL-3.0 source.                                                                     |
+| Team               | You plus AI agents, you new to Rust        | The spec spells out every rule, and each phase ends in a check you can run yourself.                                                          |
 
 ### Better than Quickshell
 
-- **Memory.** No QML engine, no JavaScript engine and no GPU context in v1. The target is 30 MB or less at idle for the v1 bar, checked in Phase 0.
+- **Memory.** No QML engine, no JavaScript engine and no GPU context in v0.1. The target is 30 MB or less at idle for the v0.1 bar, checked in Phase 0, and every later feature keeps to the same budget.
 - **Idle CPU.** With nothing changing on screen, the clock's once-a-minute tick is the only wakeup.
 - **Startup.** The shell is a compiled binary. The first frame should land within 100 ms of launch.
-- **Crashes.** Rust rules out memory bugs in the toolkit. A panic inside one config closure disables that binding and logs it, and the rest of the bar keeps running. If the process dies anyway, the supervisor restarts it and falls back to the last build that worked.
+- **Crashes.** Rust rules out memory bugs in the toolkit. A panic inside one config closure disables that binding and logs it, and the rest of the shell keeps running. If the process dies anyway, the supervisor restarts it and falls back to the last build that worked.
 - **Config errors.** The compiler catches them before the shell runs, and rust-analyzer gives autocomplete and inline errors.
 
 ### Worse than Quickshell
@@ -36,7 +36,7 @@ Nothing from Quickshell carries over. Users write their shell as a Rust crate th
 - **Configs need Rust.** That is a higher bar than QML for users, and for you while you learn.
 - **No ecosystem.** There are no existing configs to copy from.
 
-**Timeline.** My guess is 4 to 6 months of focused work to reach v1, longer if part time. The Phases section breaks that down. Treat it as a guess, not a plan.
+**Timeline.** My guess is 4 to 6 months of focused work to reach v0.1, longer if part time. The Phases section breaks that down. The phases after v0.1, which bring the rest of Quickshell, aren't estimated yet. Treat it all as a guess, not a plan.
 
 ## At a glance
 
@@ -108,7 +108,7 @@ A config is a normal Cargo project in `~/.config/crabshell/`, created from a tem
     └── main.rs
 ```
 
-The template's `Cargo.toml` compiles dependencies once with full optimization and the config itself at `opt-level = 1`, so edits rebuild fast and the bar still runs fast.
+The template's `Cargo.toml` compiles dependencies once with full optimization and the config itself at `opt-level = 1`, so edits rebuild fast and the shell still runs fast.
 
 ```toml
 [package]
@@ -126,7 +126,7 @@ opt-level = 1
 opt-level = 3
 ```
 
-The whole v1 bar as a user writes it:
+The whole v0.1 bar as a user writes it:
 
 ```rust
 use crabshell::prelude::*;
@@ -233,7 +233,7 @@ API rules settled while building `crabshell` (Phase 5, step 1):
 
 Two processes run. The `crabshell` CLI, installed once per machine, is the supervisor. The shell is the user's own compiled binary, which links the `crabshell` library.
 
-v1 has three CLI commands:
+v0.1 has three CLI commands:
 
 - `crabshell init` copies the template into `~/.config/crabshell/`. It refuses if the directory already exists.
 - `crabshell run` builds the config, starts the shell, watches for edits and supervises.
@@ -252,13 +252,13 @@ What `crabshell run` does:
 Panic handling inside the shell:
 
 - Builds use `panic = "unwind"`. The toolkit wraps every binding, effect, event handler and service callback in `catch_unwind`.
-- A panicking binding is disabled and logged with its widget path, for example `PanelWindow[DP-1]/Row/Button[2]/Text.text`. The rest of the bar keeps running.
+- A panicking binding is disabled and logged with its widget path, for example `PanelWindow[DP-1]/Row/Button[2]/Text.text`. The rest of the shell keeps running.
 - The reactive core releases every `RefCell` borrow before it calls user code, so a caught panic never leaves the runtime borrowed. A reactive-core test checks this.
 - A panic in the toolkit's own Wayland or rendering code is not caught. The process exits and the supervisor restarts it.
 
 Logging goes through `tracing` to stderr. The supervisor passes the shell's stderr through to its own, so `journalctl` sees both when `crabshell run` runs as a systemd user service.
 
-The blink during a reload lasts as long as shell startup, which targets 100 ms. Starting the new shell before stopping the old one would remove the blink. But both bars would reserve screen space for a moment and every window would jump, so that handoff waits until after v1.
+The blink during a reload lasts as long as shell startup, which targets 100 ms. Starting the new shell before stopping the old one would remove the blink. But both bars would reserve screen space for a moment and every window would jump, so that handoff waits until after v0.1.
 
 ## Reactive core
 
@@ -313,11 +313,11 @@ More required tests:
 
 ## Widgets, layout and styles
 
-v1 ships ten widgets. Nine are in `crabshell-ui`. `Tray` is in `crabshell-services`, because it needs the tray service and `crabshell-ui` can't depend on services; the prelude re-exports it. Users build everything else by combining them.
+v0.1 ships ten widgets; the phases after it add the rest a full shell needs (see "Beyond v0.1"). Nine are in `crabshell-ui`. `Tray` is in `crabshell-services`, because it needs the tray service and `crabshell-ui` can't depend on services; the prelude re-exports it. Users build everything else by combining them.
 
 | Widget          | What it does                                                                                                                  |
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `PanelWindow`   | A layer-shell surface on one output with anchors, size, exclusive zone and layer. It takes no keyboard focus in v1.           |
+| `PanelWindow`   | A layer-shell surface on one output with anchors, size, exclusive zone and layer. It takes no keyboard focus in v0.1.         |
 | `PopupWindow`   | An `xdg_popup` anchored to a widget's rectangle. Tray menus use it.                                                           |
 | `Row`, `Column` | Flex layout with `gap`, `padding`, `align` and `justify`.                                                                     |
 | `Stack`         | Children drawn on top of each other in one cell.                                                                              |
@@ -352,7 +352,7 @@ v1 ships ten widgets. Nine are in `crabshell-ui`. `Tray` is in `crabshell-servic
 - Pointer events come from `wl_pointer`. Hit testing walks the tree from the top and picks the deepest `Button` under the pointer.
 - The cursor shape is set through `wp_cursor_shape_v1`, with a pointer cursor over buttons.
 - `on_scroll` receives whole steps. Mouse wheels use `axis_value120`. Touchpad scrolling is summed and becomes one step per 15 logical pixels.
-- v1 has no keyboard input, so it doesn't need libxkbcommon.
+- v0.1 has no keyboard input, so it doesn't need libxkbcommon.
 
 Rules settled while building `crabshell-ui` (Phase 2, step 1):
 
@@ -383,7 +383,7 @@ Rules settled while building `crabshell-ui` (Phase 4, step 3):
 
 ## Rendering
 
-v1 draws on the CPU with `tiny-skia`, straight into shared-memory buffers, and repaints only what changed. For a bar that uses less memory than a GPU context. A 1920×30 bar buffer is 225 KiB.
+v0.1 draws on the CPU with `tiny-skia`, straight into shared-memory buffers, and repaints only what changed. For a bar that uses less memory than a GPU context. A 1920×30 bar buffer is 225 KiB.
 
 ### Buffers
 
@@ -400,7 +400,7 @@ v1 draws on the CPU with `tiny-skia`, straight into shared-memory buffers, and r
 ### Frame pacing
 
 - After each commit, request a `wl_surface.frame` callback. Draw only when the callback has arrived and something is dirty.
-- Nothing dirty means no commit, so an idle bar never wakes up to draw.
+- Nothing dirty means no commit, so an idle shell never wakes up to draw.
 
 ### Scale
 
@@ -410,7 +410,7 @@ v1 draws on the CPU with `tiny-skia`, straight into shared-memory buffers, and r
 
 - `cosmic-text` shapes and lays out text, and rasterizes glyphs through `swash` with its own glyph cache.
 - Don't scan every system font at startup. On a machine with thousands of font files, that alone could miss the 100 ms startup target. Resolve the families the config names through fontconfig and load only those files into `cosmic-text`'s font database. Missing glyphs use fontconfig's fallback list. In Phase 0, fontconfig's startup took about 15 of the 17.7 ms to first frame, and its cache files held about 4 MiB of memory.
-- Glyphs are drawn as grayscale alpha masks. There is no subpixel antialiasing in v1.
+- Glyphs are drawn as grayscale alpha masks. There is no subpixel antialiasing in v0.1.
 
 ### Icons and images
 
@@ -420,7 +420,7 @@ v1 draws on the CPU with `tiny-skia`, straight into shared-memory buffers, and r
 
 ### Shapes
 
-Solid fills, rounded rectangles and borders. No blur, shadows or gradients in v1.
+Solid fills, rounded rectangles and borders. No blur, shadows or gradients in v0.1.
 
 ### Later GPU backend
 
@@ -540,7 +540,7 @@ Rules settled while building `crabshell-wayland` (Phase 4, step 4):
 
 ## Services
 
-v1 has four services in `crabshell-services`. Each one owns its connection, runs on the main thread, and hands out `ReadSignal`s plus a few methods. Every service is created on first use and shared by all bars, so two outputs never mean two connections.
+v0.1 has four services in `crabshell-services`; the phases after it add Quickshell's others (see "Beyond v0.1"). Each one owns its connection, runs on the main thread, and hands out `ReadSignal`s plus a few methods. Every service is created on first use and shared by all bars, so two outputs never mean two connections.
 
 | Service    | Signals and methods                                                                                                                                                                                                                                                                               | Source                                                             | Crate                         |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | ----------------------------- |
@@ -554,7 +554,7 @@ v1 has four services in `crabshell-services`. Each one owns its connection, runs
 - Write the IPC framing in-house. Each message is a 14-byte header (`i3-ipc`, a length, a type) plus JSON, about 150 lines of code, and owning it avoids pulling in another async runtime.
 - On start, send `SUBSCRIBE` to `workspace` events, then `GET_WORKSPACES`, so no change between the two goes unseen. On every event, send `GET_WORKSPACES` again and replace the whole list. That is simpler than applying each event's changes and costs one small JSON reply.
 - If the socket closes, set the list to empty and reconnect every 2 s. A first connect that fails, as with a stale `SWAYSOCK` under another compositor, logs once and never retries, so it never wakes the bar.
-- Other wlroots compositors don't speak Sway IPC. Before Phase 3, check which of your target compositors implement `ext-workspace-v1`. If none do, v1 shows workspaces on Sway only, and other compositors get the bar without them. Checked on 2026-11-11: labwc has it since 0.8.3, Sway and Wayfire only on their `master` branches, and river not at all. So v1 shows workspaces on Sway only, and an `ext-workspace-v1` backend waits until after v1.
+- Other wlroots compositors don't speak Sway IPC. Before Phase 3, check which of your target compositors implement `ext-workspace-v1`. If none do, v0.1 shows workspaces on Sway only, and other compositors get the bar without them. Checked on 2026-11-11: labwc has it since 0.8.3, Sway and Wayfire only on their `master` branches, and river not at all. So v0.1 shows workspaces on Sway only, and an `ext-workspace-v1` backend waits until after v0.1.
 
 ### Tray
 
@@ -571,7 +571,7 @@ v1 has four services in `crabshell-services`. Each one owns its connection, runs
 
 - Run libpulse's threaded mainloop and subscribe to sink and server events.
 - On a server event, read the default sink name, then that sink's info. `volume_percent` is the average across channels, with 100% equal to `PA_VOLUME_NORM`.
-- `change_volume` clamps to 0-100% in v1.
+- `change_volume` clamps to 0-100% in v0.1.
 - If the server goes away, the signal becomes `None` and the service retries every 2 s for up to a minute after startup or after a working connection drops. Then it logs once and stops until the shell restarts.
 
 ### Clock
@@ -637,14 +637,14 @@ One Cargo workspace with seven crates. Each crate owns one area, so an agent can
 
 Every target is a guess until Phase 0 measures it. The baseline is Quickshell running the same bar, with workspaces, tray, volume and clock, on the same machine and output. Use Quickshell's `Quickshell.I3` module for workspaces, and check that it connects to Sway's socket. Don't compare against numbers found online.
 
-| Metric                                        | Target                                                     | How to measure                                                                  |
-| --------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| Idle memory (RSS), v1 bar on one 1080p output | 30 MB or less, and at most a quarter of Quickshell's       | `ps -o rss= -p <pid>` after 60 s idle                                           |
-| Idle wakeups                                  | 1 per minute with a minute clock and nothing else changing | `perf stat -e 'syscalls:sys_exit_epoll_wait' -p <pid> -- sleep 300`             |
-| Startup to first frame                        | 100 ms or less                                             | The shell logs the time from `main` to its first committed buffer               |
-| Workspace switch to screen                    | Within one frame, 16 ms at 60 Hz                           | The shell logs the time from the IPC event to the commit                        |
-| Rebuild after a one-line edit                 | 10 s or less                                               | The supervisor logs each build's duration                                       |
-| Reload gap with no bar on screen              | 200 ms or less                                             | The supervisor logs the time from the old shell's exit to the new one's `ready` |
+| Metric                                          | Target                                                     | How to measure                                                                  |
+| ----------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Idle memory (RSS), v0.1 bar on one 1080p output | 30 MB or less, and at most a quarter of Quickshell's       | `ps -o rss= -p <pid>` after 60 s idle                                           |
+| Idle wakeups                                    | 1 per minute with a minute clock and nothing else changing | `perf stat -e 'syscalls:sys_exit_epoll_wait' -p <pid> -- sleep 300`             |
+| Startup to first frame                          | 100 ms or less                                             | The shell logs the time from `main` to its first committed buffer               |
+| Workspace switch to screen                      | Within one frame, 16 ms at 60 Hz                           | The shell logs the time from the IPC event to the commit                        |
+| Rebuild after a one-line edit                   | 10 s or less                                               | The supervisor logs each build's duration                                       |
+| Reload gap with nothing on screen               | 200 ms or less                                             | The supervisor logs the time from the old shell's exit to the new one's `ready` |
 
 Record each measured number in this table next to its target when a phase finishes.
 
@@ -669,7 +669,7 @@ Not verified in Phase 0: exit on the compositor's `closed` event, and drawing at
 
 ### Phase 2 results
 
-Measured on 2026-11-11 with the example counter bar, release build. It has no services yet, so Phase 3 measures the full v1 bar against Quickshell's 125.2 MiB.
+Measured on 2026-11-11 with the example counter bar, release build. It has no services yet, so Phase 3 measures the full v0.1 bar against Quickshell's 125.2 MiB.
 
 | Metric                       | Target         | Headless Sway, 1920×1080, scale 1 | Laptop eDP-1 under SwayFX, 1920×1080, scale 1 |
 | ---------------------------- | -------------- | --------------------------------- | --------------------------------------------- |
@@ -683,7 +683,7 @@ The laptop run used the build from before the step 4 review fixes.
 
 Measured on 2026-11-11 with `examples/bar.rs`: workspaces, the minute clock and the volume button, with no tray. Release build on headless Sway, 1920×1080 at scale 1, with audio connected to a private pipewire-pulse.
 
-| Metric                       | Target                                           | v1 bar, headless Sway                                    |
+| Metric                       | Target                                           | v0.1 bar, headless Sway                                  |
 | ---------------------------- | ------------------------------------------------ | -------------------------------------------------------- |
 | Startup to first frame       | 100 ms or less                                   | 14.2 ms                                                  |
 | Idle memory (RSS) after 60 s | 30 MB or less, at most a quarter of Quickshell's | 17.9 MiB, 14% of Quickshell's 125.2 MiB                  |
@@ -696,7 +696,7 @@ The counter bar, which uses no services, went from 13.4 to 15.5 MiB once `crabsh
 
 Measured on 2026-11-13 with `examples/bar.rs`, now with the tray: workspaces, the tray, the volume button and the minute clock. Release build on headless Sway, 1920×1080 at scale 1, with audio on a private pipewire-pulse and the tray running the watcher on a private session bus. Two runs.
 
-| Metric                       | Target                                           | v1 bar, headless Sway                                         |
+| Metric                       | Target                                           | v0.1 bar, headless Sway                                       |
 | ---------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
 | Startup to first frame       | 100 ms or less                                   | 14.3 and 15.8 ms                                              |
 | Idle memory (RSS) after 60 s | 30 MB or less, at most a quarter of Quickshell's | 18.7 and 18.8 MiB, 15% of Quickshell's 125.2 MiB              |
@@ -707,7 +707,7 @@ The tray adds about 0.8 MiB. The counter bar, with no tray, stays at 15.4 to 15.
 
 ## Phases
 
-Seven phases totaling 16 to 26 weeks of focused work, all guesses. A phase is done only when its exit check passes. Phase 0 is a go/no-go gate for the whole project.
+Seven phases to v0.1, totaling 16 to 26 weeks of focused work, all guesses, then the phases in "Beyond v0.1". A phase is done only when its exit check passes. Phase 0 is a go/no-go gate for the whole project.
 
 1. **Phase 0, spike (1-2 weeks).** A static text bar on Sway built from one layer-shell surface, one shm buffer, tiny-skia, and cosmic-text with fontconfig loading. Also prove one zbus call runs on calloop's executor.
    - Exit: the bar shows in a headless Sway screenshot and on your real session. RSS and first-frame time are recorded in Performance targets, next to a measured Quickshell baseline.
@@ -722,8 +722,22 @@ Seven phases totaling 16 to 26 weeks of focused work, all guesses. A phase is do
    - Exit: tests with a fake tray item pass on a private `dbus-daemon`. By hand, `nm-applet --indicator`, `blueman-applet`, KeePassXC and one Electron app such as Discord all show icons, their menus open, clicks reach the app, and all of them survive a reload. Passed on 2026-11-13, except surviving a reload, which needs Phase 5's supervisor and is checked with it: the fake-item tests pass, and the maintainer checked nm-applet, blueman-applet, KeePassXC and Discord on the laptop's session, beside Quickshell's watcher and as the watcher. Commits 59477fd to de5710a, after a review per step, with popups also tested on headless labwc.
 6. **Phase 5, CLI and reload (2-3 weeks).** `init`, `run`, `check`, the watcher, `cx.persist`, crash restarts and `last-good`.
    - Exit: a scripted test checks four cases. A syntax error leaves the old shell running and sends a notification. Fixing it brings up the new shell within build time plus 200 ms. After `kill -9` the shell is back within 2 s. A config that panics at startup three times falls back to `last-good`.
-7. **Phase 6, release (1-2 weeks).** Template, README, API docs on docs.rs, published crates, and measured numbers in the performance table.
+7. **Phase 6, the v0.1 release (1-2 weeks).** Template, README, API docs on docs.rs, published crates, and measured numbers in the performance table.
    - Exit: on a clean user account, you go from `cargo install crabshell-cli` to a running bar in under 15 minutes by following the README.
+
+### Beyond v0.1
+
+After v0.1, the phases bring every feature Quickshell has, so any Quickshell setup can be rebuilt in Crabshell. The list follows Quickshell 0.3.2's modules, from its public docs; its source stays unread. Each phase gets its own plan, exit check and measurements when it starts, and every one keeps the four rules: lighter than Quickshell, idle means asleep, a config is plain Rust, and one bad binding never takes the shell down. The order is a first guess.
+
+| Phase | Area                             | What it brings, by the Quickshell modules it matches                                                                                                                                                                                                                                                                                |
+| ----- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 7     | Windows and input                | Floating windows, layer-shell options (keyboard focus, layers, margins, exclusion), input regions and masks, keyboard input (libxkbcommon), text input, scrolling lists, images, clipping and wrapper widgets (`PanelWindow`, `FloatingWindow`, `PopupWindow`, `Region`, `WlrLayershell`, `WlrKeyboardFocus`, `Quickshell.Widgets`) |
+| 8     | Animation and effects            | Animations that run only while something moves, gradients, shadows and the compositor's background blur (`EasingCurve`, `BackgroundEffect`), and the GPU backend if the CPU renderer can't keep up                                                                                                                                  |
+| 9     | Desktop services                 | Notifications server, media players, PipeWire nodes and levels, battery and power profiles, Bluetooth, networking, idle monitor and inhibitor (`Services.Notifications`, `Services.Mpris`, `Services.Pipewire`, `Services.UPower`, `Bluetooth`, `Networking`, `IdleMonitor`, `IdleInhibitor`)                                       |
+| 10    | Launchers and system integration | Desktop entries and their actions, processes, files and sockets, an IPC handler driven from the command line, JSON files, color quantizing, screencopy views, toplevel management (`DesktopEntries`, `Quickshell.Io`, `IpcHandler`, `ColorQuantizer`, `ScreencopyView`, `ToplevelManager`)                                          |
+| 11    | Lock screen, greeter and polkit  | Session lock surfaces, PAM authentication, a greetd greeter and a polkit agent (`WlSessionLock`, `Services.Pam`, `Services.Greetd`, `Services.Polkit`)                                                                                                                                                                              |
+| 12    | More compositors                 | Hyprland (workspaces, monitors, toplevels, focus grab, global shortcuts), i3, niri and generic window-manager protocols (`Quickshell.Hyprland`, `Quickshell.I3`, `Quickshell.WindowManager`, `GlobalShortcut`, `ShortcutInhibitor`)                                                                                                 |
+| 13    | Parity check                     | A comparison against every Quickshell 0.3.2 type, with each gap closed or written down with a reason                                                                                                                                                                                                                                |
 
 ## Rules for AI agents
 
@@ -761,25 +775,25 @@ Read the Overview and the section for your crate before writing code. If this do
 
 ## Risks and open questions
 
-The biggest risk is the reload loop. A 2-10 s rebuild per edit is the price of compiled configs, and it is the one goal this design doesn't meet.
+The biggest risk is the reload loop. A 2-10 s rebuild per edit is the price of compiled configs, and it is the one goal this design doesn't meet. The second is the size of the goal: Quickshell exposes about 240 QML types, so full parity is many phases past v0.1.
 
-| Risk                                      | Why it matters                                                              | Mitigation                                                                                                                         |
-| ----------------------------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| Reload misses the goal                    | 2-10 s per edit, against Quickshell's sub-second reload                     | Fast dev profile, a small config crate, build time measured in Phase 5. Try Dioxus's experimental subsecond hot-patching after v1. |
-| You review Rust you can't fully judge yet | Bugs in the reactive core or event loop hide well                           | Small changes, required tests, headless Sway screenshots, and plain-language explanations from agents                              |
-| Tray apps bend the spec                   | Electron, Qt and Ayatana apps each implement StatusNotifierItem differently | Phase 4 gets 4-6 weeks and tests real apps                                                                                         |
-| Text looks worse than Qt's                | v1 has grayscale antialiasing only                                          | Compare screenshots side by side in Phase 0                                                                                        |
-| Font loading slows startup                | Scanning every system font can blow the 100 ms target                       | Load only the files fontconfig matches                                                                                             |
-| Sway-first shrinks the audience           | Most Quickshell users run Hyprland or niri                                  | Keep compositor IPC inside `crabshell-services`, so adding Hyprland later touches one module                                       |
-| Configs need a Rust toolchain             | A higher entry bar and a slow first build                                   | Template and README, with the full first run timed in Phase 6                                                                      |
-| No accessibility in v1                    | Screen readers can't read the bar                                           | Add AccessKit (AT-SPI) right after v1                                                                                              |
+| Risk                                      | Why it matters                                                              | Mitigation                                                                                                                           |
+| ----------------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Reload misses the goal                    | 2-10 s per edit, against Quickshell's sub-second reload                     | Fast dev profile, a small config crate, build time measured in Phase 5. Try Dioxus's experimental subsecond hot-patching after v0.1. |
+| You review Rust you can't fully judge yet | Bugs in the reactive core or event loop hide well                           | Small changes, required tests, headless Sway screenshots, and plain-language explanations from agents                                |
+| Tray apps bend the spec                   | Electron, Qt and Ayatana apps each implement StatusNotifierItem differently | Phase 4 gets 4-6 weeks and tests real apps                                                                                           |
+| Text looks worse than Qt's                | v0.1 has grayscale antialiasing only                                        | Compare screenshots side by side in Phase 0                                                                                          |
+| Font loading slows startup                | Scanning every system font can blow the 100 ms target                       | Load only the files fontconfig matches                                                                                               |
+| Sway-first shrinks the audience           | Most Quickshell users run Hyprland or niri                                  | Keep compositor IPC inside `crabshell-services`, so adding Hyprland later touches one module                                         |
+| Configs need a Rust toolchain             | A higher entry bar and a slow first build                                   | Template and README, with the full first run timed in Phase 6                                                                        |
+| No accessibility in v0.1                  | Screen readers can't read the shell                                         | Add AccessKit (AT-SPI) right after v0.1                                                                                              |
 
 Open questions:
 
 - [x] Project name: Crabshell.
 - [ ] Which other wlroots compositors to test (river, labwc, Wayfire), and which of them implement `ext-workspace-v1`.
 - [ ] Should a reload start the new shell before stopping the old one, to remove the blink? That needs a fix for both bars reserving space at once.
-- [ ] Stay on libpulse after v1, or switch to native PipeWire?
+- [ ] Stay on libpulse after v0.1, or switch to native PipeWire?
 - [ ] When to add Hyprland and niri, and in which order.
 - [ ] Should the shell exit with status 1 when `f` panics for every output at startup? Today it keeps running with no bar, so Phase 5's fallback to last-good after three crashes never fires for that config.
 - [ ] Install cargo-deny and add a deny.toml. Until then the license policy is checked by hand with `cargo metadata`.
@@ -787,4 +801,5 @@ Open questions:
 ## Sources
 
 - [Quickshell source](https://github.com/quickshell-mirror/quickshell) at commit `9b0f339` from 2026-10-21, counted locally. About 62k lines of C++ exposing 241 QML types, licensed LGPL-3.0.
+- [Quickshell 0.3.2's type list](https://quickshell.org/docs/v0.3.2/types), from its public docs, read on 2026-11-13 for "Beyond v0.1".
 - Everything else comes from memory and wasn't checked against current docs: crate names and APIs, protocol versions, Sway commands and toolchain behavior. Phase 0 checked the stack's crates against their source and found four changes: sctk 0.21 uses delegate_dispatch2! and has no fractional-scale helper, cosmic-text 0.19 changed set_text, and zbus 6 replaced async-io with zruntime. Pinned versions are in the repo's Cargo.toml.

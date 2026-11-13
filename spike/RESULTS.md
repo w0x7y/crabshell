@@ -1,5 +1,7 @@
 # Phase 0 spike results
 
+The spike drew a static bar because a bar was the smallest real test of the approach. It was a go/no-go check, not the project's scope, which is a full Quickshell replacement.
+
 Measured 2026-11-10 with the release build on the live SwayFX session.
 
 Every check the spike set out to make passed. The bar starts in about 18 ms and holds about 13 MiB of RSS. It wakes up zero times while idle. One zbus call ran correctly on calloop's futures executor with no tokio. Two things were not tested here: the `closed` event and scales other than 1.0 (see "Not verified"). Quickshell drawing the identical bar uses 9.5 times the RSS and takes 10 times as long to its first frame (see "Quickshell baseline").
@@ -160,7 +162,7 @@ The one-shot 10 s RSS timer fires outside the window. With `perf`, the design do
 4. **No repaint on a configure that changes nothing.** Sway sends a second 1920×30 configure about 1 ms after the first frame. The first build redrew for it. The final build only commits, which applies the ack sctk already sent, and logs "configure with unchanged size". The bar still draws only on configure or scale change, just less often.
 5. **Pixel format.** I used `Argb8888`, the format every compositor must support, and swapped red and blue in the colours I paint. wl_shm stores Argb8888 as B,G,R,A bytes in memory, while tiny-skia writes R,G,B,A. Blending treats each channel separately, so the swap is exact, and drawing stays zero-copy with no conversion pass. The alternative, `Abgr8888`, is optional for compositors.
 6. **Pure-Rust Wayland backend.** sctk by default uses wayland-rs's Rust implementation of the wire protocol, so libwayland-client is not linked, although the design doc expects it to be. This is fine for CPU drawing. A future wgpu/EGL backend will need sctk's `system` feature, which switches to libwayland.
-7. **Default features turned off** wherever the spike doesn't use them (feature table above). xkbcommon is off because v1 has no keyboard input.
+7. **Default features turned off** wherever the spike doesn't use them (feature table above). xkbcommon is off because v0.1 has no keyboard input.
 8. **Two extra log lines.** "fonts ready N ms", to split startup time, and "first configure" with the output name.
 9. **Locale hardcoded to `en-US`** for cosmic-text, because `FontSystem::new_with_locale_and_db` needs one. Detecting it would need another crate.
 10. **Crate APIs differ from the prompt's from-memory versions.** I checked them against the published source of each pinned version, which is the code docs.rs renders:

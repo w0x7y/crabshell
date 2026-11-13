@@ -2,7 +2,7 @@
 //! counter example matches its goldens at scales 1, 1.5 and 2, before and
 //! after a click; an idle bar wakes nothing, by its own counters and from
 //! outside; unplugging an output drops its bar and frees its nodes. And
-//! Phase 3's: the v1 bar example shows the private Sway's workspaces,
+//! Phase 3's: the v0.1 bar example shows the private Sway's workspaces,
 //! switches them on a click, logs each switch's time to the screen, wakes
 //! only on the minute with audio connected, and its volume button agrees
 //! with a private pipewire-pulse through scrolls, clicks and changes made
@@ -42,7 +42,7 @@ mod counter;
   reason = "the example's bar is tested; its main isn't run here"
 )]
 #[path = "../examples/bar.rs"]
-mod v1;
+mod v0_1;
 
 #[allow(dead_code, reason = "the services' own tests use the rest")]
 #[path = "../../crabshell-services/tests/pipewire/mod.rs"]
@@ -491,7 +491,7 @@ impl ExampleBar {
     }
   }
 
-  /// Waits for the v1 bar run by [`run_v1_bar_logging_its_volume`] to log
+  /// Waits for the v0.1 bar run by [`run_v0_1_bar_logging_its_volume`] to log
   /// its volume button saying `label`, and returns the button's middle.
   fn volume_says(&self, label: &str) -> (u32, u32) {
     let line = self.wait_for(&format!(" says {label}"));
@@ -639,7 +639,7 @@ fn measure_the_counter_bar() {
   let counter = ExampleBar::start(&sway, "counter", true, &[]);
   let mut report = format!("counter example, {}\n", measure(&counter));
   drop(counter);
-  // Then the v1 bar, on workspace 1, then switching between 1 and 2. Its
+  // Then the v0.1 bar, on workspace 1, then switching between 1 and 2. Its
   // tray runs the watcher on a private session bus.
   let server = PrivateServer::start("measure");
   let bus = PrivateBus::start();
@@ -1136,22 +1136,22 @@ fn run_as_child() {
   match std::env::var(CHILD).as_deref() {
     Ok("panics") => crabshell::run(|_| panic!("a broken config")),
     Ok("counter") => crabshell::run(|cx| cx.per_output(counter::bar)),
-    Ok("v1") => run_v1_bar_logging_its_volume(),
+    Ok("v0.1") => run_v0_1_bar_logging_its_volume(),
     _ => {}
   }
 }
 
-/// What [`run_v1_bar_logging_its_volume`] logs, before the volume button's
+/// What [`run_v0_1_bar_logging_its_volume`] logs, before the volume button's
 /// middle and label.
 const VOLUME: &str = "the volume button at ";
 
-/// The v1 bar on every output, on a loop of its own that logs the volume
+/// The v0.1 bar on every output, on a loop of its own that logs the volume
 /// button's middle and label whenever they change: what the bar shows,
 /// read from its laid-out tree after each turn. Never returns.
-fn run_v1_bar_logging_its_volume() -> ! {
+fn run_v0_1_bar_logging_its_volume() -> ! {
   let event_loop = EventLoop::connect().expect("the private Sway");
   let mut shell =
-    Shell::new(event_loop, |cx| cx.per_output(v1::bar)).expect("the root closure runs");
+    Shell::new(event_loop, |cx| cx.per_output(v0_1::bar)).expect("the root closure runs");
   let mut logged = String::new();
   loop {
     shell.dispatch(None).expect("the connection works");
@@ -1188,7 +1188,7 @@ fn the_volume_button_and_the_audio_server_agree() {
   let bar = ExampleBar::spawn(
     &sway,
     this_as_shell("the_volume_button_and_the_audio_server_agree"),
-    &[(CHILD, "v1"), ("PULSE_SERVER", &server.address())],
+    &[(CHILD, "v0.1"), ("PULSE_SERVER", &server.address())],
   );
   let layout = (1920, 1080);
   let (x, y) = bar.volume_says("vol 50%");
@@ -1260,7 +1260,7 @@ fn losing_the_compositor_exits_2() {
   );
 }
 
-/// A private session bus, for the v1 bar's tray: `dbus-daemon --session`
+/// A private session bus, for the v0.1 bar's tray: `dbus-daemon --session`
 /// on an address of its own. It stops on drop.
 struct PrivateBus {
   daemon: Child,

@@ -1,12 +1,12 @@
 # crabshell
 
-a full rust replacement for quickshell. your whole desktop shell is a rust crate: bars now, then popups, menus, the tray and the rest. the first release targets sway and other wlroots compositors
+a full rust replacement for quickshell: everything quickshell does, crabshell will do. your whole desktop shell is a rust crate, with bars, popups, notifications, launchers, lock screens, osds and the rest. the first milestone, v0.1, is a bar for sway and other wlroots compositors, a checkpoint that proves the approach works before the rest of quickshell's features follow
 
 ![the counter example bar at scale 2](crates/crabshell/tests/golden/counter@2x.png)
 
 the counter example, drawn at scale 2
 
-status: early. bars draw, take clicks, follow monitors as they come and go, and show the clock, sway's workspaces and the volume. the tray comes next, and nothing is on crates.io yet
+status: early, on the way to v0.1. bars draw, take clicks, follow monitors as they come and go, and show the clock, sway's workspaces, the volume and the tray with its menus. the cli with hot reload comes next, then everything else quickshell has. nothing is on crates.io yet
 
 vibe coded: ai coding agents write the code, and other agents review each step against [a design doc](docs/design.md)
 
@@ -26,9 +26,9 @@ a 30 px bar shows up at the top of every monitor. click the button to count
 cargo run --release -p crabshell --example bar
 ```
 
-the v1 bar from [the design doc](docs/design.md#writing-a-config), so far without the tray: each monitor's sway workspaces at the left, the volume and the clock at the right. click a workspace to switch to it, scroll over the volume to change it and click it to mute. [examples/bar.rs](crates/crabshell/examples/bar.rs)
+the v0.1 bar from [the design doc](docs/design.md#writing-a-config): each monitor's sway workspaces at the left, the tray, the volume and the clock at the right. click a workspace to switch to it, click a tray icon or right-click it for its menu, scroll over the volume to change it and click it to mute. [examples/bar.rs](crates/crabshell/examples/bar.rs)
 
-### a bar
+### a config
 
 ```rust
 use crabshell::prelude::*;
@@ -67,14 +67,18 @@ the counter example on a 1920×1080 screen under swayfx
 
 for comparison, quickshell drawing the [phase 0 test bar](spike/RESULTS.md) uses 125 MiB and needs 219 ms to its first frame
 
+### where it's going
+
+v0.1 is a bar with workspaces, the clock, the tray and the volume, plus `crabshell run` with hot reload. after it come floating windows and keyboard input, animations and effects, a notifications server, media players, battery, bluetooth and networking, launchers and ipc, lock screens and greeters, then hyprland, niri and more compositors, until every quickshell feature is covered. the plan is in [the design doc](docs/design.md#beyond-v01)
+
 ### what's in it
 
 ~ [crabshell](crates/crabshell/), `run()`, `per_output`, the prelude and the examples\
 ~ [crabshell-reactive](crates/crabshell-reactive/), signals, memos, effects and owners\
 ~ [crabshell-ui](crates/crabshell-ui/), widgets, styles, layout, text and hit testing\
 ~ [crabshell-render](crates/crabshell-render/), drawing on the cpu with tiny-skia, damage tracking, glyphs and icons\
-~ [crabshell-wayland](crates/crabshell-wayland/), the event loop, layer-shell windows, buffers, scaling, the pointer and monitors\
-~ [crabshell-services](crates/crabshell-services/), the clock, sway's workspaces and audio\
+~ [crabshell-wayland](crates/crabshell-wayland/), the event loop, layer-shell windows and popups, buffers, scaling, the pointer and monitors\
+~ [crabshell-services](crates/crabshell-services/), the clock, sway's workspaces, audio and the tray so far\
 ~ [spike](spike/) and [baseline](baseline/), the phase 0 prototype and the quickshell bar it was measured against
 
 ### tests
@@ -92,7 +96,7 @@ env -u SWAYSOCK cargo test -p crabshell-wayland --test headless -- --ignored --t
 env -u SWAYSOCK cargo test -p crabshell --test headless -- --ignored --test-threads=1
 ```
 
-they need `sway`, `swaymsg` and `grim`, plus `pipewire` and `pactl` for the audio ones. each test runs its own private sway from a copy of `sway`. the copy drops swayfx's `cap_sys_nice`, so it never goes realtime and a realtime cpu limit of 0 can't kill it. the audio ones also run their own pipewire-pulse, so your volume never moves. `CRABSHELL_BLESS=1` rewrites the golden images, which expect noto sans as your `sans-serif`
+they need `sway`, `swaymsg`, `grim` and `labwc`, plus `pipewire` and `pactl` for the audio ones. each test runs its own private sway from a copy of `sway`. the copy drops swayfx's `cap_sys_nice`, so it never goes realtime and a realtime cpu limit of 0 can't kill it. the audio ones also run their own pipewire-pulse, so your volume never moves. `CRABSHELL_BLESS=1` rewrites the golden images, which expect noto sans as your `sans-serif`
 
 ### formatting
 

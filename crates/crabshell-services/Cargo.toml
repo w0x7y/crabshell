@@ -1,7 +1,7 @@
 [package]
 name = "crabshell-services"
 version = "0.0.0"
-description = "The clock, Sway workspaces, audio and tray services for Crabshell"
+description = "Crabshell's services, so far the clock, Sway workspaces, audio and the tray"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
