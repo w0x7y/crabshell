@@ -4,7 +4,7 @@
 //! It is generic over the surface and output types so the bookkeeping can
 //! be tested with fakes: the real ones need a compositor.
 
-use crabshell_ui::{Popup, Rect, Window};
+use crabshell_ui::Window;
 
 /// A window the platform holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -15,8 +15,8 @@ pub(crate) struct Entry<S, O> {
   pub(crate) id: WindowId,
   pub(crate) window: Window,
   /// For a popup: the window that opened it, which always comes earlier
-  /// in the list, and the opening widget's rectangle there.
-  pub(crate) opener: Option<(WindowId, Rect)>,
+  /// in the list.
+  pub(crate) opener: Option<WindowId>,
   pub(crate) surface: Option<S>,
   /// The output the surface was created on; set with `surface`.
   pub(crate) output: Option<O>,
@@ -48,17 +48,17 @@ impl<S, O: PartialEq> Windows<S, O> {
   /// time, as xdg-shell's grabs need, so every popup that isn't the
   /// opener or one of its openers goes first. `None`, and the popup
   /// dropped, if the opener isn't held.
-  pub(crate) fn add_popup(&mut self, opener: WindowId, popup: Popup) -> Option<WindowId> {
+  pub(crate) fn add_popup(&mut self, opener: WindowId, popup: Window) -> Option<WindowId> {
     self.get(opener)?;
     let mut chain = vec![opener];
-    while let Some((next, _)) = chain.last().and_then(|&id| self.get(id)?.opener) {
+    while let Some(next) = chain.last().and_then(|&id| self.get(id)?.opener) {
       chain.push(next);
     }
     self.remove_where(|entry| entry.opener.is_some() && !chain.contains(&entry.id));
-    Some(self.push(popup.window, Some((opener, popup.anchor))))
+    Some(self.push(popup, Some(opener)))
   }
 
-  fn push(&mut self, window: Window, opener: Option<(WindowId, Rect)>) -> WindowId {
+  fn push(&mut self, window: Window, opener: Option<WindowId>) -> WindowId {
     let id = WindowId(self.next_id);
     self.next_id += 1;
     self.entries.push(Entry {
@@ -86,11 +86,7 @@ impl<S, O: PartialEq> Windows<S, O> {
     let mut ids = Vec::new();
     // An opener comes before its popups, so one pass finds them all.
     for entry in &self.entries {
-      if doomed(entry)
-        || entry
-          .opener
-          .is_some_and(|(opener, _)| ids.contains(&opener))
-      {
+      if doomed(entry) || entry.opener.is_some_and(|opener| ids.contains(&opener)) {
         ids.push(entry.id);
       }
     }

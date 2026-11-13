@@ -882,6 +882,9 @@ fn a_menu_opened_before_the_bar_draws_waits_for_it_and_grabs_nothing() {
   let mut menus = Menus::start_with(&sway, "1", setup);
   let open = menus.wait_for("the menu opened at start", |open| open.len() == 1);
   assert_eq!(menus.info(open[0]).commits, 1);
+  // Below the bar's row, which opened it, as laid out: not at the corner
+  // where the row was before its first layout.
+  assert_eq!(menus.info(open[0]).position, Some((0, 30)));
   // No button was pressed, so it took no grab, and a submenu may take
   // none either: a grab under it would end the connection.
   menus.click_entry(open[0], 0);

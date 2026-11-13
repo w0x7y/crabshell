@@ -77,12 +77,16 @@ impl Platform {
   }
 
   /// Shows the popup at `index` once the window that opened it is on
-  /// screen: lays it out for its size, places it next to the widget, and
-  /// grabs the pointer with the last button event's serial if its opener
-  /// is a panel or grabbed too.
+  /// screen: lays it out for its size, places it next to the widget where
+  /// the opener's last layout put it, and grabs the pointer with the last
+  /// button event's serial if its opener is a panel or grabbed too.
   pub(crate) fn create_popup(&mut self, index: usize) {
     let entry = &self.windows.entries[index];
-    let Some((opener, rect)) = entry.opener else {
+    let Some(opener) = entry.opener else {
+      return;
+    };
+    // `None` once the widget is gone, which closes the popup.
+    let Some(rect) = entry.window.anchor() else {
       return;
     };
     let Some(parent) = self.windows.get(opener) else {

@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crabshell_reactive::Runtime;
-use crabshell_ui::{Cx, Popup, Rect, Text, Window};
+use crabshell_ui::{Cx, Text, Window};
 
 use crate::windows::{WindowId, Windows};
 
@@ -131,12 +131,10 @@ fn chain(cx: &Cx) -> (Windows<Logged, u32>, [WindowId; 3], DropLog) {
   (windows, [panel, first, second], dropped)
 }
 
-/// A popup for output `name`, as one opened from a panel there is.
-fn popup(cx: &Cx, name: &str) -> Popup {
-  Popup {
-    window: window(cx, name),
-    anchor: Rect::default(),
-  }
+/// A stand-in popup for output `name`, as one opened from a panel there
+/// is: the bookkeeping doesn't look inside.
+fn popup(cx: &Cx, name: &str) -> Window {
+  window(cx, name)
 }
 
 #[test]
@@ -175,11 +173,7 @@ fn opening_a_popup_closes_every_popup_outside_its_openers_chain() {
   let (mut windows, [panel, first, _], dropped) = chain(&cx);
   let sibling = windows.add_popup(first, popup(&cx, "DP-1")).expect("held");
   assert_eq!(*dropped.borrow(), [3]);
-  let openers: Vec<_> = windows
-    .entries
-    .iter()
-    .map(|entry| entry.opener.map(|(opener, _)| opener))
-    .collect();
+  let openers: Vec<_> = windows.entries.iter().map(|entry| entry.opener).collect();
   assert_eq!(openers, [None, Some(panel), Some(first)]);
   assert_eq!(windows.entries[2].id, sibling);
 

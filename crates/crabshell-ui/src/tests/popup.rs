@@ -5,8 +5,7 @@ use std::rc::Rc;
 
 use super::{Counter, Harness, capture_logs, paths};
 use crate::{
-  Align, Button, Cx, Icon, Point, PointerButton, Popup, PopupWindow, Rect, Row, Size, Style, Text,
-  Window,
+  Align, Button, Cx, Icon, Point, PointerButton, PopupWindow, Rect, Row, Size, Style, Text, Window,
 };
 
 fn click_at(window: &Window, point: Point) {
@@ -27,12 +26,12 @@ fn opener(h: &mut Harness, build: impl Fn(&Cx) -> PopupWindow + 'static) -> Wind
 }
 
 /// Clicks the button and takes the one popup it opened, laid out.
-fn open(h: &mut Harness, window: &Window) -> Popup {
+fn open(h: &mut Harness, window: &Window) -> Window {
   click_at(window, Point::new(20.0, 10.0));
   let mut popups = window.take_popups();
   assert_eq!(popups.len(), 1, "one popup");
   let popup = popups.remove(0);
-  h.frame(&popup.window);
+  h.frame(&popup);
   popup
 }
 
@@ -42,13 +41,13 @@ fn a_click_opens_a_popup_next_to_its_button() {
   let window = opener(&mut h, |_| PopupWindow::new().child(square()));
   assert!(window.take_popups().is_empty());
   let popup = open(&mut h, &window);
-  assert_eq!(popup.anchor, Rect::new(10.0, 0.0, 20.0, 20.0));
-  assert!(popup.window.is_popup());
+  assert_eq!(popup.anchor(), Some(Rect::new(10.0, 0.0, 20.0, 20.0)));
+  assert!(popup.is_popup());
   assert!(!window.is_popup());
-  assert!(!popup.window.wants_close());
-  assert_eq!(popup.window.output(), window.output());
+  assert!(!popup.wants_close());
+  assert_eq!(popup.output(), window.output());
   assert_eq!(
-    paths(&popup.window),
+    paths(&popup),
     [
       "PanelWindow[DP-1]/Row/Button[0]/PopupWindow",
       "PanelWindow[DP-1]/Row/Button[0]/PopupWindow/Icon",
@@ -68,21 +67,21 @@ fn a_popup_is_as_large_as_its_content() {
       .child(Icon::new("x").size(move || side.get()))
   });
   let popup = open(&mut h, &window);
-  assert_eq!(popup.window.size(), Size::new(32.0, 28.0));
+  assert_eq!(popup.size(), Size::new(32.0, 28.0));
   side.set(30);
-  h.frame(&popup.window);
-  assert_eq!(popup.window.size(), Size::new(42.0, 38.0));
+  h.frame(&popup);
+  assert_eq!(popup.size(), Size::new(42.0, 38.0));
 
   // Sizes are whole pixels, as xdg_positioner takes them.
   let window = opener(&mut h, |_| PopupWindow::new().child(Text::new("menu")));
-  let size = open(&mut h, &window).window.size();
+  let size = open(&mut h, &window).size();
   assert!(size.width > 0.0 && size.width.fract() == 0.0, "{size:?}");
   assert!(size.height > 0.0 && size.height.fract() == 0.0, "{size:?}");
 
   // An empty popup, such as a submenu not filled yet, is 1 by 1, since
   // xdg_positioner refuses an empty size.
   let window = opener(&mut h, |_| PopupWindow::new());
-  assert_eq!(open(&mut h, &window).window.size(), Size::new(1.0, 1.0));
+  assert_eq!(open(&mut h, &window).size(), Size::new(1.0, 1.0));
 }
 
 #[test]
@@ -92,8 +91,8 @@ fn close_popup_inside_a_popup_asks_it_to_close() {
     PopupWindow::new().child(Button::new(square()).on_click(|cx| cx.close_popup()))
   });
   let popup = open(&mut h, &window);
-  click_at(&popup.window, Point::new(10.0, 10.0));
-  assert!(popup.window.wants_close());
+  click_at(&popup, Point::new(10.0, 10.0));
+  assert!(popup.wants_close());
 
   // A bar has no popup to close.
   let bar = h.window(
@@ -134,7 +133,7 @@ fn a_popup_closes_with_the_widget_that_opened_it_and_frees_its_nodes() {
   let popup = open(&mut h, &window);
   shown.set(Vec::new());
   h.frame(&window);
-  assert!(popup.window.wants_close());
+  assert!(popup.wants_close());
   drop(popup);
   drop(window);
   assert_eq!(h.runtime.node_count(), before);
@@ -210,4 +209,36 @@ fn a_context_of_no_widget_opens_nothing() {
     logs.contains("open_popup needs a widget's context"),
     "{logs}"
   );
+}
+
+#[test]
+fn a_popup_is_anchored_where_its_widget_was_at_the_last_layout() {
+  let mut h = Harness::new();
+  let left = h.cx.signal(10);
+  // The keyed child opens a popup as it is built, before any layout. Its
+  // context is the inner row's.
+  let inner = Row::new().child(square()).children_keyed(
+    || vec![()],
+    |_| (),
+    |cx, _| {
+      let opener = cx.clone();
+      cx.effect(move || opener.open_popup(|_| PopupWindow::new().child(square())));
+      Row::new()
+    },
+  );
+  let outer = Row::new()
+    .padding(0, move || left.get())
+    .align(Align::Start)
+    .child(inner);
+  let window = Window::new(&h.cx, h.panel().child(outer));
+  h.runtime.flush();
+  let popup = window.take_popups().pop().expect("opened as it was built");
+  assert_eq!(popup.anchor(), None, "the row has no layout yet");
+
+  window.set_size(Size::new(200.0, 30.0));
+  h.frame(&window);
+  assert_eq!(popup.anchor(), Some(Rect::new(10.0, 0.0, 20.0, 20.0)));
+  left.set(30);
+  h.frame(&window);
+  assert_eq!(popup.anchor(), Some(Rect::new(30.0, 0.0, 20.0, 20.0)));
 }

@@ -53,16 +53,6 @@ impl PopupWindow {
   }
 }
 
-/// A popup a widget opened, for the platform to show: from
-/// [`Window::take_popups`] on the window it opened from.
-pub struct Popup {
-  /// The popup's own window.
-  pub window: Window,
-  /// The rectangle of the widget it opened from, at the last layout, in
-  /// the opening window's logical pixels. The popup goes next to it.
-  pub anchor: Rect,
-}
-
 impl Cx {
   /// Opens a popup next to the widget this context belongs to, such as the
   /// button whose handler got it. `build` describes the popup and gets its
@@ -74,7 +64,11 @@ impl Cx {
   /// widget's path and nothing opens. A context of no widget, such as the
   /// one `per_output` gives, logs that and opens nothing.
   pub fn open_popup(&self, build: impl FnOnce(&Cx) -> PopupWindow) {
-    let Some((tree, node)) = self.anchor.as_ref().and_then(|anchor| anchor.get()) else {
+    let Some((anchor, (tree, node))) = self
+      .anchor
+      .clone()
+      .and_then(|anchor| anchor.get().map(|found| (anchor, found)))
+    else {
       return tracing::warn!("open_popup needs a widget's context, such as a handler's");
     };
     let opener = {
@@ -83,10 +77,10 @@ impl Cx {
         .expect("invariant: a window's tree is not borrowed while user code runs");
       tree
         .node(node)
-        .map(|node| (node.path.clone(), node.rect.unwrap_or_default()))
+        .map(|node| node.path.clone())
         .zip(Some(tree.output.clone()))
     };
-    let Some(((opener, anchor), output)) = opener else {
+    let Some((opener, output)) = opener else {
       return;
     };
     let path: Rc<str> = format!("{opener}/PopupWindow").into();
@@ -114,19 +108,17 @@ impl Cx {
     };
     let owner = cx.owner();
     let alive = cx.signal(());
-    let opening = Rc::clone(&tree);
     let popup = Rc::new_cyclic(|this| {
       let mut tree = Tree::new(this.clone(), "PopupWindow", output, cx, path);
       tree.popup = Some(PopupState {
-        opener: Rc::downgrade(&opening),
+        opener: anchor,
         close: false,
         alive,
       });
       RefCell::new(tree)
     });
     borrow(&popup).mount_root(style, child);
-    let window = Window { tree: popup, owner };
-    borrow(&tree).popups.push(Popup { window, anchor });
+    borrow(&tree).popups.push(Window { tree: popup, owner });
   }
 
   /// Closes the popup this context's widget is in, with every popup it
@@ -156,7 +148,7 @@ impl Cx {
       };
       popup.close = true;
       closed = true;
-      next = popup.opener.upgrade();
+      next = popup.opener.get().map(|(tree, _)| tree);
     }
     closed
   }
@@ -164,8 +156,19 @@ impl Cx {
 
 impl Window {
   /// Takes the popups this window's widgets opened since the last call.
-  pub fn take_popups(&self) -> Vec<Popup> {
+  pub fn take_popups(&self) -> Vec<Window> {
     std::mem::take(&mut borrow(&self.tree).popups)
+  }
+
+  /// For a popup, the rectangle of the widget that opened it, at its
+  /// window's last layout, in that window's logical pixels. The platform
+  /// places the popup next to it. `None` for a panel, once the widget is
+  /// gone, or before its first layout.
+  pub fn anchor(&self) -> Option<Rect> {
+    let opener = Rc::clone(&self.tree.borrow().popup.as_ref()?.opener);
+    let (tree, node) = opener.get()?;
+    let tree = tree.borrow();
+    tree.node(node)?.rect
   }
 
   /// Whether this window is a popup.

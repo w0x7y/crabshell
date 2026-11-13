@@ -20,12 +20,11 @@ use crate::cx::{Anchor, Cx};
 use crate::geometry::{Rect, Size};
 use crate::input::{Handlers, Pointer};
 use crate::keyed::KeyedSlot;
-use crate::popup::Popup;
 use crate::prop::{Prop, PropKind};
 use crate::style::{Padding, Style};
 use crate::text::TextNode;
 use crate::widgets::{Align, Element, ElementChild, ElementKind, IconSource, Justify};
-use crate::window::{Anchors, Layer, Output, PanelWindow};
+use crate::window::{Anchors, Layer, Output, PanelWindow, Window};
 
 pub(crate) type NodeId = taffy::NodeId;
 
@@ -43,15 +42,15 @@ pub(crate) struct Tree {
   pub(crate) damage: Vec<Rect>,
   pub(crate) pointer: Pointer,
   /// Popups its widgets opened, until the platform takes them.
-  pub(crate) popups: Vec<Popup>,
+  pub(crate) popups: Vec<Window>,
   /// Set for a popup's own tree.
   pub(crate) popup: Option<PopupState>,
 }
 
 /// What only a popup's tree has.
 pub(crate) struct PopupState {
-  /// The window it opened from, a panel or another popup.
-  pub(crate) opener: Weak<RefCell<Tree>>,
+  /// The widget it opened from, in a panel or another popup.
+  pub(crate) opener: Rc<Anchor>,
   /// `close_popup` asked for it to close.
   pub(crate) close: bool,
   /// Lives under the popup's owner, so it is gone once the widget that

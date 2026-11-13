@@ -79,7 +79,7 @@ pub use cx::Cx;
 pub use geometry::{Point, Rect, Size};
 pub use input::{CursorShape, PointerButton, ScrollDelta};
 pub use menu::{Menu, MenuEntry, MenuToggle};
-pub use popup::{Popup, PopupWindow};
+pub use popup::PopupWindow;
 pub use prop::{IntoProp, Prop};
 pub use style::{Border, Color, Font, Padding, Style};
 pub use text::TextSystem;

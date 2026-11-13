@@ -6,8 +6,7 @@ use std::rc::Rc;
 
 use super::{Harness, capture_logs, node_at, rect_at};
 use crate::{
-  Button, Content, Icon, Menu, MenuEntry, MenuToggle, Point, PointerButton, Popup, PopupWindow,
-  Window,
+  Button, Content, Icon, Menu, MenuEntry, MenuToggle, Point, PointerButton, PopupWindow, Window,
 };
 
 fn entry(id: i32, label: &str) -> MenuEntry {
@@ -91,7 +90,7 @@ impl Ids {
 
 /// A bar whose button opens a popup holding `menu`, already open: the
 /// bar and the popup.
-fn opened(h: &mut Harness, menu: impl Fn() -> Menu + 'static) -> (Window, Popup) {
+fn opened(h: &mut Harness, menu: impl Fn() -> Menu + 'static) -> (Window, Window) {
   let button = Button::new(Icon::new("x").size(20))
     .on_click(move |cx| cx.open_popup(|_| PopupWindow::new().child(menu())));
   let window = h.window(h.panel().child(button), 20.0, 20.0);
@@ -99,7 +98,7 @@ fn opened(h: &mut Harness, menu: impl Fn() -> Menu + 'static) -> (Window, Popup)
   let mut popups = window.take_popups();
   assert_eq!(popups.len(), 1);
   let popup = popups.remove(0);
-  h.frame(&popup.window);
+  h.frame(&popup);
   (window, popup)
 }
 
@@ -156,12 +155,12 @@ fn a_click_activates_an_entry_and_closes_the_popup() {
     let ids = ids.clone();
     Menu::new(entries()).on_activate(move |_cx, id| ids.push(id))
   });
-  click(&popup.window, &[0, 5]);
+  click(&popup, &[0, 5]);
   assert_eq!(activated.get(), [], "a disabled entry ignores clicks");
-  assert!(!popup.window.wants_close());
-  click(&popup.window, &[0, 0]);
+  assert!(!popup.wants_close());
+  click(&popup, &[0, 0]);
   assert_eq!(activated.get(), [1]);
-  assert!(popup.window.wants_close());
+  assert!(popup.wants_close());
 }
 
 #[test]
@@ -175,22 +174,19 @@ fn a_submenu_opens_next_to_its_entry_with_the_same_handlers() {
       .on_activate(move |_cx, id| activate.push(id))
       .on_open_submenu(move |_cx, id| open.push(id))
   });
-  click(&popup.window, &[0, 4]);
+  click(&popup, &[0, 4]);
   assert_eq!(opened_ids.get(), [5]);
-  assert!(!popup.window.wants_close());
-  let mut nested = popup.window.take_popups();
+  assert!(!popup.wants_close());
+  let mut nested = popup.take_popups();
   assert_eq!(nested.len(), 1);
   let submenu = nested.remove(0);
-  assert_eq!(submenu.anchor, rect_at(&popup.window, &[0, 4]));
-  h.frame(&submenu.window);
-  assert_eq!(text_at(&submenu.window, &[0, 0, 0, 1]), "Inner");
-  click(&submenu.window, &[0, 0]);
+  assert_eq!(submenu.anchor(), Some(rect_at(&popup, &[0, 4])));
+  h.frame(&submenu);
+  assert_eq!(text_at(&submenu, &[0, 0, 0, 1]), "Inner");
+  click(&submenu, &[0, 0]);
   assert_eq!(activated.get(), [6]);
-  assert!(submenu.window.wants_close());
-  assert!(
-    popup.window.wants_close(),
-    "the menu that opened it closes too"
-  );
+  assert!(submenu.wants_close());
+  assert!(popup.wants_close(), "the menu that opened it closes too");
 }
 
 #[test]
@@ -200,16 +196,16 @@ fn entries_and_submenus_follow_their_signal() {
   let window = h.window(h.panel().child(Menu::new(move || list.get())), 200.0, 300.0);
   click(&window, &[0, 4]);
   let submenu = window.take_popups().remove(0);
-  h.frame(&submenu.window);
+  h.frame(&submenu);
 
   list.update(|entries| {
     entries[0].label = "Close".into();
     entries[4].children = vec![entry(6, "Inner"), entry(8, "Filled late")];
   });
   h.frame(&window);
-  h.frame(&submenu.window);
+  h.frame(&submenu);
   assert_eq!(text_at(&window, &[0, 0, 0, 1]), "Close");
-  assert_eq!(text_at(&submenu.window, &[0, 1, 0, 1]), "Filled late");
+  assert_eq!(text_at(&submenu, &[0, 1, 0, 1]), "Filled late");
 
   // An id that turns from a separator into an entry gets a button.
   list.update(|entries| entries[1] = entry(2, "Was a line"));
@@ -219,7 +215,7 @@ fn entries_and_submenus_follow_their_signal() {
   // The submenu's entry going closes the submenu alone.
   list.update(|entries| entries.retain(|entry| entry.id != 5));
   h.frame(&window);
-  assert!(submenu.window.wants_close());
+  assert!(submenu.wants_close());
 }
 
 #[test]
