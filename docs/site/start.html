@@ -22,7 +22,7 @@
 
 <main class="prose">
 <h1>getting started</h1>
-<p>from a checkout to a running bar, and what happens when you edit it. crabshell isn't on crates.io yet, so for now it builds from a clone of the repository.</p>
+<p>from nothing to a running bar, and what happens when you edit it.</p>
 
 <h2 id="what-you-need">what you need</h2>
 <ul>
@@ -35,15 +35,12 @@
 </ul>
 
 <h2 id="install">install the command</h2>
-<pre class="code" data-lang="sh">$ git clone https://github.com/w0x7y/crabshell
-$ cd crabshell
-$ cargo install --locked --path crates/crabshell-cli</pre>
+<pre class="code" data-lang="sh">$ cargo install --locked crabshell-cli</pre>
 <p>that puts <code>crabshell</code> in <code>~/.cargo/bin</code>. <code>crabshell help</code> lists its commands.</p>
 
 <h2 id="make-a-config">make a config</h2>
-<p>still inside the checkout:</p>
-<pre class="code" data-lang="sh">$ crabshell init --path "$PWD"</pre>
-<p>this writes <code>~/.config/crabshell</code> from the template, building against your checkout. without <code>--path</code> it builds against crates.io, which works once the crates are published. init never overwrites anything: it refuses if the directory is already there. keep the clone where it is, since the config points at it.</p>
+<pre class="code" data-lang="sh">$ crabshell init</pre>
+<p>this writes <code>~/.config/crabshell</code> from the template, a cargo project that depends on the <code>crabshell</code> crate. init never overwrites anything: it refuses if the directory is already there. to build against a clone of the repository instead, run <code>crabshell init --path &lt;clone&gt;</code>.</p>
 <pre class="code">~/.config/crabshell/
 ├── Cargo.toml
 └── src/

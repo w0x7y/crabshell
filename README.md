@@ -8,7 +8,7 @@ a full rust replacement for quickshell: everything quickshell does, crabshell wi
 
 the counter example, drawn at scale 2
 
-status: almost v0.1. bars draw, take clicks, follow monitors as they come and go, and show the clock, sway's workspaces, the volume and the tray with its menus. `crabshell run` rebuilds your bar when you save it and swaps the running one in about a second. nothing is on crates.io yet, so for now you install from a clone
+status: v0.1. bars draw, take clicks, follow monitors as they come and go, and show the clock, sway's workspaces, the volume and the tray with its menus. `crabshell run` rebuilds your bar when you save it and swaps the running one in about a second
 
 vibe coded: ai coding agents write the code, and other agents review each step against [a design doc](docs/design.md)
 
@@ -26,14 +26,12 @@ you need
 install the `crabshell` command, make a config, and run it
 
 ```sh
-git clone https://github.com/w0x7y/crabshell
-cd crabshell
-cargo install --locked --path crates/crabshell-cli
-crabshell init --path "$PWD"
+cargo install --locked crabshell-cli
+crabshell init
 crabshell run
 ```
 
-`init` writes a config to `~/.config/crabshell`, a normal cargo project that builds against your clone. it never overwrites one that's already there. keep the clone where it is, since the config points at it. the first `crabshell run` compiles the whole toolkit, which takes a few minutes. then a 30 px bar shows up at the top of every monitor: sway's workspaces at the left, the tray, the volume and the clock at the right. stop any other bar first, or both will reserve space
+`init` writes a config to `~/.config/crabshell`, a normal cargo project that depends on the `crabshell` crate. it never overwrites one that's already there. to build against a clone of this repository instead, run `crabshell init --path <clone>`. the first `crabshell run` compiles the whole toolkit, which takes a few minutes. then a 30 px bar shows up at the top of every monitor: sway's workspaces at the left, the tray, the volume and the clock at the right. stop any other bar first, or both will reserve space
 
 to start it with sway instead, add this to your sway config. sway's `exec` may not see `~/.cargo/bin`, so give the full path, and make sure `cargo` is on the `PATH` your session starts with
 
@@ -78,7 +76,7 @@ fn bar(cx: &Cx, output: &Output) -> PanelWindow {
 
 every widget property takes a value or a closure. a closure runs again when a signal it reads changes, and only what changed is redrawn. `per_output` builds windows for every monitor, now and later, and drops them when the monitor goes. `cx.persist` keeps a value across reloads. the full example, with styles and hover, is [examples/counter.rs](crates/crabshell/examples/counter.rs)
 
-to try the examples without a config, from the clone
+to try the examples without a config, from a clone of this repository
 
 ```sh
 cargo run --release -p crabshell --example counter
@@ -102,7 +100,7 @@ for comparison, quickshell drawing the [phase 0 test bar](spike/RESULTS.md) uses
 
 ### where it's going
 
-v0.1 is the template bar plus `crabshell run`, published on crates.io. after it come floating windows and keyboard input, animations and effects, a notifications server, media players, battery, bluetooth and networking, launchers and ipc, lock screens and greeters, then hyprland, niri and more compositors, until every quickshell feature is covered. the plan is in [the design doc](docs/design.md#beyond-v01), and [docs/site/roadmap.html](docs/site/roadmap.html) shows where each phase stands
+v0.1 is the template bar plus `crabshell run`, on crates.io. after it come floating windows and keyboard input, animations and effects, a notifications server, media players, battery, bluetooth and networking, launchers and ipc, lock screens and greeters, then hyprland, niri and more compositors, until every quickshell feature is covered. the plan is in [the design doc](docs/design.md#beyond-v01), and [docs/site/roadmap.html](docs/site/roadmap.html) shows where each phase stands
 
 ### what's in it
 
