@@ -167,6 +167,18 @@ impl Window {
     self.edit_field(|edit| edit.insert(&text));
   }
 
+  /// Pastes `text` from the clipboard into the focused field, replacing
+  /// its selection; line breaks become spaces. Unlike an input method's
+  /// text, a paste goes into a password field too.
+  pub fn paste(&self, text: &str) {
+    // An empty clipboard pastes nothing, not even over the selection.
+    if text.is_empty() {
+      return;
+    }
+    let text = text.replace(['\n', '\r'], " ");
+    self.change_field(true, |edit| edit.insert(&text));
+  }
+
   /// Deletes `before` bytes before the focused field's selection, or its
   /// caret, and `after` bytes after it, for an input method; the
   /// selection itself stays. Lengths that would split a character are
@@ -216,13 +228,19 @@ impl Window {
   /// the field's signal once the tree is released. A password field is
   /// left alone: input methods don't type in one.
   fn edit_field(&self, change: impl FnOnce(&mut Edit)) {
+    self.change_field(false, change);
+  }
+
+  /// As [`edit_field`](Self::edit_field), into a password field too when
+  /// `passwords`.
+  fn change_field(&self, passwords: bool, change: impl FnOnce(&mut Edit)) {
     let write = {
       let mut tree = borrow(&self.tree);
       let Some(id) = tree.keyboard.focused else {
         return;
       };
       let before = match tree.node(id).map(|node| &node.kind) {
-        Some(NodeKind::Input(input)) if !input.password => input.edit.text.clone(),
+        Some(NodeKind::Input(input)) if passwords || !input.password => input.edit.text.clone(),
         _ => return,
       };
       let mut write = None;

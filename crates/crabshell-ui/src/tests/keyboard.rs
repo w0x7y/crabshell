@@ -254,7 +254,9 @@ fn a_panicking_window_key_handler_is_logged_and_tab_still_works() {
     .on_key(|_, _| panic!("window key failure"));
   let window = h.window(panel, 200.0, 30.0);
   window.keyboard_enter();
-  let logs = capture_logs(|| window.key(&press(Key::Tab)));
+  let logs = capture_logs(|| {
+    window.key(&press(Key::Tab));
+  });
   assert!(
     logs.contains("handler PanelWindow[DP-1].on_key panicked and is disabled"),
     "{logs}"

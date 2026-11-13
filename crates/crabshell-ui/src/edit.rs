@@ -21,7 +21,7 @@ pub(crate) struct Edit {
 }
 
 /// What a key did.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Keyed {
   /// The text changed.
   Edited,
@@ -29,6 +29,12 @@ pub(crate) enum Keyed {
   Moved,
   /// Enter was pressed.
   Accept,
+  /// Ctrl+C: this selected text is to be copied.
+  Copy(String),
+  /// Ctrl+X: this selected text was cut and is to be copied.
+  Cut(String),
+  /// Ctrl+V: the clipboard is to be pasted.
+  Paste,
   /// The key means nothing here; others may use it.
   Unused,
 }
@@ -66,13 +72,31 @@ impl Edit {
   }
 
   /// What `event` does. Ctrl moves and deletes by word, and Shift extends
-  /// the selection.
-  pub(crate) fn key(&mut self, event: &KeyEvent) -> Keyed {
+  /// the selection. Copying and cutting need `copyable`, which a password
+  /// isn't.
+  pub(crate) fn key(&mut self, event: &KeyEvent, copyable: bool) -> Keyed {
     let modifiers = event.modifiers;
     let word = modifiers.ctrl;
+    let command = modifiers.ctrl && !modifiers.alt;
     let before = self.clone();
     match &event.key {
       Key::Enter => return Keyed::Accept,
+      Key::Character('c' | 'C' | 'x' | 'X') if command && !copyable => return Keyed::Moved,
+      Key::Character('c' | 'C') if command => {
+        return match self.selection() {
+          Some(range) => Keyed::Copy(self.text[range].to_owned()),
+          None => Keyed::Unused,
+        };
+      }
+      Key::Character('x' | 'X') if command => {
+        let Some(range) = self.selection() else {
+          return Keyed::Unused;
+        };
+        let cut = self.text[range].to_owned();
+        self.insert("");
+        return Keyed::Cut(cut);
+      }
+      Key::Character('v' | 'V') if command => return Keyed::Paste,
       Key::Character('a' | 'A') if modifiers.ctrl && !modifiers.alt => {
         self.anchor = Some(0);
         self.cursor = self.text.len();

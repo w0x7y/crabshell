@@ -72,6 +72,16 @@ pub enum Key {
   Other(u32),
 }
 
+/// What a key asks of the clipboard.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Clipboard {
+  /// Offer this text as the clipboard's.
+  Copy(String),
+  /// Read the clipboard and [`paste`](Window::paste) it into the focused
+  /// field.
+  Paste,
+}
+
 /// The modifier keys held.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Modifiers {
@@ -131,18 +141,23 @@ impl Window {
   /// window's; a handler returns `true` when it used the key. Otherwise
   /// Tab and Shift+Tab move the focus between buttons and fields, and
   /// Enter or Space clicks the focused button.
-  pub fn key(&self, event: &KeyEvent) {
+  ///
+  /// Returns what the platform should do with the clipboard: copy a
+  /// field's selection on Ctrl+C or Ctrl+X, or paste into the focused
+  /// field with [`paste`](Self::paste) on Ctrl+V.
+  pub fn key(&self, event: &KeyEvent) -> Option<Clipboard> {
     let typed = borrow(&self.tree).input_key(event);
     match typed {
-      Some(Typed::Edited(signal, text)) => {
+      Some(Typed::Edited(signal, text, clipboard)) => {
         // A signal whose owner is gone just isn't written.
         signal.try_set(text);
-        return;
+        return clipboard;
       }
-      Some(Typed::Moved) => return,
+      Some(Typed::Clipboard(clipboard)) => return Some(clipboard),
+      Some(Typed::Moved) => return None,
       Some(Typed::Accept(call)) => {
         call.run();
-        return;
+        return None;
       }
       None => {}
     }
@@ -152,13 +167,14 @@ impl Window {
     };
     for call in [button, window].into_iter().flatten() {
       if call.run(event) {
-        return;
+        return None;
       }
     }
     let click = borrow(&self.tree).default_key(event);
     if let Some(click) = click {
       click.run();
     }
+    None
   }
 
   /// The path of the focused button, for tests and logs.
@@ -219,11 +235,19 @@ impl Tree {
     let NodeKind::Input(input) = &mut self.node_mut(id)?.kind else {
       return None;
     };
-    let keyed = input.edit.key(event);
+    let keyed = input.edit.key(event, !input.password);
+    let accept = keyed == Keyed::Accept;
     let typed = match keyed {
       Keyed::Unused => return None,
       Keyed::Moved => Typed::Moved,
-      Keyed::Edited => Typed::Edited(input.signal, input.edit.text.clone()),
+      Keyed::Edited => Typed::Edited(input.signal, input.edit.text.clone(), None),
+      Keyed::Copy(text) => Typed::Clipboard(Clipboard::Copy(text)),
+      Keyed::Cut(text) => Typed::Edited(
+        input.signal,
+        input.edit.text.clone(),
+        Some(Clipboard::Copy(text)),
+      ),
+      Keyed::Paste => Typed::Clipboard(Clipboard::Paste),
       Keyed::Accept => {
         let handler = untrack(|| input.on_accept.try_with(Option::clone)).flatten();
         let text = input.edit.text.clone();
@@ -237,7 +261,7 @@ impl Tree {
         })
       }
     };
-    if keyed != Keyed::Accept {
+    if !accept {
       self.update_input(id, |input| {
         input.refresh();
       });
@@ -316,8 +340,10 @@ impl Tree {
 
 /// What a key did in a text field, once the tree is released.
 enum Typed {
-  /// The text changed; the signal gets it.
-  Edited(Signal<String>, String),
+  /// The text changed; the signal gets it. A cut also copies.
+  Edited(Signal<String>, String, Option<Clipboard>),
+  /// The platform should copy or paste.
+  Clipboard(Clipboard),
   /// Only the caret or selection moved, already in the tree.
   Moved,
   /// Enter: the field's `on_accept` runs.

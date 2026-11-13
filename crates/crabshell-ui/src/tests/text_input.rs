@@ -189,7 +189,9 @@ fn a_panicking_on_accept_is_logged_with_its_path() {
     input.focus(true).on_accept(|_, _| panic!("accept failure"))
   });
   h.frame(&window);
-  let logs = capture_logs(|| window.key(&key(Key::Enter)));
+  let logs = capture_logs(|| {
+    window.key(&key(Key::Enter));
+  });
   assert!(
     logs.contains("handler PanelWindow[DP-1]/Row/TextInput[0].on_accept panicked and is disabled"),
     "{logs}"
@@ -368,4 +370,62 @@ fn input_methods_leave_a_password_field_alone() {
   h.frame(&window);
   assert_eq!(text.get(), "pw");
   assert_eq!(shown(&window).0, "••");
+}
+
+#[test]
+fn ctrl_c_and_x_ask_to_copy_and_ctrl_v_to_paste() {
+  use crate::Clipboard;
+
+  let mut h = Harness::new();
+  let text = h.cx.signal(String::from("copy me"));
+  let window = field(&mut h, text, |input| input.focus(true));
+  h.frame(&window);
+  let ctrl = |letter: &str| KeyEvent {
+    modifiers: Modifiers {
+      ctrl: true,
+      ..Modifiers::default()
+    },
+    ..typed(letter)
+  };
+  window.key(&ctrl("a"));
+  assert_eq!(
+    window.key(&ctrl("c")),
+    Some(Clipboard::Copy(String::from("copy me")))
+  );
+  assert_eq!(
+    window.key(&ctrl("x")),
+    Some(Clipboard::Copy(String::from("copy me")))
+  );
+  assert_eq!(text.get(), "");
+  assert_eq!(window.key(&ctrl("v")), Some(Clipboard::Paste));
+  window.paste("pasted\nline");
+  assert_eq!(text.get(), "pasted line");
+  window.key(&ctrl("a"));
+  window.paste("");
+  assert_eq!(
+    text.get(),
+    "pasted line",
+    "an empty clipboard keeps the selection"
+  );
+}
+
+#[test]
+fn a_password_pastes_but_never_copies() {
+  let mut h = Harness::new();
+  let text = h.cx.signal(String::from("secret"));
+  let window = field(&mut h, text, |input| input.focus(true).password(true));
+  h.frame(&window);
+  let ctrl = |letter: &str| KeyEvent {
+    modifiers: Modifiers {
+      ctrl: true,
+      ..Modifiers::default()
+    },
+    ..typed(letter)
+  };
+  window.key(&ctrl("a"));
+  assert_eq!(window.key(&ctrl("c")), None);
+  assert_eq!(window.key(&ctrl("x")), None);
+  assert_eq!(text.get(), "secret");
+  window.paste("new");
+  assert_eq!(text.get(), "new");
 }

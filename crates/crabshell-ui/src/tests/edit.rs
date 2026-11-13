@@ -41,17 +41,20 @@ fn at(text: &str, cursor: usize) -> Edit {
 #[test]
 fn typing_inserts_at_the_caret_and_replaces_a_selection() {
   let mut edit = at("fir", 3);
-  assert_eq!(edit.key(&typed("e")), Keyed::Edited);
+  assert_eq!(edit.key(&typed("e"), true), Keyed::Edited);
   assert_eq!((edit.text.as_str(), edit.cursor), ("fire", 4));
   edit.cursor = 0;
-  edit.key(&typed("A"));
+  edit.key(&typed("A"), true);
   assert_eq!(edit.text, "Afire");
   edit.anchor = Some(1);
   edit.cursor = 5;
-  edit.key(&typed("x"));
+  edit.key(&typed("x"), true);
   assert_eq!((edit.text.as_str(), edit.cursor), ("Ax", 2));
   // Ctrl and Alt combinations type nothing, even with text.
-  assert_eq!(edit.key(&with(typed("c"), true, false)), Keyed::Unused);
+  assert_eq!(
+    edit.key(&with(typed("q"), true, false), true),
+    Keyed::Unused
+  );
   assert_eq!(edit.text, "Ax");
 }
 
@@ -59,56 +62,56 @@ fn typing_inserts_at_the_caret_and_replaces_a_selection() {
 fn backspace_and_delete_take_a_whole_grapheme_or_word() {
   // "é" as e and a combining accent, then a flag of two code points.
   let mut edit = at("cafe\u{301} 🇫🇷", "cafe\u{301} 🇫🇷".len());
-  edit.key(&key(Key::Backspace));
+  edit.key(&key(Key::Backspace), true);
   assert_eq!(edit.text, "cafe\u{301} ");
-  edit.key(&key(Key::Backspace));
-  edit.key(&key(Key::Backspace));
+  edit.key(&key(Key::Backspace), true);
+  edit.key(&key(Key::Backspace), true);
   assert_eq!(edit.text, "caf");
   let mut edit = at("open the door", 0);
-  edit.key(&with(key(Key::Delete), true, false));
+  edit.key(&with(key(Key::Delete), true, false), true);
   assert_eq!(edit.text, " the door");
   edit.cursor = edit.text.len();
-  edit.key(&with(key(Key::Backspace), true, false));
+  edit.key(&with(key(Key::Backspace), true, false), true);
   assert_eq!(edit.text, " the ");
   // A word back skips the spaces after it.
   let mut edit = at("the door  ", 10);
-  edit.key(&with(key(Key::Backspace), true, false));
+  edit.key(&with(key(Key::Backspace), true, false), true);
   assert_eq!(edit.text, "the ");
   // At the ends, nothing goes, but the key is still the field's.
   let mut edit = at("x", 0);
-  assert_eq!(edit.key(&key(Key::Backspace)), Keyed::Moved);
+  assert_eq!(edit.key(&key(Key::Backspace), true), Keyed::Moved);
   assert_eq!(edit.text, "x");
 }
 
 #[test]
 fn arrows_move_by_grapheme_or_word_and_shift_selects() {
   let mut edit = at("ab cd", 0);
-  edit.key(&key(Key::Right));
+  edit.key(&key(Key::Right), true);
   assert_eq!(edit.cursor, 1);
-  edit.key(&with(key(Key::Right), true, false));
+  edit.key(&with(key(Key::Right), true, false), true);
   assert_eq!(edit.cursor, 2, "to the end of the word");
-  edit.key(&with(key(Key::Right), true, false));
+  edit.key(&with(key(Key::Right), true, false), true);
   assert_eq!(edit.cursor, 5);
-  edit.key(&with(key(Key::Left), true, false));
+  edit.key(&with(key(Key::Left), true, false), true);
   assert_eq!(edit.cursor, 3);
-  edit.key(&with(key(Key::Home), false, true));
+  edit.key(&with(key(Key::Home), false, true), true);
   assert_eq!(edit.selection(), Some(0..3));
   // An arrow without Shift collapses the selection to its side.
-  edit.key(&key(Key::Right));
+  edit.key(&key(Key::Right), true);
   assert_eq!((edit.cursor, edit.selection()), (3, None));
-  edit.key(&with(key(Key::End), false, true));
-  edit.key(&key(Key::Left));
+  edit.key(&with(key(Key::End), false, true), true);
+  edit.key(&key(Key::Left), true);
   assert_eq!((edit.cursor, edit.selection()), (3, None));
 }
 
 #[test]
 fn ctrl_a_selects_everything_and_other_keys_are_left_alone() {
   let mut edit = at("all of it", 2);
-  edit.key(&with(typed("a"), true, false));
+  edit.key(&with(typed("a"), true, false), true);
   assert_eq!(edit.selection(), Some(0..9));
-  assert_eq!(edit.key(&key(Key::Enter)), Keyed::Accept);
+  assert_eq!(edit.key(&key(Key::Enter), true), Keyed::Accept);
   for unused in [Key::Up, Key::Down, Key::Escape, Key::Tab, Key::PageDown] {
-    assert_eq!(edit.key(&key(unused)), Keyed::Unused);
+    assert_eq!(edit.key(&key(unused), true), Keyed::Unused);
   }
 }
 
@@ -132,4 +135,32 @@ fn grapheme_counts_map_between_text_and_its_password_dots() {
   assert_eq!(graphemes_before(text, text.len()), 3);
   assert_eq!(grapheme_start(text, 1), "e\u{301}".len());
   assert_eq!(grapheme_start(text, 9), text.len());
+}
+
+#[test]
+fn ctrl_c_x_and_v_copy_cut_and_paste_a_selection() {
+  let mut edit = at("cut me", 0);
+  let ctrl = |letter| with(typed(letter), true, false);
+  assert_eq!(
+    edit.key(&ctrl("c"), true),
+    Keyed::Unused,
+    "nothing selected"
+  );
+  edit.key(&with(key(Key::End), false, true), true);
+  assert_eq!(
+    edit.key(&ctrl("c"), true),
+    Keyed::Copy(String::from("cut me"))
+  );
+  assert_eq!(edit.text, "cut me");
+  assert_eq!(
+    edit.key(&ctrl("x"), true),
+    Keyed::Cut(String::from("cut me"))
+  );
+  assert_eq!(edit.text, "");
+  assert_eq!(edit.key(&ctrl("v"), true), Keyed::Paste);
+  // A password copies nothing, and the keys stay the field's.
+  let mut secret = at("pw", 0);
+  secret.key(&with(key(Key::End), false, true), true);
+  assert_eq!(secret.key(&ctrl("x"), false), Keyed::Moved);
+  assert_eq!(secret.text, "pw");
 }

@@ -83,7 +83,7 @@ mod tests;
 pub use cx::Cx;
 pub use geometry::{Point, Rect, Size};
 pub use input::{CursorShape, PointerButton, ScrollDelta};
-pub use keyboard::{Key, KeyEvent, Modifiers};
+pub use keyboard::{Clipboard, Key, KeyEvent, Modifiers};
 pub use menu::{Menu, MenuEntry, MenuToggle};
 pub use popup::PopupWindow;
 pub use prop::{IntoProp, Prop};
