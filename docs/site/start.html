@@ -1,119 +1,287 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>getting started · crabshell</title>
-<link rel="icon" href="logo.svg" type="image/svg+xml">
-<link rel="stylesheet" href="site.css">
-<script>try{var t=localStorage.getItem("crabshell:theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
-</head>
-<body>
-<header class="site">
-<div class="row">
-<a class="name" href="index.html">crabshell</a>
-<span class="version">v0.1</span>
-</div>
-<div class="row">
-<nav class="main" aria-label="main"><a href="index.html">home</a> / <a href="start.html" aria-current="page">start</a> / <a href="config.html">config</a> / <a href="architecture.html">architecture</a> / <a href="roadmap.html">roadmap</a> / <a href="features.html">features</a> / <a href="https://github.com/w0x7y/crabshell" target="_blank" rel="noopener">github</a></nav>
-<p class="theme"><button type="button" data-theme-set="dark">dark</button> / <button type="button" data-theme-set="light">light</button></p>
-</div>
-</header>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <title>getting started · crabshell</title>
+    <link rel="icon" href="logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="site.css" />
+    <script>
+      try {
+        var t = localStorage.getItem("crabshell:theme");
+        if (t) document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <header class="site">
+      <div class="row">
+        <a class="name" href="index.html">crabshell</a>
+        <span class="version">v0.1</span>
+      </div>
+      <div class="row">
+        <nav class="main" aria-label="main">
+          <a href="index.html">home</a> /
+          <a href="start.html" aria-current="page">start</a> /
+          <a href="config.html">config</a> /
+          <a href="architecture.html">architecture</a> /
+          <a href="roadmap.html">roadmap</a> /
+          <a href="features.html">features</a> /
+          <a
+            href="https://github.com/w0x7y/crabshell"
+            target="_blank"
+            rel="noopener"
+            >github</a
+          >
+        </nav>
+        <p class="theme">
+          <button type="button" data-theme-set="dark">dark</button> /
+          <button type="button" data-theme-set="light">light</button>
+        </p>
+      </div>
+    </header>
 
-<main class="prose">
-<h1>getting started</h1>
-<p>from nothing to a running bar, and what happens when you edit it.</p>
+    <main class="prose">
+      <h1>getting started</h1>
+      <p>from nothing to a running bar, and what happens when you edit it.</p>
 
-<h2 id="what-you-need">what you need</h2>
-<ul>
-<li>rust 1.99 or newer</li>
-<li>sway, or another wlroots compositor with layer-shell. labwc works too, though only sway shows workspaces for now</li>
-<li>linux 5.3 or newer, for the supervisor's process handles</li>
-<li>pkg-config, fontconfig and libpulse with their development files, like <code>pkg-config libfontconfig1-dev libpulse-dev</code> on debian or ubuntu</li>
-<li>pulseaudio or pipewire-pulse running, for the volume widget</li>
-<li>a d-bus session bus for the tray, and a notification daemon like mako or dunst for build errors</li>
-</ul>
+      <h2 id="what-you-need">what you need</h2>
+      <ul>
+        <li>rust 1.99 or newer</li>
+        <li>
+          sway, or another wlroots compositor with layer-shell. labwc works too,
+          though only sway shows workspaces for now
+        </li>
+        <li>linux 5.3 or newer, for the supervisor's process handles</li>
+        <li>
+          pkg-config, fontconfig and libpulse with their development files, like
+          <code>pkg-config libfontconfig1-dev libpulse-dev</code> on debian or
+          ubuntu
+        </li>
+        <li>pulseaudio or pipewire-pulse running, for the volume widget</li>
+        <li>
+          a d-bus session bus for the tray, and a notification daemon like mako
+          or dunst for build errors
+        </li>
+      </ul>
 
-<h2 id="install">install the command</h2>
-<pre class="code" data-lang="sh">$ cargo install --locked crabshell-cli</pre>
-<p>that puts <code>crabshell</code> in <code>~/.cargo/bin</code>. <code>crabshell help</code> lists its commands.</p>
+      <h2 id="install">install the command</h2>
+      <pre class="code" data-lang="sh">
+$ cargo install --locked crabshell-cli</pre>
+      <p>
+        that puts <code>crabshell</code> in <code>~/.cargo/bin</code>.
+        <code>crabshell help</code> lists its commands.
+      </p>
 
-<h2 id="make-a-config">make a config</h2>
-<pre class="code" data-lang="sh">$ crabshell init</pre>
-<p>this writes <code>~/.config/crabshell</code> from the template, a cargo project that depends on the <code>crabshell</code> crate. init never overwrites anything: it refuses if the directory is already there. to build against a clone of the repository instead, run <code>crabshell init --path &lt;clone&gt;</code>.</p>
-<pre class="code">~/.config/crabshell/
+      <h2 id="make-a-config">make a config</h2>
+      <pre class="code" data-lang="sh">$ crabshell init</pre>
+      <p>
+        this writes <code>~/.config/crabshell</code> from the template, a cargo
+        project that depends on the <code>crabshell</code> crate. init never
+        overwrites anything: it refuses if the directory is already there. to
+        build against a clone of the repository instead, run
+        <code>crabshell init --path &lt;clone&gt;</code>.
+      </p>
+      <pre class="code">
+~/.config/crabshell/
 ├── Cargo.toml
 └── src/
     └── main.rs</pre>
-<p>the template is the v0.1 bar: sway's workspaces on the left, the tray, the volume and a clock on the right. <a href="config.html">writing a config</a> walks through it line by line.</p>
+      <p>
+        the template is the v0.1 bar: sway's workspaces on the left, the tray,
+        the volume and a clock on the right.
+        <a href="config.html">writing a config</a> walks through it line by
+        line.
+      </p>
 
-<h2 id="run-it">run it</h2>
-<pre class="code" data-lang="sh">$ crabshell run</pre>
-<p>the first build compiles the whole toolkit and takes a few minutes. later builds take about a second. builds go to <code>~/.cache/crabshell/target</code>, so the config directory stays small.</p>
-<p>to start it with sway, add this to your sway config. sway's <code>exec</code> may not see <code>~/.cargo/bin</code>, so give the full path, and make sure <code>cargo</code> is on the <code>PATH</code> your session starts with:</p>
-<pre class="code" data-lang="sh">exec ~/.cargo/bin/crabshell run</pre>
-<p>run only one <code>crabshell run</code> at a time, or you get two bars.</p>
+      <h2 id="run-it">run it</h2>
+      <pre class="code" data-lang="sh">$ crabshell run</pre>
+      <p>
+        the first build compiles the whole toolkit and takes a few minutes.
+        later builds take about a second. builds go to
+        <code>~/.cache/crabshell/target</code>, so the config directory stays
+        small.
+      </p>
+      <p>
+        to start it with sway, add this to your sway config. sway's
+        <code>exec</code> may not see <code>~/.cargo/bin</code>, so give the
+        full path, and make sure <code>cargo</code> is on the
+        <code>PATH</code> your session starts with:
+      </p>
+      <pre class="code" data-lang="sh">exec ~/.cargo/bin/crabshell run</pre>
+      <p>
+        run only one <code>crabshell run</code> at a time, or you get two bars.
+      </p>
 
-<h2 id="edit-and-reload">edit and reload</h2>
-<p>leave <code>crabshell run</code> running and save <code>src/main.rs</code> or <code>Cargo.toml</code>. it rebuilds 300 ms after the last save.</p>
-<ul>
-<li>when the build works, the old shell saves its <code>cx.persist</code> values and exits, and the new one starts from them. the bar is gone for about 20 ms.</li>
-<li>when it doesn't, the old shell keeps running. the full error prints in the terminal, and a desktop notification shows its first line.</li>
-<li>a save that changes nothing in the build doesn't restart anything.</li>
-</ul>
+      <h2 id="edit-and-reload">edit and reload</h2>
+      <p>
+        leave <code>crabshell run</code> running and save
+        <code>src/main.rs</code> or <code>Cargo.toml</code>. it rebuilds 300 ms
+        after the last save.
+      </p>
+      <ul>
+        <li>
+          when the build works, the old shell saves its
+          <code>cx.persist</code> values and exits, and the new one starts from
+          them. the bar is gone for about 20 ms.
+        </li>
+        <li>
+          when it doesn't, the old shell keeps running. the full error prints in
+          the terminal, and a desktop notification shows its first line.
+        </li>
+        <li>
+          a save that changes nothing in the build doesn't restart anything.
+        </li>
+      </ul>
 
-<h2 id="when-it-crashes">when it crashes</h2>
-<ul>
-<li>a panic in one binding doesn't crash anything. that binding turns off, and the log names it, like <code>PanelWindow[DP-1]/Row/Button[2]/Text.text</code>.</li>
-<li>a shell that dies starts again after 1 s, then 2, 4 and so on, up to 30 s.</li>
-<li>a build that runs for a minute is copied to <code>~/.cache/crabshell/last-good</code>.</li>
-<li>when a new build crashes three times in its first minute, crabshell runs <code>last-good</code> instead, if there is one, and says so in a notification.</li>
-</ul>
+      <h2 id="when-it-crashes">when it crashes</h2>
+      <ul>
+        <li>
+          a panic in one binding doesn't crash anything. that binding turns off,
+          and the log names it, like
+          <code>PanelWindow[DP-1]/Row/Button[2]/Text.text</code>.
+        </li>
+        <li>
+          a shell that dies starts again after 1 s, then 2, 4 and so on, up to
+          30 s.
+        </li>
+        <li>
+          a build that runs for a minute is copied to
+          <code>~/.cache/crabshell/last-good</code>.
+        </li>
+        <li>
+          when a new build crashes three times in its first minute, crabshell
+          runs <code>last-good</code> instead, if there is one, and says so in a
+          notification.
+        </li>
+      </ul>
 
-<h2 id="check">check without running</h2>
-<pre class="code" data-lang="sh">$ crabshell check</pre>
-<p>runs <code>cargo check</code> on the config and prints its errors, for editors and scripts. it exits with cargo's status.</p>
+      <h2 id="check">check without running</h2>
+      <pre class="code" data-lang="sh">$ crabshell check</pre>
+      <p>
+        runs <code>cargo check</code> on the config and prints its errors, for
+        editors and scripts. it exits with cargo's status.
+      </p>
 
-<h2 id="logs">logs</h2>
-<p>everything goes to stderr. the supervisor's lines start with <code>crabshell:</code>, and the shell's come from its log. set <code>CRABSHELL_LOG=debug</code> for more. to watch them, run <code>crabshell run</code> in a terminal instead of from sway.</p>
+      <h2 id="logs">logs</h2>
+      <p>
+        everything goes to stderr. the supervisor's lines start with
+        <code>crabshell:</code>, and the shell's come from its log. set
+        <code>CRABSHELL_LOG=debug</code> for more. to watch them, run
+        <code>crabshell run</code> in a terminal instead of from sway.
+      </p>
 
-<h2 id="where-things-live">where things live</h2>
-<div class="table">
-<table>
-<thead><tr><th>path</th><th>what</th></tr></thead>
-<tbody>
-<tr><td><code>~/.config/crabshell</code></td><td>your config: <code>Cargo.toml</code> and <code>src/</code></td></tr>
-<tr><td><code>~/.cache/crabshell/target</code></td><td>its builds</td></tr>
-<tr><td><code>~/.cache/crabshell/last-good</code></td><td>the last build that ran for a minute</td></tr>
-<tr><td><code>$XDG_RUNTIME_DIR/crabshell/state.json</code></td><td><code>cx.persist</code> values between two shells. written on reload, read once, then removed</td></tr>
-<tr><td><code>$XDG_RUNTIME_DIR/crabshell/control-&lt;pid&gt;.sock</code></td><td>the socket the supervisor and the shell talk over</td></tr>
-</tbody>
-</table>
-</div>
-<p><code>XDG_CONFIG_HOME</code> and <code>XDG_CACHE_HOME</code> move the first three.</p>
+      <h2 id="where-things-live">where things live</h2>
+      <div class="table">
+        <table>
+          <thead>
+            <tr>
+              <th>path</th>
+              <th>what</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>~/.config/crabshell</code></td>
+              <td>
+                your config: <code>Cargo.toml</code> and <code>src/</code>
+              </td>
+            </tr>
+            <tr>
+              <td><code>~/.cache/crabshell/target</code></td>
+              <td>its builds</td>
+            </tr>
+            <tr>
+              <td><code>~/.cache/crabshell/last-good</code></td>
+              <td>the last build that ran for a minute</td>
+            </tr>
+            <tr>
+              <td><code>$XDG_RUNTIME_DIR/crabshell/state.json</code></td>
+              <td>
+                <code>cx.persist</code> values between two shells. written on
+                reload, read once, then removed
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>$XDG_RUNTIME_DIR/crabshell/control-&lt;pid&gt;.sock</code>
+              </td>
+              <td>the socket the supervisor and the shell talk over</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        <code>XDG_CONFIG_HOME</code> and <code>XDG_CACHE_HOME</code> move the
+        first three.
+      </p>
 
-<h2 id="exit-codes">exit codes</h2>
-<div class="table">
-<table>
-<thead><tr><th>program</th><th>code</th><th>meaning</th></tr></thead>
-<tbody>
-<tr><td><code>crabshell</code></td><td>0</td><td>stopped: the shell exited on purpose, the session ended, or it got ctrl-c or sigterm</td></tr>
-<tr><td><code>crabshell</code></td><td>1</td><td>a command failed, and it says why</td></tr>
-<tr><td><code>crabshell</code></td><td>2</td><td>the command line didn't parse, so it prints the usage</td></tr>
-<tr><td>your shell</td><td>0</td><td>it saved its state for a reload</td></tr>
-<tr><td>your shell</td><td>1</td><td>the closure passed to <code>crabshell::run</code> panicked</td></tr>
-<tr><td>your shell</td><td>2</td><td>no compositor, a missing protocol, or the connection was lost</td></tr>
-</tbody>
-</table>
-</div>
-</main>
+      <h2 id="exit-codes">exit codes</h2>
+      <div class="table">
+        <table>
+          <thead>
+            <tr>
+              <th>program</th>
+              <th>code</th>
+              <th>meaning</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>crabshell</code></td>
+              <td>0</td>
+              <td>
+                stopped: the shell exited on purpose, the session ended, or it
+                got ctrl-c or sigterm
+              </td>
+            </tr>
+            <tr>
+              <td><code>crabshell</code></td>
+              <td>1</td>
+              <td>a command failed, and it says why</td>
+            </tr>
+            <tr>
+              <td><code>crabshell</code></td>
+              <td>2</td>
+              <td>the command line didn't parse, so it prints the usage</td>
+            </tr>
+            <tr>
+              <td>your shell</td>
+              <td>0</td>
+              <td>it saved its state for a reload</td>
+            </tr>
+            <tr>
+              <td>your shell</td>
+              <td>1</td>
+              <td>
+                the closure passed to <code>crabshell::run</code> panicked
+              </td>
+            </tr>
+            <tr>
+              <td>your shell</td>
+              <td>2</td>
+              <td>
+                no compositor, a missing protocol, or the connection was lost
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </main>
 
-<footer class="site">
-<p>next: <a href="config.html">writing a config</a>.</p>
-<p>crabshell is mit or apache-2.0 licensed. its colors are <a href="https://w0x7y.dev/rime" target="_blank" rel="noopener">rime</a> and rime frost, plus an orange made to match.</p>
-</footer>
+    <footer class="site">
+      <p>next: <a href="config.html">writing a config</a>.</p>
+      <p>
+        crabshell is mit or apache-2.0 licensed. its colors are
+        <a href="https://w0x7y.dev/rime" target="_blank" rel="noopener">rime</a>
+        and rime frost, plus an orange made to match.
+      </p>
+    </footer>
 
-<script src="data.js"></script>
-<script src="site.js"></script>
-</body>
+    <script src="data.js"></script>
+    <script src="site.js"></script>
+  </body>
 </html>
