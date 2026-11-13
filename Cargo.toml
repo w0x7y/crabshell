@@ -32,6 +32,9 @@ jiff = { version = "=0.2.42", default-features = false, features = ["std", "tz-s
 # Minimal features: what the audio service calls is in every libpulse since 5.0.
 libpulse-binding = { version = "=2.30.1", default-features = false }
 png = "=0.18.1"
+zune-jpeg = { version = "=0.5.15", default-features = false, features = ["std"] }
+gif = { version = "=0.14.2", default-features = false, features = ["std"] }
+image-webp = "=0.2.4"
 resvg = { version = "=0.49.0", default-features = false }
 # Without tokio, which only its stream API needs.
 inotify = { version = "=0.11.5", default-features = false }

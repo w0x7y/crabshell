@@ -7,7 +7,7 @@ use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use crabshell_ui::{IconPixels, IconSource};
+use crabshell_ui::{Fit, IconPixels, IconSource};
 use resvg::usvg;
 use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
 
@@ -21,6 +21,10 @@ const CAPACITY: usize = 128;
 /// past [`CAPACITY`]. Several windows draw in turn, so this spans a few
 /// frames of each.
 const RECENT: u64 = 16;
+
+/// How many bytes of pixels stay cached. Past that, as past [`CAPACITY`],
+/// what no recent draw used is dropped: a slideshow's pictures add up.
+const MAX_CACHED_BYTES: usize = 32 * 1024 * 1024;
 
 /// The largest SVG file read, in bytes.
 const MAX_SVG_BYTES: u64 = 1024 * 1024;
@@ -64,6 +68,16 @@ enum Key {
   File {
     path: PathBuf,
     side: u32,
+  },
+  /// An image file, scaled to `width` by `height` pixels, as it was when
+  /// last modified: a file rewritten in place, or one that appears after a
+  /// failure, is read again.
+  Image {
+    path: PathBuf,
+    modified: Option<std::time::SystemTime>,
+    width: u32,
+    height: u32,
+    fit: Fit,
   },
   /// Raw pixels, by their shared allocation: reading the bytes on every
   /// draw would cost as much as rasterizing them.
@@ -169,9 +183,7 @@ impl Icons {
         side,
       },
     };
-    let frame = self.frame;
     if !self.cache.contains_key(&key) {
-      self.rasterized += 1;
       let rasterized = match source {
         IconSource::Name(name) => match self.themes.find(&self.theme, name, size, scale) {
           Some(path) => rasterize_file(&path, side),
@@ -180,35 +192,77 @@ impl Icons {
         IconSource::File(path) => rasterize_file(path, side),
         IconSource::Pixels(pixels) => from_argb(pixels).and_then(|image| fit(&image, side)),
       };
-      let pixmap = match rasterized {
-        Ok(pixmap) => Some(pixmap),
-        Err(error) => {
-          if self.failed.len() > CAPACITY {
-            self.failed.clear();
-          }
-          if self.failed.insert(key.clone()) {
-            tracing::warn!(icon = %describe(source), %error, "couldn't draw an icon");
-          }
-          None
-        }
-      };
-      self.cache.insert(
-        key.clone(),
-        Entry {
-          pixmap,
-          used: frame,
-        },
-      );
+      self.store(key.clone(), rasterized, || describe(source));
     }
-    let entry = self.cache.get_mut(&key)?;
-    entry.used = frame;
+    self.used(&key)
+  }
+
+  /// The image file at `path` scaled to `width` by `height` pixels as
+  /// `fit` says, decoded on first use. `None` if it can't be loaded; that
+  /// is logged once.
+  pub(crate) fn image(
+    &mut self,
+    path: &Path,
+    width: u32,
+    height: u32,
+    fit: Fit,
+  ) -> Option<&Pixmap> {
+    let modified = std::fs::metadata(path)
+      .and_then(|metadata| metadata.modified())
+      .ok();
+    let key = Key::Image {
+      path: path.to_owned(),
+      modified,
+      width,
+      height,
+      fit,
+    };
+    if !self.cache.contains_key(&key) {
+      let rasterized = crate::images::rasterize(path, width, height, fit);
+      self.store(key.clone(), rasterized, || {
+        format!("image {}", path.display())
+      });
+    }
+    self.used(&key)
+  }
+
+  /// Caches what rasterizing `key` gave. A failure is cached as nothing
+  /// and logged once, with `what` it was.
+  fn store(&mut self, key: Key, rasterized: Result<Pixmap, String>, what: impl FnOnce() -> String) {
+    self.rasterized += 1;
+    let pixmap = match rasterized {
+      Ok(pixmap) => Some(pixmap),
+      Err(error) => {
+        if self.failed.len() > CAPACITY {
+          self.failed.clear();
+        }
+        if self.failed.insert(key.clone()) {
+          tracing::warn!(source = %what(), %error, "couldn't draw an icon or image");
+        }
+        None
+      }
+    };
+    let used = self.frame;
+    self.cache.insert(key, Entry { pixmap, used });
+  }
+
+  /// The cached pixmap for `key`, marked used by this draw.
+  fn used(&mut self, key: &Key) -> Option<&Pixmap> {
+    let entry = self.cache.get_mut(key)?;
+    entry.used = self.frame;
     entry.pixmap.as_ref()
   }
 
   /// Ends a draw: past [`CAPACITY`], icons no draw used within the last
   /// [`RECENT`] are dropped.
   pub(crate) fn end_frame(&mut self) {
-    if self.cache.len() > CAPACITY {
+    let bytes: usize = self
+      .cache
+      .values()
+      .filter_map(|entry| entry.pixmap.as_ref())
+      .map(|pixmap| pixmap.data().len())
+      .sum();
+    if self.cache.len() > CAPACITY || bytes > MAX_CACHED_BYTES {
       let oldest = self.frame.saturating_sub(RECENT - 1);
       self.cache.retain(|_, entry| entry.used >= oldest);
     }
@@ -236,7 +290,13 @@ fn rasterize_file(path: &Path, side: u32) -> Result<Pixmap, String> {
     .map(str::to_ascii_lowercase);
   match extension.as_deref() {
     Some("svg") => rasterize_svg(&read_capped(path, MAX_SVG_BYTES)?, side),
-    Some("png") => fit(&decode_png(&read_capped(path, MAX_PNG_BYTES)?)?, side),
+    Some("png") => {
+      let max_pixels = u64::from(MAX_PNG_SIDE) * u64::from(MAX_PNG_SIDE);
+      fit(
+        &decode_png(&read_capped(path, MAX_PNG_BYTES)?, MAX_PNG_SIDE, max_pixels)?,
+        side,
+      )
+    }
     _ => Err(String::from("only .svg and .png files can be icons")),
   }
 }
@@ -274,6 +334,20 @@ pub(crate) fn read_limited(reader: impl Read, cap: u64) -> Result<Vec<u8>, Strin
 }
 
 fn rasterize_svg(data: &[u8], side: u32) -> Result<Pixmap, String> {
+  let tree = svg_tree(data)?;
+  let size = tree.size();
+  let mut pixmap = empty(side)?;
+  let scale = side as f32 / size.width().max(size.height());
+  let transform = Transform::from_scale(scale, scale).post_translate(
+    (side as f32 - size.width() * scale) / 2.0,
+    (side as f32 - size.height() * scale) / 2.0,
+  );
+  resvg::render(&tree, transform, &mut pixmap.as_mut());
+  Ok(pixmap)
+}
+
+/// Parses an SVG that may only embed `data:` images and uses no filters.
+pub(crate) fn svg_tree(data: &[u8]) -> Result<usvg::Tree, String> {
   // An `<image>` naming a file would read anything on the machine, pipes
   // included, so only `data:` URLs are loaded.
   let options = usvg::Options {
@@ -289,31 +363,24 @@ fn rasterize_svg(data: &[u8], side: u32) -> Result<Pixmap, String> {
   if !tree.filters().is_empty() {
     return Err(String::from("the SVG uses a filter, which icons may not"));
   }
-  let size = tree.size();
-  let mut pixmap = empty(side)?;
-  let scale = side as f32 / size.width().max(size.height());
-  let transform = Transform::from_scale(scale, scale).post_translate(
-    (side as f32 - size.width() * scale) / 2.0,
-    (side as f32 - size.height() * scale) / 2.0,
-  );
-  resvg::render(&tree, transform, &mut pixmap.as_mut());
-  Ok(pixmap)
+  Ok(tree)
 }
 
-/// Decodes a PNG into a premultiplied pixmap of its own size.
-fn decode_png(data: &[u8]) -> Result<Pixmap, String> {
+/// Decodes a PNG of at most `max_side` pixels a side and `max_pixels` in
+/// all into a premultiplied pixmap of its own size.
+pub(crate) fn decode_png(data: &[u8], max_side: u32, max_pixels: u64) -> Result<Pixmap, String> {
   // Every row is checked against these too, so a lying header can't make
   // the decoder allocate more.
   let limits = png::Limits {
-    bytes: (MAX_PNG_SIDE * MAX_PNG_SIDE * 8) as usize,
+    bytes: max_pixels.saturating_mul(8).min(usize::MAX as u64) as usize,
   };
   let mut decoder = png::Decoder::new_with_limits(Cursor::new(data), limits);
   decoder.set_transformations(png::Transformations::normalize_to_color8());
   let mut reader = decoder.read_info().map_err(|error| error.to_string())?;
   let (width, height) = (reader.info().width, reader.info().height);
-  if width > MAX_PNG_SIDE || height > MAX_PNG_SIDE {
+  if width > max_side || height > max_side || u64::from(width) * u64::from(height) > max_pixels {
     return Err(format!(
-      "a {width}x{height} PNG is larger than {MAX_PNG_SIDE} pixels a side"
+      "a {width}x{height} PNG is larger than {max_side} pixels a side or {max_pixels} pixels"
     ));
   }
   let size = reader
@@ -379,7 +446,7 @@ fn from_argb(pixels: &IconPixels) -> Result<Pixmap, String> {
 }
 
 /// A pixmap from straight-alpha RGBA bytes.
-fn premultiplied(mut rgba: Vec<u8>, width: u32, height: u32) -> Result<Pixmap, String> {
+pub(crate) fn premultiplied(mut rgba: Vec<u8>, width: u32, height: u32) -> Result<Pixmap, String> {
   for pixel in rgba.as_chunks_mut::<4>().0 {
     let alpha = u16::from(pixel[3]);
     for channel in &mut pixel[..3] {
@@ -416,7 +483,7 @@ fn fit(image: &Pixmap, side: u32) -> Result<Pixmap, String> {
 
 /// `image` at half its size, rounded up, each pixel the average of the 2 by
 /// 2 block it covers. Premultiplied pixels average correctly.
-fn halve(image: &Pixmap) -> Result<Pixmap, String> {
+pub(crate) fn halve(image: &Pixmap) -> Result<Pixmap, String> {
   let (width, height) = (image.width(), image.height());
   let (half_width, half_height) = (width.div_ceil(2), height.div_ceil(2));
   let mut half = Pixmap::new(half_width, half_height).ok_or("an icon with no pixels")?;

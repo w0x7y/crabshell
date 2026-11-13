@@ -8,7 +8,8 @@
 
 use cosmic_text::{FontSystem, SwashCache, SwashContent, SwashImage};
 use crabshell_ui::{
-  Color, Content, IconView, NodeView, Rect, Size, Style, TextSystem, TextView, WindowView,
+  Color, Content, IconView, ImageView, NodeView, Rect, Size, Style, TextSystem, TextView,
+  WindowView,
 };
 use tiny_skia::{FillRule, Mask, Paint, PathBuilder, Pixmap, PixmapMut, PixmapPaint, Transform};
 
@@ -409,8 +410,8 @@ impl Painter<'_> {
     match node.content() {
       Content::Text(text) => self.text(pixmap, &text),
       Content::Icon(icon) => self.icon(pixmap, &icon),
-      // Drawn from the next commit on, once the decoders are in.
-      Content::Image(_) | Content::None => {}
+      Content::Image(image) => self.image(pixmap, &image),
+      Content::None => {}
     }
     if style.clips() {
       self.clipped_children(pixmap, node, style);
@@ -582,6 +583,43 @@ impl Painter<'_> {
           SwashContent::SubpixelMask => {}
         }
       }
+    }
+  }
+
+  /// An image, scaled to its box in pixels.
+  fn image(&mut self, pixmap: &mut PixmapMut<'_>, image: &ImageView<'_>) {
+    let Grid {
+      scale, left, top, ..
+    } = self.grid;
+    // Placed and sized apart, as an icon is, so an image past the
+    // window's edge is cut there instead of squeezed inside it.
+    let rect = image.rect;
+    let (width, height) = ((rect.width * scale).round(), (rect.height * scale).round());
+    let (x, y) = (
+      (rect.x * scale).round() - left,
+      (rect.y * scale).round() - top,
+    );
+    if !(width >= 1.0 && height >= 1.0) {
+      return;
+    }
+    let Some(area) = tiny_skia::Rect::from_xywh(x, y, width, height) else {
+      return;
+    };
+    if !visible(pixmap, area) {
+      return;
+    }
+    if let Some(pixels) = self
+      .icons
+      .image(image.path, width as u32, height as u32, image.fit)
+    {
+      pixmap.draw_pixmap(
+        x as i32,
+        y as i32,
+        pixels.as_ref(),
+        &PixmapPaint::default(),
+        Transform::identity(),
+        None,
+      );
     }
   }
 

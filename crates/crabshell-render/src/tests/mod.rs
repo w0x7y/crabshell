@@ -12,6 +12,7 @@ mod damage;
 mod glyphs;
 mod golden;
 mod icons;
+mod images;
 mod repaint;
 mod shapes;
 mod theme;

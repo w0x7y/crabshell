@@ -4,8 +4,8 @@
 use std::rc::Rc;
 
 use crabshell_ui::{
-  Align, Color, Column, Content, Font, Icon, IconPixels, IconSource, Menu, MenuEntry, MenuToggle,
-  Row, Stack, Style, Text, Window,
+  Align, Color, Column, Content, Fit, Font, Icon, IconPixels, IconSource, Image, Menu, MenuEntry,
+  MenuToggle, Row, Stack, Style, Text, Window,
 };
 
 use super::{Scene, assert_golden, fixture};
@@ -259,5 +259,27 @@ fn clipping_panel(scene: &Scene, label: String) -> crabshell_ui::PanelWindow {
 fn clip() {
   check("clip", 160.0, 40.0, |scene| {
     clipping_panel(scene, String::from("a label far too long to fit here"))
+  });
+}
+
+/// The stripes picture in 30 by 30 boxes: filled, contained and covered.
+#[test]
+fn images() {
+  check("images", 120.0, 40.0, |scene| {
+    let image = |fit| {
+      Image::new(fixture("stripes.png"))
+        .width(30)
+        .height(30)
+        .fit(fit)
+    };
+    scene.panel().style(BAR).child(
+      Row::new()
+        .padding(5, 5)
+        .gap(5)
+        .align(Align::Start)
+        .child(image(Fit::Fill))
+        .child(image(Fit::Contain))
+        .child(image(Fit::Cover)),
+    )
   });
 }

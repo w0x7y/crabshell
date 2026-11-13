@@ -74,6 +74,7 @@
 mod damage;
 mod draw;
 mod icons;
+mod images;
 mod theme;
 
 #[cfg(test)]
