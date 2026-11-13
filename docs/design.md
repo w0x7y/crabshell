@@ -660,7 +660,7 @@ One Cargo workspace with seven crates. Each crate owns one area, so an agent can
 
 - Pin every external version once, in the workspace `Cargo.toml` under `[workspace.dependencies]`.
 - Add a crate only when it saves more than about 200 lines or implements a protocol or file format. Add it to the table above first.
-- Rust crates must be MIT, Apache-2.0, BSD, ISC, Zlib or Unicode licensed. `cargo deny check licenses` enforces this.
+- Rust crates must be MIT, Apache-2.0, BSD, ISC, Zlib or Unicode licensed. `cargo deny check licenses` enforces this with `deny.toml`, in CI on every push.
 - System C libraries (libpulse, fontconfig) are linked dynamically. sctk speaks the Wayland protocol in pure Rust, so libwayland-client isn't linked.
 - Use edition 2024 on the latest stable toolchain. No nightly features.
 
@@ -845,7 +845,7 @@ Open questions:
 - [ ] Stay on libpulse after v0.1, or switch to native PipeWire?
 - [ ] When to add Hyprland and niri, and in which order.
 - [ ] Should the shell exit with status 1 when `f` panics for every output at startup? Today it keeps running with no bar, so Phase 5's fallback to last-good after three crashes never fires for that config.
-- [ ] Install cargo-deny and add a deny.toml. Until then the license policy is checked by hand with `cargo metadata`.
+- [x] Install cargo-deny and add a deny.toml. Done in Phase 6, and CI runs it.
 
 ## Sources
 
