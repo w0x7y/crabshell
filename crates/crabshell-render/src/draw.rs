@@ -413,7 +413,7 @@ impl Painter<'_> {
       Content::Image(image) => self.image(pixmap, &image),
       Content::None => {}
     }
-    if style.clips() {
+    if node.clips() {
       self.clipped_children(pixmap, node, style);
     } else {
       for child in node.children() {

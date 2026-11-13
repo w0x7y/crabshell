@@ -125,8 +125,8 @@ pub struct Padding {
 /// [`Text`](crate::Text) takes `color` and `font` from the nearest widget
 /// that sets them, starting with itself and going up. Nothing else inherits.
 ///
-/// `font`, `padding` and `clip` change the layout; the other fields only
-/// change how the widget is painted.
+/// `font`, `padding`, `clip`, `width` and `height` change the layout; the
+/// other fields only change how the widget is painted.
 ///
 /// ```
 /// use crabshell_ui::{Color, Font, Style};
@@ -158,6 +158,10 @@ pub struct Style {
   /// Whether the children are cut to the inside of the border, following
   /// the rounded corners, like CSS's `overflow: hidden`.
   pub clip: Option<bool>,
+  /// The width in logical pixels, instead of what the content needs.
+  pub width: Option<f32>,
+  /// The height in logical pixels, instead of what the content needs.
+  pub height: Option<f32>,
 }
 
 impl Style {
@@ -172,6 +176,8 @@ impl Style {
       border: None,
       opacity: None,
       clip: None,
+      width: None,
+      height: None,
     }
   }
 
@@ -244,6 +250,23 @@ impl Style {
     }
   }
 
+  /// Sets the width in logical pixels, instead of what the content needs.
+  pub const fn width(self, width: f32) -> Style {
+    Style {
+      width: Some(width),
+      ..self
+    }
+  }
+
+  /// Sets the height in logical pixels, instead of what the content
+  /// needs.
+  pub const fn height(self, height: f32) -> Style {
+    Style {
+      height: Some(height),
+      ..self
+    }
+  }
+
   /// This style with every field that `over` sets replaced by its value.
   /// Buttons use it to lay their hover and pressed styles over the normal
   /// one.
@@ -257,6 +280,8 @@ impl Style {
       border: or(over.border, self.border),
       opacity: or(over.opacity, self.opacity),
       clip: or(over.clip, self.clip),
+      width: or(over.width, self.width),
+      height: or(over.height, self.height),
     }
   }
 
@@ -265,10 +290,14 @@ impl Style {
     self.clip == Some(true)
   }
 
-  /// Whether the two styles lay out the same: same font, padding and
-  /// clipping, which changes how far the children's painting reaches.
+  /// Whether the two styles lay out the same: same font, padding, size
+  /// and clipping, which changes how far the children's painting reaches.
   pub(crate) fn same_layout(&self, other: &Style) -> bool {
-    self.font == other.font && self.padding == other.padding && self.clips() == other.clips()
+    self.font == other.font
+      && self.padding == other.padding
+      && self.width == other.width
+      && self.height == other.height
+      && self.clips() == other.clips()
   }
 }
 

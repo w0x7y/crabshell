@@ -15,6 +15,7 @@ use crabshell_reactive::{Signal, untrack};
 use crate::cx::Cx;
 use crate::geometry::{Point, Rect};
 use crate::keyboard::KeyHandler;
+use crate::scroll::PIXELS_PER_NOTCH;
 use crate::tree::{ButtonNode, Change, NodeId, NodeKind, Tree, borrow};
 use crate::window::Window;
 
@@ -140,11 +141,17 @@ impl Window {
   }
 
   /// The pointer scrolled. Once whole steps add up, the `on_scroll` of the
-  /// button under the pointer runs with them.
+  /// button under the pointer runs with them. Without one, the innermost
+  /// scroll view under the pointer scrolls.
   pub fn pointer_scroll(&self, delta: ScrollDelta) {
-    let call = borrow(&self.tree).scroll(delta);
-    if let Some(call) = call {
-      call.run();
+    let scrolled = borrow(&self.tree).scroll(delta);
+    match scrolled {
+      Some(Scrolled::Button(call)) => call.run(),
+      // A signal whose owner is gone just doesn't scroll.
+      Some(Scrolled::View(signal, offset)) => {
+        signal.try_set(offset);
+      }
+      None => {}
     }
   }
 
@@ -176,7 +183,7 @@ impl Tree {
       rect.width - 2.0 * border,
       rect.height - 2.0 * border,
     );
-    let children = if style.clips() && !inside.contains(point) {
+    let children = if node.clips() && !inside.contains(point) {
       Vec::new()
     } else {
       self.taffy.children(id).unwrap_or_default()
@@ -271,8 +278,11 @@ impl Tree {
     self.call(target, action)
   }
 
-  fn scroll(&mut self, delta: ScrollDelta) -> Option<Call> {
-    let target = self.pointer.hovered?;
+  fn scroll(&mut self, delta: ScrollDelta) -> Option<Scrolled> {
+    let handled = self.pointer.hovered.filter(|&id| self.scrolls(id));
+    let Some(target) = handled else {
+      return self.scroll_view(delta);
+    };
     // Steps down, rounded toward zero; the rest waits for more scrolling.
     let down = match delta {
       ScrollDelta::Wheel(value120) => {
@@ -295,7 +305,62 @@ impl Tree {
       return None;
     }
     // Handlers count up as positive.
-    self.call(target, Action::Scroll(down.saturating_neg()))
+    self
+      .call(target, Action::Scroll(down.saturating_neg()))
+      .map(Scrolled::Button)
+  }
+
+  /// Whether button `id` has an `on_scroll`.
+  fn scrolls(&self, id: NodeId) -> bool {
+    let Some(NodeKind::Button(button)) = self.node(id).map(|node| &node.kind) else {
+      return false;
+    };
+    untrack(|| {
+      button
+        .handlers
+        .try_with(|handlers| handlers.scroll.is_some())
+    })
+    .unwrap_or(false)
+  }
+
+  /// Scrolls the innermost scroll view under the pointer by `delta`, as
+  /// far as its content goes.
+  fn scroll_view(&mut self, delta: ScrollDelta) -> Option<Scrolled> {
+    let position = self.pointer.position?;
+    let id = self.scroll_view_at(self.root, position)?;
+    let pixels = match delta {
+      ScrollDelta::Wheel(value120) => value120 as f32 / VALUE120_PER_STEP as f32 * PIXELS_PER_NOTCH,
+      ScrollDelta::Pixels(pixels) if pixels.is_finite() => pixels,
+      ScrollDelta::Pixels(_) => return None,
+    };
+    let NodeKind::Scroll(scroll) = &self.node(id)?.kind else {
+      return None;
+    };
+    // From the signal, not the last layout, so scrolls and writes since
+    // then add up.
+    let now = untrack(|| scroll.signal.try_get())?;
+    let now = if now.is_nan() {
+      0.0
+    } else {
+      now.clamp(0.0, scroll.most)
+    };
+    let offset = (now + pixels).clamp(0.0, scroll.most);
+    (offset != now).then_some(Scrolled::View(scroll.signal, offset))
+  }
+
+  /// The innermost scroll view under `point` in `id`'s subtree, where its
+  /// ancestors' clips let the pointer reach.
+  fn scroll_view_at(&self, id: NodeId, point: Point) -> Option<NodeId> {
+    let node = self.node(id)?;
+    if !node.rect.is_some_and(|rect| rect.contains(point)) {
+      return None;
+    }
+    let children = self.taffy.children(id).unwrap_or_default();
+    children
+      .into_iter()
+      .rev()
+      .find_map(|child| self.scroll_view_at(child, point))
+      .or_else(|| matches!(node.kind, NodeKind::Scroll(_)).then_some(id))
   }
 
   /// A click on button `id`, as from the keyboard.
@@ -315,6 +380,14 @@ impl Tree {
       action,
     })
   }
+}
+
+/// What a scroll does, once the tree is released.
+enum Scrolled {
+  /// Runs a button's `on_scroll`.
+  Button(Call),
+  /// Writes a scroll view's offset.
+  View(Signal<f32>, f32),
 }
 
 #[derive(Clone, Copy)]

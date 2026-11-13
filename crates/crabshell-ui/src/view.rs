@@ -92,6 +92,12 @@ impl<'a> NodeView<'a> {
       .filter_map(move |id| NodeView::new(tree, id))
   }
 
+  /// Whether the node cuts its children to the inside of its border: a
+  /// clipping style or a scroll view.
+  pub fn clips(&self) -> bool {
+    self.node.clips()
+  }
+
   /// What the node draws besides its background and border.
   pub fn content(&self) -> Content<'a> {
     match &self.node.kind {

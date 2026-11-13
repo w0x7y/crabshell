@@ -426,3 +426,34 @@ fn an_image_is_its_size_and_a_new_picture_only_repaints() {
   h.frame(&window);
   assert_eq!(rect_at(&window, &[0, 1]).width, 50.0);
 }
+
+#[test]
+fn a_style_size_wins_over_the_content_and_changing_it_lays_out_again() {
+  let mut h = Harness::new();
+  let tall = h.cx.signal(false);
+  let row = Row::new()
+    .align(Align::Start)
+    .child(
+      Stack::new()
+        .style(move || {
+          Style::new()
+            .width(50.0)
+            .height(if tall.get() { 25.0 } else { 20.0 })
+        })
+        .child(Icon::new("x").size(10)),
+    )
+    // Smaller than its 30-pixel icon, which overflows.
+    .child(
+      Stack::new()
+        .style(Style::new().width(10.0).height(10.0))
+        .child(Icon::new("x").size(30)),
+    );
+  let window = h.window(h.panel().child(row), 200.0, 100.0);
+  assert_eq!(rect_at(&window, &[0, 0]), Rect::new(0.0, 0.0, 50.0, 20.0));
+  assert_eq!(rect_at(&window, &[0, 1]), Rect::new(50.0, 0.0, 10.0, 10.0));
+  tall.set(true);
+  h.runtime.flush();
+  assert!(window.needs_layout());
+  h.frame(&window);
+  assert_eq!(rect_at(&window, &[0, 0]).height, 25.0);
+}

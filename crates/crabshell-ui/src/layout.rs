@@ -15,8 +15,8 @@
 use cosmic_text::FontSystem;
 use taffy::prelude::{TaffyGridLine, TaffyGridSpan};
 use taffy::{
-  AlignItems, AvailableSpace, Display, FlexDirection, GridPlacement, JustifyContent,
-  LengthPercentage, Line,
+  AlignItems, AvailableSpace, Dimension, Display, FlexDirection, GridPlacement, JustifyContent,
+  LengthPercentage, Line, Overflow,
 };
 
 use crate::geometry::{Point, Rect};
@@ -34,6 +34,8 @@ enum Parent {
   Stack,
   /// The window's one-cell grid.
   Window,
+  /// A scroll view, whose child keeps its full height.
+  Scroll,
 }
 
 impl Tree {
@@ -132,6 +134,7 @@ impl Tree {
     let child_parent = match node.kind {
       NodeKind::Root => Parent::Window,
       NodeKind::Stack => Parent::Stack,
+      NodeKind::Scroll(_) => Parent::Scroll,
       _ => Parent::Flex,
     };
 
@@ -169,9 +172,35 @@ impl Tree {
       (layout.content_box_height()).max(0.0),
     );
 
+    // A scroll view shows its child moved up by the offset, clamped so
+    // neither end scrolls past the box.
+    let mut origin = Point::new(rect.x, rect.y);
+    if let Some(NodeKind::Scroll(scroll)) = self.node(id).map(|node| &node.kind) {
+      let bottom = self
+        .taffy
+        .children(id)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|child| self.taffy.layout(child).ok())
+        .map(|child| {
+          child.location.y + child.size.height + layout.padding.bottom + layout.border.bottom
+        })
+        .fold(0.0, f32::max);
+      let most = (bottom - layout.size.height).max(0.0);
+      let shown = if scroll.offset.is_nan() {
+        0.0
+      } else {
+        scroll.offset.clamp(0.0, most)
+      };
+      origin.y -= shown;
+      if let Some(NodeKind::Scroll(scroll)) = self.node_mut(id).map(|node| &mut node.kind) {
+        scroll.shown = shown;
+        scroll.most = most;
+      }
+    }
     let mut children = Rect::default();
     for child in self.taffy.children(id).unwrap_or_default() {
-      children = children.union(self.place(child, Point::new(rect.x, rect.y), fonts));
+      children = children.union(self.place(child, origin, fonts));
     }
 
     let Some(node) = self.taffy.get_node_context_mut(id) else {
@@ -209,7 +238,7 @@ impl Tree {
       Some(_) => {}
     }
     node.drawn = drawn;
-    let clips = node.effective_style().clips();
+    let clips = node.clips();
     let children = if clips {
       children.intersect(rect)
     } else {
@@ -312,6 +341,15 @@ fn taffy_style(node: &Node, parent: Parent, size: crate::Size) -> taffy::Style {
       };
     }
     NodeKind::Stack => style.display = Display::Grid,
+    NodeKind::Scroll(_) => {
+      style.flex_direction = FlexDirection::Column;
+      // As in CSS, a scroll container isn't held to its content's size.
+      style.overflow = taffy::Point {
+        x: Overflow::Visible,
+        y: Overflow::Scroll,
+      };
+      style.scrollbar_width = 0.0;
+    }
     NodeKind::Spacer => style.flex_grow = 1.0,
     NodeKind::Button(_) => {
       style.align_items = AlignItems::CENTER;
@@ -319,7 +357,25 @@ fn taffy_style(node: &Node, parent: Parent, size: crate::Size) -> taffy::Style {
     }
     NodeKind::Text(_) | NodeKind::Icon(_) | NodeKind::Image(_) => {}
   }
-  if parent != Parent::Flex {
+  // A size the style sets wins over the content's, but never over the
+  // window's own.
+  let own = node.effective_style();
+  if !matches!(node.kind, NodeKind::Root) {
+    let length = |value: Option<f32>| match value {
+      Some(value) if value.is_finite() => Dimension::length(value.max(0.0)),
+      _ => Dimension::auto(),
+    };
+    style.size = taffy::Size {
+      width: length(own.width),
+      height: length(own.height),
+    };
+  }
+  if parent == Parent::Scroll {
+    // A child with a height of its own would otherwise shrink to what its
+    // content needs.
+    style.flex_shrink = 0.0;
+  }
+  if matches!(parent, Parent::Stack | Parent::Window) {
     let cell = Line {
       start: GridPlacement::from_line_index(1),
       end: GridPlacement::from_span(1),

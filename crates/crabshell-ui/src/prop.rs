@@ -89,6 +89,7 @@ value_props!(
   Option<Region>,
   PathBuf,
   Fit,
+  Option<usize>,
   IconSource,
   Vec<MenuEntry>,
 );

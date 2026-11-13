@@ -15,6 +15,7 @@ use crate::input::{Handler, Handlers};
 use crate::keyboard::KeyEvent;
 use crate::keyed::{self, KeyedMount};
 use crate::prop::{IntoProp, Prop};
+use crate::scroll::ScrollProps;
 use crate::style::Style;
 
 /// Something that can be placed in a window: one of this crate's widgets, or
@@ -60,7 +61,9 @@ pub(crate) enum ElementKind {
   Text(TextProps),
   Icon(IconProps),
   Image(ImageProps),
-  Button(ButtonProps),
+  // Boxed: a button's handlers make it the largest by far.
+  Button(Box<ButtonProps>),
+  Scroll(ScrollProps),
 }
 
 /// One entry of a container's child list: a single widget, or a keyed list
@@ -653,7 +656,7 @@ impl Widget for Button {
     Element {
       name: "Button",
       style: self.style,
-      kind: ElementKind::Button(self.button),
+      kind: ElementKind::Button(Box::new(self.button)),
       children: vec![ElementChild::One(Box::new(self.child.into_element()))],
     }
   }

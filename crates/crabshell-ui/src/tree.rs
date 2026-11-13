@@ -22,7 +22,7 @@ use crate::geometry::{Rect, Size};
 use crate::input::{Handlers, Pointer};
 use crate::keyboard::Keyboard;
 use crate::keyed::KeyedSlot;
-use crate::prop::{Prop, PropKind};
+use crate::prop::{IntoProp, Prop, PropKind};
 use crate::region::Region;
 use crate::style::{Padding, Style};
 use crate::text::TextNode;
@@ -111,6 +111,7 @@ pub(crate) enum NodeKind {
   Text(TextNode),
   Icon(IconNode),
   Image(ImageNode),
+  Scroll(ScrollNode),
   Button(ButtonNode),
 }
 
@@ -122,6 +123,17 @@ pub(crate) struct Flex {
   pub(crate) padding_horizontal: Option<u32>,
   pub(crate) align: Align,
   pub(crate) justify: Justify,
+}
+
+pub(crate) struct ScrollNode {
+  /// Written by scrolling, read for the offset.
+  pub(crate) signal: Signal<f32>,
+  /// The offset asked for; layout shows it clamped to the content.
+  pub(crate) offset: f32,
+  /// The offset shown at the last layout.
+  pub(crate) shown: f32,
+  /// How far the child can scroll, from the last layout.
+  pub(crate) most: f32,
 }
 
 pub(crate) struct ImageNode {
@@ -234,6 +246,12 @@ impl Node {
       }
     }
     style
+  }
+
+  /// Whether the node cuts its children to the inside of its border: a
+  /// clipping style or a scroll view.
+  pub(crate) fn clips(&self) -> bool {
+    self.effective_style().clips() || matches!(self.kind, NodeKind::Scroll(_))
   }
 
   /// Whether the node draws anything itself, in its style in effect. The
@@ -405,6 +423,12 @@ impl Tree {
       ElementKind::Stack => NodeKind::Stack,
       ElementKind::Spacer => NodeKind::Spacer,
       ElementKind::Text(_) => NodeKind::Text(TextNode::new()),
+      ElementKind::Scroll(props) => NodeKind::Scroll(ScrollNode {
+        signal: props.offset.unwrap_or_else(|| cx.signal(0.0)),
+        offset: 0.0,
+        shown: 0.0,
+        most: 0.0,
+      }),
       ElementKind::Image(_) => NodeKind::Image(ImageNode {
         source: None,
         width: crate::Image::DEFAULT_SIZE,
@@ -477,6 +501,22 @@ impl Tree {
         self.bind_opt(id, props.max_lines, "max_lines", |tree, id, value| {
           tree.update_text(id, |text| text.set_max_lines(value))
         });
+      }
+      ElementKind::Scroll(_) => {
+        if let Some(NodeKind::Scroll(scroll)) = self.node(id).map(|node| &node.kind) {
+          let signal = scroll.signal;
+          self.bind(
+            id,
+            (move || signal.get()).into_prop(),
+            "offset",
+            |tree, id, value| {
+              tree.update(id, |node| match &mut node.kind {
+                NodeKind::Scroll(scroll) => replace(&mut scroll.offset, value),
+                _ => Change::None,
+              });
+            },
+          );
+        }
       }
       ElementKind::Image(props) => {
         self.bind(id, props.source, "image", |tree, id, value| {

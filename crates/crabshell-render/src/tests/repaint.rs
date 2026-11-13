@@ -572,3 +572,60 @@ fn repainting_inside_a_clip_matches_drawing_everything() {
     }
   }
 }
+
+#[test]
+fn scrolling_repaints_match_drawing_everything() {
+  let mut scene = Scene::new();
+  let offset = scene.cx.signal(0.0);
+  let column = ["one", "two", "three", "four", "five", "six"]
+    .into_iter()
+    .fold(crabshell_ui::Column::new(), |column, label| {
+      column.child(
+        Row::new()
+          .style(Style::new().background(Color::hex("#45475a")).padding(4, 6))
+          .child(Text::new(label)),
+      )
+    });
+  let panel = scene
+    .panel()
+    .style(
+      Style::new()
+        .background(Color::rgb(30, 30, 46))
+        .color(Color::hex("#cdd6f4")),
+    )
+    .child(
+      Row::new().padding(6, 10).align(Align::Start).child(
+        crabshell_ui::ScrollView::new(column)
+          .offset(offset)
+          .style(Style::new().height(40.0).radius(6.0)),
+      ),
+    );
+  let window = scene.window(panel, 120.0, 60.0);
+  // The view ends at y 46; the rows below it are cut off, so the window's
+  // background shows there.
+  let full = scene.full(&window, 1.0);
+  let at = ((52 * full.width + 20) * 4) as usize;
+  assert_eq!(
+    &full.pixels[at..at + 3],
+    &[30, 30, 46],
+    "rows below the view"
+  );
+  for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+    offset.set(0.0);
+    scene.frame(&window);
+    window.take_damage();
+    let mut history = DamageHistory::new();
+    let mut buffer = Buffer::new(&window, scale);
+    repaint(&mut scene, &window, &[], &mut history, &mut buffer);
+    for step in [7.5, 30.0, 1000.0, 3.0] {
+      offset.set(step);
+      scene.frame(&window);
+      let damage = window.take_damage();
+      repaint(&mut scene, &window, &damage, &mut history, &mut buffer);
+      assert!(
+        buffer.pixels == scene.full(&window, scale).pixels,
+        "scrolled to {step} at scale {scale}, a repaint differs from a full draw"
+      );
+    }
+  }
+}
