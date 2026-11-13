@@ -844,6 +844,75 @@ fn an_input_method_composes_and_commits_into_a_text_field() {
   );
 }
 
+#[test]
+#[ignore = "needs headless Sway and wl-clipboard"]
+fn ctrl_c_copies_a_field_to_other_programs_and_ctrl_v_pastes_from_them() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let mut keyboard = VirtualKeyboard::new(&sway);
+  let setup = Setup {
+    keyboard: KeyboardFocus::Exclusive,
+    field: true,
+    ..PLAIN
+  };
+  let mut shell = Shell::build(&sway, setup);
+  shell.wait_for_bar("HEADLESS-1");
+  let typed = shell.knobs.typed;
+  for key in [keys::H, keys::E, keys::L, keys::L, keys::O] {
+    keyboard.tap(key);
+  }
+  run_until(&mut shell.event_loop, "the typing", |_| {
+    typed.get_untracked() == "hello"
+  });
+  keyboard.ctrl(keys::A);
+  keyboard.ctrl(keys::C);
+  settle(&mut shell.event_loop);
+
+  // wl-paste waits for the shell to write, so the loop runs meanwhile.
+  let paste = sway
+    .client("wl-paste")
+    .arg("--no-newline")
+    .stdout(std::process::Stdio::piped())
+    .spawn()
+    .expect("wl-paste runs");
+  let paste = Rc::new(RefCell::new(Some(paste)));
+  let output = Rc::new(RefCell::new(None));
+  let (child, out) = (Rc::clone(&paste), Rc::clone(&output));
+  run_until(&mut shell.event_loop, "wl-paste to finish", move |_| {
+    let mut child = child.borrow_mut();
+    match child.as_mut().map(std::process::Child::try_wait) {
+      Some(Ok(Some(_))) => {
+        let done = child.take().expect("still held");
+        *out.borrow_mut() = Some(done.wait_with_output().expect("its output"));
+        true
+      }
+      _ => false,
+    }
+  });
+  let pasted = output.borrow_mut().take().expect("wl-paste finished");
+  assert_eq!(String::from_utf8_lossy(&pasted.stdout), "hello");
+
+  let mut copy = sway
+    .client("wl-copy")
+    .args(["--foreground", "--paste-once", "pasted"])
+    .spawn()
+    .expect("wl-copy runs");
+  // The shell hears of wl-copy's offer in its own time: until then,
+  // Ctrl+V pastes what the field itself copied.
+  // Retried a few times a second, so pastes don't race each other.
+  let mut last = std::time::Instant::now() - Duration::from_secs(1);
+  run_until(&mut shell.event_loop, "the paste from wl-copy", |_| {
+    if typed.get_untracked() != "pasted" && last.elapsed() > Duration::from_millis(300) {
+      last = std::time::Instant::now();
+      keyboard.ctrl(keys::A);
+      keyboard.ctrl(keys::V);
+    }
+    typed.get_untracked() == "pasted"
+  });
+  let _ = copy.kill();
+  let _ = copy.wait();
+}
+
 /// The popups held, in the order they opened. Only one chain is ever
 /// open, so each opened from the one before.
 fn popups(platform: &Platform) -> Vec<WindowId> {

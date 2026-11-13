@@ -31,6 +31,7 @@ use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1:
 use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
+use crate::clipboard::Offered;
 use crate::events::{self, Event, Listener};
 use crate::keyboard::SeatKeyboard;
 use crate::outputs::OutputInfo;
@@ -40,6 +41,8 @@ use crate::scale::Scale;
 use crate::surface::{self, Role, Surface};
 use crate::text_input::SeatTextInput;
 use crate::windows::{Entry, WindowId, Windows};
+use smithay_client_toolkit::data_device_manager::DataDeviceManagerState;
+use smithay_client_toolkit::data_device_manager::data_device::DataDevice;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
 
 /// A new window's first shared-memory pool, in bytes: a 1920 by 30 bar.
@@ -308,6 +311,11 @@ pub struct Platform {
   pub(crate) windows: Windows<Surface, WlOutput>,
   pub(crate) pointers: Vec<SeatPointer>,
   pub(crate) keyboards: Vec<SeatKeyboard>,
+  /// Present when the compositor offers a clipboard.
+  pub(crate) data_devices_manager: Option<DataDeviceManagerState>,
+  pub(crate) data_devices: Vec<(WlSeat, DataDevice)>,
+  /// The text this shell offers as the clipboard's.
+  pub(crate) offered: Option<Offered>,
   /// Present when the compositor relays input methods.
   pub(crate) text_inputs_manager: Option<ZwpTextInputManagerV3>,
   pub(crate) text_inputs: Vec<SeatTextInput>,
@@ -359,6 +367,7 @@ impl Platform {
       }
     };
     let text_inputs_manager = globals.bind(&qh, 1..=1, ()).ok();
+    let data_devices_manager = DataDeviceManagerState::bind(globals, &qh).ok();
     tracing::debug!(
       fractional = fractional.is_some(),
       text_input = text_inputs_manager.is_some(),
@@ -385,6 +394,9 @@ impl Platform {
       pointers: Vec::new(),
       keyboards: Vec::new(),
       text_inputs_manager,
+      data_devices_manager,
+      data_devices: Vec::new(),
+      offered: None,
       text_inputs: Vec::new(),
       last_button: None,
       renderer: Renderer::new(),
@@ -396,6 +408,7 @@ impl Platform {
     for seat in platform.seats.seats() {
       let qh = platform.qh.clone();
       platform.add_text_input(&qh, &seat);
+      platform.add_data_device(&qh, &seat);
     }
     Ok(platform)
   }

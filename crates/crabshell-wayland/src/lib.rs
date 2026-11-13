@@ -65,6 +65,7 @@
 #![warn(missing_docs)]
 
 mod buffers;
+mod clipboard;
 mod events;
 mod handlers;
 mod keyboard;

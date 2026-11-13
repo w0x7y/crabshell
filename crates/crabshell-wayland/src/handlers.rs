@@ -226,6 +226,7 @@ impl SeatHandler for Platform {
 
   fn new_seat(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: WlSeat) {
     self.add_text_input(qh, &seat);
+    self.add_data_device(qh, &seat);
   }
 
   fn new_capability(
@@ -260,6 +261,7 @@ impl SeatHandler for Platform {
     self.drop_pointers(&seat);
     self.drop_keyboards(&seat);
     self.drop_text_input(&seat);
+    self.drop_data_device(&seat);
   }
 }
 
@@ -304,6 +306,7 @@ impl Platform {
         keyboard,
         focus: None,
         modifiers: Modifiers::default(),
+        serial: 0,
       }),
       Err(error) => tracing::warn!(%error, "couldn't get the seat's keyboard"),
     }

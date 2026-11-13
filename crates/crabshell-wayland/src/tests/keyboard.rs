@@ -5,6 +5,29 @@ use smithay_client_toolkit::seat::keyboard::{KeyEvent, Keysym};
 
 use crate::keyboard::{key, key_event};
 
+#[test]
+fn shortcuts_in_another_script_go_by_the_us_letter_at_that_place() {
+  let ctrl = Modifiers {
+    ctrl: true,
+    ..Modifiers::default()
+  };
+  // Hebrew's bet sits where C is.
+  let bet = KeyEvent {
+    raw_code: 46,
+    ..event(Keysym::hebrew_bet, Some("ב"))
+  };
+  assert_eq!(key_event(&bet, ctrl, false).key, Key::Character('c'));
+  // Without Ctrl it is the letter it types.
+  assert_eq!(
+    key_event(&bet, Modifiers::default(), false).key,
+    Key::Character('ב')
+  );
+  assert_eq!(crate::keyboard::us_letter(16), Some('q'));
+  assert_eq!(crate::keyboard::us_letter(50), Some('m'));
+  assert_eq!(crate::keyboard::us_letter(51), None);
+  assert_eq!(crate::keyboard::us_letter(2), None);
+}
+
 fn event(keysym: Keysym, utf8: Option<&str>) -> KeyEvent {
   KeyEvent {
     time: 0,

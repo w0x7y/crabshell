@@ -5,7 +5,7 @@
 //! key with a calloop timer that exists only while the key is down, so an
 //! idle keyboard wakes nothing.
 
-use crabshell_ui::{Key, KeyEvent, Modifiers};
+use crabshell_ui::{Clipboard, Key, KeyEvent, Modifiers};
 use smithay_client_toolkit::reexports::client::protocol::{
   wl_keyboard::WlKeyboard, wl_seat::WlSeat, wl_surface::WlSurface,
 };
@@ -22,6 +22,8 @@ pub(crate) struct SeatKeyboard {
   /// The window it is in.
   pub(crate) focus: Option<WindowId>,
   pub(crate) modifiers: Modifiers,
+  /// The serial of the last key press, which taking the clipboard needs.
+  pub(crate) serial: u32,
 }
 
 /// The ui's event for sctk's `event`.
@@ -30,8 +32,17 @@ pub(crate) fn key_event(
   modifiers: Modifiers,
   repeat: bool,
 ) -> KeyEvent {
+  let mut named = key(event.keysym);
+  // Shortcuts go by the key's place on a US keyboard when the layout puts
+  // a letter from another script there, so Ctrl+C copies in Hebrew too.
+  if (modifiers.ctrl || modifiers.alt || modifiers.logo)
+    && matches!(named, Key::Character(c) if !c.is_ascii())
+    && let Some(latin) = us_letter(event.raw_code)
+  {
+    named = Key::Character(latin);
+  }
   KeyEvent {
-    key: key(event.keysym),
+    key: named,
     // Enter, Backspace and Ctrl combinations "type" control characters.
     text: event
       .utf8
@@ -40,6 +51,15 @@ pub(crate) fn key_event(
     modifiers,
     repeat,
   }
+}
+
+/// The letter a US keyboard has at Linux key code `code`.
+pub(crate) fn us_letter(code: u32) -> Option<char> {
+  const ROWS: [(u32, &str); 3] = [(16, "qwertyuiop"), (30, "asdfghjkl"), (44, "zxcvbnm")];
+  ROWS.iter().find_map(|&(first, letters)| {
+    let index = usize::try_from(code.checked_sub(first)?).ok()?;
+    letters.chars().nth(index)
+  })
 }
 
 /// The ui's name for `keysym`.
@@ -84,8 +104,17 @@ impl Platform {
       return;
     };
     let event = key_event(event, ours.modifiers, repeat);
-    if let Some(entry) = ours.focus.and_then(|id| self.windows.get(id)) {
-      entry.window.key(&event);
+    let (seat, serial) = (ours.seat.clone(), ours.serial);
+    let Some(id) = ours.focus else {
+      return;
+    };
+    let Some(entry) = self.windows.get(id) else {
+      return;
+    };
+    match entry.window.key(&event) {
+      Some(Clipboard::Copy(text)) => self.copy(&seat, serial, text),
+      Some(Clipboard::Paste) => self.paste(&seat, id),
+      None => {}
     }
   }
 
@@ -163,9 +192,16 @@ impl KeyboardHandler for Platform {
     _: &Connection,
     _: &QueueHandle<Self>,
     keyboard: &WlKeyboard,
-    _: u32,
+    serial: u32,
     event: keyboard::KeyEvent,
   ) {
+    if let Some(ours) = self
+      .keyboards
+      .iter_mut()
+      .find(|ours| ours.keyboard == *keyboard)
+    {
+      ours.serial = serial;
+    }
     self.key(keyboard, &event, false);
   }
 

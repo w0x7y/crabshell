@@ -242,6 +242,18 @@ impl Sway {
     EventLoop::with_connection(self.connection()).expect("sway offers what Crabshell needs")
   }
 
+  /// A command for `program` that talks to this Sway and nothing else.
+  #[allow(dead_code, reason = "crabshell's tests don't use it")]
+  pub fn client(&self, program: &str) -> Command {
+    let mut command = Command::new(program);
+    command
+      .env_clear()
+      .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+      .env("XDG_RUNTIME_DIR", &self.dir)
+      .env("WAYLAND_DISPLAY", &self.display);
+    command
+  }
+
   /// A screenshot of `output` from grim, as RGBA.
   pub fn screenshot(&self, output: &str) -> Image {
     let shot = Command::new("grim")
@@ -482,9 +494,17 @@ const KEYMAP: &str = "xkb_keymap {
 pub mod keys {
   pub const ESC: u32 = 1;
   pub const TAB: u32 = 15;
+  pub const E: u32 = 18;
+  pub const O: u32 = 24;
   pub const ENTER: u32 = 28;
+  pub const LEFT_CTRL: u32 = 29;
   pub const A: u32 = 30;
+  pub const H: u32 = 35;
+  pub const L: u32 = 38;
   pub const LEFT_SHIFT: u32 = 42;
+  pub const X: u32 = 45;
+  pub const C: u32 = 46;
+  pub const V: u32 = 47;
   pub const SPACE: u32 = 57;
 }
 
@@ -540,6 +560,21 @@ impl VirtualKeyboard {
   /// Removes the virtual keyboard, so the seat has none.
   pub fn unplug(&mut self) {
     self.keyboard.destroy();
+    self
+      .queue
+      .roundtrip(&mut Helper)
+      .expect("the helper's roundtrip");
+  }
+
+  /// Presses and releases `key` with Ctrl held. A virtual keyboard sends
+  /// its own modifier state; Control is the third modifier of the keymap.
+  pub fn ctrl(&mut self, key: u32) {
+    const CONTROL: u32 = 4;
+    self.press(keys::LEFT_CTRL);
+    self.keyboard.modifiers(CONTROL, 0, 0, 0);
+    self.tap(key);
+    self.release(keys::LEFT_CTRL);
+    self.keyboard.modifiers(0, 0, 0, 0);
     self
       .queue
       .roundtrip(&mut Helper)
