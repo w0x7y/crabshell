@@ -32,6 +32,7 @@ use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
 use crate::events::{self, Event, Listener};
+use crate::keyboard::SeatKeyboard;
 use crate::outputs::OutputInfo;
 use crate::pointer::Cursor;
 use crate::popups::{WM_BASE_VERSION, WmBase};
@@ -303,6 +304,7 @@ pub struct Platform {
   listener: Option<Listener<Platform>>,
   pub(crate) windows: Windows<Surface, WlOutput>,
   pub(crate) pointers: Vec<SeatPointer>,
+  pub(crate) keyboards: Vec<SeatKeyboard>,
   /// The seat and serial of the last button press or release on one of
   /// the windows, which a popup's grab needs.
   pub(crate) last_button: Option<(WlSeat, u32)>,
@@ -373,6 +375,7 @@ impl Platform {
       listener: None,
       windows: Windows::new(),
       pointers: Vec::new(),
+      keyboards: Vec::new(),
       last_button: None,
       renderer: Renderer::new(),
       icon_theme: None,

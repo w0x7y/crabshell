@@ -67,6 +67,7 @@
 mod buffers;
 mod events;
 mod handlers;
+mod keyboard;
 mod outputs;
 mod pacing;
 mod platform;

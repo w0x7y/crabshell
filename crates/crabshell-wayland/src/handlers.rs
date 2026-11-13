@@ -3,7 +3,7 @@
 //! is for and updates it. Nothing here trusts the compositor's numbers
 //! without checking them.
 
-use crabshell_ui::Size;
+use crabshell_ui::{Modifiers, Size};
 use smithay_client_toolkit::compositor::CompositorHandler;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::client::protocol::{
@@ -31,6 +31,7 @@ use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
 use crate::events::Event;
+use crate::keyboard::SeatKeyboard;
 use crate::outputs::describe;
 use crate::platform::{Platform, SeatPointer};
 use crate::pointer::{self, Cursor};
@@ -232,7 +233,36 @@ impl SeatHandler for Platform {
     seat: WlSeat,
     capability: Capability,
   ) {
-    if capability != Capability::Pointer || self.pointers.iter().any(|ours| ours.seat == seat) {
+    match capability {
+      Capability::Pointer => self.add_pointer(qh, seat),
+      Capability::Keyboard => self.add_keyboard(qh, seat),
+      _ => {}
+    }
+  }
+
+  fn remove_capability(
+    &mut self,
+    _: &Connection,
+    _: &QueueHandle<Self>,
+    seat: WlSeat,
+    capability: Capability,
+  ) {
+    match capability {
+      Capability::Pointer => self.drop_pointers(&seat),
+      Capability::Keyboard => self.drop_keyboards(&seat),
+      _ => {}
+    }
+  }
+
+  fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: WlSeat) {
+    self.drop_pointers(&seat);
+    self.drop_keyboards(&seat);
+  }
+}
+
+impl Platform {
+  fn add_pointer(&mut self, qh: &QueueHandle<Self>, seat: WlSeat) {
+    if self.pointers.iter().any(|ours| ours.seat == seat) {
       return;
     }
     let pointer = match self.seats.get_pointer(qh, &seat) {
@@ -254,24 +284,37 @@ impl SeatHandler for Platform {
     });
   }
 
-  fn remove_capability(
-    &mut self,
-    _: &Connection,
-    _: &QueueHandle<Self>,
-    seat: WlSeat,
-    capability: Capability,
-  ) {
-    if capability != Capability::Pointer {
+  fn add_keyboard(&mut self, qh: &QueueHandle<Self>, seat: WlSeat) {
+    if self.keyboards.iter().any(|ours| ours.seat == seat) {
       return;
     }
-    while let Some(index) = self.pointers.iter().position(|ours| ours.seat == seat) {
+    let keyboard = self.seats.get_keyboard_with_repeat(
+      qh,
+      &seat,
+      None,
+      self.loop_handle(),
+      Box::new(|platform: &mut Platform, keyboard, event| platform.key(keyboard, &event, true)),
+    );
+    match keyboard {
+      Ok(keyboard) => self.keyboards.push(SeatKeyboard {
+        seat,
+        keyboard,
+        focus: None,
+        modifiers: Modifiers::default(),
+      }),
+      Err(error) => tracing::warn!(%error, "couldn't get the seat's keyboard"),
+    }
+  }
+
+  fn drop_pointers(&mut self, seat: &WlSeat) {
+    while let Some(index) = self.pointers.iter().position(|ours| ours.seat == *seat) {
       self.drop_pointer(index);
     }
   }
 
-  fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: WlSeat) {
-    while let Some(index) = self.pointers.iter().position(|ours| ours.seat == seat) {
-      self.drop_pointer(index);
+  fn drop_keyboards(&mut self, seat: &WlSeat) {
+    while let Some(index) = self.keyboards.iter().position(|ours| ours.seat == *seat) {
+      self.drop_keyboard(index);
     }
   }
 }

@@ -1,6 +1,8 @@
 //! A private headless Sway for one test, and helpers to drive the loop.
 //! `crabshell`'s headless tests include this file too.
 
+use std::fs::File;
+use std::os::fd::AsFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -10,9 +12,13 @@ use std::time::{Duration, Instant};
 
 use crabshell_wayland::{EventLoop, Platform};
 use smithay_client_toolkit::reexports::client::globals::{GlobalListContents, registry_queue_init};
-use smithay_client_toolkit::reexports::client::protocol::{wl_pointer, wl_registry};
+use smithay_client_toolkit::reexports::client::protocol::{wl_pointer, wl_registry, wl_seat};
 use smithay_client_toolkit::reexports::client::{
   Connection, Dispatch, EventQueue, QueueHandle, delegate_noop,
+};
+use smithay_client_toolkit::reexports::protocols_misc::zwp_virtual_keyboard_v1::client::{
+  zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
+  zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
 };
 use smithay_client_toolkit::reexports::protocols_wlr::virtual_pointer::v1::client::{
   zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
@@ -384,6 +390,9 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Helper {
 }
 
 delegate_noop!(Helper: ZwlrVirtualPointerManagerV1);
+delegate_noop!(Helper: ZwpVirtualKeyboardManagerV1);
+delegate_noop!(Helper: ZwpVirtualKeyboardV1);
+delegate_noop!(Helper: ignore wl_seat::WlSeat);
 delegate_noop!(Helper: ZwlrVirtualPointerV1);
 
 impl VirtualPointer {
@@ -449,6 +458,99 @@ impl VirtualPointer {
       self.pointer.button(0, BTN_LEFT, state);
       self.pointer.frame();
     }
+    self
+      .queue
+      .roundtrip(&mut Helper)
+      .expect("the helper's roundtrip");
+  }
+}
+
+/// The US layout, by the names Sway's own XKB data resolves.
+const KEYMAP: &str = "xkb_keymap {
+  xkb_keycodes { include \"evdev+aliases(qwerty)\" };
+  xkb_types { include \"complete\" };
+  xkb_compat { include \"complete\" };
+  xkb_symbols { include \"pc+us+inet(evdev)\" };
+};";
+
+/// Linux key codes, as `zwp_virtual_keyboard_v1.key` takes them.
+#[allow(dead_code, reason = "each test binary uses some of them")]
+pub mod keys {
+  pub const ESC: u32 = 1;
+  pub const TAB: u32 = 15;
+  pub const ENTER: u32 = 28;
+  pub const A: u32 = 30;
+  pub const LEFT_SHIFT: u32 = 42;
+  pub const SPACE: u32 = 57;
+}
+
+/// A second client with a virtual keyboard, so the seat has a keyboard:
+/// a headless Sway with no input devices has none.
+#[allow(dead_code, reason = "crabshell's tests don't use it yet")]
+pub struct VirtualKeyboard {
+  queue: EventQueue<Helper>,
+  keyboard: ZwpVirtualKeyboardV1,
+  time: u32,
+}
+
+#[allow(dead_code, reason = "crabshell's tests don't use it yet")]
+impl VirtualKeyboard {
+  pub fn new(sway: &Sway) -> VirtualKeyboard {
+    let connection = sway.connection();
+    let (globals, mut queue) =
+      registry_queue_init::<Helper>(&connection).expect("the helper's registry");
+    let seat: wl_seat::WlSeat = globals
+      .bind(&queue.handle(), 1..=1, ())
+      .expect("sway offers a seat");
+    let manager: ZwpVirtualKeyboardManagerV1 = globals
+      .bind(&queue.handle(), 1..=1, ())
+      .expect("sway offers zwp_virtual_keyboard_manager_v1");
+    let keyboard = manager.create_virtual_keyboard(&seat, &queue.handle(), ());
+    let path = sway.runtime_dir().join("keymap.xkb");
+    // The size sent counts the NUL that ends the keymap.
+    let keymap = format!("{KEYMAP}\0");
+    std::fs::write(&path, &keymap).expect("write the keymap");
+    let file = File::open(&path).expect("open the keymap");
+    const XKB_V1: u32 = 1;
+    keyboard.keymap(XKB_V1, file.as_fd(), keymap.len() as u32);
+    queue
+      .roundtrip(&mut Helper)
+      .expect("the helper's roundtrip");
+    VirtualKeyboard {
+      queue,
+      keyboard,
+      time: 0,
+    }
+  }
+
+  /// Presses `key`, a code from [`keys`], and holds it.
+  pub fn press(&mut self, key: u32) {
+    self.send(key, 1);
+  }
+
+  /// Releases `key`.
+  pub fn release(&mut self, key: u32) {
+    self.send(key, 0);
+  }
+
+  /// Removes the virtual keyboard, so the seat has none.
+  pub fn unplug(&mut self) {
+    self.keyboard.destroy();
+    self
+      .queue
+      .roundtrip(&mut Helper)
+      .expect("the helper's roundtrip");
+  }
+
+  /// Presses and releases `key`.
+  pub fn tap(&mut self, key: u32) {
+    self.press(key);
+    self.release(key);
+  }
+
+  fn send(&mut self, key: u32, state: u32) {
+    self.time += 10;
+    self.keyboard.key(self.time, key, state);
     self
       .queue
       .roundtrip(&mut Helper)

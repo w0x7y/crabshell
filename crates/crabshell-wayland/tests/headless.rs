@@ -19,11 +19,11 @@ use std::time::Duration;
 
 use crabshell_reactive::{Runtime, Signal};
 use crabshell_ui::{
-  Align, Button, Color, Column, Cx, Edge, KeyboardFocus, Margins, Output, PanelWindow, PopupWindow,
-  Rect, Region, Row, Spacer, Style, Text, Window,
+  Align, Button, Color, Column, Cx, Edge, Key, KeyEvent, KeyboardFocus, Margins, Output,
+  PanelWindow, PopupWindow, Rect, Region, Row, Spacer, Style, Text, Window,
 };
 use crabshell_wayland::{Event, EventLoop, Platform, WindowId};
-use sway::{Image, Sway, VirtualPointer, run_until, settle};
+use sway::{Image, Sway, VirtualKeyboard, VirtualPointer, keys, run_until, settle};
 
 /// Set in the child that [`sway_refuses_to_start_beside_a_swaysock`] runs.
 const GUARD_CHILD: &str = "CRABSHELL_GUARD_CHILD";
@@ -99,6 +99,10 @@ struct Knobs {
   reopen: Signal<u32>,
   /// Whether the bar's mask leaves out the button.
   masked: Signal<bool>,
+  /// The keys the bar's `on_key` got.
+  keys: Signal<Vec<KeyEvent>>,
+  /// When the bar takes the keyboard, from `setup.keyboard`.
+  keyboard: Signal<KeyboardFocus>,
 }
 
 /// A popup with two entries: the first opens another menu beside it, and
@@ -141,12 +145,16 @@ fn bar(cx: &Cx, output: &str, knobs: Knobs) -> Window {
     .width(width)
     .height(height)
     .margins(knobs.setup.margins)
-    .keyboard_focus(knobs.setup.keyboard)
+    .keyboard_focus(move || knobs.keyboard.get())
     .mask(move || {
       knobs
         .masked
         .get()
         .then(|| Region::rect(200, 0, 100_000, 100_000))
+    })
+    .on_key(move |_, event| {
+      knobs.keys.update(|keys| keys.push(event.clone()));
+      false
     })
     .style(
       Style::new()
@@ -227,6 +235,8 @@ impl Shell {
       from_effect: cx.signal(false),
       reopen: cx.signal(0),
       masked: cx.signal(false),
+      keys: cx.signal(Vec::new()),
+      keyboard: cx.signal(setup.keyboard),
     };
     let mut event_loop = sway.connect();
     let built = Rc::new(RefCell::new(Vec::new()));
@@ -604,6 +614,138 @@ fn a_mask_lets_clicks_through_until_it_changes() {
   run_until(&mut shell.event_loop, "a click once unmasked", |_| {
     clicks.get_untracked() == 1
   });
+}
+
+/// A bar that takes the keyboard, on HEADLESS-1 at scale 1, and a
+/// virtual keyboard. The keyboard comes first, as on a real seat: Sway
+/// gives a layer surface the keyboard as it maps.
+fn typing(sway: &Sway) -> (Shell, VirtualKeyboard) {
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let keyboard = VirtualKeyboard::new(sway);
+  let setup = Setup {
+    keyboard: KeyboardFocus::Exclusive,
+    ..PLAIN
+  };
+  let mut shell = Shell::build(sway, setup);
+  shell.wait_for_bar("HEADLESS-1");
+  (shell, keyboard)
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn keys_reach_a_bar_that_takes_the_keyboard_and_tab_and_enter_click() {
+  let sway = Sway::start();
+  let (mut shell, mut keyboard) = typing(&sway);
+  let (knobs, id) = (shell.knobs, shell.window("HEADLESS-1"));
+  keyboard.tap(keys::A);
+  run_until(&mut shell.event_loop, "the a key", |_| {
+    knobs.keys.with_untracked(|keys| !keys.is_empty())
+  });
+  let a = knobs.keys.with_untracked(|keys| keys[0].clone());
+  assert_eq!(
+    (a.key, a.text.as_deref(), a.repeat),
+    (Key::Character('a'), Some("a"), false)
+  );
+
+  keyboard.tap(keys::TAB);
+  run_until(
+    &mut shell.event_loop,
+    "the focus on the button",
+    |platform| {
+      platform
+        .windows()
+        .find(|(held, _)| *held == id)
+        .and_then(|(_, window)| window.focused())
+        .is_some()
+    },
+  );
+  keyboard.tap(keys::ENTER);
+  run_until(&mut shell.event_loop, "a click from Enter", |_| {
+    knobs.clicks.get_untracked() == 1
+  });
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_bar_takes_the_keyboard_once_its_focus_changes() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let mut keyboard = VirtualKeyboard::new(&sway);
+  let mut shell = Shell::new(&sway);
+  shell.wait_for_bar("HEADLESS-1");
+  let knobs = shell.knobs;
+  keyboard.tap(keys::A);
+  settle(&mut shell.event_loop);
+  assert!(
+    knobs.keys.with_untracked(Vec::is_empty),
+    "a bar without focus got a key"
+  );
+
+  knobs.keyboard.set(KeyboardFocus::Exclusive);
+  settle(&mut shell.event_loop);
+  keyboard.tap(keys::A);
+  run_until(&mut shell.event_loop, "the a key", |_| {
+    knobs.keys.with_untracked(|keys| keys.len() == 1)
+  });
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_held_key_repeats_until_released_and_then_nothing_wakes() {
+  let sway = Sway::start();
+  let (mut shell, mut keyboard) = typing(&sway);
+  let knobs = shell.knobs;
+  keyboard.press(keys::A);
+  run_until(&mut shell.event_loop, "three repeats", |_| {
+    knobs
+      .keys
+      .with_untracked(|keys| keys.iter().filter(|key| key.repeat).count() >= 3)
+  });
+  keyboard.release(keys::A);
+  settle(&mut shell.event_loop);
+  let typed = knobs.keys.with_untracked(Vec::len);
+  // No repeat timer is left: one dispatch sleeps the whole time.
+  let before = shell.event_loop.platform().stats().iterations;
+  let started = std::time::Instant::now();
+  shell
+    .event_loop
+    .dispatch(Some(Duration::from_secs(2)))
+    .expect("the connection works");
+  assert!(
+    started.elapsed() >= Duration::from_millis(1900),
+    "{:?}",
+    started.elapsed()
+  );
+  assert_eq!(shell.event_loop.platform().stats().iterations, before + 1);
+  assert_eq!(knobs.keys.with_untracked(Vec::len), typed);
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_key_held_as_the_keyboard_goes_stops_repeating() {
+  let sway = Sway::start();
+  let (mut shell, mut keyboard) = typing(&sway);
+  let knobs = shell.knobs;
+  keyboard.press(keys::A);
+  run_until(&mut shell.event_loop, "a repeat", |_| {
+    knobs
+      .keys
+      .with_untracked(|keys| keys.iter().any(|key| key.repeat))
+  });
+  keyboard.unplug();
+  settle(&mut shell.event_loop);
+  let before = shell.event_loop.platform().stats().iterations;
+  let started = std::time::Instant::now();
+  shell
+    .event_loop
+    .dispatch(Some(Duration::from_secs(2)))
+    .expect("the connection works");
+  assert!(
+    started.elapsed() >= Duration::from_millis(1900),
+    "{:?}",
+    started.elapsed()
+  );
+  assert_eq!(shell.event_loop.platform().stats().iterations, before + 1);
 }
 
 /// The popups held, in the order they opened. Only one chain is ever

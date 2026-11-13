@@ -2,6 +2,7 @@
 
 mod buffers;
 mod events;
+mod keyboard;
 mod outputs;
 mod pacing;
 mod platform;
