@@ -4,13 +4,15 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::panic::{self, AssertUnwindSafe};
 use std::rc::{Rc, Weak};
 
 use crabshell_reactive::{Memo, Signal, untrack};
 
 use crate::cx::Cx;
+use crate::input::panic_message;
 use crate::tree::{NodeId, Tree, borrow};
-use crate::widgets::Widget;
+use crate::widgets::{Element, Stack, Widget};
 
 /// Where a keyed list lives: which child group of which container.
 pub(crate) struct KeyedSlot {
@@ -33,6 +35,21 @@ struct Entry<T> {
   cx: Cx,
   value: Signal<T>,
   node: NodeId,
+}
+
+/// The element `view` builds. If it panics, that is logged and an empty
+/// `Stack` stands in, so the other items still show and keep their places.
+fn build<W: Widget>(label: &str, view: impl FnOnce() -> W) -> Element {
+  match panic::catch_unwind(AssertUnwindSafe(|| Box::new(view()).into_element())) {
+    Ok(element) => element,
+    Err(payload) => {
+      tracing::error!(
+        "{label}: building an item panicked; it shows empty: {}",
+        panic_message(payload.as_ref())
+      );
+      Box::new(Stack::new()).into_element()
+    }
+  }
 }
 
 pub(crate) fn mount<T, K, W>(
@@ -87,7 +104,7 @@ where
             let cx = slot.cx.child();
             let value = cx.signal(item);
             let memo = cx.memo(move || value.get());
-            let element = untrack(|| Box::new(view(&cx, memo)).into_element());
+            let element = untrack(|| build(&label, || view(&cx, memo)));
             added.push((cx, value, element));
             kept.push((item_key, None));
           }

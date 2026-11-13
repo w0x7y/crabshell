@@ -86,7 +86,7 @@ pub use menu::{Menu, MenuEntry, MenuToggle};
 pub use popup::PopupWindow;
 pub use prop::{IntoProp, Prop};
 pub use region::Region;
-pub use scroll::ScrollView;
+pub use scroll::{ListView, ScrollView};
 pub use style::{Border, Color, Font, Padding, Style};
 pub use text::TextSystem;
 pub use view::{Content, IconView, ImageView, NodeView, TextView, WindowView};
