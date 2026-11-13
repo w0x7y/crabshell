@@ -6,7 +6,7 @@ use std::rc::Rc;
 use serde::Deserialize;
 use zbus::{Connection, DeserializeDict, Type, as_variant};
 
-use super::{Service, bus_call};
+use super::{CALL_TIMEOUT, Service, bus_call};
 pub use crabshell_ui::{MenuEntry, MenuToggle};
 
 pub(super) const DBUSMENU: &str = "com.canonical.dbusmenu";
@@ -58,8 +58,9 @@ impl OpenMenu {
 }
 
 impl Service {
-  /// Opens item `id`'s menu: tells the app, then reads the layout.
-  pub(super) fn open_menu(self: &Rc<Self>, id: &str) {
+  /// Opens item `id`'s menu: tells the app, then reads the layout. Returns
+  /// the opening's number, or `None` if the item has no menu.
+  pub(super) fn open_menu(self: &Rc<Self>, id: &str) -> Option<u64> {
     let open = self.with_entry(id, |entry| {
       let path = entry.shown.as_ref()?.menu.clone();
       Some(OpenMenu {
@@ -72,22 +73,21 @@ impl Service {
       })
     });
     let Some(mut open) = open.flatten() else {
-      return tracing::warn!(id, "this tray item has no menu");
+      tracing::warn!(id, "this tray item has no menu");
+      return None;
     };
     self.close_menu();
     let (rule, bus, path) = (open.rule(), open.bus.clone(), open.path.clone());
     let (connection, opened) = {
       let mut state = self.state.borrow_mut();
-      let Some(state) = state.as_mut() else {
-        return;
-      };
+      let state = state.as_mut()?;
       state.menu_count += 1;
       open.opened = state.menu_count;
       state.open = Some(open);
       (state.connection.clone(), state.menu_count)
     };
     let Some(connection) = connection else {
-      return;
+      return Some(opened);
     };
     let service = Rc::clone(self);
     self.shared.spawn(async move {
@@ -102,13 +102,14 @@ impl Service {
         &0,
       );
       // Some apps don't have it; the layout is read either way.
-      if let Err(error) = about.await {
+      if let Err(error) = service.shared.timeout(CALL_TIMEOUT, about).await {
         tracing::debug!(%error, "a tray menu refused AboutToShow");
       }
       if service.is_open(|open| open.opened == opened) {
         service.read_menu(&connection);
       }
     });
+    Some(opened)
   }
 
   /// Tells the open menu's app that submenu `entry` opens, and reads the
@@ -135,7 +136,9 @@ impl Service {
         "AboutToShow",
         &entry,
       );
-      let changed = about
+      let changed = service
+        .shared
+        .timeout(CALL_TIMEOUT, about)
         .await
         .and_then(|reply| reply.body().deserialize::<bool>());
       match changed {
@@ -147,7 +150,7 @@ impl Service {
   }
 
   /// Whether a menu is open and `test` holds for it.
-  fn is_open(&self, test: impl FnOnce(&OpenMenu) -> bool) -> bool {
+  pub(super) fn is_open(&self, test: impl FnOnce(&OpenMenu) -> bool) -> bool {
     let state = self.state.borrow();
     let open = state.as_ref().and_then(|state| state.open.as_ref());
     open.is_some_and(test)
@@ -160,10 +163,13 @@ impl Service {
       let Some(state) = state.as_mut() else {
         return;
       };
-      if state.menu.try_with(Option::is_some) == Some(true) {
-        state.menu.set(None);
+      let open = state.open.take();
+      // Set even when it is already `None`, so a menu's popup hears that
+      // its opening ended, as when the first read fails.
+      if open.is_some() || state.menu.try_with(Option::is_some) == Some(true) {
+        state.menu.try_set(None);
       }
-      (state.open.take(), state.connection.clone())
+      (open, state.connection.clone())
     };
     if let (Some(open), Some(connection)) = (open, connection) {
       let rule = open.rule();
@@ -180,6 +186,19 @@ impl Service {
     if self.is_open(|open| open.item == id) {
       self.close_menu();
     }
+  }
+
+  /// Closes the open menu if it is still the one `open_menu` numbered
+  /// `opened`, not one opened since.
+  pub(super) fn close_menu_opened(&self, opened: u64) {
+    if self.follows(opened) {
+      self.close_menu();
+    }
+  }
+
+  /// Whether the open menu is the one `open_menu` numbered `opened`.
+  pub(super) fn follows(&self, opened: u64) -> bool {
+    self.is_open(|open| open.opened == opened)
   }
 
   /// Reads the open menu again when it says it changed.
@@ -218,7 +237,9 @@ impl Service {
         "GetLayout",
         &args,
       );
-      let layout = call
+      let layout = service
+        .shared
+        .timeout(CALL_TIMEOUT, call)
         .await
         .and_then(|reply| reply.body().deserialize::<(u32, Layout)>());
       let newest = |open: &OpenMenu| open.read == read;

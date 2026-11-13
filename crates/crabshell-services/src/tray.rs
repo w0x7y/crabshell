@@ -13,6 +13,7 @@
 
 mod menu;
 mod watcher;
+mod widget;
 
 #[cfg(test)]
 mod tests;
@@ -35,6 +36,7 @@ use zbus::{Connection, DeserializeDict, DynamicType, Message, MessageStream, Obj
 use crate::Shared;
 use menu::{DBUSMENU, OpenMenu};
 pub use menu::{MenuEntry, MenuToggle, TrayMenu};
+pub use widget::Tray;
 
 const WATCHER: &str = "org.kde.StatusNotifierWatcher";
 const WATCHER_PATH: &str = "/StatusNotifierWatcher";
@@ -242,6 +244,7 @@ impl TrayHost {
       return tracing::warn!(id, method, "no such tray item");
     };
     let id = id.to_owned();
+    let shared = Rc::clone(&service.shared);
     service.shared.spawn(async move {
       let call = connection.call_method(
         Some(bus.as_str()),
@@ -250,7 +253,7 @@ impl TrayHost {
         method,
         &body,
       );
-      if let Err(error) = call.await {
+      if let Err(error) = shared.timeout(CALL_TIMEOUT, call).await {
         tracing::info!(id, method, %error, "the tray item refused");
       }
     });
@@ -419,13 +422,11 @@ impl Service {
     tracing::info!("another program runs the tray watcher; using it");
     let register = "RegisterStatusNotifierHost";
     let path = WATCHER_PATH;
-    connection
-      .call_method(Some(WATCHER), path, Some(WATCHER), register, &host)
-      .await?;
+    let call = connection.call_method(Some(WATCHER), path, Some(WATCHER), register, &host);
+    self.shared.timeout(CALL_TIMEOUT, call).await?;
     let get = (WATCHER, "RegisteredStatusNotifierItems");
-    let reply = connection
-      .call_method(Some(WATCHER), path, Some(PROPERTIES), "Get", &get)
-      .await?;
+    let call = connection.call_method(Some(WATCHER), path, Some(PROPERTIES), "Get", &get);
+    let reply = self.shared.timeout(CALL_TIMEOUT, call).await?;
     let list: Vec<String> = reply
       .body()
       .deserialize::<zbus::Variant<'_>>()?
@@ -588,7 +589,9 @@ impl Service {
         "GetAll",
         &ITEM,
       );
-      let properties = get_all
+      let properties = service
+        .shared
+        .timeout(CALL_TIMEOUT, get_all)
         .await
         .and_then(|reply| reply.body().deserialize::<Properties>());
       let item = match properties {
@@ -708,7 +711,7 @@ impl Service {
 async fn run(service: Rc<Service>, address: zbus::Address) {
   // A call to an app that hangs fails after this, instead of keeping its
   // future forever. There is no timer while no call is out.
-  let builder = zbus::connection::Builder::address(address).method_timeout(CALL_TIMEOUT);
+  let builder = zbus::connection::Builder::address(address);
   let connection = match builder.build().await {
     Ok(connection) => connection,
     Err(error) => {

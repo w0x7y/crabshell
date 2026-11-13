@@ -21,11 +21,14 @@ mod sway;
 mod testing;
 mod tray;
 
-use std::cell::OnceCell;
+use std::cell::{Cell, OnceCell, RefCell};
+use std::future::{Future, poll_fn};
 use std::os::fd::OwnedFd;
 use std::path::PathBuf;
+use std::pin::pin;
 use std::rc::Rc;
-use std::time::Instant;
+use std::task::{Poll, Waker};
+use std::time::{Duration, Instant};
 
 use calloop::channel::Channel;
 use calloop::futures::{Executor, Scheduler};
@@ -38,7 +41,7 @@ use crabshell_ui::Cx;
 pub use audio::{Audio, Sink};
 pub use clock::Precision;
 pub use sway::{Sway, Workspace};
-pub use tray::{MenuEntry, MenuToggle, TrayHost, TrayItem, TrayMenu, TrayStatus};
+pub use tray::{MenuEntry, MenuToggle, Tray, TrayHost, TrayItem, TrayMenu, TrayStatus};
 
 /// Makes the services reachable from `cx` and every context made from it.
 /// The shell calls this once, with its root context and its event loop.
@@ -175,6 +178,60 @@ impl Shared {
       && let Err(error) = scheduler.schedule(future)
     {
       tracing::error!(%error, "a service's future couldn't start");
+    }
+  }
+}
+
+impl Shared {
+  /// Awaits `call`, or gives up after `limit` with a timed-out error. The
+  /// timer is the loop's and goes as soon as the call ends. zbus's own
+  /// timeout left its timer behind, which woke zbus's thread once, `limit`
+  /// after every call, while nothing changed.
+  async fn timeout<T>(
+    &self,
+    limit: Duration,
+    call: impl Future<Output = zbus::Result<T>>,
+  ) -> zbus::Result<T> {
+    let fired = Rc::new(Cell::new(false));
+    let waker: Rc<RefCell<Option<Waker>>> = Rc::default();
+    let tick = {
+      let (fired, waker) = (Rc::clone(&fired), Rc::clone(&waker));
+      Box::new(move || {
+        fired.set(true);
+        if let Some(waker) = waker.take() {
+          waker.wake();
+        }
+        TimeoutAction::Drop
+      })
+    };
+    let token = self
+      .event_loop()
+      .and_then(|event_loop| event_loop.insert_timer(Instant::now() + limit, tick));
+    let _timer = RemoveOnDrop(self, token);
+    let mut call = pin!(call);
+    poll_fn(|context| {
+      if let Poll::Ready(result) = call.as_mut().poll(context) {
+        return Poll::Ready(result);
+      }
+      if fired.get() {
+        let error = std::io::Error::new(std::io::ErrorKind::TimedOut, "no answer in time");
+        return Poll::Ready(Err(zbus::Error::InputOutput(error.into())));
+      }
+      waker.replace(Some(context.waker().clone()));
+      Poll::Pending
+    })
+    .await
+  }
+}
+
+/// Removes a loop source when dropped, as a call that ends removes its
+/// timer.
+struct RemoveOnDrop<'a>(&'a Shared, Option<RegistrationToken>);
+
+impl Drop for RemoveOnDrop<'_> {
+  fn drop(&mut self) {
+    if let (Some(token), Some(event_loop)) = (self.1, self.0.event_loop()) {
+      event_loop.remove(token);
     }
   }
 }
