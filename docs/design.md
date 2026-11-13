@@ -257,6 +257,17 @@ Rules settled while building `crabshell-cli` (Phase 5, step 2):
 - `crabshell check` runs `cargo check` on the config from the config's own directory, so another project's `.cargo/config.toml` or `rust-toolchain.toml` doesn't apply, with the cache's target directory. Its output passes straight through, and it exits with cargo's status. `CARGO`, when set, names the cargo to run.
 - A bad command line, including an argument that isn't UTF-8, prints the usage and exits with 2. A command that fails explains why and exits with 1. A `--path` that isn't UTF-8 is refused, and control characters in it are escaped in the TOML.
 
+Rules settled while building `crabshell run` (Phase 5, step 3):
+
+- The supervisor runs on one thread, on a calloop loop like the shell's. It learns the shell exited from a pidfd (`rustix`'s `pidfd_open`, so Linux 5.3 or later), which sleeps until then instead of polling. A shell that is up and quiet wakes the supervisor once, when it turns 60 s old.
+- The build's program is the one `executable` in cargo's `--message-format=json-render-diagnostics` output, so a config can name its package anything. A config that builds more than one program is refused.
+- The control socket is `$XDG_RUNTIME_DIR/crabshell/control-<supervisor pid>.sock`, in a directory made private the way `persist::write` does it. It is removed when `run` ends. Without `XDG_RUNTIME_DIR`, `run` refuses to start. The supervisor logs `ready` with the milliseconds since the shell started, and doesn't wait for it.
+- Exit status 0 or 2 stops `run` with 0, since 2 means the session is gone. Any other end restarts the shell. A program that can't be started counts as a crash.
+- A crash counts toward the fallback only within 60 s of the newest build's first start. Starting `last-good` resets the wait to 1 s. `last-good` that keeps crashing restarts with the same growing wait. Only a build is ever copied to `last-good`, through `last-good.partial` and a rename.
+- If the first build fails, `run` starts `last-good` when there is one, and otherwise exits with 1.
+- SIGINT and SIGTERM end the shell with SIGTERM, then `run` with 0. Waiting to restart, `run` ends at once. signalfd needs the two signals blocked, and a child inherits that mask, so they are unblocked while the shell spawns.
+- Logs go to stderr with a `crabshell:` prefix. The shell's stdout and stderr pass straight through.
+
 Panic handling inside the shell:
 
 - Builds use `panic = "unwind"`. The toolkit wraps every binding, effect, event handler and service callback in `catch_unwind`.
@@ -629,7 +640,7 @@ One Cargo workspace with seven crates. Each crate owns one area, so an agent can
 | `crabshell-wayland`  | Event loop, windows, popups, outputs, pointer, shm buffers            | reactive, ui, render | `smithay-client-toolkit`, `calloop`, `wayland-protocols`             |
 | `crabshell-services` | Workspaces, tray, audio, clock                                        | reactive, ui         | `zbus`, `serde_json`, `libpulse-binding`, `jiff`, `calloop`, `serde` |
 | `crabshell`          | Public API, `run()`, `prelude`, `cx.persist`                          | all of the above     | `serde`, `serde_json`, tracing-subscriber                            |
-| `crabshell-cli`      | The `crabshell` binary with `init`, `run`, `check` and the supervisor | none                 | `inotify`, `zbus`                                                    |
+| `crabshell-cli`      | The `crabshell` binary with `init`, `run`, `check` and the supervisor | none                 | `calloop`, `rustix`, `serde_json`, `inotify`, `zbus`                 |
 
 `Cx` lives in `crabshell-ui` and carries a map of services keyed by type. `crabshell-services` adds `cx.sway()`, `cx.audio()`, `cx.tray()` and `cx.clock()` through an extension trait, so `crabshell-ui` never depends on services.
 

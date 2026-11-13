@@ -1,7 +1,10 @@
 //! The command line and the template, without running anything.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
+use super::build::executable;
+use super::policy::{Binary, Exit, Next, Policy};
 use super::{FROM_CRATES_IO, TEMPLATE_MANIFEST, Task, parse, toml_string};
 
 fn args(line: &str) -> Vec<String> {
@@ -18,6 +21,11 @@ fn commands_parse_and_anything_else_is_refused() {
     })
   );
   assert_eq!(parse(&args("check")), Ok(Task::Check));
+  assert_eq!(parse(&args("run")), Ok(Task::Run));
+  assert_eq!(
+    parse(&args("run now")),
+    Err(String::from("can't make sense of `run now`"))
+  );
   assert_eq!(parse(&args("--help")), Ok(Task::Help));
   assert_eq!(
     parse(&args("help init")),
@@ -48,4 +56,145 @@ fn a_path_becomes_a_toml_string() {
 #[test]
 fn the_template_has_the_line_path_replaces() {
   assert_eq!(TEMPLATE_MANIFEST.matches(FROM_CRATES_IO).count(), 1);
+}
+
+fn secs(secs: u64) -> Duration {
+  Duration::from_secs(secs)
+}
+
+fn restart(after: u64, binary: Binary) -> Next {
+  Next::Restart {
+    after: secs(after),
+    binary,
+  }
+}
+
+#[test]
+fn a_status_reads_as_an_exit() {
+  assert_eq!(Exit::from_code(Some(0)), Exit::Clean);
+  assert_eq!(Exit::from_code(Some(2)), Exit::NoCompositor);
+  assert_eq!(Exit::from_code(Some(1)), Exit::Crashed);
+  assert_eq!(Exit::from_code(Some(101)), Exit::Crashed);
+  assert_eq!(Exit::from_code(None), Exit::Crashed, "a signal");
+}
+
+#[test]
+fn a_clean_exit_or_a_lost_compositor_stops() {
+  let start = Instant::now();
+  for exit in [Exit::Clean, Exit::NoCompositor] {
+    let mut policy = Policy::new(Binary::Build);
+    policy.started(start);
+    assert_eq!(policy.exited(start + secs(1), exit, true), Next::Stop);
+  }
+}
+
+#[test]
+fn crashes_wait_longer_each_time_up_to_30_s_and_health_resets_the_wait() {
+  let start = Instant::now();
+  // On last-good, so the build's fallback never steps in.
+  let mut policy = Policy::new(Binary::LastGood);
+  let mut waits = Vec::new();
+  for crash in 0..7 {
+    policy.started(start + secs(crash * 100));
+    match policy.exited(start + secs(crash * 100 + 1), Exit::Crashed, true) {
+      Next::Restart { after, binary } => {
+        assert_eq!(binary, Binary::LastGood);
+        waits.push(after.as_secs());
+      }
+      Next::Stop => panic!("a crash restarts"),
+    }
+  }
+  assert_eq!(waits, [1, 2, 4, 8, 16, 30, 30]);
+  policy.healthy();
+  assert_eq!(
+    policy.exited(start + secs(900), Exit::Crashed, true),
+    restart(1, Binary::LastGood)
+  );
+}
+
+#[test]
+fn three_quick_crashes_of_a_new_build_fall_back_to_last_good() {
+  let start = Instant::now();
+  let mut policy = Policy::new(Binary::Build);
+  policy.started(start);
+  assert_eq!(
+    policy.exited(start + secs(1), Exit::Crashed, true),
+    restart(1, Binary::Build)
+  );
+  policy.started(start + secs(2));
+  assert_eq!(
+    policy.exited(start + secs(3), Exit::Crashed, true),
+    restart(2, Binary::Build)
+  );
+  policy.started(start + secs(5));
+  assert_eq!(
+    policy.exited(start + secs(6), Exit::Crashed, true),
+    restart(1, Binary::LastGood)
+  );
+  assert_eq!(policy.binary, Binary::LastGood);
+  // last-good crashing gets the same waits, and stays last-good.
+  policy.started(start + secs(7));
+  assert_eq!(
+    policy.exited(start + secs(8), Exit::Crashed, true),
+    restart(1, Binary::LastGood)
+  );
+}
+
+#[test]
+fn without_last_good_or_after_60_s_the_build_keeps_restarting() {
+  let start = Instant::now();
+  let mut policy = Policy::new(Binary::Build);
+  for crash in 0..4 {
+    policy.started(start + secs(crash * 2));
+    let next = policy.exited(start + secs(crash * 2 + 1), Exit::Crashed, false);
+    assert!(
+      matches!(
+        next,
+        Next::Restart {
+          binary: Binary::Build,
+          ..
+        }
+      ),
+      "{next:?}"
+    );
+  }
+
+  let mut policy = Policy::new(Binary::Build);
+  policy.started(start);
+  for crash in 0..4 {
+    // Each crash comes more than 60 s after the build first started.
+    let next = policy.exited(start + secs(61 + crash), Exit::Crashed, true);
+    assert!(
+      matches!(
+        next,
+        Next::Restart {
+          binary: Binary::Build,
+          ..
+        }
+      ),
+      "{next:?}"
+    );
+  }
+}
+
+#[test]
+fn cargos_messages_name_the_one_program_built() {
+  let library = r#"{"reason":"compiler-artifact","target":{"kind":["lib"]},"executable":null}"#;
+  let program =
+    r#"{"reason":"compiler-artifact","target":{"kind":["bin"]},"executable":"/t/debug/my-shell"}"#;
+  let other =
+    r#"{"reason":"compiler-artifact","target":{"kind":["bin"]},"executable":"/t/debug/second"}"#;
+  let script =
+    r#"{"reason":"compiler-artifact","target":{"kind":["custom-build"]},"executable":null}"#;
+  let finished = r#"{"reason":"build-finished","success":true}"#;
+  let messages = [library, script, "not json", program, finished].join("\n");
+  assert_eq!(
+    executable(&messages),
+    Ok(PathBuf::from("/t/debug/my-shell"))
+  );
+  assert_eq!(
+    executable(&[library, finished].join("\n")),
+    Err(String::from("the config built no program"))
+  );
+  assert!(executable(&[program, other].join("\n")).is_err());
 }

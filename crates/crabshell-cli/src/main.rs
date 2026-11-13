@@ -6,6 +6,10 @@
 
 #![forbid(unsafe_code)]
 
+mod build;
+mod policy;
+mod supervise;
+
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -16,6 +20,8 @@ commands:
                      With --path, it builds against the Crabshell checkout at
                      DIR instead of crates.io
   check              run cargo check on the config and print its errors
+  run                build the config and run it, starting it again if it
+                     crashes
   help               show this
 ";
 
@@ -32,6 +38,7 @@ const FROM_CRATES_IO: &str = "crabshell = \"0.1\"";
 enum Task {
   Init { path: Option<PathBuf> },
   Check,
+  Run,
   Help,
 }
 
@@ -54,6 +61,7 @@ fn main() -> ExitCode {
   let done = match task {
     Task::Init { path } => init(path.as_deref()).map(|()| ExitCode::SUCCESS),
     Task::Check => check(),
+    Task::Run => run(),
     Task::Help => {
       print!("{USAGE}");
       Ok(ExitCode::SUCCESS)
@@ -73,9 +81,10 @@ fn parse(args: &[String]) -> Result<Task, String> {
       path: Some(PathBuf::from(dir)),
     }),
     ["check"] => Ok(Task::Check),
+    ["run"] => Ok(Task::Run),
     ["help" | "--help" | "-h"] => Ok(Task::Help),
     [] => Err(String::from("no command given")),
-    ["init" | "check" | "help" | "--help" | "-h", ..] => {
+    ["init" | "check" | "run" | "help" | "--help" | "-h", ..] => {
       Err(format!("can't make sense of `{}`", args.join(" ")))
     }
     [command, ..] => Err(format!("unknown command `{command}`")),
@@ -178,26 +187,33 @@ fn toml_string(path: &Path) -> Option<String> {
   Some(quoted)
 }
 
-/// Runs `cargo check` on the config, its output passed straight through.
-/// The exit status is cargo's.
-fn check() -> Result<ExitCode, String> {
+/// The config directory, if it has a `Cargo.toml`.
+fn config_with_manifest() -> Result<PathBuf, String> {
   let dir = config_dir()?;
-  let manifest = dir.join("Cargo.toml");
-  if !manifest.is_file() {
+  if !dir.join("Cargo.toml").is_file() {
     return Err(format!(
       "there is no config in {}; create one with `crabshell init`",
       dir.display()
     ));
   }
-  // `cargo run` sets CARGO to the cargo that is running; a user's shell
-  // finds cargo on PATH.
-  let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+  Ok(dir)
+}
+
+/// Builds the config and supervises the shell it makes.
+fn run() -> Result<ExitCode, String> {
+  supervise::run(&config_with_manifest()?, &target_dir()?).map(|()| ExitCode::SUCCESS)
+}
+
+/// Runs `cargo check` on the config, its output passed straight through.
+/// The exit status is cargo's.
+fn check() -> Result<ExitCode, String> {
+  let dir = config_with_manifest()?;
   // From the config's directory, so another project's .cargo/config.toml
   // or rust-toolchain.toml doesn't apply.
-  let status = std::process::Command::new(cargo)
+  let status = std::process::Command::new(build::cargo())
     .current_dir(&dir)
     .args(["check", "--manifest-path"])
-    .arg(&manifest)
+    .arg(dir.join("Cargo.toml"))
     .env("CARGO_TARGET_DIR", target_dir()?)
     .status()
     .map_err(|error| format!("can't run cargo ({error}); is Rust installed?"))?;
