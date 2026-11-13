@@ -278,7 +278,7 @@ Rules settled while building the watcher and reload (Phase 5, step 4):
 - Each notification opens its own session-bus connection, which closes after the call, so an idle supervisor stays asleep. A server gets 25 s to answer, timed by a loop timer. A failure, such as no notification server, is logged. The body escapes `&`, `<` and `>`, since servers read it as markup. The supervisor notifies when an edit doesn't build, when the first build fails and `last-good` starts, and when it falls back to `last-good`.
 - The supervisor logs each build's duration, and the time from the old shell's exit to the new one's `ready`.
 - A build blocks the loop. A signal that arrives meanwhile is handled when it ends.
-- `crabshell-cli`'s tests run on a private `dbus-daemon` whose config lists no service directories, since `--session` would start real services, such as the desktop's notification daemon, and every other test gets an address that leads nowhere.
+- Every crate's tests run their buses on a private `dbus-daemon` whose config lists no service directories, since `--session` would start real services, such as the desktop's notification daemon. `crabshell-cli`'s other tests get a session bus address that leads nowhere, and none of its tests passes on the desktop's `DISPLAY`, `XAUTHORITY`, `WAYLAND_DISPLAY` or `SWAYSOCK`: libpulse alone reads X's root window, which would start the desktop's Xwayland.
 
 Panic handling inside the shell:
 
@@ -738,18 +738,18 @@ The tray adds about 0.8 MiB. The counter bar, with no tray, stays at 15.4 to 15.
 
 ### Phase 5 results
 
-Measured on 2026-11-13 by `crates/crabshell-cli/tests/exit_check.rs`. It makes the template's bar with `crabshell init --path` and runs it under `crabshell run` on one 1280×720 headless Sway output, with a private session bus for the tray and the notifications and no audio server. The config builds with the template's dev profile. Three runs gave the same numbers to within 5 ms.
+Measured on 2026-11-13 by `crates/crabshell-cli/tests/exit_check.rs`. It makes the template's bar with `crabshell init --path` and runs it under `crabshell run` on one 1280×720 headless Sway output, with a private session bus for the tray and the notifications and no audio server. The config builds with the template's dev profile. These are the ranges over four runs.
 
 | Metric                                          | Target         | Template bar, headless Sway           |
 | ----------------------------------------------- | -------------- | ------------------------------------- |
 | Rebuild after a one-line edit                   | 10 s or less   | 0.7 s                                 |
-| Reload gap, old shell's exit to the new `ready` | 200 ms or less | 13 ms                                 |
-| New shell ready after its build ends            | 200 ms or less | 65 ms                                 |
+| Reload gap, old shell's exit to the new `ready` | 200 ms or less | 13 to 19 ms                           |
+| New shell ready after its build ends            | 200 ms or less | 65 to 97 ms                           |
 | Back after `kill -9`                            | 2 s or less    | 1.02 to 1.03 s, the 1 s wait included |
 | Three startup panics to `last-good` ready       | none           | 4.7 s from the edit                   |
 | Supervisor RSS with the shell up                | none           | 5.3 to 5.5 MiB                        |
 
-The time from the build's end to the new shell's `ready` is mostly the old shell saving and exiting: the gap itself is 13 ms.
+The time from the build's end to the new shell's `ready` is mostly the old shell saving and exiting: the gap itself is 13 to 19 ms.
 
 ## Phases
 
@@ -765,10 +765,10 @@ Seven phases to v0.1, totaling 16 to 26 weeks of focused work, all guesses, then
 4. **Phase 3, clock, workspaces and audio (2-4 weeks).**
    - Exit: a workspace switch repaints within one frame, per the log. Scrolling changes the volume, and `pactl get-sink-volume @DEFAULT_SINK@` agrees. After a suspend and resume, the clock is right within 1 s. You check that last one by hand. Passed on 2026-11-11 after a review per step, in commits 11dc5e7 to 7c66869. The switch and volume checks run as headless tests against a private Sway and a private pipewire-pulse, and the maintainer checked suspend and resume, workspaces and volume on the laptop's real session.
 5. **Phase 4, tray and popups (4-6 weeks).** Watcher, host, DBusMenu, `PopupWindow`, `Menu` and `Tray`.
-   - Exit: tests with a fake tray item pass on a private `dbus-daemon`. By hand, `nm-applet --indicator`, `blueman-applet`, KeePassXC and one Electron app such as Discord all show icons, their menus open, clicks reach the app, and all of them survive a reload. Passed on 2026-11-13, except surviving a reload, which needs Phase 5's supervisor and is checked with it: the fake-item tests pass, and the maintainer checked nm-applet, blueman-applet, KeePassXC and Discord on the laptop's session, beside Quickshell's watcher and as the watcher. Commits 59477fd to de5710a, after a review per step, with popups also tested on headless labwc.
+   - Exit: tests with a fake tray item pass on a private `dbus-daemon`. By hand, `nm-applet --indicator`, `blueman-applet`, KeePassXC and one Electron app such as Discord all show icons, their menus open, clicks reach the app, and all of them survive a reload. Passed on 2026-11-13: the fake-item tests pass, and the maintainer checked nm-applet, blueman-applet, KeePassXC and Discord on the laptop's session, beside Quickshell's watcher and as the watcher. Surviving a reload was checked the same day under Phase 5's `crabshell run`: after an edit to the template bar reloaded it, all four came back with working menus. Commits 59477fd to de5710a, after a review per step, with popups also tested on headless labwc.
 6. **Phase 5, CLI and reload (2-3 weeks).** `init`, `run`, `check`, the watcher, `cx.persist`, crash restarts and `last-good`.
    - Exit: a scripted test checks four cases. A syntax error leaves the old shell running and sends a notification. Fixing it brings up the new shell within build time plus 200 ms. After `kill -9` the shell is back within 2 s. A config that panics at startup three times falls back to `last-good`.
-   - Passed on 2026-11-13: `crates/crabshell-cli/tests/exit_check.rs` checks all four cases on headless Sway, with the numbers in "Phase 5 results". Built in the commits from 0b603c2 on, after a review per step. Phase 4's "all of them survive a reload" with real tray apps still waits for a check by hand on the laptop's session.
+   - Passed on 2026-11-13: `crates/crabshell-cli/tests/exit_check.rs` checks all four cases on headless Sway, with the numbers in "Phase 5 results". Built in the commits from 0b603c2 on, after a review per step. With it, Phase 4's tray apps were checked surviving a reload.
 7. **Phase 6, the v0.1 release (1-2 weeks).** Template, README, API docs on docs.rs, published crates, and measured numbers in the performance table.
    - Exit: on a clean user account, you go from `cargo install crabshell-cli` to a running bar in under 15 minutes by following the README.
 
@@ -812,7 +812,7 @@ Read the Overview and the section for your crate before writing code. If this do
 - Every behavior change comes with a test.
 - Reactive and layout logic get unit tests.
 - Rendering gets golden PNGs. Render to an offscreen pixmap and compare with a per-pixel tolerance of 2 out of 255. Update goldens only on purpose, and say so in the change description.
-- Workspaces are tested against a fake Sway socket. The tray is tested with a fake item on a private `dbus-daemon --session`. Audio is tested against a fake server, and against a private pipewire-pulse in `#[ignore]` tests run by hand.
+- Workspaces are tested against a fake Sway socket. The tray is tested with a fake item on a private `dbus-daemon` that starts no services. Audio is tested against a fake server, and against a private pipewire-pulse in `#[ignore]` tests run by hand.
 - Integration tests run on headless Sway, as described under Wayland platform.
 
 ### Reporting
