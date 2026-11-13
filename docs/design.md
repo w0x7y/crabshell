@@ -193,7 +193,7 @@ API rules agents must keep:
 - `Signal<T>` (read and write) and `ReadSignal<T>` (what services hand out) are `Copy` handles, so closures capture them without cloning. `get()` returns a clone and subscribes the closure it runs in. `with(|v| ...)` reads by reference. `set()` and `update()` write.
 - Every widget property takes a plain value or a closure. `.height(30)` sets it once. `.height(move || ...)` is a binding that re-runs when a signal it read changes.
 - `children_keyed(items, key, view)` builds one child per item and reuses it while its key stays in the list. `view` receives a `Memo<T>` that updates when that item's value changes.
-- Event handlers (`on_click`, `on_right_click`, `on_scroll`) receive `&Cx` and run on the main thread.
+- Event handlers (`on_click`, `on_right_click`, `on_middle_click`, `on_scroll`) receive `&Cx` and run on the main thread.
 - `Style` is `Copy` and every builder method is a `const fn`, so a theme is a set of constants. `Text` inherits `color` and `font` from the nearest ancestor that sets them. Nothing else inherits.
 - `cx.persist("key", default)` returns a `Signal<T>` for any `T: Serialize + DeserializeOwned`. Its value survives reloads. If an edit changes the type so the saved value no longer fits, it falls back to the default and logs once.
 - A service that isn't running gives `None` or an empty list. A missing Sway socket or audio server logs once and never panics.
@@ -209,7 +209,7 @@ API rules settled while building `crabshell` (Phase 2, step 4):
 - `crabshell::run` exits with 1 (`EXIT_ROOT_PANICKED`) when `root` panics, and with 2 (`EXIT_NO_COMPOSITOR`) when there is no compositor, a required protocol is missing, or the connection is lost. A logout is not a crash.
 - `CRABSHELL_LOG` sets the log level, such as `debug`. Unset or empty means `info`, and a value that doesn't parse is warned about once.
 - `cx.provide::<T>()` and `cx.service::<T>()` use one services map shared by every child context. `Shell` drives the loop by hand for tests, and dropping it frees everything it made.
-- The prelude holds the widgets, styles, `Cx`, `Output`, the signal types, `ShellExt` and `IntoPanels`. Since Phase 3 it also holds `ServicesExt` (for `cx.clock()`, `cx.sway()` and `cx.audio()`), `Precision`, `Workspace` and `Sink`. `Tray` arrives in Phase 4.
+- The prelude holds the widgets, styles, `Cx`, `Output`, the signal types, `ShellExt` and `IntoPanels`. Since Phase 3 it also holds `ServicesExt` (for `cx.clock()`, `cx.sway()` and `cx.audio()`), `Precision`, `Workspace` and `Sink`. Since Phase 4 it also holds `PopupWindow`, `Menu`, `MenuEntry`, `MenuToggle`, `Tray`, and `TrayHost` with its item and menu types, for `cx.tray()`.
 
 API rules settled while building `crabshell` (Phase 3, step 4):
 
@@ -306,18 +306,18 @@ More required tests:
 
 v1 ships ten widgets. Nine are in `crabshell-ui`. `Tray` is in `crabshell-services`, because it needs the tray service and `crabshell-ui` can't depend on services; the prelude re-exports it. Users build everything else by combining them.
 
-| Widget          | What it does                                                                                                        |
-| --------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `PanelWindow`   | A layer-shell surface on one output with anchors, size, exclusive zone and layer. It takes no keyboard focus in v1. |
-| `PopupWindow`   | An `xdg_popup` anchored to a widget's rectangle. Tray menus use it.                                                 |
-| `Row`, `Column` | Flex layout with `gap`, `padding`, `align` and `justify`.                                                           |
-| `Stack`         | Children drawn on top of each other in one cell.                                                                    |
-| `Spacer`        | Takes the leftover space in a `Row` or `Column`.                                                                    |
-| `Text`          | One line by default, with `ellipsis` and `max_lines`.                                                               |
-| `Icon`          | A freedesktop icon name, an SVG or PNG path, or raw ARGB pixels from a tray item.                                   |
-| `Button`        | A clickable box with `hover_style` and `pressed_style`, plus `on_click`, `on_right_click` and `on_scroll`.          |
-| `Menu`          | A vertical list of buttons built from a DBusMenu layout, with separators, checkmarks and submenus as nested popups. |
-| `Tray`          | One icon button per tray item, each opening its `Menu`. Built only from the widgets above.                          |
+| Widget          | What it does                                                                                                                  |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `PanelWindow`   | A layer-shell surface on one output with anchors, size, exclusive zone and layer. It takes no keyboard focus in v1.           |
+| `PopupWindow`   | An `xdg_popup` anchored to a widget's rectangle. Tray menus use it.                                                           |
+| `Row`, `Column` | Flex layout with `gap`, `padding`, `align` and `justify`.                                                                     |
+| `Stack`         | Children drawn on top of each other in one cell.                                                                              |
+| `Spacer`        | Takes the leftover space in a `Row` or `Column`.                                                                              |
+| `Text`          | One line by default, with `ellipsis` and `max_lines`.                                                                         |
+| `Icon`          | A freedesktop icon name, an SVG or PNG path, or raw ARGB pixels from a tray item.                                             |
+| `Button`        | A clickable box with `hover_style` and `pressed_style`, plus `on_click`, `on_right_click`, `on_middle_click` and `on_scroll`. |
+| `Menu`          | A vertical list of buttons built from a DBusMenu layout, with separators, checkmarks and submenus as nested popups.           |
+| `Tray`          | One icon button per tray item, each opening its `Menu`. Built only from the widgets above.                                    |
 
 ### Layout
 
@@ -589,8 +589,16 @@ Rules settled while building `crabshell-services` (Phase 4, steps 1 and 2):
 - Tray: zbus has no object server here, so the watcher's methods and properties, `Introspect` included, are answered by hand on the main thread. A call that expects no reply is still acted on.
 - Tray: watcher signals count only as broadcasts while another program owns the watcher name. An item's signals count only from its current owner and object path.
 - Tray: pixmaps are at most 512 px a side and 1 MiB per item in total, and the smallest are kept first.
-- Tray: calls time out after 25 s. `Activate` is sent at (0, 0). `Event` sends data 0 and timestamp 0. A `Menu` of `/NO_DBUSMENU` means no menu.
+- Tray: calls to apps and to another watcher time out after 25 s, on a timer of the loop's own that goes as soon as the call ends. zbus's `method_timeout` left its timer behind, which woke zbus's thread once, 25 s after every call. Calls the bus answers itself have no timeout. `Activate` is sent at (0, 0). `Event` sends data 0 and timestamp 0. A `Menu` of `/NO_DBUSMENU` means no menu.
 - Tray: only one menu is open at a time. Its match rule exists only while it is open, and a failed read closes it. A menu keeps at most 1024 entries, and submenus are read as they open.
+
+Rules settled while building the `Tray` widget (Phase 4, step 5):
+
+- `Tray::new()` takes `icon_size` (16 by default) and `menu_style`, the menu popup's style (light text on dark gray by default). Both take a value or a closure.
+- It is built from `crabshell-ui`'s widgets. `cx.tray()` needs a context, which a keyed child's view gets, so the tray is one such child holding a row of the items. `Prop::shared` lets one property feed many widgets.
+- A click opens the menu popup at once, so it grabs the pointer with the click's serial. The popup is clear and empty until the app's layout arrives. It closes once the tray stops following its opening: the app's menu went, a read failed (the first one too), or the app left. `menu_style` is the `Menu`'s style, so submenus get it too.
+- When the popup goes, the tray stops following the app's menu, unless the menu was opened again since. `open_menu` numbers each opening for that.
+- A widget doesn't know its output's scale, so pixmaps are picked for twice the icon size. An item with no icon shows `image-missing`.
 
 ## Crates
 

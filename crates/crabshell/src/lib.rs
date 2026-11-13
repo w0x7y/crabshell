@@ -35,9 +35,10 @@
 //! `crabshell-services`, drawing from `crabshell-render` and the Wayland
 //! platform from `crabshell-wayland`; the [`prelude`] has what a bar uses,
 //! including [`ServicesExt`](crabshell_services::ServicesExt) for
-//! `cx.clock(Precision::Minute)`, `cx.sway()` and `cx.audio()`.
+//! `cx.clock(Precision::Minute)`, `cx.sway()`, `cx.audio()` and
+//! `cx.tray()`, and the [`Tray`](crabshell_services::Tray) widget.
 //! `examples/bar.rs` is the v1 bar, with each output's workspaces, the
-//! volume and the clock.
+//! tray, the volume and the clock.
 //!
 //! # How it works
 //!
@@ -77,9 +78,12 @@ pub use shell::{EXIT_NO_COMPOSITOR, EXIT_ROOT_PANICKED, Error, Shell, ShellExt, 
 pub mod prelude {
   pub use crate::{IntoPanels, ShellExt};
   pub use crabshell_reactive::{Effect, Memo, ReadSignal, Signal};
-  pub use crabshell_services::{Precision, ServicesExt, Sink, Workspace};
+  pub use crabshell_services::{
+    Precision, ServicesExt, Sink, Tray, TrayHost, TrayItem, TrayMenu, TrayStatus, Workspace,
+  };
   pub use crabshell_ui::{
     Align, Anchors, Border, Button, Color, Column, Cx, Edge, Font, Icon, IconPixels, IconSource,
-    Justify, Layer, Output, Padding, PanelWindow, Row, Size, Spacer, Stack, Style, Text, Widget,
+    Justify, Layer, Menu, MenuEntry, MenuToggle, Output, Padding, PanelWindow, PopupWindow, Row,
+    Size, Spacer, Stack, Style, Text, Widget,
   };
 }

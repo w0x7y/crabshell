@@ -637,15 +637,26 @@ fn measure_the_counter_bar() {
   let counter = ExampleBar::start(&sway, "counter", true, &[]);
   let mut report = format!("counter example, {}\n", measure(&counter));
   drop(counter);
-  // Then the v1 bar, on workspace 1, then switching between 1 and 2.
+  // Then the v1 bar, on workspace 1, then switching between 1 and 2. Its
+  // tray runs the watcher on a private session bus.
   let server = PrivateServer::start("measure");
-  let bar = ExampleBar::start(&sway, "bar", true, &[("PULSE_SERVER", &server.address())]);
+  let bus = PrivateBus::start();
+  let bar = ExampleBar::start(
+    &sway,
+    "bar",
+    true,
+    &[
+      ("PULSE_SERVER", &server.address()),
+      ("DBUS_SESSION_BUS_ADDRESS", &bus.address),
+    ],
+  );
   bar.wait_until_connected(&server);
   let idle = measure(&bar);
   let times = switch_workspaces(&sway, &bar, 10);
   let slowest = times.iter().copied().fold(0.0, f64::max);
   report += &format!(
-    "bar example with audio on a private pipewire-pulse, {idle}; workspace switch to \
+    "bar example with audio on a private pipewire-pulse and the tray on a private bus, \
+         {idle}; workspace switch to \
          screen: median {:.1} ms, slowest {slowest:.1} ms over {} switches, each {times:.1?} ms\n",
     median(&times),
     times.len()
@@ -1146,8 +1157,8 @@ fn run_v1_bar_logging_its_volume() -> ! {
     let Some(id) = shown_on(platform, "HEADLESS-1") else {
       continue;
     };
-    // Between the spacer and the clock.
-    let ((x, y), label) = in_row(platform, id, 2, |button| {
+    // Between the tray and the clock.
+    let ((x, y), label) = in_row(platform, id, 3, |button| {
       (middle(button.rect()), text_of(button))
     });
     let line = format!("{VOLUME}{x},{y} says {label}");
@@ -1245,4 +1256,35 @@ fn losing_the_compositor_exits_2() {
     Some(crabshell::EXIT_NO_COMPOSITOR),
     "{status}"
   );
+}
+
+/// A private session bus, for the v1 bar's tray: `dbus-daemon --session`
+/// on an address of its own. It stops on drop.
+struct PrivateBus {
+  daemon: Child,
+  address: String,
+}
+
+impl PrivateBus {
+  fn start() -> PrivateBus {
+    let mut daemon = Command::new("dbus-daemon")
+      .args(["--session", "--nofork", "--print-address"])
+      .stdout(Stdio::piped())
+      .spawn()
+      .expect("dbus-daemon starts (it comes with dbus)");
+    let stdout = daemon.stdout.take().expect("dbus-daemon's stdout");
+    let mut address = String::new();
+    BufReader::new(stdout)
+      .read_line(&mut address)
+      .expect("dbus-daemon prints its address");
+    let address = address.trim().to_owned();
+    PrivateBus { daemon, address }
+  }
+}
+
+impl Drop for PrivateBus {
+  fn drop(&mut self) {
+    let _ = self.daemon.kill();
+    let _ = self.daemon.wait();
+  }
 }

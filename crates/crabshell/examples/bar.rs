@@ -1,7 +1,8 @@
 //! The v1 bar from the design doc's "Writing a config": Sway's workspaces
-//! for each output at the left, the volume and the clock at the right.
-//! Scroll over the volume to change it by 5% a notch, and click it to mute.
-//! The tray comes in Phase 4.
+//! for each output at the left, the tray, the volume and the clock at the
+//! right. Scroll over the volume to change it by 5% a notch, and click it
+//! to mute. Click a tray icon to activate its app, or right-click it for
+//! its menu.
 //!
 //! Run it inside Sway with `cargo run -p crabshell --example bar`.
 
@@ -50,6 +51,7 @@ pub fn bar(cx: &Cx, output: &Output) -> PanelWindow {
           },
         ))
         .child(Spacer::new())
+        .child(Tray::new().icon_size(18))
         .child(
           Button::new(Text::new(move || match sink.get() {
             Some(s) if s.muted => "muted".to_string(),
