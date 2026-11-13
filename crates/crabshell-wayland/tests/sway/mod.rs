@@ -44,10 +44,14 @@ impl Sway {
   /// services, and it may name the desktop's Sway.
   pub fn start() -> Sway {
     if let Some(socket) = std::env::var_os("SWAYSOCK") {
+      // The test target's name: cargo names its binary `<name>-<hash>`.
+      let exe = std::env::current_exe().unwrap_or_default();
+      let stem = exe.file_stem().unwrap_or_default().to_string_lossy();
+      let target = stem.rsplit_once('-').map_or(&*stem, |(name, _)| name);
       panic!(
         "this test process has SWAYSOCK={socket:?}, maybe the desktop's Sway, so no \
                  private Sway starts. Run the suite as\n  env -u SWAYSOCK cargo test -p {} \
-                 --test headless -- --ignored --test-threads=1",
+                 --test {target} -- --ignored --test-threads=1",
         env!("CARGO_PKG_NAME")
       );
     }
