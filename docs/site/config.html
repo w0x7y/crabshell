@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>writing a config · crabshell</title>
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="site.css">
+<script>try{var t=localStorage.getItem("crabshell:theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+</head>
+<body>
+<header class="site">
+<div class="row">
+<a class="name" href="index.html">crabshell</a>
+<span class="version">v0.1 in progress</span>
+</div>
+<div class="row">
+<nav class="main" aria-label="main"><a href="index.html">home</a> / <a href="start.html">start</a> / <a href="config.html" aria-current="page">config</a> / <a href="architecture.html">architecture</a> / <a href="roadmap.html">roadmap</a> / <a href="features.html">features</a> / <a href="https://github.com/w0x7y/crabshell" target="_blank" rel="noopener">github</a></nav>
+<p class="theme"><button type="button" data-theme-set="dark">dark</button> / <button type="button" data-theme-set="light">light</button></p>
+</div>
+</header>
+
+<main class="prose">
+<h1>writing a config</h1>
+<p>a config is a normal cargo project whose <code>main</code> calls <code>crabshell::run</code>. this page goes through the template <code>crabshell init</code> writes, then the rules the api keeps.</p>
+
+<h2 id="the-template">the template</h2>
+<p class="file">Cargo.toml</p>
+<pre class="code" data-lang="toml">[package]
+name = "my-shell"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+crabshell = "0.1"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3</pre>
+<p>the dependencies build once with full optimization, and your own crate at level 1, so an edit rebuilds fast and the bar still runs fast.</p>
+<p class="file">src/main.rs</p>
+<pre class="code" data-lang="rust">use crabshell::prelude::*;
+
+const BAR: Style = Style::new()
+    .background(Color::rgb(0x1e, 0x1e, 0x2e))
+    .color(Color::rgb(0xcd, 0xd6, 0xf4))
+    .font(Font::new("Inter", 13.0));
+const WS: Style = Style::new().padding(2, 8).radius(4.0);
+const WS_FOCUSED: Style = WS.background(Color::rgb(0x45, 0x47, 0x5a));
+
+fn main() {
+    crabshell::run(|cx| cx.per_output(bar));
+}
+
+fn bar(cx: &amp;Cx, output: &amp;Output) -&gt; PanelWindow {
+    let clock = cx.clock(Precision::Minute);
+    let workspaces = cx.sway().workspaces();
+    let sink = cx.audio().default_sink();
+    let output_name = output.name();
+
+    PanelWindow::new(output)
+        .anchors(Edge::Top | Edge::Left | Edge::Right)
+        .height(30)
+        .exclusive_zone(30)
+        .style(BAR)
+        .child(
+            Row::new()
+                .gap(8)
+                .padding(4, 8)
+                .child(Row::new().gap(4).children_keyed(
+                    move || {
+                        workspaces.get().into_iter()
+                            .filter(|w| w.output == output_name)
+                            .collect::&lt;Vec&lt;_&gt;&gt;()
+                    },
+                    |w| w.id,
+                    |_cx, ws| {
+                        Button::new(Text::new(move || ws.get().name))
+                            .style(move || if ws.get().focused { WS_FOCUSED } else { WS })
+                            .on_click(move |cx| cx.sway().focus_workspace(&amp;ws.get().name))
+                    },
+                ))
+                .child(Spacer::new())
+                .child(Tray::new().icon_size(18))
+                .child(
+                    Button::new(Text::new(move || match sink.get() {
+                        Some(s) if s.muted =&gt; "muted".to_string(),
+                        Some(s) =&gt; format!("vol {}%", s.volume_percent),
+                        None =&gt; "no audio".to_string(),
+                    }))
+                    .on_click(|cx| cx.audio().toggle_mute())
+                    .on_scroll(|cx, steps| cx.audio().change_volume(steps * 5)),
+                )
+                .child(Text::new(move || clock.get().strftime("%a %d %b  %H:%M").to_string())),
+        )
+}</pre>
+
+<h2 id="a-bar-per-monitor">a bar per monitor</h2>
+<ul>
+<li><code>crabshell::run(|cx| ...)</code> takes the root closure, starts the event loop and never returns.</li>
+<li><code>cx.per_output(f)</code> calls <code>f</code> for every monitor there is now and every one that appears later. <code>f</code> returns a <code>PanelWindow</code>, or a <code>Vec</code> of them for several windows or none. when a monitor goes, its window and everything <code>f</code> made go with it.</li>
+<li><code>PanelWindow::new(output)</code> is a layer-shell window. it takes <code>.anchors(...)</code>, <code>.width(...)</code>, <code>.height(...)</code>, <code>.exclusive_zone(...)</code>, <code>.layer(Layer::Top)</code>, <code>.style(...)</code> and <code>.child(...)</code>.</li>
+</ul>
+
+<h2 id="values-or-closures">a value or a closure</h2>
+<p>every property takes either one. <code>.height(30)</code> sets it once. <code>.height(move || ...)</code> is a binding: it runs again whenever a signal it read changes, and only that property updates.</p>
+<pre class="code" data-lang="rust">Text::new("plain text")
+Text::new(move || format!("{} windows", count.get()))</pre>
+
+<h2 id="signals">signals</h2>
+<ul>
+<li><code>Signal&lt;T&gt;</code> can be read and written. <code>ReadSignal&lt;T&gt;</code> is what services hand out. both are <code>Copy</code>, so a <code>move</code> closure takes them without a clone.</li>
+<li><code>get()</code> returns a clone and subscribes the closure it runs in. <code>with(|v| ...)</code> reads by reference. <code>set(...)</code> and <code>update(|v| ...)</code> write.</li>
+<li><code>cx.signal(value)</code> makes one, <code>cx.memo(|| ...)</code> caches a value worked out from others, and <code>cx.effect(|| ...)</code> runs code whenever what it read changes.</li>
+</ul>
+<pre class="code" data-lang="rust">let count = cx.signal(0);
+Button::new(Text::new(move || format!("clicked {}", count.get())))
+    .on_click(move |_cx| count.update(|n| *n += 1))</pre>
+
+<h2 id="widgets">widgets</h2>
+<div class="table">
+<table>
+<thead><tr><th>widget</th><th>what it does</th></tr></thead>
+<tbody>
+<tr><td><code>Row</code>, <code>Column</code></td><td>lay children out left to right, or top to bottom, with <code>gap</code>, <code>padding</code>, <code>align</code> and <code>justify</code></td></tr>
+<tr><td><code>Stack</code></td><td>draws its children on top of each other</td></tr>
+<tr><td><code>Text</code></td><td>text from a value or a closure, with <code>ellipsis</code> and <code>max_lines</code></td></tr>
+<tr><td><code>Icon</code></td><td>an icon from the icon theme, or from pixels, at a <code>size</code></td></tr>
+<tr><td><code>Button</code></td><td>wraps a child and takes clicks and scrolling, with <code>hover_style</code> and <code>pressed_style</code></td></tr>
+<tr><td><code>Spacer</code></td><td>takes the space left in a row or column</td></tr>
+<tr><td><code>Tray</code></td><td>the system tray, with <code>icon_size</code> and <code>menu_style</code></td></tr>
+<tr><td><code>PopupWindow</code></td><td>a popup next to the widget that opened it, from <code>cx.open_popup(|cx| ...)</code></td></tr>
+<tr><td><code>Menu</code></td><td>a list of <code>MenuEntry</code> items for a popup, with <code>on_activate</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<h2 id="lists">lists</h2>
+<p><code>children_keyed(items, key, view)</code> builds one child per item and keeps it while its key stays in the list. <code>view</code> gets a memo that updates when that item changes, so a workspace that gains focus restyles its own button and nothing else.</p>
+
+<h2 id="events">events</h2>
+<p><code>on_click</code>, <code>on_right_click</code> and <code>on_middle_click</code> get <code>&amp;Cx</code>. <code>on_scroll</code> also gets the steps, up positive. all of them run on the main thread.</p>
+
+<h2 id="styles">styles</h2>
+<p>a <code>Style</code> is <code>Copy</code>, and every method on it is a <code>const fn</code>, so a theme is a set of constants. the methods are <code>background</code>, <code>color</code>, <code>font</code>, <code>padding</code>, <code>radius</code>, <code>border</code>, <code>opacity</code> and <code>merge</code>. colors come from <code>Color::rgb</code>, <code>Color::rgba</code> or <code>Color::hex</code>.</p>
+<pre class="code" data-lang="rust">const PILL: Style = Style::new().padding(2, 8).radius(4.0);
+const PILL_ON: Style = PILL.background(Color::hex("#3a404b"));</pre>
+<p><code>Text</code> takes its <code>color</code> and <code>font</code> from the nearest parent that sets them. nothing else is inherited.</p>
+
+<h2 id="services">services</h2>
+<div class="table">
+<table>
+<thead><tr><th>call</th><th>gives you</th></tr></thead>
+<tbody>
+<tr><td><code>cx.clock(Precision::Minute)</code></td><td>the time, as a <code>ReadSignal</code> of <code>jiff::Zoned</code> that changes on the minute. <code>Precision::Second</code> ticks every second</td></tr>
+<tr><td><code>cx.sway().workspaces()</code></td><td>sway's workspaces, each with its <code>name</code>, <code>output</code> and <code>focused</code>. <code>focus_workspace(name)</code> switches</td></tr>
+<tr><td><code>cx.audio().default_sink()</code></td><td>the default output's volume and mute. <code>toggle_mute()</code> and <code>change_volume(percent)</code> change them</td></tr>
+<tr><td><code>cx.tray()</code></td><td>the tray's items and their menus. the <code>Tray</code> widget uses it for you</td></tr>
+</tbody>
+</table>
+</div>
+<p>a service starts the first time you ask for it, so one you don't use costs nothing. one that can't run, like sway with no socket, gives <code>None</code> or an empty list and logs once.</p>
+
+<h2 id="persist">keep state across reloads</h2>
+<p><code>cx.persist(key, default)</code> gives a <code>Signal</code> whose value survives a reload, for any type that serde can save. if an edit changes the type so the saved value no longer fits, it starts from the default and logs once.</p>
+<pre class="code" data-lang="rust">let clicks = cx.persist(&amp;format!("clicks on {}", output.name()), 0_u32);</pre>
+
+<h2 id="panics">when your code panics</h2>
+<ul>
+<li>a panic in a binding, an effect, an event handler or a <code>per_output</code> builder is caught. that part turns off, and the log names it with its widget path. the rest keeps running.</li>
+<li>a panic in the closure passed to <code>crabshell::run</code> ends the shell with status 1, and <code>crabshell run</code> treats it as a crash.</li>
+</ul>
+</main>
+
+<footer class="site">
+<p>more on how it works: <a href="architecture.html">architecture</a>. the full rules: <a href="../design.md#writing-a-config">the design doc</a>.</p>
+<p>crabshell is mit or apache-2.0 licensed. its colors are <a href="https://w0x7y.dev/rime" target="_blank" rel="noopener">rime</a> and rime frost, plus an orange made to match.</p>
+</footer>
+
+<script src="data.js"></script>
+<script src="site.js"></script>
+</body>
+</html>
