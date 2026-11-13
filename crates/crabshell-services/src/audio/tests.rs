@@ -160,6 +160,27 @@ fn libpulse_threads() -> usize {
   libpulse_tasks().len()
 }
 
+/// [`libpulse_threads`] once it is `expected`, or after a second. The
+/// kernel drops an exited thread from `/proc` a moment after
+/// `pthread_join` returns, so a count right after libpulse stops can
+/// still include it.
+fn libpulse_threads_settled(expected: usize) -> usize {
+  let give_up = Instant::now() + Duration::from_secs(1);
+  while libpulse_threads() != expected && Instant::now() < give_up {
+    std::thread::sleep(Duration::from_millis(5));
+  }
+  libpulse_threads()
+}
+
+/// Runs `shell`'s loop until libpulse has started, or for a second: under
+/// load, a short run can end before the loop's next turn.
+fn run_until_libpulse_starts(shell: &mut Harness) {
+  let give_up = Instant::now() + Duration::from_secs(1);
+  while libpulse_threads() == 0 && Instant::now() < give_up {
+    shell.run_for(Duration::from_millis(10));
+  }
+}
+
 /// How many times libpulse's threads have been switched out so far.
 fn libpulse_switches() -> u64 {
   let switches = |task: PathBuf| -> u64 {
@@ -413,7 +434,9 @@ fn a_server_that_hangs_up_gives_none_and_a_retry() {
 #[test]
 fn every_caller_shares_one_connection() {
   let _one = one_at_a_time();
-  let before = libpulse_threads();
+  // Every test that starts libpulse holds the lock and stops it.
+  let before = libpulse_threads_settled(0);
+  assert_eq!(before, 0, "no libpulse thread outlives its test");
   let mut shell = Harness::new(&NoServer::new("shared").address());
   let sink = shell.cx.audio().default_sink();
   let output = shell.cx.child();
@@ -423,7 +446,7 @@ fn every_caller_shares_one_connection() {
     before,
     "libpulse starts on the loop's next turn"
   );
-  shell.run_for(Duration::from_millis(10));
+  run_until_libpulse_starts(&mut shell);
   assert_eq!(libpulse_threads(), before + 1);
   // It belongs to the root, so an output going away leaves it.
   output.owner().dispose();
@@ -464,13 +487,14 @@ fn disposing_the_root_frees_the_sink() {
 #[test]
 fn dropping_the_shell_stops_libpulse() {
   let _one = one_at_a_time();
-  let before = libpulse_threads();
+  let before = libpulse_threads_settled(0);
+  assert_eq!(before, 0, "no libpulse thread outlives its test");
   let mut shell = Harness::new(&NoServer::new("dropped").address());
   let audio = shell.cx.audio();
-  shell.run_for(Duration::from_millis(100));
+  run_until_libpulse_starts(&mut shell);
   assert_eq!(libpulse_threads(), before + 1);
   drop((audio, shell));
-  assert_eq!(libpulse_threads(), before);
+  assert_eq!(libpulse_threads_settled(before), before);
 }
 
 #[test]
