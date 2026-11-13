@@ -419,7 +419,8 @@ Keep every drawing call inside `crabshell-render`, behind plain functions. A GPU
 
 Rules settled while building `crabshell-render` (Phase 2, step 2):
 
-- Buffers use `ARGB8888`. Each damaged area is drawn into a reused RGBA scratch pixmap, then copied into the buffer with red and blue swapped. This replaces drawing straight into the buffer: it keeps glyphs, resvg and png in tiny-skia's order, at the cost of one copy of the changed pixels.
+- Buffers use `ARGB8888`. Damaged areas are drawn in 64-pixel tiles of a fixed grid, each into a reused RGBA scratch pixmap, then copied into the buffer with red and blue swapped. This replaces drawing straight into the buffer: it keeps glyphs, resvg and png in tiny-skia's order, at the cost of one copy of the changed pixels.
+- A pixel is always drawn in the same tile, whatever the damage. tiny-skia cuts a curve where it leaves the pixmap, which changes the antialiasing beside the cut, so drawing each damaged area as one pixmap made a repaint differ from a full draw.
 - Damage: logical rectangles round outward to pixels, plus a 1 px margin. Overlapping rectangles merge. Each window keeps 4 frames of history. A buffer older than that, a new buffer, a buffer last drawn by another window, or a new size or scale is repainted whole. The reported damage is this frame's change. More than half dirty reports the whole buffer.
 - `draw` returns `Result<_, CanvasError>`. The caller commits after every successful draw, in order, or the reported damage is wrong.
 - Shapes snap to whole pixels. The radius is clamped to half the shorter side. A border is drawn inside the edge, its width rounded down with a 1 px minimum.
