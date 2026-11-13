@@ -304,7 +304,7 @@ More required tests:
 
 ## Widgets, layout and styles
 
-v1 ships ten widgets, all in `crabshell-ui`. Users build everything else by combining them.
+v1 ships ten widgets. Nine are in `crabshell-ui`. `Tray` is in `crabshell-services`, because it needs the tray service and `crabshell-ui` can't depend on services; the prelude re-exports it. Users build everything else by combining them.
 
 | Widget          | What it does                                                                                                        |
 | --------------- | ------------------------------------------------------------------------------------------------------------------- |
@@ -362,6 +362,15 @@ Rules settled while building `crabshell-ui` (Phase 2, step 1):
 - Font fallback asks fontconfig per character, family and weight. fontconfig's face index carries a variable font's named instance in its upper 16 bits, so mask it with `0xFFFF` before passing it to fontdb.
 - `Icon::new` accepts a theme name as `&str` or `String`, a file path, or raw ARGB pixels. The default size is 16.
 - Every crate may use `tracing` for logging.
+
+Rules settled while building `crabshell-ui` (Phase 4, step 3):
+
+- A widget opens a popup from its own context, such as a handler's, with `cx.open_popup(|cx| PopupWindow::new()...)`. The popup belongs to that widget and closes when the widget goes.
+- A popup is the size of its content, in whole logical pixels and at least 1×1.
+- `cx.close_popup()` closes the popup it is called in, every popup it opened, and every popup that opened it.
+- The popup's builder runs untracked. A panic in it is logged with a path ending in `/PopupWindow`, and nothing opens.
+- `Menu` keys its entries by `(id, separator)`. A separator is 2 px tall. Checkmarks and radio marks reserve the width of the widest mark, so labels line up.
+- `MenuEntry` and `MenuToggle` live in `crabshell-ui`, and `crabshell-services` re-exports them.
 
 ## Rendering
 
@@ -467,7 +476,7 @@ How each source plugs into calloop:
 ### Popups
 
 - A `PopupWindow` positions itself with `xdg_positioner`, anchored to the rectangle of the widget that opened it. It flips to the other side when it would leave the output.
-- It grabs the pointer using the serial of the click that opened it. The compositor sends `popup_done` on a click outside, and the popup closes and drops its owner.
+- It grabs the pointer using the serial of the last button press or release on the shell's windows, usually the click that opened it. The compositor sends `popup_done` on a click outside, and the popup closes and drops its owner.
 
 ### Testing without a screen
 
@@ -505,16 +514,28 @@ Rules settled while building `crabshell-wayland` (Phase 2, step 3):
 - `crabshell-wayland` depends on `crabshell-reactive` directly, for `Runtime::flush`. `wayland-protocols` is pinned at 0.32.13 with the client and staging features, the same copy sctk uses.
 - Invalidation: a node that draws nothing itself (no background, border, text or icon) adds no damage when it moves or resizes. The window always counts as drawing. A paint change counts a node as drawing until its next layout.
 
+Rules settled while building `crabshell-wayland` (Phase 4, step 4):
+
+- `xdg_wm_base` is required, bound at up to version 6.
+- Popups are taken after the flush and shown in the same loop iteration, laid out first so their size is known. A popup is created once its opener has committed a frame: through `get_popup` on a panel's layer surface, or as the child of another popup.
+- A popup goes below its widget in a bar along the top or bottom, and beside it in a vertical bar or another popup. It flips and slides on both axes to stay on the output.
+- The anchor rectangle is the widget's rectangle in whole pixels, at least 1×1, clamped inside the parent.
+- A popup grabs the pointer only if its opener is a panel or grabbed too, since xdg-shell forbids a grab under a popup that didn't grab.
+- Only one popup chain is open at a time: opening a popup closes every popup that isn't its opener or one of its openers. Popups are destroyed topmost first.
+- `popup_done`, `close_popup`, or the opening widget going away drops a popup and the popups it opened.
+- A popup whose content changes size sends the new size with `reposition` once it is mapped.
+- `Platform::windows()` and `remove_window` cover popups. `WindowInfo::position` is a popup's place relative to its opener.
+
 ## Services
 
 v1 has four services in `crabshell-services`. Each one owns its connection, runs on the main thread, and hands out `ReadSignal`s plus a few methods. Every service is created on first use and shared by all bars, so two outputs never mean two connections.
 
-| Service    | Signals and methods                                                                                                                    | Source                                                             | Crate                         |
-| ---------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | ----------------------------- |
-| Workspaces | `workspaces()` gives `Vec<Workspace>` with id, name, output, focused, visible, urgent. `focus_workspace(name)`.                        | Sway IPC at `$SWAYSOCK`                                            | Own framing with `serde_json` |
-| Tray       | `items()` gives `Vec<TrayItem>` with id, title, status, icon, tooltip, menu. `activate`, `secondary_activate`, `scroll`, `menu_event`. | StatusNotifierItem and `com.canonical.dbusmenu` on the session bus | `zbus`                        |
-| Audio      | `default_sink()` gives `Option<Sink>` with name, volume_percent, muted. `change_volume(percent)`, `toggle_mute()`.                     | PulseAudio protocol, served by pipewire-pulse on PipeWire systems  | `libpulse-binding`            |
-| Clock      | `clock(precision)` gives a `jiff::Zoned`                                                                                               | System time and time zone                                          | `jiff`                        |
+| Service    | Signals and methods                                                                                                                                                                                                                                                                               | Source                                                             | Crate                         |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | ----------------------------- |
+| Workspaces | `workspaces()` gives `Vec<Workspace>` with id, name, output, focused, visible, urgent. `focus_workspace(name)`.                                                                                                                                                                                   | Sway IPC at `$SWAYSOCK`                                            | Own framing with `serde_json` |
+| Tray       | `items()` gives `Vec<TrayItem>` with id (bus name and path), app_id, title, status, icon_name, icon_pixmaps, attention_icon_name, icon_theme_path, tooltip, item_is_menu and menu. `activate`, `secondary_activate`, `scroll`, `menu()`, `open_menu`, `open_submenu`, `close_menu`, `menu_event`. | StatusNotifierItem and `com.canonical.dbusmenu` on the session bus | `zbus`                        |
+| Audio      | `default_sink()` gives `Option<Sink>` with name, volume_percent, muted. `change_volume(percent)`, `toggle_mute()`.                                                                                                                                                                                | PulseAudio protocol, served by pipewire-pulse on PipeWire systems  | `libpulse-binding`            |
+| Clock      | `clock(precision)` gives a `jiff::Zoned`                                                                                                                                                                                                                                                          | System time and time zone                                          | `jiff`                        |
 
 ### Workspaces
 
@@ -530,7 +551,7 @@ v1 has four services in `crabshell-services`. Each one owns its connection, runs
 - Items register with either a bus name or only an object path. Electron and Ayatana apps send only a path. Accept both, using the sender's unique name when only a path arrives and `/StatusNotifierItem` when only a name arrives.
 - Read `Id`, `Title`, `Status`, `IconName`, `IconPixmap`, `IconThemePath`, `AttentionIconName`, `ToolTip`, `Menu` and `ItemIsMenu`. Re-read on `NewIcon`, `NewTitle`, `NewStatus` and `NewToolTip`.
 - A left click calls `Activate(x, y)`, or opens the menu when `ItemIsMenu` is true. A right click opens the menu, and a middle click calls `SecondaryActivate`.
-- To open a menu, call `AboutToShow`, then `GetLayout(0, -1, [])`. Rebuild it on `LayoutUpdated`. A click sends `Event(id, "clicked", ...)`.
+- To open a menu, call `AboutToShow`, then `GetLayout(0, -1, names)`, where `names` lists the seven properties a menu shows: `type`, `label`, `enabled`, `visible`, `toggle-type`, `toggle-state` and `children-display`. An empty list would also bring every entry's `icon-data`. Read it again on `LayoutUpdated` and `ItemsPropertiesUpdated`. A click sends `Event(id, "clicked", ...)`.
 - `IconPixmap` is ARGB32 in network byte order. Convert it to premultiplied RGBA and pick the size closest to the icon size.
 - When Crabshell owns the watcher, a reload restarts it, and items must register again. Most apps re-register when the watcher's name owner changes. Phase 4 checks this with real apps.
 
@@ -558,6 +579,15 @@ Rules settled while building `crabshell-services` (Phase 3, steps 1 to 3):
 - Audio: every libpulse call runs on the main thread under the mainloop lock. Callbacks only send plain data, tagged with a connection generation, over one calloop channel. libpulse connects with `NOAUTOSPAWN` on the loop's next turn.
 - Audio: `volume_percent` is the channel average, rounded as pactl prints it. A volume or mute step builds on the last one sent until a read echoes it, another sink is read, or 250 ms pass, because pipewire-pulse answers a read right after a set with the old value.
 - Tests give every `Config` field explicitly, so none reaches the real `SWAYSOCK` or audio server. Audio's connected path is tested against a fake server, and `#[ignore]` tests run it against a private pipewire-pulse.
+
+Rules settled while building `crabshell-services` (Phase 4, steps 1 and 2):
+
+- Tray: the shell queues for `org.kde.StatusNotifierWatcher` and takes over as the watcher when the bus hands it the name.
+- Tray: zbus has no object server here, so the watcher's methods and properties, `Introspect` included, are answered by hand on the main thread. A call that expects no reply is still acted on.
+- Tray: watcher signals count only as broadcasts while another program owns the watcher name. An item's signals count only from its current owner and object path.
+- Tray: pixmaps are at most 512 px a side and 1 MiB per item in total, and the smallest are kept first.
+- Tray: calls time out after 25 s. `Activate` is sent at (0, 0). `Event` sends data 0 and timestamp 0. A `Menu` of `/NO_DBUSMENU` means no menu.
+- Tray: only one menu is open at a time. Its match rule exists only while it is open, and a failed read closes it. A menu keeps at most 1024 entries, and submenus are read as they open.
 
 ## Crates
 
