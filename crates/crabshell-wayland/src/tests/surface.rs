@@ -233,3 +233,38 @@ fn a_new_icon_theme_repaints_the_whole_window() {
     Some(vec![crabshell_render::PixelRect::new(0, 0, 200, 30)])
   );
 }
+
+#[test]
+fn on_demand_focus_needs_layer_shell_version_4() {
+  use crabshell_ui::KeyboardFocus;
+  use smithay_client_toolkit::shell::wlr_layer::KeyboardInteractivity;
+
+  use crate::surface::keyboard;
+
+  assert_eq!(
+    keyboard(KeyboardFocus::None, 4),
+    KeyboardInteractivity::None
+  );
+  assert_eq!(
+    keyboard(KeyboardFocus::Exclusive, 1),
+    KeyboardInteractivity::Exclusive
+  );
+  assert_eq!(
+    keyboard(KeyboardFocus::OnDemand, 4),
+    KeyboardInteractivity::OnDemand
+  );
+  // Before version 4 the value is a protocol error; taking no keys is
+  // safer than taking all of them.
+  assert_eq!(
+    keyboard(KeyboardFocus::OnDemand, 3),
+    KeyboardInteractivity::None
+  );
+}
+
+#[test]
+fn a_namespace_with_a_nul_byte_falls_back_to_the_default() {
+  use crate::surface::namespace;
+
+  assert_eq!(namespace("bar"), "bar");
+  assert_eq!(namespace("bar\0x"), "crabshell");
+}

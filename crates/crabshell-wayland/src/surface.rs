@@ -2,15 +2,21 @@
 //! `xdg_popup`: its settings, buffers, scale and frame pacing, and drawing
 //! a frame into it.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crabshell_render::{BufferAge, Canvas, DamageHistory, PixelFormat, PixelRect, Renderer};
-use crabshell_ui::{Anchors, Edge, Layer, Size, SurfaceConfig, TextSystem, Window};
-use smithay_client_toolkit::compositor::FrameCallbackData;
+use crabshell_ui::{
+  Anchors, Edge, KeyboardFocus, Layer, Region, Size, SurfaceConfig, TextSystem, Window,
+};
+use smithay_client_toolkit::compositor::{self, CompositorState, FrameCallbackData};
 use smithay_client_toolkit::reexports::client::protocol::{
   wl_callback::WlCallback, wl_shm, wl_surface::WlSurface,
 };
 use smithay_client_toolkit::reexports::client::{Dispatch, Proxy, QueueHandle};
 use smithay_client_toolkit::shell::WaylandSurface;
-use smithay_client_toolkit::shell::wlr_layer::{self, Anchor, LayerSurface, SurfaceKind};
+use smithay_client_toolkit::shell::wlr_layer::{
+  self, Anchor, KeyboardInteractivity, LayerSurface, SurfaceKind,
+};
 use smithay_client_toolkit::shell::xdg::XdgPositioner;
 use smithay_client_toolkit::shell::xdg::popup::Popup;
 use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
@@ -23,9 +29,6 @@ use crate::scale::Scale;
 
 /// The largest logical size accepted from a configure.
 const MAX_LOGICAL_SIDE: u32 = 16_384;
-
-/// The layer-shell namespace, which compositors use to tell apps apart.
-pub(crate) const NAMESPACE: &str = "crabshell";
 
 /// An sctk buffer and its size, which sctk doesn't keep.
 pub(crate) struct ShmSlot {
@@ -167,6 +170,10 @@ pub(crate) struct Surface {
   pub(crate) last_damage: Vec<PixelRect>,
   /// The size of the last buffer committed.
   pub(crate) buffer_size: Option<(u32, u32)>,
+  /// A panel's layer-shell namespace, which can't change once sent.
+  pub(crate) namespace: String,
+  /// The input mask last sent and the size it was cut to.
+  mask_sent: Option<(Option<Region>, (u32, u32))>,
 }
 
 impl Surface {
@@ -187,6 +194,8 @@ impl Surface {
       commits: 0,
       last_damage: Vec::new(),
       buffer_size: None,
+      namespace: String::new(),
+      mask_sent: None,
     }
   }
 
@@ -246,10 +255,18 @@ impl Surface {
   /// Sends a panel's new settings from the window's description, which
   /// must have passed [`size_problem`]. The compositor answers with a
   /// configure.
-  pub(crate) fn reconfigure(&self, config: &SurfaceConfig) {
+  pub(crate) fn reconfigure(&mut self, config: &SurfaceConfig) {
     let Role::Layer(surface) = &self.role else {
       return;
     };
+    if self.namespace != namespace(&config.namespace) {
+      tracing::warn!(
+        shown = self.namespace,
+        new = config.namespace,
+        "a window's namespace changed; it applies when the window is shown again"
+      );
+      self.namespace = namespace(&config.namespace);
+    }
     apply(surface, config);
     if let SurfaceKind::Wlr(wlr) = surface.kind() {
       // Changing the layer later needs version 2.
@@ -258,6 +275,44 @@ impl Surface {
       }
     }
     surface.commit();
+  }
+
+  /// Whether the input mask was cut to another size than the surface's.
+  pub(crate) fn mask_outdated(&self) -> bool {
+    self.size.is_some() && self.mask_sent.as_ref().map(|(_, size)| *size) != self.size
+  }
+
+  /// Sends `mask`, cut to the surface's size, unless that was sent last.
+  /// The next commit applies it. Nothing is sent before the first
+  /// configure, which gives the size.
+  pub(crate) fn send_mask(&mut self, compositor: &CompositorState, mask: Option<&Region>) {
+    let Some(size) = self.size else {
+      return;
+    };
+    if self
+      .mask_sent
+      .as_ref()
+      .is_some_and(|(sent, sent_size)| sent.as_ref() == mask && *sent_size == size)
+    {
+      return;
+    }
+    let surface = self.wl_surface();
+    match mask {
+      None => surface.set_input_region(None),
+      Some(mask) => match compositor::Region::new(compositor) {
+        Ok(region) => {
+          for [x, y, width, height] in mask.rects(size.0, size.1) {
+            region.add(x, y, width, height);
+          }
+          surface.set_input_region(Some(region.wl_region()));
+        }
+        Err(error) => {
+          tracing::warn!(%error, "couldn't create a region for a window's mask");
+          return;
+        }
+      },
+    }
+    self.mask_sent = Some((mask.cloned(), size));
   }
 
   /// Draws `window`'s damage into a free buffer and commits it, with a
@@ -410,9 +465,52 @@ pub(crate) fn configured_size(new_size: (u32, u32), requested: (u32, u32)) -> Op
 
 /// Sends the settings a commit applies, all but the layer.
 pub(crate) fn apply(surface: &LayerSurface, config: &SurfaceConfig) {
+  let margins = config.margins;
   surface.set_anchor(anchor(config.anchors));
   surface.set_size(config.width, config.height);
   surface.set_exclusive_zone(config.exclusive_zone);
+  surface.set_margin(margins.top, margins.right, margins.bottom, margins.left);
+  let version = match surface.kind() {
+    SurfaceKind::Wlr(wlr) => wlr.version(),
+    _ => 1,
+  };
+  surface.set_keyboard_interactivity(keyboard(config.keyboard_focus, version));
+}
+
+/// The keyboard interactivity for `focus` on a layer surface of
+/// `version`. On-demand focus came in version 4; before it, asking for it
+/// is a protocol error, so the window takes no keys instead of all of them.
+pub(crate) fn keyboard(focus: KeyboardFocus, version: u32) -> KeyboardInteractivity {
+  match focus {
+    KeyboardFocus::None => KeyboardInteractivity::None,
+    KeyboardFocus::Exclusive => KeyboardInteractivity::Exclusive,
+    KeyboardFocus::OnDemand if version >= 4 => KeyboardInteractivity::OnDemand,
+    KeyboardFocus::OnDemand => {
+      static WARNED: AtomicBool = AtomicBool::new(false);
+      if !WARNED.swap(true, Ordering::Relaxed) {
+        tracing::warn!(
+          version,
+          "the compositor's layer-shell can't give focus on demand; such windows take no keyboard focus"
+        );
+      }
+      KeyboardInteractivity::None
+    }
+  }
+}
+
+/// The namespace to send for `asked`. The protocol's strings can't hold a
+/// NUL byte, and sending one panics in the bindings, so such a name is
+/// logged and replaced with the default.
+pub(crate) fn namespace(asked: &str) -> String {
+  if asked.contains('\0') {
+    tracing::warn!(
+      namespace = asked,
+      "a namespace can't hold a NUL byte; using the default"
+    );
+    SurfaceConfig::default().namespace
+  } else {
+    asked.to_owned()
+  }
 }
 
 /// The layer-shell anchors for `anchors`.

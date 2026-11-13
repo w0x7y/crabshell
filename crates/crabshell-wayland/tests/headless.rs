@@ -19,8 +19,8 @@ use std::time::Duration;
 
 use crabshell_reactive::{Runtime, Signal};
 use crabshell_ui::{
-  Align, Button, Color, Column, Cx, Edge, Output, PanelWindow, PopupWindow, Rect, Row, Spacer,
-  Style, Text, Window,
+  Align, Button, Color, Column, Cx, Edge, KeyboardFocus, Margins, Output, PanelWindow, PopupWindow,
+  Rect, Region, Row, Spacer, Style, Text, Window,
 };
 use crabshell_wayland::{Event, EventLoop, Platform, WindowId};
 use sway::{Image, Sway, VirtualPointer, run_until, settle};
@@ -69,6 +69,10 @@ struct Setup {
   at_start: bool,
   /// The edge the bar runs along.
   edge: Edge,
+  /// The bar's margins.
+  margins: Margins,
+  /// When the bar takes the keyboard.
+  keyboard: KeyboardFocus,
 }
 
 /// A bar across the top that opens nothing.
@@ -76,6 +80,8 @@ const PLAIN: Setup = Setup {
   popups: false,
   at_start: false,
   edge: Edge::Top,
+  margins: Margins::all(0),
+  keyboard: KeyboardFocus::None,
 };
 
 /// What the test bar's bindings read and write.
@@ -91,6 +97,8 @@ struct Knobs {
   /// time `reopen` changes.
   from_effect: Signal<bool>,
   reopen: Signal<u32>,
+  /// Whether the bar's mask leaves out the button.
+  masked: Signal<bool>,
 }
 
 /// A popup with two entries: the first opens another menu beside it, and
@@ -132,6 +140,14 @@ fn bar(cx: &Cx, output: &str, knobs: Knobs) -> Window {
     .anchors(anchors)
     .width(width)
     .height(height)
+    .margins(knobs.setup.margins)
+    .keyboard_focus(knobs.setup.keyboard)
+    .mask(move || {
+      knobs
+        .masked
+        .get()
+        .then(|| Region::rect(200, 0, 100_000, 100_000))
+    })
     .style(
       Style::new()
         .background(Color::hex("#1e1e2e"))
@@ -210,6 +226,7 @@ impl Shell {
       setup,
       from_effect: cx.signal(false),
       reopen: cx.signal(0),
+      masked: cx.signal(false),
     };
     let mut event_loop = sway.connect();
     let built = Rc::new(RefCell::new(Vec::new()));
@@ -512,6 +529,81 @@ fn a_click_from_a_virtual_pointer_reaches_the_button() {
     "a click from the virtual pointer",
     |_| clicks.get_untracked() == 1,
   );
+}
+
+/// `rect.y` of the workspace on `output`: where the space other windows
+/// get starts, below the top bars' exclusive zones and their margins.
+fn workspace_top(sway: &Sway, output: &str) -> u32 {
+  let json: String = sway
+    .msg(&["-t", "get_workspaces"])
+    .split_whitespace()
+    .collect();
+  // Sway writes each workspace's rect before its output.
+  let before = json
+    .find(&format!("\"output\":\"{output}\""))
+    .map(|at| &json[..at])
+    .unwrap_or_else(|| panic!("no workspace on {output}: {json}"));
+  let rect = &before[before.rfind("\"rect\":").expect("a workspace has a rect")..];
+  rect
+    .split("\"y\":")
+    .nth(1)
+    .and_then(|rest| rest.split([',', '}']).next())
+    .and_then(|y| y.trim().parse().ok())
+    .unwrap_or_else(|| panic!("no rect.y in {rect}"))
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn margins_move_the_bar_and_count_in_its_zone() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let setup = Setup {
+    margins: Margins::new(8, 8, 0, 8),
+    keyboard: KeyboardFocus::OnDemand,
+    ..PLAIN
+  };
+  let mut shell = Shell::build(&sway, setup);
+  shell.wait_for_bar("HEADLESS-1");
+  // The zone of 30 plus the top margin.
+  assert_eq!(workspace_top(&sway, "HEADLESS-1"), 38);
+  let shot = sway.screenshot("HEADLESS-1");
+  let pixel = |x: u32, y: u32| {
+    let at = ((y * shot.width + x) * 4) as usize;
+    [shot.rgba[at], shot.rgba[at + 1], shot.rgba[at + 2]]
+  };
+  let bar = [0x1e, 0x1e, 0x2e];
+  assert_eq!(pixel(960, 8), bar);
+  assert_eq!(pixel(1911, 37), bar);
+  assert_ne!(pixel(960, 7), bar, "the top margin");
+  assert_ne!(pixel(7, 20), bar, "the left margin");
+  assert_ne!(pixel(1912, 20), bar, "the right margin");
+  assert_ne!(pixel(960, 38), bar, "below the bar");
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_mask_lets_clicks_through_until_it_changes() {
+  let sway = Sway::start();
+  let (mut shell, mut pointer, (x, y)) = clickable(&sway);
+  let clicks = shell.knobs.clicks;
+  shell.knobs.masked.set(true);
+  settle(&mut shell.event_loop);
+  // The pointer has to move for the seat to look again at what is under
+  // it.
+  pointer.move_to(900, 500, (1920, 1080));
+  pointer.move_to(x, y, (1920, 1080));
+  pointer.click();
+  settle(&mut shell.event_loop);
+  assert_eq!(clicks.get_untracked(), 0, "a click outside the mask");
+
+  shell.knobs.masked.set(false);
+  settle(&mut shell.event_loop);
+  pointer.move_to(900, 500, (1920, 1080));
+  pointer.move_to(x, y, (1920, 1080));
+  pointer.click();
+  run_until(&mut shell.event_loop, "a click once unmasked", |_| {
+    clicks.get_untracked() == 1
+  });
 }
 
 /// The popups held, in the order they opened. Only one chain is ever

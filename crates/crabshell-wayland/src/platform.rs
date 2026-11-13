@@ -20,7 +20,7 @@ use smithay_client_toolkit::registry::RegistryState;
 use smithay_client_toolkit::seat::SeatState;
 use smithay_client_toolkit::seat::pointer::cursor_shape::CursorShapeManager;
 use smithay_client_toolkit::shell::WaylandSurface;
-use smithay_client_toolkit::shell::wlr_layer::{KeyboardInteractivity, LayerShell};
+use smithay_client_toolkit::shell::wlr_layer::LayerShell;
 use smithay_client_toolkit::shm::Shm;
 use smithay_client_toolkit::shm::slot::SlotPool;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::{
@@ -36,7 +36,7 @@ use crate::outputs::OutputInfo;
 use crate::pointer::Cursor;
 use crate::popups::{WM_BASE_VERSION, WmBase};
 use crate::scale::Scale;
-use crate::surface::{self, NAMESPACE, Role, Surface};
+use crate::surface::{self, Role, Surface};
 use crate::windows::{Entry, WindowId, Windows};
 
 /// A new window's first shared-memory pool, in bytes: a 1920 by 30 bar.
@@ -535,6 +535,7 @@ impl Platform {
       text,
       qh,
       stats,
+      compositor,
       ..
     } = self;
     for entry in windows.entries.iter_mut() {
@@ -543,8 +544,10 @@ impl Platform {
         // surface keeps the last good ones.
         let config = entry.window.surface();
         if !refused(entry, &config)
-          && let Some(surface) = &entry.surface
+          && let Some(surface) = &mut entry.surface
         {
+          // Before `reconfigure`, whose commit applies it.
+          surface.send_mask(compositor, config.mask.as_ref());
           surface.reconfigure(&config);
         }
       }
@@ -553,6 +556,11 @@ impl Platform {
       };
       if !surface.frames.pacing.configured() {
         continue;
+      }
+      // A new size cuts the mask again; the frame drawn at that size
+      // commits it.
+      if surface.mask_outdated() {
+        surface.send_mask(compositor, entry.window.surface().mask.as_ref());
       }
       if entry.window.needs_layout() {
         entry.window.layout(text);
@@ -617,17 +625,17 @@ impl Platform {
       // The settings were read above; later changes are sent as they
       // come.
       self.windows.entries[index].window.take_surface_changed();
+      let namespace = surface::namespace(&config.namespace);
       let wl_surface = self.compositor.create_surface(&self.qh);
       let fractional = self.scale_objects(&wl_surface);
       let layer = self.layer_shell.create_layer_surface(
         &self.qh,
         wl_surface,
         surface::layer(config.layer),
-        Some(NAMESPACE),
+        Some(namespace.clone()),
         Some(&output),
       );
       surface::apply(&layer, &config);
-      layer.set_keyboard_interactivity(KeyboardInteractivity::None);
       // An empty commit asks for the first configure.
       layer.commit();
       // Until the compositor says otherwise, the output's own scale.
@@ -639,7 +647,9 @@ impl Platform {
       };
       tracing::debug!(output = name, ?config, "created a layer surface");
       let entry = &mut self.windows.entries[index];
-      entry.surface = Some(Surface::new(Role::Layer(layer), fractional, pool, scale));
+      let mut surface = Surface::new(Role::Layer(layer), fractional, pool, scale);
+      surface.namespace = namespace;
+      entry.surface = Some(surface);
       entry.output = Some(output);
     }
   }
