@@ -1,10 +1,10 @@
 //! Drawing a window's view into a buffer.
 //!
-//! Each area to repaint is drawn from scratch into an RGBA pixmap of its own
-//! size, then copied into the buffer. The pixmap clips the drawing to the
-//! area, and the copy converts the pixels to the buffer's byte order, so
-//! tiny-skia, glyph masks, resvg and PNG decoding all work in the RGBA order
-//! they share.
+//! The areas to repaint are drawn from scratch, one tile of a fixed grid at
+//! a time, into an RGBA pixmap of the tile's size, then copied into the
+//! buffer. The pixmap clips the drawing to the tile, and the copy converts
+//! the pixels to the buffer's byte order, so tiny-skia, glyph masks, resvg
+//! and PNG decoding all work in the RGBA order they share.
 
 use cosmic_text::{FontSystem, SwashCache, SwashContent, SwashImage};
 use crabshell_ui::{
@@ -14,6 +14,12 @@ use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, PixmapMut, PixmapPaint, Tr
 
 use crate::damage::{BufferAge, DamageHistory, PixelRect};
 use crate::icons::Icons;
+
+/// The side of a tile, in buffer pixels. tiny-skia cuts a curve where it
+/// leaves the pixmap, which changes the antialiasing beside the cut, so
+/// every pixel is drawn in the same tile whatever the damage, and a repaint
+/// matches drawing everything.
+const TILE: u32 = 64;
 
 /// How many glyph images cosmic-text's cache may hold after a draw before
 /// it is cleared. A bar needs a few hundred; the cache never shrinks itself.
@@ -52,7 +58,7 @@ pub struct Canvas<'a> {
 pub struct Renderer {
   glyphs: SwashCache,
   icons: Icons,
-  /// Where each area is drawn before it is copied into the buffer, kept
+  /// Where each tile is drawn before it is copied into the buffer, kept
   /// between frames.
   scratch: Vec<u8>,
   work: Work,
@@ -165,7 +171,19 @@ impl Renderer {
       });
     }
     let plan = history.plan(damage, scale, width, height, age);
-    for &area in &plan.repaint {
+    let mut tiles: Vec<(u32, u32)> = Vec::new();
+    for area in plan.repaint.iter().filter(|area| area.area() > 0) {
+      for row in area.y / TILE..=(area.y + area.height - 1) / TILE {
+        tiles
+          .extend((area.x / TILE..=(area.x + area.width - 1) / TILE).map(|column| (row, column)));
+      }
+    }
+    tiles.sort_unstable();
+    tiles.dedup();
+    for (row, column) in tiles {
+      let (x, y) = (column * TILE, row * TILE);
+      let size = (width.saturating_sub(x), height.saturating_sub(y));
+      let area = PixelRect::new(x, y, TILE.min(size.0), TILE.min(size.1));
       self.scratch.clear();
       self.scratch.resize(area.area() as usize * 4, 0);
       let Some(mut pixmap) = PixmapMut::from_bytes(&mut self.scratch, area.width, area.height)

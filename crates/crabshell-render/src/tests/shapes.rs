@@ -234,7 +234,7 @@ fn a_repaint_skips_widgets_outside_the_damage() {
   scene.frame(&window);
   scene.draw(&window, &mut history, &mut buffer);
   let (_, after) = scene.renderer.work();
-  // The window, the row, the changed text and a neighbor or two whose
-  // ink allowance reaches it; not all 43 nodes.
-  assert!(after - before <= 6, "{} nodes drawn", after - before);
+  // The window, the row, the changed text and the neighbors that share its
+  // 64-pixel tile; not all 43 nodes.
+  assert!(after - before <= 12, "{} nodes drawn", after - before);
 }

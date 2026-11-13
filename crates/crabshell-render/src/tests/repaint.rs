@@ -452,3 +452,66 @@ fn argb_repaints_match_a_full_argb_draw() {
     assert!(buffer.pixels == full.pixels, "at {scale}");
   }
 }
+
+/// Draws `damage` into `buffer`, which belongs to `history`.
+fn repaint(
+  scene: &mut Scene,
+  window: &Window,
+  damage: &[crabshell_ui::Rect],
+  history: &mut DamageHistory,
+  buffer: &mut Buffer,
+) {
+  scene
+    .renderer
+    .draw(
+      &window.view(),
+      damage,
+      &mut scene.text,
+      history,
+      Canvas {
+        pixels: &mut buffer.pixels,
+        width: buffer.width,
+        height: buffer.height,
+        scale: buffer.scale,
+        format: PixelFormat::Abgr8888,
+        age: &mut buffer.age,
+      },
+    )
+    .expect("the test's canvas fits");
+}
+
+#[test]
+fn a_repaint_whose_edge_cuts_a_rounded_corner_matches_drawing_everything() {
+  let mut scene = Scene::new();
+  let panel = scene
+    .panel()
+    .style(Style::new().background(Color::rgb(30, 30, 46)))
+    .child(
+      Row::new().padding(5, 10).align(Align::Start).child(
+        Row::new().style(
+          Style::new()
+            .background(Color::hex("#89b4fa"))
+            .border(1.0, Color::hex("#fab387"))
+            .radius(6.0)
+            .padding(10, 20),
+        ),
+      ),
+    );
+  let window = scene.window(panel, 100.0, 40.0);
+  for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+    let full = scene.full(&window, scale);
+    // The box's left corners span x 10 to 16; sweep the damage's right
+    // edge through them.
+    for right in 11..=16 {
+      let mut history = DamageHistory::new();
+      let mut buffer = Buffer::new(&window, scale);
+      repaint(&mut scene, &window, &[], &mut history, &mut buffer);
+      let damage = crabshell_ui::Rect::new(0.0, 0.0, right as f32, 40.0);
+      repaint(&mut scene, &window, &[damage], &mut history, &mut buffer);
+      assert!(
+        buffer.pixels == full.pixels,
+        "a repaint to x {right} at scale {scale} differs from a full draw"
+      );
+    }
+  }
+}

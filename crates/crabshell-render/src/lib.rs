@@ -54,9 +54,11 @@
 //!   outward. Overlapping areas are merged, a buffer that skipped frames
 //!   also repaints what changed in them, and when more than half of the
 //!   buffer is dirty, all of it is repainted.
-//! - Each area is drawn from scratch into an RGBA pixmap of its own, which
-//!   clips the drawing, and copied into the buffer in the buffer's byte
-//!   order.
+//! - The areas are drawn from scratch in 64-pixel tiles of a fixed grid,
+//!   each into an RGBA pixmap of its own that clips the drawing, and copied
+//!   into the buffer in the buffer's byte order. A pixel is always drawn
+//!   in the same tile, so a repaint gives the same pixels as drawing
+//!   everything, even where a tile's edge cuts a curve.
 //! - Rectangles snap to whole pixels, so edges stay sharp at fractional
 //!   scales. A border is drawn inside the edge. Opacity applies to a widget
 //!   and everything inside it as one layer.
