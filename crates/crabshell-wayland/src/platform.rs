@@ -7,9 +7,11 @@ use crabshell_reactive::Runtime;
 use crabshell_render::{BufferAge, Canvas, DamageHistory, PixelFormat, PixelRect, Renderer};
 use crabshell_ui::{CursorShape, TextSystem, Window};
 use smithay_client_toolkit::compositor::CompositorState;
+use smithay_client_toolkit::globals::GlobalData;
 use smithay_client_toolkit::output::OutputState;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::reexports::client::globals::{GlobalList, registry_queue_init};
+use smithay_client_toolkit::reexports::client::protocol::wl_surface::WlSurface;
 use smithay_client_toolkit::reexports::client::protocol::{
   wl_output::WlOutput, wl_pointer::WlPointer, wl_seat::WlSeat,
 };
@@ -25,18 +27,21 @@ use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::
   Shape, WpCursorShapeDeviceV1,
 };
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1;
+use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1::WpFractionalScaleV1;
+use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
 use crate::events::{self, Event, Listener};
 use crate::outputs::OutputInfo;
 use crate::pointer::Cursor;
+use crate::popups::{WM_BASE_VERSION, WmBase};
 use crate::scale::Scale;
-use crate::surface::{self, NAMESPACE, Surface};
+use crate::surface::{self, NAMESPACE, Role, Surface};
 use crate::windows::{Entry, WindowId, Windows};
 
 /// A new window's first shared-memory pool, in bytes: a 1920 by 30 bar.
 /// sctk grows it as buffers need.
-const INITIAL_POOL_BYTES: usize = 1920 * 30 * 4;
+pub(crate) const INITIAL_POOL_BYTES: usize = 1920 * 30 * 4;
 
 /// The `wl_compositor` version needed: `wl_surface.damage_buffer` came in 4.
 const COMPOSITOR_VERSION: u32 = 4;
@@ -58,7 +63,7 @@ impl EventLoop {
   /// # Errors
   ///
   /// If there is no compositor to connect to, or it lacks `wl_compositor`
-  /// version 4, `wl_shm` or `zwlr_layer_shell_v1`.
+  /// version 4, `wl_shm`, `zwlr_layer_shell_v1` or `xdg_wm_base`.
   pub fn connect() -> Result<EventLoop, Error> {
     let connection =
       Connection::connect_to_env().map_err(|error| Error::Connect(error.to_string()))?;
@@ -229,6 +234,9 @@ pub struct WindowInfo {
   pub commits: u64,
   /// The rectangles the last frame reported with `damage_buffer`.
   pub last_damage: Vec<PixelRect>,
+  /// For a popup, where the compositor placed it, relative to the window
+  /// that opened it, from the last configure. `None` for a panel.
+  pub position: Option<(i32, i32)>,
 }
 
 /// A window drawn whole into memory, as the compositor should show it.
@@ -279,8 +287,9 @@ pub struct Platform {
   signal: LoopSignal,
   runtime: Runtime,
   pub(crate) registry: RegistryState,
-  compositor: CompositorState,
+  pub(crate) compositor: CompositorState,
   layer_shell: LayerShell,
+  pub(crate) xdg: WmBase,
   pub(crate) shm: Shm,
   pub(crate) outputs: OutputState,
   pub(crate) seats: SeatState,
@@ -291,10 +300,13 @@ pub struct Platform {
   listener: Option<Listener<Platform>>,
   pub(crate) windows: Windows<Surface, WlOutput>,
   pub(crate) pointers: Vec<SeatPointer>,
+  /// The seat and serial of the last button press or release on one of
+  /// the windows, which a popup's grab needs.
+  pub(crate) last_button: Option<(WlSeat, u32)>,
   renderer: Renderer,
   /// The icon theme set, for snapshots' renderers.
   icon_theme: Option<String>,
-  text: TextSystem,
+  pub(crate) text: TextSystem,
   pub(crate) stats: Stats,
 }
 
@@ -316,6 +328,10 @@ impl Platform {
     let layer_shell =
       LayerShell::bind(globals, &qh).map_err(|_| Error::Missing("zwlr_layer_shell_v1"))?;
     let shm = Shm::bind(globals, &qh).map_err(|_| Error::Missing("wl_shm"))?;
+    let xdg = globals
+      .bind(&qh, 1..=WM_BASE_VERSION, GlobalData)
+      .map(WmBase)
+      .map_err(|_| Error::Missing("xdg_wm_base"))?;
     // Fractional scaling needs both; without either, whole scales.
     let manager = globals.bind::<WpFractionalScaleManagerV1, _, _>(&qh, 1..=1, ());
     let viewporter = globals.bind::<WpViewporter, _, _>(&qh, 1..=1, ());
@@ -347,12 +363,14 @@ impl Platform {
       runtime: Runtime::current(),
       compositor,
       layer_shell,
+      xdg,
       shm,
       fractional,
       known: Vec::new(),
       listener: None,
       windows: Windows::new(),
       pointers: Vec::new(),
+      last_button: None,
       renderer: Renderer::new(),
       icon_theme: None,
       text: TextSystem::new(),
@@ -425,6 +443,9 @@ impl Platform {
       last_damage: surface
         .map(|surface| surface.last_damage.clone())
         .unwrap_or_default(),
+      position: surface
+        .and_then(Surface::popup)
+        .and_then(|popup| popup.position),
     })
   }
 
@@ -531,6 +552,7 @@ impl Platform {
       }
       if entry.window.needs_layout() {
         entry.window.layout(text);
+        surface.fit(entry.window.size());
         // A layout can move a button out from under a still
         // pointer, or under it.
         for pointer in pointers
@@ -551,13 +573,17 @@ impl Platform {
     }
   }
 
-  /// Creates layer surfaces for panels whose output is known. Called
-  /// after a flush, since a window's settings are bindings that first
-  /// run then. Popups aren't shown yet.
+  /// Creates layer surfaces for panels whose output is known, and popups
+  /// for those whose opener is on screen. Called after a flush, since a
+  /// window's settings are bindings that first run then.
   fn create_surfaces(&mut self) {
     for index in 0..self.windows.entries.len() {
       let entry = &mut self.windows.entries[index];
-      if entry.surface.is_some() || entry.opener.is_some() {
+      if entry.surface.is_some() {
+        continue;
+      }
+      if entry.opener.is_some() {
+        self.create_popup(index);
         continue;
       }
       let name = entry.window.output().name();
@@ -588,12 +614,7 @@ impl Platform {
       // come.
       self.windows.entries[index].window.take_surface_changed();
       let wl_surface = self.compositor.create_surface(&self.qh);
-      let fractional = self.fractional.as_ref().map(|(manager, viewporter)| {
-        (
-          manager.get_fractional_scale(&wl_surface, &self.qh, ()),
-          viewporter.get_viewport(&wl_surface, &self.qh, ()),
-        )
-      });
+      let fractional = self.scale_objects(&wl_surface);
       let layer = self.layer_shell.create_layer_surface(
         &self.qh,
         wl_surface,
@@ -614,9 +635,23 @@ impl Platform {
       };
       tracing::debug!(output = name, ?config, "created a layer surface");
       let entry = &mut self.windows.entries[index];
-      entry.surface = Some(Surface::new(layer, fractional, pool, scale));
+      entry.surface = Some(Surface::new(Role::Layer(layer), fractional, pool, scale));
       entry.output = Some(output);
     }
+  }
+
+  /// A new surface's fractional scale and viewport, when the compositor
+  /// scales fractionally.
+  pub(crate) fn scale_objects(
+    &self,
+    surface: &WlSurface,
+  ) -> Option<(WpFractionalScaleV1, WpViewport)> {
+    self.fractional.as_ref().map(|(manager, viewporter)| {
+      (
+        manager.get_fractional_scale(surface, &self.qh, ()),
+        viewporter.get_viewport(surface, &self.qh, ()),
+      )
+    })
   }
 
   /// Tells the listener about `event`.

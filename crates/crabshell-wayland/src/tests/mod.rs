@@ -6,6 +6,7 @@ mod outputs;
 mod pacing;
 mod platform;
 mod pointer;
+mod popups;
 mod scale;
 mod surface;
 mod windows;

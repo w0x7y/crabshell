@@ -51,6 +51,13 @@
 //!   `set_buffer_scale`. A new scale repaints the whole window.
 //! - Pointer events go to `crabshell-ui`'s hit testing; the cursor shape is
 //!   set with `wp_cursor_shape_v1` when offered.
+//! - A popup a widget opened is taken after the flush, laid out at the size
+//!   its content wants, and shown as an `xdg_popup` next to the widget,
+//!   beside it in a popup or a vertical bar and below it in any other bar,
+//!   flipped or slid to stay on the output. It grabs the pointer with the last button
+//!   event's serial, so a click outside makes the compositor dismiss it.
+//!   Only one chain of popups is open at a time, and they are destroyed
+//!   topmost first, as xdg-shell requires.
 //!
 //! [`Window`]: crabshell_ui::Window
 

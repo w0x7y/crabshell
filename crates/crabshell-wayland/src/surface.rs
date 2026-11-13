@@ -1,13 +1,18 @@
-//! One window's layer surface: its settings, buffers, scale and frame
-//! pacing, and drawing a frame into it.
+//! One window's surface, a panel's layer surface or a popup's
+//! `xdg_popup`: its settings, buffers, scale and frame pacing, and drawing
+//! a frame into it.
 
 use crabshell_render::{BufferAge, Canvas, DamageHistory, PixelFormat, PixelRect, Renderer};
-use crabshell_ui::{Anchors, Edge, Layer, SurfaceConfig, TextSystem, Window};
+use crabshell_ui::{Anchors, Edge, Layer, Size, SurfaceConfig, TextSystem, Window};
 use smithay_client_toolkit::compositor::FrameCallbackData;
-use smithay_client_toolkit::reexports::client::protocol::{wl_callback::WlCallback, wl_shm};
+use smithay_client_toolkit::reexports::client::protocol::{
+  wl_callback::WlCallback, wl_shm, wl_surface::WlSurface,
+};
 use smithay_client_toolkit::reexports::client::{Dispatch, Proxy, QueueHandle};
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{self, Anchor, LayerSurface, SurfaceKind};
+use smithay_client_toolkit::shell::xdg::XdgPositioner;
+use smithay_client_toolkit::shell::xdg::popup::Popup;
 use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1::WpFractionalScaleV1;
 use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
@@ -120,9 +125,32 @@ impl Frames {
   }
 }
 
-/// A window's layer surface and everything needed to draw into it.
+/// What a surface is to the compositor.
+pub(crate) enum Role {
+  /// A panel's layer surface.
+  Layer(LayerSurface),
+  /// A popup.
+  Popup(PopupRole),
+}
+
+/// A popup's `xdg_popup` and how it was placed.
+pub(crate) struct PopupRole {
+  pub(crate) popup: Popup,
+  /// Kept to send a new size with: its anchor rectangle and gravity stay.
+  pub(crate) positioner: XdgPositioner,
+  /// The size the compositor last placed it at.
+  pub(crate) placed: (u32, u32),
+  /// Whether it took a pointer grab. A popup opened from it may take one
+  /// only if it did.
+  pub(crate) grabbed: bool,
+  /// Where the compositor placed it, from the last configure, relative to
+  /// the window that opened it.
+  pub(crate) position: Option<(i32, i32)>,
+}
+
+/// A window's surface and everything needed to draw into it.
 pub(crate) struct Surface {
-  pub(crate) layer: LayerSurface,
+  pub(crate) role: Role,
   /// Present when the compositor scales fractionally.
   pub(crate) fractional: Option<(WpFractionalScaleV1, WpViewport)>,
   pool: SlotPool,
@@ -143,13 +171,13 @@ pub(crate) struct Surface {
 
 impl Surface {
   pub(crate) fn new(
-    layer: LayerSurface,
+    role: Role,
     fractional: Option<(WpFractionalScaleV1, WpViewport)>,
     pool: SlotPool,
     scale: Scale,
   ) -> Surface {
     Surface {
-      layer,
+      role,
       fractional,
       pool,
       buffers: Buffers::new(),
@@ -160,6 +188,46 @@ impl Surface {
       last_damage: Vec::new(),
       buffer_size: None,
     }
+  }
+
+  pub(crate) fn wl_surface(&self) -> &WlSurface {
+    match &self.role {
+      Role::Layer(layer) => layer.wl_surface(),
+      Role::Popup(popup) => popup.popup.wl_surface(),
+    }
+  }
+
+  /// The popup role, if this is a popup.
+  pub(crate) fn popup(&self) -> Option<&PopupRole> {
+    match &self.role {
+      Role::Popup(popup) => Some(popup),
+      Role::Layer(_) => None,
+    }
+  }
+
+  /// A popup is the size its content wants, which its layout just worked
+  /// out.
+  pub(crate) fn fit(&mut self, size: Size) {
+    if let Role::Popup(_) = self.role {
+      self.size = Some((size.width as u32, size.height as u32));
+      self.place_again();
+    }
+  }
+
+  /// Sends a popup's new size so the compositor places it again, once it
+  /// is mapped: `reposition` is only for a mapped popup. A no-op before
+  /// `xdg_wm_base` version 3, where the new size still shows.
+  fn place_again(&mut self) {
+    let (Role::Popup(popup), Some(size)) = (&mut self.role, self.size) else {
+      return;
+    };
+    if self.commits == 0 || popup.placed == size {
+      return;
+    }
+    popup.placed = size;
+    let [width, height] = [size.0, size.1].map(|side| i32::try_from(side).unwrap_or(i32::MAX));
+    popup.positioner.set_size(width, height);
+    popup.popup.reposition(&popup.positioner, 0);
   }
 
   /// Takes a configure's size. Returns the size, or `None` if it can't be
@@ -175,17 +243,21 @@ impl Surface {
     Some(size)
   }
 
-  /// Sends new settings from the window's description, which must have
-  /// passed [`size_problem`]. The compositor answers with a configure.
+  /// Sends a panel's new settings from the window's description, which
+  /// must have passed [`size_problem`]. The compositor answers with a
+  /// configure.
   pub(crate) fn reconfigure(&self, config: &SurfaceConfig) {
-    apply(&self.layer, config);
-    if let SurfaceKind::Wlr(wlr) = self.layer.kind() {
+    let Role::Layer(surface) = &self.role else {
+      return;
+    };
+    apply(surface, config);
+    if let SurfaceKind::Wlr(wlr) = surface.kind() {
       // Changing the layer later needs version 2.
       if wlr.version() >= 2 {
-        self.layer.set_layer(layer(config.layer));
+        surface.set_layer(layer(config.layer));
       }
     }
-    self.layer.commit();
+    surface.commit();
   }
 
   /// Draws `window`'s damage into a free buffer and commits it, with a
@@ -253,7 +325,11 @@ impl Surface {
     let Some(report) = frames.draw(window, renderer, text, canvas, &mut slot.age) else {
       return false;
     };
-    let surface = self.layer.wl_surface();
+    // Not `self.wl_surface()`: `frames` is borrowed from `self`.
+    let surface = match &self.role {
+      Role::Layer(layer) => layer.wl_surface(),
+      Role::Popup(popup) => popup.popup.wl_surface(),
+    };
     if let Err(error) = slot.buffer.shm.attach_to(surface) {
       tracing::warn!(%error, "couldn't attach a buffer");
       frames.lost();
@@ -286,14 +362,16 @@ impl Surface {
     self.commits += 1;
     self.last_damage = report;
     self.buffer_size = Some((buffer_width, buffer_height));
+    // A popup that grew before its first frame is mapped only now.
+    self.place_again();
     true
   }
 }
 
 impl Drop for Surface {
   fn drop(&mut self) {
-    // The layer surface and its wl_surface go when `layer` drops; these
-    // two are ours to destroy.
+    // The role and its wl_surface go when `role` drops; these two are
+    // ours to destroy.
     if let Some((fractional, viewport)) = self.fractional.take() {
       fractional.destroy();
       viewport.destroy();

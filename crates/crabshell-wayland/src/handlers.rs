@@ -18,7 +18,6 @@ use smithay_client_toolkit::reexports::client::{
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
-use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{
   LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
 };
@@ -36,7 +35,7 @@ use crate::outputs::describe;
 use crate::platform::{Platform, SeatPointer};
 use crate::pointer::{self, Cursor};
 use crate::scale::Scale;
-use crate::surface::Surface;
+use crate::surface::{Role, Surface};
 use crate::windows::Entry;
 
 /// A window the platform holds, with its real surface and output.
@@ -48,7 +47,7 @@ impl Platform {
       entry
         .surface
         .as_ref()
-        .is_some_and(|ours| ours.layer.wl_surface() == surface)
+        .is_some_and(|ours| ours.wl_surface() == surface)
     })
   }
 
@@ -57,13 +56,20 @@ impl Platform {
       entry
         .surface
         .as_ref()
-        .is_some_and(|ours| &ours.layer == layer)
+        .is_some_and(|ours| matches!(&ours.role, Role::Layer(ours) if ours == layer))
     })
   }
 
   /// Lets go of a seat's pointer, unhovering the window it was over.
   fn drop_pointer(&mut self, index: usize) {
     let pointer = self.pointers.remove(index);
+    if self
+      .last_button
+      .as_ref()
+      .is_some_and(|(seat, _)| *seat == pointer.seat)
+    {
+      self.last_button = None;
+    }
     if let Some(entry) = pointer.cursor.focus().and_then(|id| self.windows.get(id)) {
       entry.window.pointer_leave();
     }
@@ -290,13 +296,16 @@ impl PointerHandler for Platform {
         entry
           .surface
           .as_ref()
-          .is_some_and(|surface| surface.layer.wl_surface() == &event.surface)
+          .is_some_and(|surface| surface.wl_surface() == &event.surface)
       }) else {
         continue;
       };
       match event.kind {
         PointerEventKind::Enter { serial } => ours.cursor.enter(serial, entry.id),
         PointerEventKind::Leave { .. } => ours.cursor.leave(),
+        PointerEventKind::Press { serial, .. } | PointerEventKind::Release { serial, .. } => {
+          self.last_button = Some((ours.seat.clone(), serial));
+        }
         _ => {}
       }
       let mut cursor = None;
