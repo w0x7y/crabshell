@@ -17,7 +17,7 @@ Nothing from Quickshell carries over. Users write their shell as a Rust crate th
 | Rendering          | Own CPU renderer, GPU later                | No blur or shadows in v0.1.                                                                                                                   |
 | Scope              | Everything Quickshell does, in milestones  | v0.1 is a bar with workspaces, clock, tray and volume. Notifications, launchers, lock screens, OSDs and the rest come in the phases after it. |
 | Compositors        | Sway and other wlroots compositors first   | Hyprland and the rest come after v0.1.                                                                                                        |
-| C libraries        | Fine when the system ships them            | Links libpulse and fontconfig at runtime. Wayland itself is pure Rust.                                                                        |
+| C libraries        | Fine when the system ships them            | Links libpulse, fontconfig and libxkbcommon at runtime. Wayland itself is pure Rust.                                                          |
 | Quickshell configs | No compatibility, no migration             | Users rewrite their configs by hand.                                                                                                          |
 | License            | MIT or Apache-2.0                          | Agents write fresh code and never translate Quickshell's LGPL-3.0 source.                                                                     |
 | Team               | You plus AI agents, you new to Rust        | The spec spells out every rule, and each phase ends in a check you can run yourself.                                                          |
@@ -73,8 +73,8 @@ Your config compiles into the shell; `crabshell run` rebuilds and restarts it. T
 |          |             | dirty flags per widget   |                               |
 |          |             +--------------------------+                               |
 |          |                          | dirty areas to repaint                      |
-|          | pointer                  v                                             |
-|          | events      +--------------------------+                               |
+|          | pointer, keys            v                                             |
+|          | and text    +--------------------------+                               |
 |          |             | crabshell-render         |                               |
 |          |             | tiny-skia into shm       |                               |
 |          |             | repaints dirty areas     |                               |
@@ -84,7 +84,7 @@ Your config compiles into the shell; `crabshell run` rebuilds and restarts it. T
 |          |             +--------------------------+                               |
 |          +------------ | crabshell-wayland        |                               |
 |                        | calloop, layer-shell,    |                               |
-|                        | popups, pointer, frames  |                               |
+|                        | windows, input, frames   |                               |
 |                        +--------------------------+                               |
 +-------------------------------------^-|-------------------------------------------+
                                       | | buffers out, input events in
@@ -229,6 +229,15 @@ API rules settled while building `crabshell` (Phase 5, step 1):
 - `Shell::new` starts with no saved values. Only `run` reads the file and follows the supervisor.
 - The counter example persists each output's count, so a reload keeps it.
 
+API rules settled in Phase 7, windows and input:
+
+- A property that the widget itself writes back takes a `Signal`, not a value or a closure: `TextInput::new(text)`, `ScrollView::offset` and `ListView::offset`. Typing and scrolling write the signal, and setting it changes what shows. Every other property still takes a value or a closure.
+- `cx.floating(FloatingWindow::new()...)` comes from `ShellExt`. The window lives as long as the calling context, and its `visible` shows and hides it meanwhile. Without an `on_close`, a close from the compositor hides it until `visible` turns false and true again.
+- `PanelWindow` takes `margins`, `keyboard_focus` (`None`, `Exclusive` or `OnDemand`), `namespace`, `mask` (a `Region`) and `on_key`. A namespace is read once, when the window is shown.
+- Keys go to the focused text field, then the focused button's `on_key`, then the window's `on_key`; a handler returns `true` when it used the key. Then Tab and Shift+Tab move the focus between buttons and fields, and Enter or Space clicks the focused button. `Button` also gets `focus_style` and `on_press`, which runs while the pointer button is held, the time for `cx.start_move()` and `cx.start_resize(edges)` in a floating window.
+- `Style` gets `clip`, `width` and `height`, and `Image` takes a file with `width`, `height` and `fit` (`Fill`, `Contain` or `Cover`). `PopupWindow` takes `edges`, `gravity` and `adjustment`, read when it opens.
+- The prelude adds `KeyboardFocus`, `Margins`, `Region`, `Key`, `KeyEvent`, `Modifiers`, `Image`, `Fit`, `ScrollView`, `ListView`, `TextInput`, `FloatingWindow` and `Adjust`. The launcher example shows them together.
+
 ## Process model and reload
 
 Two processes run. The `crabshell` CLI, installed once per machine, is the supervisor. The shell is the user's own compiled binary, which links the `crabshell` library.
@@ -344,20 +353,25 @@ More required tests:
 
 ## Widgets, layout and styles
 
-v0.1 ships ten widgets; the phases after it add the rest a full shell needs (see "Beyond v0.1"). Nine are in `crabshell-ui`. `Tray` is in `crabshell-services`, because it needs the tray service and `crabshell-ui` can't depend on services; the prelude re-exports it. Users build everything else by combining them.
+v0.1 shipped ten widgets, Phase 7 added five, and the phases after it add the rest a full shell needs (see "Beyond v0.1"). All but one are in `crabshell-ui`. `Tray` is in `crabshell-services`, because it needs the tray service and `crabshell-ui` can't depend on services; the prelude re-exports it. Users build everything else by combining them.
 
-| Widget          | What it does                                                                                                                  |
-| --------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `PanelWindow`   | A layer-shell surface on one output with anchors, size, exclusive zone and layer. It takes no keyboard focus in v0.1.         |
-| `PopupWindow`   | An `xdg_popup` anchored to a widget's rectangle. Tray menus use it.                                                           |
-| `Row`, `Column` | Flex layout with `gap`, `padding`, `align` and `justify`.                                                                     |
-| `Stack`         | Children drawn on top of each other in one cell.                                                                              |
-| `Spacer`        | Takes the leftover space in a `Row` or `Column`.                                                                              |
-| `Text`          | One line by default, with `ellipsis` and `max_lines`.                                                                         |
-| `Icon`          | A freedesktop icon name, an SVG or PNG path, or raw ARGB pixels from a tray item.                                             |
-| `Button`        | A clickable box with `hover_style` and `pressed_style`, plus `on_click`, `on_right_click`, `on_middle_click` and `on_scroll`. |
-| `Menu`          | A vertical list of buttons built from a DBusMenu layout, with separators, checkmarks and submenus as nested popups.           |
-| `Tray`          | One icon button per tray item, each opening its `Menu`. Built only from the widgets above.                                    |
+| Widget           | What it does                                                                                                                |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `PanelWindow`    | A layer-shell surface on one output with anchors, size, exclusive zone, layer, margins, keyboard focus and an input mask.   |
+| `FloatingWindow` | An ordinary `xdg_toplevel` window with a title, size limits, maximized, fullscreen and `visible`, shown with `cx.floating`. |
+| `PopupWindow`    | An `xdg_popup` anchored to a widget's rectangle. Tray menus use it.                                                         |
+| `Row`, `Column`  | Flex layout with `gap`, `padding`, `align` and `justify`.                                                                   |
+| `Stack`          | Children drawn on top of each other in one cell.                                                                            |
+| `Spacer`         | Takes the leftover space in a `Row` or `Column`.                                                                            |
+| `Text`           | One line by default, with `ellipsis` and `max_lines`.                                                                       |
+| `Icon`           | A freedesktop icon name, an SVG or PNG path, or raw ARGB pixels from a tray item.                                           |
+| `Button`         | A clickable box with `hover_style`, `pressed_style` and `focus_style`, plus click, press, scroll and key handlers.          |
+| `Image`          | A PNG, JPEG, GIF, WebP or SVG file at a fixed size, filled, contained or covered.                                           |
+| `ScrollView`     | Shows part of a taller child, cut to its box, scrolled by the wheel or by its offset signal.                                |
+| `ListView`       | A scrolling list of rows of one height that builds only the rows in view, with a `current` row kept in view.                |
+| `TextInput`      | A one-line text field with a caret, selection, placeholder, password dots, the clipboard and input methods.                 |
+| `Menu`           | A vertical list of buttons built from a DBusMenu layout, with separators, checkmarks and submenus as nested popups.         |
+| `Tray`           | One icon button per tray item, each opening its `Menu`. Built only from the widgets above.                                  |
 
 ### Layout
 
@@ -374,7 +388,7 @@ v0.1 ships ten widgets; the phases after it add the rest a full shell needs (see
 
 ### Styles
 
-- `Style` has `background`, `color`, `font` (family, size, weight), `padding`, `radius`, `border` (width, color) and `opacity`. Every field is optional, and an unset field falls back to the widget's default.
+- `Style` has `background`, `color`, `font` (family, size, weight), `padding`, `radius`, `border` (width, color), `opacity`, `clip`, `width` and `height`. Every field is optional, and an unset field falls back to the widget's default. `clip`, `width` and `height` are layout properties.
 - `Text` inherits `color` and `font` from the nearest ancestor that sets them. Nothing else inherits, and there are no selectors or classes.
 - Colors are sRGB with alpha. `Color::rgb`, `Color::rgba` and `Color::hex` are all `const fn`.
 
@@ -383,7 +397,7 @@ v0.1 ships ten widgets; the phases after it add the rest a full shell needs (see
 - Pointer events come from `wl_pointer`. Hit testing walks the tree from the top and picks the deepest `Button` under the pointer.
 - The cursor shape is set through `wp_cursor_shape_v1`, with a pointer cursor over buttons.
 - `on_scroll` receives whole steps. Mouse wheels use `axis_value120`. Touchpad scrolling is summed and becomes one step per 15 logical pixels.
-- v0.1 has no keyboard input, so it doesn't need libxkbcommon.
+- Keyboard input comes from `wl_keyboard`, with sctk reading the keymap through libxkbcommon. A window gets keys only with a keyboard focus other than `None`.
 
 Rules settled while building `crabshell-ui` (Phase 2, step 1):
 
@@ -396,7 +410,7 @@ Rules settled while building `crabshell-ui` (Phase 2, step 1):
 - Scroll steps are positive for up and don't pass to ancestor buttons. A partial touchpad scroll resets when the hovered button changes or the gesture ends (`axis_stop`).
 - Event handlers are `Fn`. A handler that panics is logged with its path and disabled, like a binding.
 - The exclusive zone defaults to the height for a top or bottom bar, the width for a left or right one, and 0 otherwise. Width and height default to 0, which lets the compositor decide. `surface()` is valid only after the first flush.
-- The window's child is exactly the window's size. Content that doesn't fit overflows and is not clipped, as in CSS. Damage covers everything a widget paints, including text lines taller than their box, so the renderer must not clip text either.
+- The window's child is exactly the window's size. Content that doesn't fit overflows and is not clipped, as in CSS, unless a style sets `clip` or the widget is a scroll view or text field. Damage covers everything a widget paints, including text lines taller than their box, so the renderer clips only where those say.
 - `into_element` describes the whole subtree as plain data, untracked, before the window's tree is borrowed.
 - Child contexts come from the parent `Cx` through `Cx::child`, so the services map reaches every widget. `cx.per_output` reaches the platform the same way.
 - Font fallback asks fontconfig per character, family and weight. fontconfig's face index carries a variable font's named instance in its upper 16 bits, so mask it with `0xFFFF` before passing it to fontdb.
@@ -411,6 +425,18 @@ Rules settled while building `crabshell-ui` (Phase 4, step 3):
 - The popup's builder runs untracked. A panic in it is logged with a path ending in `/PopupWindow`, and nothing opens.
 - `Menu` keys its entries by `(id, separator)`. A separator is 2 px tall. Checkmarks and radio marks reserve the width of the widest mark, so labels line up.
 - `MenuEntry` and `MenuToggle` live in `crabshell-ui`, and `crabshell-services` re-exports them.
+
+Rules settled while building `crabshell-ui` (Phase 7):
+
+- A `Region` joins rectangles, rounded rectangles and ellipses with union, subtract, intersect and xor, in call order, and is cut into rectangles at each row's center for `wl_region`.
+- The focus moves only by Tab, a click on a field, or a field's `focus` turning true; a click on a button doesn't take it. The focus shows only while the window has the keyboard. Removing the focused widget drops the focus.
+- A focus style that moves buttons checks the hover again after the layout.
+- A clip cuts its children to the inside of its border, following the corners, and cuts their bounds to its rectangle. A clip that comes, goes or changes shape repaints its old and new bounds, and the pointer can't reach children under its border.
+- A scroll view lays its child out at full height, never shrunk, and shows it moved up by the offset clamped to the content. The wheel scrolls 48 logical pixels a notch, the touchpad by its pixels, starting from the signal so scrolls before the next layout add up. A button with `on_scroll` under the pointer takes the scroll instead.
+- A list builds the rows in view plus one each side, reached through a one-item keyed list for its context. A keyed item whose builder panics is logged and shows empty, keeping its place.
+- A text field edits by grapheme and word through unicode-segmentation, places its caret and selection with cosmic-text so right-to-left text works, scrolls sideways to keep the caret in view, and is cut to its content box. Text set from outside puts the caret at the end, and line breaks become spaces. Ctrl+C and Ctrl+X copy the selection, Ctrl+V pastes, and a password field pastes but never copies. Enter runs `on_accept`, or without one goes on to the window.
+- An input method sees the focused field only while the window has the keyboard and never a password. Its preedit shows underlined at the caret, replacing the selection, and moving the focus drops it.
+- A floating window's settings are read after the first flush, like a panel's. Move and resize requests are honored only while a pointer button is held.
 
 ## Rendering
 
@@ -448,6 +474,7 @@ v0.1 draws on the CPU with `tiny-skia`, straight into shared-memory buffers, and
 - Icon names resolve through the freedesktop icon theme spec with an in-house lookup. The config picks a theme with `cx.set_icon_theme("...")`, and the default is `hicolor`.
 - `resvg` renders SVG icons. It already draws with tiny-skia, so it renders into the same pixmap. PNGs load with the `png` crate.
 - Rasterized icons are cached by name, size and scale.
+- `Image` files load by extension: PNG through `png`, JPEG through `zune-jpeg`, the first frame of a GIF through `gif`, WebP through `image-webp`, and SVG through `resvg`. They are halved, then scaled, to the size drawn, and kept in the icon cache.
 
 ### Shapes
 
@@ -471,6 +498,12 @@ Rules settled while building `crabshell-render` (Phase 2, step 2):
 - Limits on outside files: SVG up to 1 MiB, with no links to outside files and no filters. PNG up to 4 MiB and 1024 px a side. Tray pixmaps up to 512 px a side. `index.theme` up to 1 MiB. Anything else must be a regular file. Icon and theme names with `/`, `..`, `.` or NUL are refused.
 - Caches: 128 rasterized icons, dropping those unused for 16 draws. 1,024 theme lookups, least recently used first. Glyph images are cleared past 2,048. Icon directory listings are kept until restart.
 
+Rules settled while building `crabshell-render` (Phase 7):
+
+- A clip draws the children into a layer blended in through a mask of the inside of the border, filled in the tile's own pixels on the fixed grid, so a repaint cuts every edge as a full draw does. A text field draws its selection, text and caret the same way, through its content box.
+- Limits on image files: 32 MiB, 8192 pixels a side and 24 million pixels, told to each decoder before it allocates; SVG images up to 4 MiB. A GIF frame with no pixels is refused. Cached pictures past 32 MiB, like icons past 128, are dropped once no recent draw used them. The cache key holds the file's modification time, so a file rewritten in place, or one that appears after a failure, is read again.
+- An image is placed and sized apart, so one past the window's edge is cut there instead of squeezed.
+
 ## Wayland platform
 
 `crabshell-wayland` uses `smithay-client-toolkit` (sctk) on a single-threaded `calloop` event loop. Everything that touches widgets or signals runs on that one thread.
@@ -481,9 +514,12 @@ Rules settled while building `crabshell-render` (Phase 2, step 2):
 | `wl_output` version 4                                    | Output names such as `DP-1`, plus mode and scale |
 | `zwlr_layer_shell_v1`                                    | `PanelWindow`                                    |
 | `xdg_wm_base`, through `zwlr_layer_surface_v1.get_popup` | `PopupWindow`                                    |
+| `xdg_toplevel`, `zxdg_decoration_manager_v1`             | `FloatingWindow`, with server-side decorations   |
 | `wp_fractional_scale_v1`, `wp_viewporter`                | Fractional scaling                               |
 | `wp_cursor_shape_v1`                                     | Cursor shapes                                    |
-| `wl_seat`, pointer only                                  | Clicks, hover and scroll                         |
+| `wl_seat`, pointer and keyboard                          | Clicks, hover, scroll and keys                   |
+| `zwp_text_input_v3`                                      | Input methods in text fields                     |
+| `wl_data_device_manager`                                 | The clipboard                                    |
 
 ### Event loop
 
@@ -511,12 +547,12 @@ How each source plugs into calloop:
 
 ### Layer surfaces
 
-- `PanelWindow` defaults to layer `top`, keyboard interactivity `none`, and an exclusive zone equal to its height on its anchored edge.
+- `PanelWindow` defaults to layer `top`, keyboard interactivity `none`, no margins, namespace `crabshell`, and an exclusive zone equal to its height on its anchored edge. Sway adds the margin on the anchored edge to the zone itself, so the default zone leaves it out.
 - When the compositor sends `closed`, drop the window.
 
 ### Popups
 
-- A `PopupWindow` positions itself with `xdg_positioner`, anchored to the rectangle of the widget that opened it. It flips to the other side when it would leave the output.
+- A `PopupWindow` positions itself with `xdg_positioner`, anchored to the rectangle of the widget that opened it. It flips to the other side when it would leave the output. Its `edges`, `gravity` and `adjustment` replace those defaults.
 - It grabs the pointer using the serial of the last button press or release on the shell's windows, usually the click that opened it. The compositor sends `popup_done` on a click outside, and the popup closes and drops its owner.
 
 ### Testing without a screen
@@ -568,6 +604,18 @@ Rules settled while building `crabshell-wayland` (Phase 4, step 4):
 - `popup_done`, `close_popup`, or the opening widget going away drops a popup and the popups it opened.
 - A popup whose content changes size sends the new size with `reposition` once it is mapped.
 - `Platform::windows()` and `remove_window` cover popups. `WindowInfo::position` is a popup's place relative to its opener.
+
+Rules settled while building `crabshell-wayland` (Phase 7):
+
+- On-demand keyboard focus needs layer-shell version 4; before it, a window asking for it takes no keys instead of all of them. A namespace holding a NUL byte is replaced with the default.
+- A mask is cut to the surface's size and sent before the commit that applies it, again whenever the size changes.
+- sctk repeats a held key with a calloop timer that exists only while the key is down. Text typed is printable only. Shortcuts in another script go by the US letter at that key, so Ctrl+C copies with a Hebrew layout.
+- Sway gives an exclusive layer surface the keyboard only if a keyboard exists when it maps, so the tests' virtual keyboard comes first. A virtual keyboard sends its own modifiers.
+- sctk tells `new_seat` only about seats that come later, so the seats at startup get their text input and data device in `Platform::new`.
+- A text input is enabled again for each field the focus moves to, told at most 4000 bytes around the caret, and sends only what changed. Sway ignores an input method's commit whose serial isn't its latest `done`.
+- The clipboard offers five text types and moves text through pipes the loop watches only while text is moving, 4 KiB at a time, so a slow program never blocks the shell. A paste reads at most 1 MiB, and an empty one pastes nothing.
+- `XdgShell` is bound with the decoration manager. A floating window asks for server-side decorations, starts at scale 1 until the compositor says otherwise, and is told the size it asks for when a configure leaves the size to it. Size limits are capped at 16384 and a maximum below the minimum is raised to it, since either would end the connection. A hidden floating window drops its toplevel and its popups.
+- A virtual pointer's clicks never reached a toplevel on headless Sway, so the floating window tests click with `swaymsg seat - cursor`.
 
 ## Services
 
@@ -644,15 +692,15 @@ Rules settled while building the `Tray` widget (Phase 4, step 5):
 
 One Cargo workspace with seven crates. Each crate owns one area, so an agent can work inside one without touching the others.
 
-| Crate                | Owns                                                                  | Depends on           | Main external crates                                                 |
-| -------------------- | --------------------------------------------------------------------- | -------------------- | -------------------------------------------------------------------- |
-| `crabshell-reactive` | Signals, memos, effects, owners, flush                                | none                 | `slotmap`                                                            |
-| `crabshell-ui`       | `Cx`, widgets, styles, layout, text layout, hit testing, invalidation | reactive             | `taffy`, `cosmic-text`, `fontconfig`                                 |
-| `crabshell-render`   | Drawing into pixmaps, damage tracking, glyphs, icons                  | ui                   | `tiny-skia`, `resvg`, `png`, `swash`                                 |
-| `crabshell-wayland`  | Event loop, windows, popups, outputs, pointer, shm buffers            | reactive, ui, render | `smithay-client-toolkit`, `calloop`, `wayland-protocols`             |
-| `crabshell-services` | Workspaces, tray, audio, clock                                        | reactive, ui         | `zbus`, `serde_json`, `libpulse-binding`, `jiff`, `calloop`, `serde` |
-| `crabshell`          | Public API, `run()`, `prelude`, `cx.persist`                          | all of the above     | `serde`, `serde_json`, tracing-subscriber                            |
-| `crabshell-cli`      | The `crabshell` binary with `init`, `run`, `check` and the supervisor | none                 | `calloop`, `rustix`, `serde_json`, `inotify`, `zbus`                 |
+| Crate                | Owns                                                                                        | Depends on           | Main external crates                                                        |
+| -------------------- | ------------------------------------------------------------------------------------------- | -------------------- | --------------------------------------------------------------------------- |
+| `crabshell-reactive` | Signals, memos, effects, owners, flush                                                      | none                 | `slotmap`                                                                   |
+| `crabshell-ui`       | `Cx`, widgets, styles, layout, text layout, hit testing, focus, invalidation                | reactive             | `taffy`, `cosmic-text`, `fontconfig`, `unicode-segmentation`                |
+| `crabshell-render`   | Drawing into pixmaps, damage tracking, glyphs, icons, images                                | ui                   | `tiny-skia`, `resvg`, `png`, `swash`, `zune-jpeg`, `gif`, `image-webp`      |
+| `crabshell-wayland`  | Event loop, windows, popups, outputs, pointer, keyboard, text input, clipboard, shm buffers | reactive, ui, render | `smithay-client-toolkit` (with `xkbcommon`), `calloop`, `wayland-protocols` |
+| `crabshell-services` | Workspaces, tray, audio, clock                                                              | reactive, ui         | `zbus`, `serde_json`, `libpulse-binding`, `jiff`, `calloop`, `serde`        |
+| `crabshell`          | Public API, `run()`, `prelude`, `cx.persist`                                                | all of the above     | `serde`, `serde_json`, tracing-subscriber                                   |
+| `crabshell-cli`      | The `crabshell` binary with `init`, `run`, `check` and the supervisor                       | none                 | `calloop`, `rustix`, `serde_json`, `inotify`, `zbus`                        |
 
 `Cx` lives in `crabshell-ui` and carries a map of services keyed by type. `crabshell-services` adds `cx.sway()`, `cx.audio()`, `cx.tray()` and `cx.clock()` through an extension trait, so `crabshell-ui` never depends on services.
 
@@ -661,7 +709,7 @@ One Cargo workspace with seven crates. Each crate owns one area, so an agent can
 - Pin every external version once, in the workspace `Cargo.toml` under `[workspace.dependencies]`.
 - Add a crate only when it saves more than about 200 lines or implements a protocol or file format. Add it to the table above first.
 - Rust crates must be MIT, Apache-2.0, BSD, ISC, Zlib or Unicode licensed. `cargo deny check licenses` enforces this with `deny.toml`, in CI on every push.
-- System C libraries (libpulse, fontconfig) are linked dynamically. sctk speaks the Wayland protocol in pure Rust, so libwayland-client isn't linked.
+- System C libraries (libpulse, fontconfig, libxkbcommon) are linked dynamically. sctk speaks the Wayland protocol in pure Rust, so libwayland-client isn't linked.
 - Use edition 2024 on the latest stable toolchain. No nightly features.
 
 ## Performance targets
@@ -753,6 +801,19 @@ Measured on 2026-11-13 by `crates/crabshell-cli/tests/exit_check.rs`. It makes t
 
 The time from the build's end to the new shell's `ready` is mostly the old shell saving and exiting: the gap itself is 13 to 19 ms.
 
+### Phase 7 results
+
+Measured on 2026-11-14 with `measure_the_counter_bar`, release builds on one 1920×1080 headless Sway output at scale 1, after all of Phase 7.
+
+| Metric                | Before Phase 7 | After Phase 7 |
+| --------------------- | -------------- | ------------- |
+| Counter example RSS   | 15.7 MiB       | 16.3 MiB      |
+| Counter first frame   | 9.7 ms         | 9.6 ms        |
+| v0.1 bar RSS          | 19.0 MiB       | 19.7 MiB      |
+| Idle wakeups, counter | 0              | 0             |
+
+Linking libxkbcommon cost about 0.6 MiB; the rest of the phase moved RSS by a few hundred KiB.
+
 ## Phases
 
 Seven phases to v0.1, totaling 16 to 26 weeks of focused work, all guesses, then the phases in "Beyond v0.1". A phase is done only when its exit check passes. Phase 0 is a go/no-go gate for the whole project.
@@ -773,7 +834,7 @@ Seven phases to v0.1, totaling 16 to 26 weeks of focused work, all guesses, then
    - Passed on 2026-11-13: `crates/crabshell-cli/tests/exit_check.rs` checks all four cases on headless Sway, with the numbers in "Phase 5 results". Built in the commits from 0b603c2 on, after a review per step. With it, Phase 4's tray apps were checked surviving a reload.
 7. **Phase 6, the v0.1 release (1-2 weeks).** Template, README, API docs on docs.rs, published crates, and measured numbers in the performance table.
    - Exit: on a clean user account, you go from `cargo install crabshell-cli` to a running bar in under 15 minutes by following the README.
-   - Marked done on 2026-11-13 without the clean-account run, which the maintainer skipped for now. All seven crates are on crates.io at 0.1.0, tagged `v0.1.0`, and docs.rs built every library's docs. With an empty cargo cache, `cargo install --locked crabshell-cli`, `crabshell init`, `crabshell check` and the first build of the template bar took 2 min 54 s on 12 cores. Commits 0ebf76e to b862f0f.
+   - Marked done on 2026-11-13 without the clean-account run, which the maintainer skipped for now. On 2026-11-14 the maintainer ran the bar on Hyprland, where it worked, and signed the exit check off. All seven crates are on crates.io at 0.1.0, tagged `v0.1.0`, and docs.rs built every library's docs. With an empty cargo cache, `cargo install --locked crabshell-cli`, `crabshell init`, `crabshell check` and the first build of the template bar took 2 min 54 s on 12 cores. Commits 0ebf76e to b862f0f.
 
 ### Beyond v0.1
 
@@ -788,6 +849,8 @@ After v0.1, the phases bring every feature Quickshell has, so any Quickshell set
 | 11    | Lock screen, greeter and polkit  | Session lock surfaces, PAM authentication, a greetd greeter and a polkit agent (`WlSessionLock`, `Services.Pam`, `Services.Greetd`, `Services.Polkit`)                                                                                                                                                                              |
 | 12    | More compositors                 | Hyprland (workspaces, monitors, toplevels, focus grab, global shortcuts), i3, niri and generic window-manager protocols (`Quickshell.Hyprland`, `Quickshell.I3`, `Quickshell.WindowManager`, `GlobalShortcut`, `ShortcutInhibitor`)                                                                                                 |
 | 13    | Parity check                     | A comparison against every Quickshell 0.3.2 type, with each gap closed or written down with a reason                                                                                                                                                                                                                                |
+
+Phase 7 passed on 2026-11-14, built in the commits from aa5d8c5 to a0b82d8 after a review per step. Its exit check, in `crates/crabshell/tests/headless.rs`, runs the launcher example on headless Sway: an overlay panel that takes the keyboard, with a text field filtering 500 rows in a `ListView` and an about `FloatingWindow`. It matches its goldens at scales 1, 1.5 and 2, typing filters the list within one frame a key, the wheel scrolls it, the compositor closes the floating window, the window's nodes come back to their count, and the open launcher wakes nothing while idle. Gaps left for later phases: no drag or kinetic scrolling and no scroll bar, no drag-select in text fields, popups that never shrink to fit, and no wrapper widgets of their own, since a `Stack` or `Button` with a padded style covers `WrapperItem`, `WrapperRectangle` and `WrapperMouseArea`, and `Style::clip` covers `ClippingRectangle`.
 
 ## Rules for AI agents
 

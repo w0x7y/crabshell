@@ -22,7 +22,7 @@ Nothing dirty means no commit and no wakeup. A clock ticking once a minute is th
 
 ### 3. A config is plain Rust
 
-A config is a normal Cargo crate that calls `crabshell::run`, using the API in the doc's "Writing a config". Keep the code and that section in sync. Every widget property takes a value or a closure, signals are `Copy` handles, and `Style` is a `const` value.
+A config is a normal Cargo crate that calls `crabshell::run`, using the API in the doc's "Writing a config". Keep the code and that section in sync. Every widget property takes a value or a closure, except one the widget writes back, which takes a `Signal`; signals are `Copy` handles, and `Style` is a `const` value.
 
 **Check.** Name each public item the change adds or alters and confirm it keeps those three rules. Put the matching "Writing a config" edit in your report, or say the section still matches.
 
@@ -84,7 +84,7 @@ Everything is indented with 2 spaces, the maintainer's editor settings. Format e
 
 - Rust: `cargo fmt --all`. `rustfmt.toml` sets `tab_spaces = 2`, and the 2024 edition sets the rest, import order included.
 - Python: `ruff format --config indent-width=2 baseline/`.
-- Markdown and YAML: `prettier --tab-width 2 --write $(git ls-files '*.md' '*.yml')`.
+- Markdown, YAML and the docs site's HTML, CSS and JavaScript: `prettier --tab-width 2 --write $(git ls-files '*.md' '*.yml' '*.html' '*.css' '*.js')`, which is what the maintainer's Neovim runs.
 - TOML and QML have no formatter. Keep each file's existing indentation.
 
 ## Commits and pushes
@@ -110,10 +110,10 @@ Everything runs on one thread. A calloop loop dispatches ready sources, runs `ru
 ## Where code lives
 
 - `crates/crabshell-reactive`: signals, memos, effects, owners and `flush`.
-- `crates/crabshell-ui`: `Cx`, widgets, styles, layout, text, hit testing and invalidation.
-- `crates/crabshell-render`: drawing, damage history, glyphs, icons and the in-house icon theme lookup. Goldens are in `tests/golden`.
-- `crates/crabshell-wayland`: the event loop, layer-shell windows, shm buffers, scale, pointer and outputs. The headless tests and shared Sway helper are in `tests/`.
-- `crates/crabshell`: `run`, `Shell`, `ShellExt::per_output`, `cx.persist`, the prelude and `examples/counter.rs`. Its headless tests, goldens and exit-code tests are in `tests/`.
+- `crates/crabshell-ui`: `Cx`, widgets, styles, layout, text, text editing, keyboard focus, hit testing and invalidation.
+- `crates/crabshell-render`: drawing, damage history, clipping, glyphs, icons, images and the in-house icon theme lookup. Goldens are in `tests/golden`.
+- `crates/crabshell-wayland`: the event loop, layer-shell and floating windows, popups, shm buffers, scale, pointer, keyboard, input methods, the clipboard and outputs. The headless tests and shared Sway helper are in `tests/`.
+- `crates/crabshell`: `run`, `Shell`, `ShellExt::per_output`, `cx.floating`, `cx.persist`, the prelude and the examples (`counter`, `bar`, `launcher`). Its headless tests, goldens and exit-code tests are in `tests/`.
 - `crates/crabshell-cli`: the `crabshell` command (`init`, `check`, and `run` with the supervisor) and the config template in `template/`, which must match the design doc's "Writing a config".
 - `spike/` and `baseline/`: the frozen Phase 0 prototype, the Quickshell bar it was measured against, and `baseline/harness.py`, which measured both.
 
