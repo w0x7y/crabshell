@@ -1,23 +1,27 @@
 //! `crabshell run`: builds the config, starts the shell and starts it again
 //! when it crashes, falling back to `last-good` when a new build keeps
-//! crashing. One thread, on a calloop loop that sleeps until the shell
-//! exits, talks or a timer is due.
+//! crashing. An edit to the config rebuilds it and swaps the shell. One
+//! thread, on a calloop loop that sleeps until the shell exits or talks,
+//! a file changes or a timer is due.
 
-use std::io::{ErrorKind, Read};
+use std::io::{ErrorKind, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use calloop::futures::Scheduler;
 use calloop::generic::Generic;
 use calloop::signals::{Signal, Signals};
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{Dispatcher, EventLoop, Interest, LoopHandle, Mode, PostAction, RegistrationToken};
 use rustix::process::{Pid, PidfdFlags};
 
-use crate::build;
+use crate::build::{self, Built};
 use crate::policy::{Binary, Exit, HEALTHY_AFTER, Next, Policy};
+use crate::watch::Watcher;
+use crate::{log, notify};
 
 /// The variable that names the control socket for the shell.
 const CONTROL: &str = "CRABSHELL_CONTROL";
@@ -25,24 +29,51 @@ const CONTROL: &str = "CRABSHELL_CONTROL";
 /// The signals that stop `crabshell run`, and the shell with it.
 const STOP_SIGNALS: [Signal; 2] = [Signal::SIGINT, Signal::SIGTERM];
 
+/// How long the files must be quiet after an edit before a rebuild, so a
+/// save that writes several files builds once.
+const DEBOUNCE: Duration = Duration::from_millis(300);
+
+/// How long the old shell gets to save and exit before it is killed.
+const SAVE_LIMIT: Duration = Duration::from_secs(5);
+
+/// The notification's title when the config doesn't build.
+const DIDNT_BUILD: &str = "Your Crabshell config didn't build";
+
 /// The longest line read from the shell; a longer one is cut.
 const MAX_LINE: usize = 256;
 
 /// What the supervisor knows while it runs.
 struct Supervisor {
   handle: LoopHandle<'static, Supervisor>,
+  /// Runs the notifications' D-Bus calls on the loop.
+  scheduler: Scheduler<()>,
   /// The stop signals, which `start` unblocks around each spawn.
   signals: Dispatcher<'static, Signals, Supervisor>,
   /// The program the config built; `None` if the first build failed and
   /// `last-good` runs instead.
   build: Option<PathBuf>,
+  config: PathBuf,
+  target: PathBuf,
   last_good: PathBuf,
   socket: PathBuf,
   policy: Policy,
+  /// The config's file watches; `None` if inotify failed.
+  watcher: Option<Watcher>,
   /// The running shell and when it started.
   shell: Option<(Child, Instant)>,
+  /// The running shell's end of the control socket, once it connects.
+  control: Option<UnixStream>,
   /// The timer that marks the running shell healthy.
   healthy_timer: Option<RegistrationToken>,
+  /// The timer that starts the shell again after a crash.
+  restart_timer: Option<RegistrationToken>,
+  /// The timer that rebuilds once the files are quiet.
+  debounce_timer: Option<RegistrationToken>,
+  /// A new build waits for the old shell to end; the timer kills it if
+  /// it takes too long.
+  reloading: Option<RegistrationToken>,
+  /// When the old shell ended in a reload, until the new one is ready.
+  reload_gap: Option<Instant>,
   /// SIGINT or SIGTERM came: the shell's exit ends `run`.
   stopping: bool,
   /// Set when `run` is done.
@@ -88,15 +119,20 @@ pub(crate) fn run(config: &Path, target: &Path) -> Result<(), String> {
     .set_nonblocking(true)
     .map_err(|error| format!("can't listen on {}: {error}", socket.display()))?;
 
+  // Before the first build, so an edit saved while it runs is seen.
+  let watcher = Watcher::new(config);
+
   // After the socket, so a session problem shows before a long build.
   let last_good = target.with_file_name("last-good");
-  let (build, binary) = match build::build(config, target) {
-    Ok(program) => (Some(program), Binary::Build),
+  let (build, binary, problem) = match timed_build(config, target) {
+    Ok(built) => (Some(built.program), Binary::Build, None),
     Err(problem) if last_good.is_file() => {
-      log(&format!("{problem}; starting last-good"));
-      (None, Binary::LastGood)
+      log(&format!(
+        "the config didn't build: {problem}; starting last-good"
+      ));
+      (None, Binary::LastGood, Some(problem))
     }
-    Err(problem) => return Err(problem),
+    Err(problem) => return Err(format!("the config didn't build: {problem}")),
   };
 
   let mut event_loop: EventLoop<'static, Supervisor> =
@@ -106,10 +142,10 @@ pub(crate) fn run(config: &Path, target: &Path) -> Result<(), String> {
   handle
     .insert_source(
       Generic::new(listener, Interest::READ, Mode::Level),
-      move |_, listener, _| {
+      move |_, listener, supervisor| {
         loop {
           match listener.accept() {
-            Ok((stream, _)) => listen(&accepting, stream),
+            Ok((stream, _)) => listen(&accepting, supervisor, stream),
             Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(PostAction::Continue),
             Err(error) if error.kind() == ErrorKind::Interrupted => {}
             Err(error) => {
@@ -130,18 +166,68 @@ pub(crate) fn run(config: &Path, target: &Path) -> Result<(), String> {
     .register_dispatcher(signals.clone())
     .map_err(|error| format!("can't watch for signals: {error}"))?;
 
+  let (executor, scheduler) =
+    calloop::futures::executor().map_err(|error| format!("can't make the executor: {error}"))?;
+  handle
+    .insert_source(executor, |(), _, _| {})
+    .map_err(|error| format!("can't make the executor: {}", error.error))?;
+  let watcher = match watcher {
+    Ok(watcher) => watcher
+      .fd()
+      .map_err(|error| error.to_string())
+      .and_then(|fd| {
+        // A copy of the descriptor wakes the loop; the watcher itself
+        // stays in the state, where reading it needs `&mut`.
+        handle
+          .insert_source(
+            Generic::new(fd, Interest::READ, Mode::Level),
+            |_, _, supervisor| {
+              supervisor.files_changed();
+              Ok(PostAction::Continue)
+            },
+          )
+          .map_err(|error| error.error.to_string())
+      })
+      .map(|_| watcher),
+    Err(error) => Err(error.to_string()),
+  };
+  let watcher = watcher
+    .map_err(|error| {
+      log(&format!(
+        "can't watch the config ({error}); edits won't reload it"
+      ))
+    })
+    .ok();
+
   let mut supervisor = Supervisor {
     handle,
+    scheduler,
     signals,
     build,
+    config: config.to_owned(),
+    target: target.to_owned(),
     last_good,
     socket,
     policy: Policy::new(binary),
+    watcher,
     shell: None,
+    control: None,
     healthy_timer: None,
+    restart_timer: None,
+    debounce_timer: None,
+    reloading: None,
+    reload_gap: None,
     stopping: false,
     result: None,
   };
+  if let Some(problem) = problem {
+    notify::send(
+      &supervisor.handle,
+      &supervisor.scheduler,
+      DIDNT_BUILD,
+      &format!("{problem}; the last config that worked runs instead"),
+    );
+  }
   supervisor.start();
   loop {
     if let Some(result) = supervisor.result.take() {
@@ -228,11 +314,16 @@ impl Supervisor {
   fn healthy(&mut self) {
     self.healthy_timer = None;
     self.policy.healthy();
+    let Some((child, _)) = &self.shell else {
+      return;
+    };
     if self.policy.binary != Binary::Build {
       return;
     }
-    let build = self.build.as_ref().expect("the build is running");
-    match keep(build, &self.last_good) {
+    // The program that ran, which a newer build at the same path may
+    // have replaced on disk.
+    let ran = PathBuf::from(format!("/proc/{}/exe", child.id()));
+    match keep(&ran, &self.last_good) {
       Ok(()) => log(&format!(
         "the shell ran {} s, so its build is kept as {}",
         HEALTHY_AFTER.as_secs(),
@@ -253,6 +344,25 @@ impl Supervisor {
     if let Some(timer) = self.healthy_timer.take() {
       self.handle.remove(timer);
     }
+    self.control = None;
+    if let Some(timer) = self.reloading.take() {
+      self.handle.remove(timer);
+      let status = child
+        .wait()
+        .map_or_else(|error| error.to_string(), |status| status.to_string());
+      log(&format!(
+        "the old shell ended ({status}); starting the new build"
+      ));
+      if self.stopping {
+        self.result = Some(Ok(()));
+      } else {
+        self.reload_gap = Some(Instant::now());
+        self.start();
+      }
+      return;
+    }
+    // A new build that ended before `ready` didn't reload.
+    self.reload_gap = None;
     match child.wait() {
       Ok(status) => self.ended(
         Exit::from_code(status.code()),
@@ -287,6 +397,12 @@ impl Supervisor {
             "{how}; the new build keeps crashing, so last-good starts in {} s",
             after.as_secs()
           ));
+          notify::send(
+            &self.handle,
+            &self.scheduler,
+            "Your Crabshell config keeps crashing",
+            "It crashed three times in its first minute, so the last config that worked runs instead.",
+          );
         } else {
           log(&format!(
             "{how}; starting it again in {} s",
@@ -297,25 +413,134 @@ impl Supervisor {
           self
             .handle
             .insert_source(Timer::from_duration(after), |_, _, supervisor| {
+              supervisor.restart_timer = None;
               if !supervisor.stopping {
                 supervisor.start();
               }
               TimeoutAction::Drop
             });
-        if let Err(error) = inserted {
-          self.result = Some(Err(format!("can't wait to restart: {}", error.error)));
+        match inserted {
+          Ok(timer) => self.restart_timer = Some(timer),
+          Err(error) => self.result = Some(Err(format!("can't wait to restart: {}", error.error))),
         }
       }
     }
   }
 
   /// The shell said `ready`.
-  fn ready(&self) {
+  fn ready(&mut self) {
     if let Some((_, started)) = &self.shell {
       log(&format!(
         "the shell is ready, {} ms after it started",
         started.elapsed().as_millis()
       ));
+      if let Some(ended) = self.reload_gap.take() {
+        log(&format!(
+          "reloaded with {} ms between the old shell's exit and the new one's ready",
+          ended.elapsed().as_millis()
+        ));
+      }
+    }
+  }
+
+  /// The watcher woke the loop: rebuild once the files are quiet for
+  /// [`DEBOUNCE`].
+  fn files_changed(&mut self) {
+    let Some(watcher) = self.watcher.as_mut() else {
+      return;
+    };
+    if !watcher.changed() {
+      return;
+    }
+    if let Some(timer) = self.debounce_timer.take() {
+      self.handle.remove(timer);
+    }
+    self.debounce_timer = self
+      .handle
+      .insert_source(Timer::from_duration(DEBOUNCE), |_, _, supervisor| {
+        supervisor.debounce_timer = None;
+        supervisor.rebuild();
+        TimeoutAction::Drop
+      })
+      .map_err(|error| {
+        log(&format!(
+          "can't wait for the edits to settle: {}",
+          error.error
+        ))
+      })
+      .ok();
+  }
+
+  /// Builds the edited config. A failed build leaves the shell running and
+  /// says why in a notification; a new program replaces the shell.
+  fn rebuild(&mut self) {
+    if self.stopping {
+      return;
+    }
+    log("the config changed; building it");
+    match timed_build(&self.config, &self.target) {
+      Err(problem) => {
+        log(&format!(
+          "the config didn't build: {problem}; the running shell stays"
+        ));
+        notify::send(&self.handle, &self.scheduler, DIDNT_BUILD, &problem);
+      }
+      Ok(built) if built.fresh && self.build.as_ref() == Some(&built.program) => {
+        log("nothing in the build changed; the shell keeps running");
+      }
+      Ok(built) => {
+        self.build = Some(built.program);
+        self.policy.new_build();
+        self.reload();
+      }
+    }
+  }
+
+  /// Swaps the running shell for the new build: asks it to save and exit,
+  /// and starts the build when it has. One waiting to restart is
+  /// replaced at once.
+  fn reload(&mut self) {
+    // Already asked: the newest build starts when the old shell ends, and
+    // the kill stays due when it was.
+    if self.reloading.is_some() {
+      return;
+    }
+    let Some((child, _)) = &self.shell else {
+      if let Some(timer) = self.restart_timer.take() {
+        self.handle.remove(timer);
+      }
+      return self.start();
+    };
+    let pid = Pid::from_child(child);
+    let asked = self
+      .control
+      .as_mut()
+      .is_some_and(|stream| stream.write_all(b"save\n").is_ok());
+    if asked {
+      log("asking the shell to save and exit");
+    } else {
+      log("the shell isn't connected, so it ends without saving");
+      let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
+    }
+    let timer =
+      self
+        .handle
+        .insert_source(Timer::from_duration(SAVE_LIMIT), move |_, _, supervisor| {
+          log(&format!(
+            "the old shell didn't end within {} s; killing it",
+            SAVE_LIMIT.as_secs()
+          ));
+          if let Some((child, _)) = supervisor.shell.as_mut() {
+            let _ = child.kill();
+          }
+          TimeoutAction::Drop
+        });
+    match timer {
+      Ok(timer) => self.reloading = Some(timer),
+      Err(error) => {
+        log(&format!("can't time the reload: {}", error.error));
+        let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+      }
     }
   }
 
@@ -333,10 +558,19 @@ impl Supervisor {
   }
 }
 
-/// Reads the shell's lines from `stream` on the loop.
-fn listen(handle: &LoopHandle<'static, Supervisor>, stream: UnixStream) {
+/// Reads the shell's lines from `stream` on the loop, and keeps a copy to
+/// write to it.
+fn listen(
+  handle: &LoopHandle<'static, Supervisor>,
+  supervisor: &mut Supervisor,
+  stream: UnixStream,
+) {
   if let Err(error) = stream.set_nonblocking(true) {
     return log(&format!("can't read from the shell: {error}"));
+  }
+  match stream.try_clone() {
+    Ok(copy) => supervisor.control = Some(copy),
+    Err(error) => log(&format!("can't write to the shell: {error}")),
   }
   let mut line = Vec::new();
   let inserted = handle.insert_source(
@@ -396,17 +630,21 @@ fn private_dir(dir: &Path) -> Result<(), String> {
   Ok(())
 }
 
-/// Copies `build` to `last_good` through a file beside it, so a crash
+/// Copies `program` to `last_good` through a file beside it, so a crash
 /// mid-copy never leaves half a program there.
-fn keep(build: &Path, last_good: &Path) -> std::io::Result<()> {
+fn keep(program: &Path, last_good: &Path) -> std::io::Result<()> {
   let partial = last_good.with_file_name("last-good.partial");
-  std::fs::copy(build, &partial)?;
+  std::fs::copy(program, &partial)?;
   std::fs::rename(&partial, last_good)
 }
 
-/// Logs `message` to stderr. A closed stderr is ignored rather than a
-/// panic, which would leave the shell unsupervised.
-fn log(message: &str) {
-  use std::io::Write;
-  let _ = writeln!(std::io::stderr(), "crabshell: {message}");
+/// Builds the config, and logs how long it took.
+fn timed_build(config: &Path, target: &Path) -> Result<Built, String> {
+  let started = Instant::now();
+  let built = build::build(config, target);
+  log(&format!(
+    "the build took {:.1} s",
+    started.elapsed().as_secs_f64()
+  ));
+  built
 }

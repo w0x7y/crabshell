@@ -260,13 +260,25 @@ Rules settled while building `crabshell-cli` (Phase 5, step 2):
 Rules settled while building `crabshell run` (Phase 5, step 3):
 
 - The supervisor runs on one thread, on a calloop loop like the shell's. It learns the shell exited from a pidfd (`rustix`'s `pidfd_open`, so Linux 5.3 or later), which sleeps until then instead of polling. A shell that is up and quiet wakes the supervisor once, when it turns 60 s old.
-- The build's program is the one `executable` in cargo's `--message-format=json-render-diagnostics` output, so a config can name its package anything. A config that builds more than one program is refused.
+- The build's program is the one `executable` in cargo's `--message-format=json` output, so a config can name its package anything. A config that builds more than one program is refused.
 - The control socket is `$XDG_RUNTIME_DIR/crabshell/control-<supervisor pid>.sock`, in a directory made private the way `persist::write` does it. It is removed when `run` ends. Without `XDG_RUNTIME_DIR`, `run` refuses to start. The supervisor logs `ready` with the milliseconds since the shell started, and doesn't wait for it.
 - Exit status 0 or 2 stops `run` with 0, since 2 means the session is gone. Any other end restarts the shell. A program that can't be started counts as a crash.
-- A crash counts toward the fallback only within 60 s of the newest build's first start. Starting `last-good` resets the wait to 1 s. `last-good` that keeps crashing restarts with the same growing wait. Only a build is ever copied to `last-good`, through `last-good.partial` and a rename.
+- A crash counts toward the fallback only within 60 s of the newest build's first start. Starting `last-good` resets the wait to 1 s. `last-good` that keeps crashing restarts with the same growing wait. Only a build is ever copied to `last-good`, from the running shell's `/proc/<pid>/exe`, so it is the program that ran even if a newer build replaced the file. The copy goes through `last-good.partial` and a rename.
 - If the first build fails, `run` starts `last-good` when there is one, and otherwise exits with 1.
 - SIGINT and SIGTERM end the shell with SIGTERM, then `run` with 0. Waiting to restart, `run` ends at once. signalfd needs the two signals blocked, and a child inherits that mask, so they are unblocked while the shell spawns.
 - Logs go to stderr with a `crabshell:` prefix. The shell's stdout and stderr pass straight through.
+
+Rules settled while building the watcher and reload (Phase 5, step 4):
+
+- The watcher starts before the first build, so an edit saved during it isn't lost. It sees `Cargo.toml` in the config directory and every file under `src/`, including directories made later and what a symlink there points at. A directory moved out of `src/` stops being watched, and a lost-events overflow rescans `src/`. Other files in the config directory, such as `Cargo.lock`, are ignored, and so are hidden files, `~` backups, Emacs's `#name#` auto-saves and Vim's `4913` probe. A build starts 300 ms after the last change.
+- Cargo's progress goes to stderr as it builds. The compiler's warnings and errors print when it ends, and the notification's body is the first error's message, such as `this file contains an unclosed delimiter`. A build that fails before the compiler runs says `cargo failed; its message is above`.
+- A build whose program cargo calls fresh, at the same path as the newest build, changes nothing, so the shell isn't reloaded. That holds while `last-good` runs too: the fresh build is the one that kept crashing.
+- To reload, the supervisor writes `save` to the shell and starts the newest build when the shell exits, whatever its status. A shell that never connected gets SIGTERM instead, and one still up 5 s after the first `save` gets SIGKILL; an edit meanwhile only rebuilds. A shell waiting to restart after a crash is replaced at once. SIGTERM to the supervisor during a reload ends the old shell and starts nothing.
+- A new build starts over: no crashes counted, and it replaces `last-good` if that was running.
+- Each notification opens its own session-bus connection, which closes after the call, so an idle supervisor stays asleep. A server gets 25 s to answer, timed by a loop timer. A failure, such as no notification server, is logged. The body escapes `&`, `<` and `>`, since servers read it as markup. The supervisor notifies when an edit doesn't build, when the first build fails and `last-good` starts, and when it falls back to `last-good`.
+- The supervisor logs each build's duration, and the time from the old shell's exit to the new one's `ready`.
+- A build blocks the loop. A signal that arrives meanwhile is handled when it ends.
+- `crabshell-cli`'s tests run on a private `dbus-daemon` whose config lists no service directories, since `--session` would start real services, such as the desktop's notification daemon, and every other test gets an address that leads nowhere.
 
 Panic handling inside the shell:
 

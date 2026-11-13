@@ -3,8 +3,10 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use super::build::executable;
+use super::build::{Built, Report, read};
+use super::notify::escape;
 use super::policy::{Binary, Exit, Next, Policy};
+use super::watch::relevant;
 use super::{FROM_CRATES_IO, TEMPLATE_MANIFEST, Task, parse, toml_string};
 
 fn args(line: &str) -> Vec<String> {
@@ -179,22 +181,87 @@ fn without_last_good_or_after_60_s_the_build_keeps_restarting() {
 
 #[test]
 fn cargos_messages_name_the_one_program_built() {
-  let library = r#"{"reason":"compiler-artifact","target":{"kind":["lib"]},"executable":null}"#;
-  let program =
-    r#"{"reason":"compiler-artifact","target":{"kind":["bin"]},"executable":"/t/debug/my-shell"}"#;
-  let other =
-    r#"{"reason":"compiler-artifact","target":{"kind":["bin"]},"executable":"/t/debug/second"}"#;
+  let library =
+    r#"{"reason":"compiler-artifact","target":{"kind":["lib"]},"executable":null,"fresh":true}"#;
+  let program = r#"{"reason":"compiler-artifact","target":{"kind":["bin"]},"executable":"/t/debug/my-shell","fresh":false}"#;
+  let other = r#"{"reason":"compiler-artifact","target":{"kind":["bin"]},"executable":"/t/debug/second","fresh":true}"#;
   let script =
     r#"{"reason":"compiler-artifact","target":{"kind":["custom-build"]},"executable":null}"#;
   let finished = r#"{"reason":"build-finished","success":true}"#;
   let messages = [library, script, "not json", program, finished].join("\n");
   assert_eq!(
-    executable(&messages),
-    Ok(PathBuf::from("/t/debug/my-shell"))
+    read(&messages).built,
+    Ok(Built {
+      program: PathBuf::from("/t/debug/my-shell"),
+      fresh: false,
+    })
   );
   assert_eq!(
-    executable(&[library, finished].join("\n")),
+    read(other).built,
+    Ok(Built {
+      program: PathBuf::from("/t/debug/second"),
+      fresh: true,
+    })
+  );
+  assert_eq!(
+    read(&[library, finished].join("\n")).built,
     Err(String::from("the config built no program"))
   );
-  assert!(executable(&[program, other].join("\n")).is_err());
+  assert!(read(&[program, other].join("\n")).built.is_err());
+}
+
+#[test]
+fn the_first_error_is_kept_for_the_notification() {
+  let warning = r#"{"reason":"compiler-message","message":{"level":"warning","message":"unused variable: `x`","rendered":"warning: unused variable: `x`\n"}}"#;
+  let error = r#"{"reason":"compiler-message","message":{"level":"error","message":"expected `;`, found `}`","rendered":"error: expected `;`, found `}`\n"}}"#;
+  let aborting = r#"{"reason":"compiler-message","message":{"level":"error","message":"aborting due to 1 previous error","rendered":"error: aborting due to 1 previous error\n"}}"#;
+  let report = read(&[warning, error, aborting].join("\n"));
+  assert_eq!(
+    report,
+    Report {
+      rendered: String::from(
+        "warning: unused variable: `x`\nerror: expected `;`, found `}`\nerror: aborting due to 1 previous error\n"
+      ),
+      first_error: Some(String::from("expected `;`, found `}`")),
+      built: Err(String::from("the config built no program")),
+    }
+  );
+}
+
+#[test]
+fn a_new_build_starts_over() {
+  let start = Instant::now();
+  let mut policy = Policy::new(Binary::Build);
+  for crash in 0..3 {
+    policy.started(start + secs(crash * 4));
+    policy.exited(start + secs(crash * 4 + 1), Exit::Crashed, true);
+  }
+  assert_eq!(policy.binary, Binary::LastGood);
+  policy.new_build();
+  assert_eq!(policy.binary, Binary::Build);
+  policy.started(start + secs(100));
+  assert_eq!(
+    policy.exited(start + secs(101), Exit::Crashed, true),
+    restart(1, Binary::Build),
+    "no crashes counted from before"
+  );
+}
+
+#[test]
+fn a_notification_body_escapes_markup() {
+  assert_eq!(
+    escape("expected `Option<u32>`, found `&str`"),
+    "expected `Option&lt;u32&gt;`, found `&amp;str`"
+  );
+}
+
+#[test]
+fn editors_scratch_files_dont_count_as_edits() {
+  use std::ffi::OsStr;
+  for name in ["main.rs", "bar.rs", "#", "a#"] {
+    assert!(relevant(OsStr::new(name)), "{name}");
+  }
+  for name in [".main.rs.swp", "main.rs~", "4913", "#main.rs#", ".#main.rs"] {
+    assert!(!relevant(OsStr::new(name)), "{name}");
+  }
 }

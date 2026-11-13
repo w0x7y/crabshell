@@ -13,5 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 calloop.workspace = true
+inotify.workspace = true
 rustix.workspace = true
 serde_json.workspace = true
+zbus.workspace = true

@@ -85,6 +85,12 @@ impl Policy {
     }
   }
 
+  /// A new build replaces the old one: it starts with no crashes, and
+  /// leaves `last-good`.
+  pub(crate) fn new_build(&mut self) {
+    *self = Policy::new(Binary::Build);
+  }
+
   /// A shell is starting now.
   pub(crate) fn started(&mut self, now: Instant) {
     if self.binary == Binary::Build && self.build_started.is_none() {

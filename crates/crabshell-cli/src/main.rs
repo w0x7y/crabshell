@@ -7,8 +7,10 @@
 #![forbid(unsafe_code)]
 
 mod build;
+mod notify;
 mod policy;
 mod supervise;
+mod watch;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -222,6 +224,13 @@ fn check() -> Result<ExitCode, String> {
     Some(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
     None => ExitCode::FAILURE,
   })
+}
+
+/// Logs `message` to stderr. A closed stderr is ignored rather than a
+/// panic, which would leave a supervised shell on its own.
+fn log(message: &str) {
+  use std::io::Write;
+  let _ = writeln!(std::io::stderr(), "crabshell: {message}");
 }
 
 #[cfg(test)]

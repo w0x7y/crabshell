@@ -46,7 +46,9 @@ impl Home {
       .env("HOME", &self.0)
       .env("XDG_CONFIG_HOME", config_home)
       .env("XDG_CACHE_HOME", self.0.join("cache"))
-      .env("XDG_RUNTIME_DIR", self.0.join("run"));
+      .env("XDG_RUNTIME_DIR", self.0.join("run"))
+      // Never the desktop's bus: a test's notification must not pop up.
+      .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent");
     command
   }
 
@@ -464,7 +466,7 @@ fn a_config_that_doesnt_build_runs_last_good_or_fails() {
   supervised.signal("-INT");
   let (code, log) = supervised.wait(Duration::from_secs(5));
   assert_eq!(code, Some(0), "{log}");
-  assert!(log.contains("didn't build; starting last-good"), "{log}");
+  assert!(log.contains("; starting last-good"), "{log}");
 }
 
 #[test]
