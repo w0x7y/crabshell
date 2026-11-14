@@ -1,5 +1,6 @@
 //! The services a Crabshell bar reads: the clock, Sway's workspaces, audio,
-//! the tray, power, notifications, the installed applications and PAM.
+//! the tray, power, notifications, the installed applications, PAM, greetd
+//! and a polkit agent.
 //!
 //! The shell calls [`provide`] once, with its root context and event loop.
 //! After that, any context hands out services through [`ServicesExt`],
@@ -26,6 +27,7 @@ mod mpris;
 mod network;
 mod notifications;
 mod pam;
+mod polkit;
 mod power;
 mod process;
 mod socket;
@@ -64,6 +66,7 @@ pub use mpris::{LoopStatus, Mpris, PlaybackStatus, Player};
 pub use network::{Network, NetworkDevice, NetworkKind, NetworkState, WifiNetwork};
 pub use notifications::{Notification, Notifications, Timeout, Urgency};
 pub use pam::{Pam, PamMessage, PamResult, PamState};
+pub use polkit::{AuthRequest, AuthState, PolkitAgent};
 pub use power::{BatteryState, DeviceKind, PowerDevice, PowerProfile, PowerProfiles, UPower};
 pub use process::{IntoCommand, Process};
 pub use socket::Socket;
@@ -99,6 +102,7 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(file::Files(Rc::clone(&shared)));
   cx.provide(greetd::Service::new(Rc::clone(&shared)));
   cx.provide(pam::Service(Rc::clone(&shared)));
+  cx.provide(polkit::Service::new(Rc::clone(&shared)));
 }
 
 /// Stops every program a config started with `cx.process`. The shell
@@ -262,6 +266,16 @@ pub trait ServicesExt {
   /// its own, since libpam blocks, and wakes the shell only when PAM asks
   /// or says something, or the attempt ends.
   fn pam(&self, service: &str) -> Pam;
+
+  /// The shell's polkit authentication agent, as Quickshell's
+  /// `PolkitAgent`: when a program asks polkit for something only some
+  /// users may do, its request shows here for the config's dialog. The
+  /// first call registers the agent with polkit on the system bus for
+  /// this session; a shell that never calls it never reaches polkit.
+  ///
+  /// A refused registration is logged and no requests arrive. It wakes
+  /// the shell only when polkit calls and while a request is answered.
+  fn polkit_agent(&self) -> PolkitAgent;
 }
 
 impl ServicesExt for Cx {
@@ -339,6 +353,10 @@ impl ServicesExt for Cx {
 
   fn pam(&self, service: &str) -> Pam {
     pam::pam(self, service)
+  }
+
+  fn polkit_agent(&self) -> PolkitAgent {
+    polkit::polkit_agent(self)
   }
 }
 
@@ -574,7 +592,8 @@ struct Config {
   /// when `TZ` is set, since it names the zone then, as it does for libc.
   localtime: Option<PathBuf>,
   /// The system bus, where logind, timedated, UPower,
-  /// power-profiles-daemon, BlueZ and NetworkManager are. `None` for none.
+  /// power-profiles-daemon, BlueZ, NetworkManager and polkit are. `None`
+  /// for none.
   system_bus: Option<zbus::Address>,
   /// The session bus, where tray items, notifying apps and media
   /// players are. `None` for none.
