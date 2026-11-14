@@ -447,15 +447,81 @@ fn events_during_a_read_read_once_more_after_it() {
 fn the_event_socket_closing_is_logged_and_empties_the_lists() {
   let fake = FakeHyprland::new();
   let (mut shell, hyprland, events) = connect(&fake);
+  // Hyprland is gone, and its socket with it.
+  std::fs::remove_file(fake.dir.join(".socket2.sock")).expect("the socket file");
   drop(events);
   let logs = capture_logs(|| {
     run(&mut shell);
   });
   assert!(logs.contains("Hyprland closed its event socket"), "{logs}");
+  assert!(!logs.contains("connecting again"), "{logs}");
   assert!(hyprland.workspaces().get_untracked().is_empty());
   assert!(hyprland.monitors().get_untracked().is_empty());
   assert!(hyprland.toplevels().get_untracked().is_empty());
   assert_eq!(run(&mut shell), 1, "nothing reconnects");
+}
+
+/// Hyprland closes an event client that falls 64 events behind, and runs
+/// on, so its socket is still there.
+#[test]
+fn a_closed_event_socket_is_connected_again_once() {
+  let fake = FakeHyprland::new();
+  let (mut shell, hyprland, events) = connect(&fake);
+  drop(events);
+  let logs = capture_logs(|| {
+    run(&mut shell);
+  });
+  assert!(logs.contains("connecting again"), "{logs}");
+  let mut events = fake.events();
+  assert_eq!(
+    fake.answer(&replies()),
+    ["j/workspaces", "j/monitors", "j/clients", "j/activewindow"],
+    "what was missed is read again"
+  );
+  run(&mut shell);
+  assert_eq!(hyprland.workspaces().get_untracked(), expected_workspaces());
+
+  // After an event, a close is followed again.
+  events.write_all(b"submap>>resize\n").expect("events");
+  run(&mut shell);
+  drop(events);
+  run(&mut shell);
+  let events = fake.events();
+  fake.answer(&replies());
+  run(&mut shell);
+
+  // A connection that closes with no event in between isn't.
+  drop(events);
+  let logs = capture_logs(|| {
+    run(&mut shell);
+  });
+  assert!(logs.contains("lost Hyprland"), "{logs}");
+  assert!(hyprland.workspaces().get_untracked().is_empty());
+  assert!(fake.events.accept().is_err(), "no third connection");
+  assert_eq!(run(&mut shell), 1, "nothing retries");
+}
+
+#[test]
+fn on_event_on_a_context_that_went_is_logged_and_does_nothing() {
+  let fake = FakeHyprland::new();
+  let (mut shell, _hyprland, mut events) = connect(&fake);
+  let child = shell.cx.child();
+  let nodes = Runtime::current().node_count();
+  let stale = child.hyprland();
+  assert_eq!(
+    Runtime::current().node_count(),
+    nodes,
+    "a handle makes no node"
+  );
+  child.owner().dispose();
+  let heard = Rc::new(Cell::new(0));
+  let kept = Rc::clone(&heard);
+  let logs = capture_logs(|| stale.on_event(move |_| kept.set(kept.get() + 1)));
+  assert!(logs.contains("context that is gone"), "{logs}");
+  events.write_all(b"submap>>resize\n").expect("events");
+  run(&mut shell);
+  assert_eq!(heard.get(), 0);
+  assert_eq!(Rc::strong_count(&heard), 1, "the handler wasn't kept");
 }
 
 #[test]

@@ -7,7 +7,7 @@
 #[cfg(test)]
 mod tests;
 
-use std::cell::RefCell;
+use std::cell::{RefCell, RefMut};
 use std::collections::{HashSet, VecDeque};
 use std::io::{ErrorKind, Read, Write};
 use std::net::Shutdown;
@@ -194,10 +194,19 @@ impl Hyprland {
   ///
   /// It runs on the main thread. If it panics, that is logged with the
   /// event and where `on_event` was called, and it isn't called again.
+  ///
+  /// Called on a handle whose context went, it logs that and does
+  /// nothing.
   #[track_caller]
   pub fn on_event(&self, handler: impl Fn(&HyprlandEvent) + 'static) {
+    let at = Location::caller();
+    if self.owner.is_disposed() {
+      return tracing::warn!(
+        "Hyprland on_event (called at {at}) on a context that is gone does nothing"
+      );
+    }
     if let Some(service) = &self.service {
-      let id = service.add_handler(Rc::new(handler), Location::caller());
+      let id = service.add_handler(Rc::new(handler), at);
       self.owner.signal(Unregister(Rc::clone(service), id));
     }
   }
@@ -342,6 +351,8 @@ struct State {
   focusing: Vec<String>,
   /// Requests waiting for fewer than [`MAX_IN_FLIGHT`] to be out.
   queued: VecDeque<(Asked, String)>,
+  /// Whether the event socket was connected again since its last event.
+  reconnected: bool,
 }
 
 /// What a request asks Hyprland.
@@ -425,12 +436,15 @@ impl Service {
         version_asked: false,
         focusing: Vec::new(),
         queued: VecDeque::new(),
+        reconnected: false,
       });
       match &self.shared.config.hyprland {
         None => tracing::info!(
           "HYPRLAND_INSTANCE_SIGNATURE or XDG_RUNTIME_DIR is unset, so there is no Hyprland to show"
         ),
-        Some(dir) => self.connect(dir),
+        Some(dir) => {
+          self.connect(dir);
+        }
       }
     }
     let state = self.state.borrow();
@@ -440,10 +454,10 @@ impl Service {
 
   /// Opens the event socket, then reads every list, so no change between
   /// the two goes unseen. A failure is logged and never retried, so a
-  /// stale signature never wakes the shell.
-  fn connect(self: &Rc<Self>, dir: &Path) {
+  /// stale signature never wakes the shell. `false` if it failed.
+  fn connect(self: &Rc<Self>, dir: &Path) -> bool {
     let Some(event_loop) = self.shared.event_loop() else {
-      return;
+      return false;
     };
     let path = dir.join(".socket2.sock");
     let opened = UnixStream::connect(&path).and_then(|stream| {
@@ -455,13 +469,14 @@ impl Service {
       Ok(opened) => opened,
       Err(error) => {
         let path = path.display();
-        return tracing::warn!(%path, %error, "can't connect to Hyprland, so its lists stay empty");
+        tracing::warn!(%path, %error, "can't connect to Hyprland, so its lists stay empty");
+        return false;
       }
     };
     let service = Rc::clone(self);
     let read = Box::new(move || service.on_events());
     let Some(reader) = event_loop.insert_fd(fd, Interest::READ, read) else {
-      return;
+      return false;
     };
     let mut state = self.state.borrow_mut();
     let state = state
@@ -475,6 +490,7 @@ impl Service {
     for query in Query::ALL {
       self.read(state, query);
     }
+    true
   }
 
   /// Reads `query`'s list, or once more after the read under way.
@@ -635,15 +651,18 @@ impl Service {
       return;
     };
     let lines = match events.stream.read(&mut chunk) {
-      Ok(0) => return self.lost(state, "Hyprland closed its event socket"),
+      Ok(0) => return self.closed(guard, "Hyprland closed its event socket"),
       Ok(read) => events
         .lines
         .push(&chunk[..read], &"Hyprland's event socket"),
       Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
         return;
       }
-      Err(error) => return self.lost(state, &error.to_string()),
+      Err(error) => return self.closed(guard, &error.to_string()),
     };
+    if !lines.is_empty() {
+      state.reconnected = false;
+    }
     // A burst of events reads each list once.
     let mut stale = [false; 4];
     let mut events = Vec::new();
@@ -808,6 +827,33 @@ impl Service {
       self.read(state, query);
     }
     state.show();
+  }
+
+  /// The event socket closed for `why`. Hyprland closes a client that
+  /// falls 64 events behind and runs on, so while its socket is there,
+  /// this connects once again and reads every list, keeping them
+  /// meanwhile. A connection that closes again before an event came is
+  /// lost.
+  fn closed(self: &Rc<Self>, mut guard: RefMut<'_, Option<State>>, why: &str) {
+    let state = guard
+      .as_mut()
+      .expect("invariant: started before connecting");
+    let dir = self.shared.config.hyprland.as_deref();
+    let Some(dir) = dir.filter(|dir| !state.reconnected && dir.join(".socket2.sock").exists())
+    else {
+      return self.lost(state, why);
+    };
+    tracing::warn!(why, "Hyprland closed its event socket; connecting again");
+    state.reconnected = true;
+    if let (Some(events), Some(event_loop)) = (state.events.take(), self.shared.event_loop()) {
+      event_loop.remove(events.reader);
+    }
+    drop(guard);
+    if !self.connect(dir)
+      && let Some(state) = self.state.borrow_mut().as_mut()
+    {
+      self.lost(state, "Hyprland's event socket can't be reached again");
+    }
   }
 
   /// Drops every connection and empties the lists. Hyprland doesn't
