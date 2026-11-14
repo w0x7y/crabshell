@@ -177,16 +177,21 @@ fn a_new_path_replaces_the_colors_and_an_older_result_never_lands_after_it() {
     done,
   } = gated();
   let found = colors::follow(&cx, turns.handle(), (move || path.get()).into_prop(), work);
+  let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+  let kept = std::rc::Rc::clone(&seen);
+  cx.effect(move || kept.borrow_mut().push(found.get()));
   turns.until("the first colors", || found.get_untracked() == [RED]);
-  // The slow job is still at work when the fast one starts and ends.
+  // The fast path waits for the slow job, whose answer is then dropped.
   path.set(PathBuf::from("slow"));
   turns.runtime.flush();
   path.set(PathBuf::from("fast"));
-  turns.until("the fast colors", || found.get_untracked() == [BLUE]);
+  turns.runtime.flush();
+  turns.turn(Duration::from_millis(100));
+  assert_eq!(found.get_untracked(), [RED], "nothing new yet");
   release.send(()).expect("the slow job waits");
   ended(&done, "slow");
-  turns.turn(Duration::from_millis(200));
-  assert_eq!(found.get_untracked(), [BLUE]);
+  turns.until("the fast colors", || found.get_untracked() == [BLUE]);
+  assert!(!seen.borrow().contains(&vec![GREEN]), "{:?}", seen.borrow());
   cx.owner().dispose();
 }
 
@@ -274,5 +279,60 @@ fn a_job_that_panics_is_logged_and_leaves_the_list_empty() {
   });
   assert!(logs.contains("path=bug"), "{logs}");
   assert!(logs.contains("couldn't find an image's colors"), "{logs}");
+  cx.owner().dispose();
+}
+
+#[test]
+fn paths_asked_for_while_a_job_runs_start_only_the_newest() {
+  let mut turns = Turns::new();
+  let cx = Cx::new(turns.runtime.new_owner());
+  let path = cx.signal(PathBuf::from("slow"));
+  let Gated {
+    work,
+    release,
+    done,
+  } = gated();
+  let found = colors::follow(&cx, turns.handle(), (move || path.get()).into_prop(), work);
+  turns.runtime.flush();
+  for name in ["a", "b", "c", "fast"] {
+    path.set(PathBuf::from(name));
+    turns.runtime.flush();
+  }
+  release.send(()).expect("the slow job waits");
+  turns.until("the fast colors", || found.get_untracked() == [BLUE]);
+  let ran: Vec<PathBuf> = done.try_iter().collect();
+  assert_eq!(ran, [PathBuf::from("slow"), PathBuf::from("fast")]);
+  cx.owner().dispose();
+}
+
+#[test]
+fn the_same_file_again_starts_nothing_until_it_changes() {
+  let mut turns = Turns::new();
+  let cx = Cx::new(turns.runtime.new_owner());
+  let file = red_and_blue("same");
+  let path = cx.signal(file.clone());
+  let jobs = Arc::new(Mutex::new(0));
+  let counted = Arc::clone(&jobs);
+  let work: Work = Arc::new(move |path: &Path| {
+    *counted.lock().expect("the count") += 1;
+    crabshell_render::quantize_colors(path, 1, 128)
+  });
+  let found = colors::follow(&cx, turns.handle(), (move || path.get()).into_prop(), work);
+  turns.until("the colors", || !found.get_untracked().is_empty());
+  path.set(file.clone());
+  turns.runtime.flush();
+  turns.turn(Duration::from_millis(100));
+  assert_eq!(
+    *jobs.lock().unwrap(),
+    1,
+    "the same file isn't worked out again"
+  );
+  // Rewritten, it is.
+  std::thread::sleep(Duration::from_millis(20));
+  let rewritten = red_and_blue("same");
+  assert_eq!(rewritten, file);
+  path.set(file);
+  turns.runtime.flush();
+  turns.until("a second job", || *jobs.lock().unwrap() == 2);
   cx.owner().dispose();
 }
