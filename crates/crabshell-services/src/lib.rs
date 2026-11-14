@@ -63,7 +63,7 @@ pub use clock::Precision;
 pub use desktop_entries::{DesktopAction, DesktopEntries, DesktopEntry};
 pub use file::FileView;
 pub use greetd::{GreetMessage, GreetState, Greetd};
-pub use hyprland::{Hyprland, HyprlandMonitor, HyprlandToplevel, HyprlandWorkspace};
+pub use hyprland::{Hyprland, HyprlandEvent, HyprlandMonitor, HyprlandToplevel, HyprlandWorkspace};
 pub use mpris::{LoopStatus, Mpris, PlaybackStatus, Player};
 pub use network::{Network, NetworkDevice, NetworkKind, NetworkState, WifiNetwork};
 pub use notifications::{Notification, Notifications, Timeout, Urgency};

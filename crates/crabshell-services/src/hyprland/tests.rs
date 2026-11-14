@@ -1,11 +1,16 @@
+use std::cell::{Cell, RefCell};
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use crabshell_reactive::Runtime;
+
 use super::{
-  Hyprland, HyprlandMonitor, HyprlandToplevel, HyprlandWorkspace, MAX_LIST, MAX_REPLY, MAX_TEXT,
+  Hyprland, HyprlandEvent, HyprlandMonitor, HyprlandToplevel, HyprlandWorkspace, MAX_LIST,
+  MAX_REPLY, MAX_REQUEST, MAX_TEXT,
 };
 use crate::testing::{Harness, TempDir, capture_logs, offline};
 use crate::{Config, ServicesExt};
@@ -165,6 +170,7 @@ fn workspace(
     windows,
     focused,
     active,
+    urgent: false,
   }
 }
 
@@ -187,6 +193,7 @@ fn expected_toplevels() -> Vec<HyprlandToplevel> {
       floating: false,
       fullscreen: false,
       focused: true,
+      urgent: false,
     },
     HyprlandToplevel {
       address: "0x5b2".to_owned(),
@@ -197,6 +204,7 @@ fn expected_toplevels() -> Vec<HyprlandToplevel> {
       floating: true,
       fullscreen: true,
       focused: false,
+      urgent: false,
     },
   ]
 }
@@ -291,6 +299,7 @@ fn workspaces_hyprland_0_57_leaves_unnumbered_are_matched_by_address() {
     windows: 1,
     focused: true,
     active: true,
+    urgent: false,
   };
   assert_eq!(
     hyprland.workspaces().get_untracked(),
@@ -560,4 +569,152 @@ fn capture_logs_with<R>(f: impl FnOnce() -> R) -> (R, String) {
   let mut result = None;
   let logs = capture_logs(|| result = Some(f()));
   (result.expect("f ran"), logs)
+}
+
+#[test]
+fn dispatch_sends_its_command_and_logs_a_refusal() {
+  let fake = FakeHyprland::new();
+  let (mut shell, hyprland, _events) = connect(&fake);
+  let logs = capture_logs(|| {
+    hyprland.dispatch("workspace 2");
+    let commands = fake.answer(&[("dispatch workspace 2", "ok")]);
+    assert_eq!(commands, ["dispatch workspace 2"]);
+    run(&mut shell);
+  });
+  assert!(logs.is_empty(), "{logs}");
+  let logs = capture_logs(|| {
+    hyprland.dispatch("bogus");
+    fake.answer(&[("dispatch bogus", "Invalid dispatcher")]);
+    run(&mut shell);
+    hyprland.dispatch(&"x".repeat(MAX_REQUEST));
+  });
+  assert!(logs.contains("Invalid dispatcher"), "{logs}");
+  assert!(logs.contains("too long"), "{logs}");
+  assert!(fake.requests().is_empty(), "a long command isn't sent");
+
+  let shell = Harness::new(offline());
+  let logs = capture_logs(|| shell.cx.hyprland().dispatch("workspace 2"));
+  assert!(logs.contains("no Hyprland to dispatch to"), "{logs}");
+}
+
+#[test]
+fn every_event_reaches_on_event_and_parse_splits_its_fields() {
+  let fake = FakeHyprland::new();
+  let (mut shell, hyprland, mut events) = connect(&fake);
+  let heard = Rc::new(RefCell::new(Vec::new()));
+  let kept = Rc::clone(&heard);
+  hyprland.on_event(move |event| kept.borrow_mut().push(event.clone()));
+  events
+    .write_all(b"submap>>resize\nwindowtitlev2>>5a1,vim, the editor\n")
+    .expect("events");
+  run(&mut shell);
+  let heard = heard.borrow();
+  let event = |name: &str, data: &str| HyprlandEvent {
+    name: name.to_owned(),
+    data: data.to_owned(),
+  };
+  assert_eq!(
+    *heard,
+    [
+      event("submap", "resize"),
+      event("windowtitlev2", "5a1,vim, the editor")
+    ]
+  );
+  assert_eq!(heard[1].parse(2), ["5a1", "vim, the editor"]);
+  assert_eq!(heard[1].parse(5), ["5a1", "vim", " the editor"]);
+  assert_eq!(heard[0].parse(1), ["resize"]);
+}
+
+#[test]
+fn a_panicking_on_event_is_logged_with_where_it_was_called_and_the_rest_runs() {
+  let fake = FakeHyprland::new();
+  let (mut shell, hyprland, mut events) = connect(&fake);
+  let panics = Rc::new(Cell::new(0));
+  let counted = Rc::clone(&panics);
+  hyprland.on_event(move |event| {
+    counted.set(counted.get() + 1);
+    panic!("bad event {}", event.name);
+  });
+  let heard = Rc::new(Cell::new(0));
+  let kept = Rc::clone(&heard);
+  let inner = hyprland.clone();
+  hyprland.on_event(move |_| {
+    // Nothing of the service is borrowed while a handler runs.
+    inner.dispatch("workspace 1");
+    inner.on_event(|_| {});
+    kept.set(kept.get() + 1);
+  });
+  events.write_all(b"workspacev2>>3,3\n").expect("events");
+  let logs = capture_logs(|| {
+    run(&mut shell);
+  });
+  let at = "Hyprland on_event (called at crates/crabshell-services/src/hyprland/tests.rs:";
+  assert!(logs.contains(at), "{logs}");
+  let panicked = "panicked on workspacev2: bad event workspacev2";
+  assert!(logs.contains(panicked), "{logs}");
+  assert_eq!(heard.get(), 1);
+  assert_eq!(
+    fake.answer(&replies()),
+    ["j/workspaces", "j/monitors", "dispatch workspace 1"],
+    "the event still reads its lists"
+  );
+  events.write_all(b"submap>>resize\n").expect("events");
+  run(&mut shell);
+  assert_eq!(
+    panics.get(),
+    1,
+    "a handler that panicked isn't called again"
+  );
+  assert_eq!(heard.get(), 2);
+}
+
+#[test]
+fn an_on_event_goes_with_its_context() {
+  let fake = FakeHyprland::new();
+  let (mut shell, _hyprland, mut events) = connect(&fake);
+  let nodes = Runtime::current().node_count();
+  let child = shell.cx.child();
+  let heard = Rc::new(Cell::new(0));
+  let kept = Rc::clone(&heard);
+  child.hyprland().on_event(move |_| kept.set(kept.get() + 1));
+  events.write_all(b"submap>>resize\n").expect("events");
+  run(&mut shell);
+  assert_eq!(heard.get(), 1);
+  child.owner().dispose();
+  assert_eq!(Runtime::current().node_count(), nodes);
+  assert_eq!(Rc::strong_count(&heard), 1, "the handler was dropped");
+  events.write_all(b"submap>>resize\n").expect("events");
+  run(&mut shell);
+  assert_eq!(heard.get(), 1);
+}
+
+#[test]
+fn urgent_marks_a_window_and_its_workspace_until_it_is_focused_or_closed() {
+  let fake = FakeHyprland::new();
+  let (mut shell, hyprland, mut events) = connect(&fake);
+  let urgent = || {
+    let toplevels = hyprland.toplevels().get_untracked();
+    let workspaces = hyprland.workspaces().get_untracked();
+    let windows: Vec<_> = toplevels.iter().map(|toplevel| toplevel.urgent).collect();
+    let spaces: Vec<_> = workspaces
+      .iter()
+      .map(|workspace| workspace.urgent)
+      .collect();
+    (windows, spaces)
+  };
+  events.write_all(b"urgent>>5b2\n").expect("events");
+  run(&mut shell);
+  assert_eq!(urgent(), (vec![false, true], vec![false, false, true]));
+  events.write_all(b"activewindowv2>>5b2\n").expect("events");
+  run(&mut shell);
+  assert_eq!(urgent(), (vec![false; 2], vec![false; 3]), "focused");
+  fake.answer(&[("j/activewindow", r#"{"address":"0x5b2"}"#)]);
+  run(&mut shell);
+
+  events.write_all(b"urgent>>5a1\n").expect("events");
+  run(&mut shell);
+  assert_eq!(urgent().0, [true, false]);
+  events.write_all(b"closewindow>>5a1\n").expect("events");
+  run(&mut shell);
+  assert_eq!(urgent().0, [false, false], "closed");
 }

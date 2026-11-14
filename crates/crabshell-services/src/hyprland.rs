@@ -8,25 +8,34 @@
 mod tests;
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::io::{ErrorKind, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
+use std::panic::{self, AssertUnwindSafe, Location};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Once;
 
 use calloop::{Interest, RegistrationToken};
-use crabshell_reactive::{ReadSignal, Signal};
+use crabshell_reactive::{Owner, ReadSignal, Signal};
 use crabshell_ui::Cx;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 
 use crate::Shared;
 use crate::dbus::set_changed;
-use crate::lines::Lines;
+use crate::lines::{Lines, panic_message};
 
 /// The largest reply read from one request; a larger one is dropped.
 pub(crate) const MAX_REPLY: usize = 8 * 1024 * 1024;
+
+/// The longest request sent; a dispatch past it is refused.
+pub(crate) const MAX_REQUEST: usize = 8 * 1024;
+
+/// The most dispatches waiting for Hyprland's reply; one past it is
+/// refused, so a config dispatching in a loop can't run out of files.
+const MAX_DISPATCHES: usize = 64;
 
 /// The longest text kept, cut at a character.
 pub(crate) const MAX_TEXT: usize = 4 * 1024;
@@ -51,6 +60,8 @@ pub struct HyprlandWorkspace {
   pub focused: bool,
   /// Whether it is shown on its monitor, focused or not.
   pub active: bool,
+  /// Whether a window on it asks for attention.
+  pub urgent: bool,
 }
 
 /// One of Hyprland's monitors, as `j/monitors` describes it.
@@ -100,18 +111,73 @@ pub struct HyprlandToplevel {
   pub fullscreen: bool,
   /// Whether it has the keyboard focus.
   pub focused: bool,
+  /// Whether it asks for attention: from its `urgent` event until it is
+  /// focused.
+  pub urgent: bool,
+}
+
+/// One line from Hyprland's event socket, such as `workspacev2>>2,2`,
+/// as Quickshell's `HyprlandEvent`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HyprlandEvent {
+  /// What happened, such as `workspacev2` or `submap`.
+  pub name: String,
+  /// What Hyprland sent with it, such as `2,2`: its fields joined by
+  /// commas.
+  pub data: String,
+}
+
+impl HyprlandEvent {
+  /// The data split into at most `fields` fields, as Quickshell's
+  /// `parse(n)`: the last keeps its commas, as a window title in
+  /// `windowtitlev2>>5a1,vim, the editor` does.
+  pub fn parse(&self, fields: usize) -> Vec<&str> {
+    self.data.splitn(fields, ',').collect()
+  }
 }
 
 /// The Hyprland service, from `cx.hyprland()`. A clone is cheap and
 /// shares the one connection.
 #[derive(Clone)]
 pub struct Hyprland {
+  /// `None` when the shell provided no services.
+  service: Option<Rc<Service>>,
+  /// The asking context's owner, which [`on_event`](Self::on_event)'s
+  /// handlers go with.
+  owner: Owner,
   workspaces: ReadSignal<Vec<HyprlandWorkspace>>,
   monitors: ReadSignal<Vec<HyprlandMonitor>>,
   toplevels: ReadSignal<Vec<HyprlandToplevel>>,
 }
 
 impl Hyprland {
+  /// Runs a Hyprland dispatcher, as `hyprctl dispatch` does: `command` is
+  /// the dispatcher and its arguments, such as `workspace 2`. It goes on
+  /// a connection of its own and never waits for Hyprland. Hyprland's
+  /// refusal is logged, and so is a command over 8 KiB, which isn't sent.
+  /// Under a Lua config Hyprland reads it as the argument of
+  /// `hl.dispatch`.
+  pub fn dispatch(&self, command: &str) {
+    match &self.service {
+      Some(service) => service.dispatch(command),
+      None => tracing::warn!(command, "no Hyprland to dispatch to"),
+    }
+  }
+
+  /// Calls `handler` with every event Hyprland sends, as Quickshell's
+  /// `rawEvent`, until the context `cx.hyprland()` was called on goes.
+  /// The lists follow once Hyprland answers the reads an event starts,
+  /// after `handler` runs.
+  ///
+  /// It runs on the main thread. If it panics, that is logged with the
+  /// event and where `on_event` was called, and it isn't called again.
+  #[track_caller]
+  pub fn on_event(&self, handler: impl Fn(&HyprlandEvent) + 'static) {
+    if let Some(service) = &self.service {
+      let id = service.add_handler(Rc::new(handler), Location::caller());
+      self.owner.signal(Unregister(Rc::clone(service), id));
+    }
+  }
   /// Every workspace, numbered ones by number after the named ones.
   /// Empty while Hyprland isn't connected.
   pub fn workspaces(&self) -> ReadSignal<Vec<HyprlandWorkspace>> {
@@ -137,6 +203,8 @@ pub(crate) fn hyprland(cx: &Cx) -> Hyprland {
       tracing::warn!("cx.hyprland() needs the services the shell provides; it shows nothing");
     });
     return Hyprland {
+      service: None,
+      owner: cx.owner(),
       workspaces: cx.signal(Vec::new()).read_only(),
       monitors: cx.signal(Vec::new()).read_only(),
       toplevels: cx.signal(Vec::new()).read_only(),
@@ -144,6 +212,8 @@ pub(crate) fn hyprland(cx: &Cx) -> Hyprland {
   };
   let (workspaces, monitors, toplevels) = service.start();
   Hyprland {
+    service: Some(service),
+    owner: cx.owner(),
     workspaces: workspaces.read_only(),
     monitors: monitors.read_only(),
     toplevels: toplevels.read_only(),
@@ -233,6 +303,32 @@ struct State {
   /// request socket logs once.
   request_failure_logged: bool,
   raw: Raw,
+  /// The windows that asked for attention since they were last focused,
+  /// by address, as only events say.
+  urgent: HashSet<String>,
+  /// What `on_event` was given, in the order it was.
+  handlers: Vec<Handler>,
+  next_handler: u64,
+}
+
+/// A config's raw-event handler.
+#[derive(Clone)]
+struct Handler {
+  id: u64,
+  /// Where `on_event` was called, for the log if it panics.
+  at: &'static Location<'static>,
+  handler: Rc<dyn Fn(&HyprlandEvent)>,
+}
+
+/// Drops a handler when the context it was given in goes.
+struct Unregister(Rc<Service>, u64);
+
+impl Drop for Unregister {
+  fn drop(&mut self) {
+    let handler = self.0.remove_handler(self.1);
+    // Dropped outside the borrow: the handler may hold a `Hyprland`.
+    drop(handler);
+  }
 }
 
 /// What Hyprland last said, the lists are built from.
@@ -253,7 +349,8 @@ struct Events {
 
 struct Request {
   id: u64,
-  query: Query,
+  /// The list it reads, or `None` for a dispatch.
+  query: Option<Query>,
   stream: UnixStream,
   reader: RegistrationToken,
   reply: Vec<u8>,
@@ -281,6 +378,9 @@ impl Service {
         next_request: 0,
         request_failure_logged: false,
         raw: Raw::default(),
+        urgent: HashSet::new(),
+        handlers: Vec::new(),
+        next_handler: 0,
       });
       match &self.shared.config.hyprland {
         None => tracing::info!(
@@ -341,20 +441,44 @@ impl Service {
       return;
     }
     *reading = Reading::Busy;
-    if !self.request(state, query) {
+    if !self.request(state, query.command(), Some(query)) {
       state.reading[query as usize] = Reading::Idle;
     }
   }
 
-  /// Sends `query`'s request on a connection of its own. `false`, logged
-  /// once, if Hyprland can't be reached.
-  fn request(self: &Rc<Self>, state: &mut State, query: Query) -> bool {
+  fn dispatch(self: &Rc<Self>, command: &str) {
+    let request = format!("dispatch {command}");
+    if request.len() > MAX_REQUEST {
+      return tracing::warn!("a dispatch over 8 KiB is too long to send");
+    }
+    let mut state = self.state.borrow_mut();
+    let state = state.as_mut().expect("invariant: started by cx.hyprland()");
+    let waiting = state
+      .requests
+      .iter()
+      .filter(|request| request.query.is_none());
+    if waiting.count() >= MAX_DISPATCHES {
+      return tracing::warn!(
+        command,
+        "64 dispatches wait for Hyprland, so this one isn't sent"
+      );
+    }
+    if self.shared.config.hyprland.is_none() {
+      return tracing::warn!(command, "no Hyprland to dispatch to");
+    }
+    self.request(state, &request, None);
+  }
+
+  /// Sends `command` on a connection of its own, to read `query`'s list
+  /// or, for `None`, to dispatch. `false`, logged once, if Hyprland can't
+  /// be reached.
+  fn request(self: &Rc<Self>, state: &mut State, command: &str, query: Option<Query>) -> bool {
     let (Some(dir), Some(event_loop)) = (&self.shared.config.hyprland, self.shared.event_loop())
     else {
       return false;
     };
     let path = dir.join(".socket.sock");
-    let command = query.command().as_bytes();
+    let command = command.as_bytes();
     let opened = UnixStream::connect(&path).and_then(|mut stream| {
       stream.set_nonblocking(true)?;
       // One write: Hyprland takes what has arrived as the whole request.
@@ -409,8 +533,8 @@ impl Service {
       return self.close();
     }
     let mut chunk = [0; 64 * 1024];
-    let mut state = self.state.borrow_mut();
-    let state = state
+    let mut guard = self.state.borrow_mut();
+    let state = guard
       .as_mut()
       .expect("invariant: started before connecting");
     let Some(events) = state.events.as_mut() else {
@@ -428,8 +552,10 @@ impl Service {
     };
     // A burst of events reads each list once.
     let mut stale = [false; 4];
+    let mut events = Vec::new();
+    let mut urgency = false;
     for line in lines {
-      let Some((name, _)) = line.split_once(">>") else {
+      let Some((name, data)) = line.split_once(">>") else {
         let line = cut(line);
         tracing::warn!(line, "a line from Hyprland's event socket without `>>`");
         continue;
@@ -437,6 +563,21 @@ impl Service {
       for &query in Query::after(name) {
         stale[query as usize] = true;
       }
+      // Events name a window without JSON's `0x`.
+      let address = || format!("0x{data}");
+      urgency |= match name {
+        "urgent" => state.urgent.len() < MAX_LIST && state.urgent.insert(address()),
+        // Focus ends a window's urgency, as in Hyprland.
+        "activewindowv2" | "closewindow" => state.urgent.remove(&address()),
+        _ => false,
+      };
+      events.push(HyprlandEvent {
+        name: cut(name.to_owned()),
+        data: cut(data.to_owned()),
+      });
+    }
+    if urgency {
+      state.show();
     }
     for query in Query::ALL
       .into_iter()
@@ -444,6 +585,57 @@ impl Service {
     {
       self.read(state, query);
     }
+    drop(guard);
+    for event in events {
+      self.deliver(&event);
+    }
+  }
+
+  /// Calls each raw-event handler with `event`, with nothing borrowed.
+  fn deliver(&self, event: &HyprlandEvent) {
+    let handlers = match self.state.borrow().as_ref() {
+      Some(state) => state.handlers.clone(),
+      None => return,
+    };
+    for Handler { id, at, handler } in handlers {
+      let registered = self
+        .state
+        .borrow()
+        .as_ref()
+        .is_some_and(|state| state.handlers.iter().any(|handler| handler.id == id));
+      if !registered {
+        // An earlier handler's context went.
+        continue;
+      }
+      if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| handler(event))) {
+        let message = panic_message(payload.as_ref());
+        let name = &event.name;
+        tracing::error!("Hyprland on_event (called at {at}) panicked on {name}: {message}");
+        drop(self.remove_handler(id));
+      }
+    }
+  }
+
+  fn add_handler(
+    &self,
+    handler: Rc<dyn Fn(&HyprlandEvent)>,
+    at: &'static Location<'static>,
+  ) -> u64 {
+    let mut state = self.state.borrow_mut();
+    let state = state.as_mut().expect("invariant: started by cx.hyprland()");
+    let id = state.next_handler;
+    state.next_handler += 1;
+    state.handlers.push(Handler { id, at, handler });
+    id
+  }
+
+  /// Takes out the handler `id`, for the caller to drop once nothing is
+  /// borrowed.
+  fn remove_handler(&self, id: u64) -> Option<Handler> {
+    let mut state = self.state.borrow_mut();
+    let handlers = &mut state.as_mut()?.handlers;
+    let at = handlers.iter().position(|handler| handler.id == id)?;
+    Some(handlers.remove(at))
   }
 
   /// Reads what came of a reply, and acts on it once Hyprland closed the
@@ -472,7 +664,14 @@ impl Service {
     if let Some(event_loop) = self.shared.event_loop() {
       event_loop.remove(request.reader);
     }
-    let query = request.query;
+    let Some(query) = request.query else {
+      let reply = String::from_utf8_lossy(&request.reply);
+      if failed.is_some() || reply.trim() != "ok" {
+        let reply = cut(reply.into_owned());
+        tracing::warn!(reply, failed, "Hyprland refused a dispatch");
+      }
+      return;
+    };
     match failed {
       Some(why) => {
         tracing::warn!(
@@ -496,6 +695,7 @@ impl Service {
     tracing::warn!(why, "lost Hyprland; its lists are empty");
     self.drop_connections(state);
     state.raw = Raw::default();
+    state.urgent.clear();
     state.show();
   }
 
@@ -526,6 +726,12 @@ impl State {
   fn show(&self) {
     let raw = &self.raw;
     let focused = raw.monitors.iter().find(|monitor| monitor.focused);
+    let urgent: Vec<_> = raw
+      .windows
+      .iter()
+      .filter(|window| self.urgent.contains(&window.address))
+      .map(|window| &window.workspace)
+      .collect();
     let mut workspaces: Vec<_> = raw
       .workspaces
       .iter()
@@ -539,6 +745,7 @@ impl State {
           .monitors
           .iter()
           .any(|monitor| monitor.name == workspace.monitor && monitor.active.is(&workspace.at)),
+        urgent: urgent.iter().any(|at| at.is(&workspace.at)),
       })
       .collect();
     // Named ones first, as Hyprland before 0.57 numbers them below zero.
@@ -568,6 +775,7 @@ impl State {
       floating: window.floating,
       fullscreen: window.fullscreen.is_fullscreen(),
       focused: raw.active.as_ref() == Some(&window.address),
+      urgent: self.urgent.contains(&window.address),
     });
     set_changed(self.workspaces, workspaces);
     set_changed(self.monitors, monitors.collect());
