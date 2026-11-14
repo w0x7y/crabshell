@@ -89,3 +89,34 @@ fn font_defaults_to_regular_weight() {
   assert_eq!(BOLD.weight, 700);
   assert_eq!(BOLD.family, "Inter");
 }
+
+#[test]
+fn a_style_blends_its_paint_fields_and_takes_the_rest_from_the_end() {
+  let from = Style::new()
+    .background(Color::rgb(0, 0, 0))
+    .radius(0.0)
+    .font(Font::new("a", 10.0));
+  let to = Style::new()
+    .border(4.0, Color::rgb(200, 0, 0))
+    .opacity(0.0)
+    .font(Font::new("b", 12.0));
+  let half = from.lerp(&to, 0.5);
+  // A background only one side sets fades to its transparent self.
+  assert_eq!(half.background, Some(Color::rgba(0, 0, 0, 128)));
+  let border = half.border.expect("a border on the way");
+  assert_eq!(
+    (border.width, border.color),
+    (2.0, Color::rgba(200, 0, 0, 128))
+  );
+  assert_eq!(half.radius, Some(0.0));
+  assert_eq!(half.opacity, Some(0.5), "unset opacity is 1");
+  assert_eq!(
+    half.font,
+    Some(Font::new("b", 12.0)),
+    "the rest is the end's"
+  );
+  assert_eq!(
+    from.lerp(&to, 1.0).background,
+    Some(Color::rgba(0, 0, 0, 0))
+  );
+}

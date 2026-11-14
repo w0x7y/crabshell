@@ -146,3 +146,103 @@ fn a_panicking_animation_is_logged_and_dropped() {
   );
   assert!(!animating());
 }
+
+mod fades {
+  use std::time::{Duration, Instant};
+
+  use super::super::Harness;
+  use crate::{
+    Align, Button, Color, Easing, Icon, Point, Row, Style, Transition, Window, advance_animations,
+    animating,
+  };
+
+  const FADE: Transition = Transition::new(100).easing(Easing::Linear);
+  const NORMAL: Style = Style::new()
+    .background(Color::rgb(0, 0, 0))
+    .transition(FADE);
+  const HOVER: Style = Style::new().background(Color::rgb(200, 100, 0));
+
+  fn background(window: &Window) -> Option<Color> {
+    super::super::node_at(window.view().root(), &[0, 0])
+      .style()
+      .background
+  }
+
+  fn hover_button(h: &mut Harness) -> Window {
+    let row = Row::new().align(Align::Start).child(
+      Button::new(Icon::new("x").size(20))
+        .style(NORMAL)
+        .hover_style(HOVER),
+    );
+    h.window(h.panel().child(row), 200.0, 30.0)
+  }
+
+  #[test]
+  fn a_hover_style_fades_in_over_the_transition_repainting_each_tick() {
+    let mut h = hover_harness();
+    let window = hover_button(&mut h);
+    window.take_damage();
+    window.pointer_motion(Point::new(10.0, 10.0));
+    assert!(animating());
+    assert_eq!(background(&window), Some(Color::rgb(0, 0, 0)), "not yet");
+    let start = Instant::now();
+    advance_animations(start);
+    advance_animations(start + Duration::from_millis(50));
+    assert_eq!(background(&window), Some(Color::rgb(100, 50, 0)));
+    assert!(!window.take_damage().is_empty(), "each tick repaints");
+    assert!(!advance_animations(start + Duration::from_millis(100)));
+    assert_eq!(background(&window), Some(Color::rgb(200, 100, 0)));
+    assert!(!window.needs_layout(), "a fade is paint only");
+  }
+
+  #[test]
+  fn leaving_mid_fade_fades_back_from_where_it_was() {
+    let mut h = hover_harness();
+    let window = hover_button(&mut h);
+    window.pointer_motion(Point::new(10.0, 10.0));
+    let start = Instant::now();
+    advance_animations(start);
+    advance_animations(start + Duration::from_millis(50));
+    window.pointer_leave();
+    // The way back starts at the halfway color, with NORMAL's transition.
+    let later = start + Duration::from_millis(60);
+    advance_animations(later);
+    assert_eq!(background(&window), Some(Color::rgb(100, 50, 0)));
+    advance_animations(later + Duration::from_millis(50));
+    assert_eq!(background(&window), Some(Color::rgb(50, 25, 0)));
+    assert!(!advance_animations(later + Duration::from_millis(100)));
+    assert_eq!(background(&window), Some(Color::rgb(0, 0, 0)));
+  }
+
+  #[test]
+  fn without_a_transition_or_before_the_first_layout_a_style_changes_at_once() {
+    let mut h = hover_harness();
+    let plain = h.cx.signal(false);
+    let row = Row::new().child(
+      Button::new(Icon::new("x").size(20)).style(
+        move || {
+          if plain.get() { Style::new() } else { NORMAL }
+        },
+      ),
+    );
+    let window = h.window(h.panel().child(row), 200.0, 30.0);
+    assert!(!animating(), "the first style shows at once");
+    plain.set(true);
+    h.frame(&window);
+    assert!(!animating(), "changing to a style with no transition");
+    assert_eq!(background(&window), None);
+  }
+
+  #[test]
+  fn a_window_dropped_mid_fade_stops_it() {
+    let mut h = hover_harness();
+    let window = hover_button(&mut h);
+    window.pointer_motion(Point::new(10.0, 10.0));
+    drop(window);
+    assert!(!advance_animations(Instant::now()));
+  }
+
+  fn hover_harness() -> Harness {
+    Harness::new()
+  }
+}

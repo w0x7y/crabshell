@@ -80,7 +80,7 @@ impl<'a> NodeView<'a> {
   /// over its own. Inherited fields aren't filled in;
   /// [`TextView::color`] has the color text is drawn in.
   pub fn style(&self) -> Style {
-    self.node.effective_style()
+    self.node.shown_style()
   }
 
   /// The children, in drawing order.
@@ -153,7 +153,7 @@ impl<'a> NodeView<'a> {
       if let Some(color) = self
         .tree
         .node(current)
-        .and_then(|node| node.effective_style().color)
+        .and_then(|node| node.shown_style().color)
       {
         return color;
       }

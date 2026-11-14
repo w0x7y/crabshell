@@ -1,6 +1,8 @@
 //! Colors, fonts and [`Style`]. Everything here is `Copy` and built with
 //! `const fn`s, so a theme is a set of constants.
 
+use crate::animation::{Animate, Transition};
+
 /// An sRGB color with straight (not premultiplied) alpha.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Color {
@@ -162,6 +164,9 @@ pub struct Style {
   pub width: Option<f32>,
   /// The height in logical pixels, instead of what the content needs.
   pub height: Option<f32>,
+  /// How a change to the paint fields fades in: background, color,
+  /// border, radius and opacity. Other fields change at once.
+  pub transition: Option<Transition>,
 }
 
 impl Style {
@@ -178,6 +183,7 @@ impl Style {
       clip: None,
       width: None,
       height: None,
+      transition: None,
     }
   }
 
@@ -267,6 +273,16 @@ impl Style {
     }
   }
 
+  /// Sets how a change to the paint fields fades in, as when a hover
+  /// style takes over: background, color, border, radius and opacity move
+  /// over `transition`. The style being changed to says how.
+  pub const fn transition(self, transition: Transition) -> Style {
+    Style {
+      transition: Some(transition),
+      ..self
+    }
+  }
+
   /// This style with every field that `over` sets replaced by its value.
   /// Buttons use it to lay their hover and pressed styles over the normal
   /// one.
@@ -282,6 +298,7 @@ impl Style {
       clip: or(over.clip, self.clip),
       width: or(over.width, self.width),
       height: or(over.height, self.height),
+      transition: or(over.transition, self.transition),
     }
   }
 
@@ -306,5 +323,56 @@ const fn or<T: Copy>(first: Option<T>, second: Option<T>) -> Option<T> {
   match first {
     Some(value) => Some(value),
     None => second,
+  }
+}
+
+impl Style {
+  /// The paint fields `t` of the way from `self` to `to`; every other
+  /// field is `to`'s. A field only one side sets fades from or to nothing:
+  /// a color from or to its transparent self, a border from or to 0 wide.
+  /// A text color only one sets changes at the end, as the other comes
+  /// from an ancestor.
+  pub(crate) fn lerp(&self, to: &Style, t: f32) -> Style {
+    let color = |from: Option<Color>, to: Option<Color>| match (from, to) {
+      (Some(from), Some(to)) => Some(from.lerp(&to, t)),
+      (None, Some(to)) => Some(Color::rgba(to.r, to.g, to.b, 0).lerp(&to, t)),
+      (Some(from), None) => Some(from.lerp(&Color::rgba(from.r, from.g, from.b, 0), t)),
+      (None, None) => None,
+    };
+    let border = match (self.border, to.border) {
+      (None, None) => None,
+      (from, to) => {
+        let from = from.or(to.map(|b| Border {
+          width: 0.0,
+          color: Color::rgba(b.color.r, b.color.g, b.color.b, 0),
+        }));
+        let to = to.or(from.map(|b| Border {
+          width: 0.0,
+          color: Color::rgba(b.color.r, b.color.g, b.color.b, 0),
+        }));
+        match (from, to) {
+          (Some(from), Some(to)) => Some(Border {
+            width: from.width.lerp(&to.width, t),
+            color: from.color.lerp(&to.color, t),
+          }),
+          _ => None,
+        }
+      }
+    };
+    let number = |from: Option<f32>, to: Option<f32>, none: f32| match (from, to) {
+      (None, None) => None,
+      (from, to) => Some(from.unwrap_or(none).lerp(&to.unwrap_or(none), t)),
+    };
+    Style {
+      background: color(self.background, to.background),
+      color: match (self.color, to.color) {
+        (Some(from), Some(to)) => Some(from.lerp(&to, t)),
+        _ => to.color,
+      },
+      border,
+      radius: number(self.radius, to.radius, 0.0),
+      opacity: number(self.opacity, to.opacity, 1.0),
+      ..*to
+    }
   }
 }

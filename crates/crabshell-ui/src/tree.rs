@@ -17,6 +17,7 @@ use std::rc::{Rc, Weak};
 use crabshell_reactive::Signal;
 use taffy::TaffyTree;
 
+use crate::animation::{self, Transition};
 use crate::cx::{Anchor, Cx};
 use crate::floating::FloatingState;
 use crate::geometry::{Rect, Size};
@@ -103,6 +104,10 @@ pub(crate) struct Node {
   pub(crate) drawn: Rect,
   /// Whether its style clipped its children at the last layout.
   pub(crate) clips: bool,
+  /// A style change fading in, and the count of fades started, which
+  /// tells a fade's clock step whether it was replaced.
+  pub(crate) fade: Option<Fade>,
+  pub(crate) fades: u64,
   /// A layout property changed, so the node is repainted after the next
   /// layout even if it doesn't move.
   pub(crate) changed: bool,
@@ -119,7 +124,8 @@ pub(crate) enum NodeKind {
   Image(ImageNode),
   Scroll(ScrollNode),
   Input(Box<InputNode>),
-  Button(ButtonNode),
+  // Boxed: its three styles make it the largest by far.
+  Button(Box<ButtonNode>),
 }
 
 pub(crate) struct Flex {
@@ -201,6 +207,13 @@ impl Default for Surface {
   }
 }
 
+/// A style change fading in from `from`, `t` of the way.
+pub(crate) struct Fade {
+  pub(crate) from: Style,
+  pub(crate) t: f32,
+  pub(crate) generation: u64,
+}
+
 /// What a property change invalidates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Change {
@@ -232,6 +245,8 @@ impl Node {
       bounds: Rect::default(),
       drawn: Rect::default(),
       clips: false,
+      fade: None,
+      fades: 0,
       changed: true,
     }
   }
@@ -253,6 +268,15 @@ impl Node {
       }
     }
     style
+  }
+
+  /// The style as drawn: the style in effect, or partway to it while a
+  /// change fades in.
+  pub(crate) fn shown_style(&self) -> Style {
+    match &self.fade {
+      Some(fade) => fade.from.lerp(&self.effective_style(), fade.t),
+      None => self.effective_style(),
+    }
   }
 
   /// Whether the node cuts its children to the inside of its border: a
@@ -455,7 +479,7 @@ impl Tree {
         source: None,
         size: crate::Icon::DEFAULT_SIZE,
       }),
-      ElementKind::Button(props) => NodeKind::Button(ButtonNode {
+      ElementKind::Button(props) => NodeKind::Button(Box::new(ButtonNode {
         hover_style: Style::new(),
         pressed_style: Style::new(),
         focus_style: Style::new(),
@@ -463,7 +487,7 @@ impl Tree {
         hovered: false,
         pressed: false,
         focused: false,
-      }),
+      })),
     };
     let id = self
       .taffy
@@ -760,18 +784,70 @@ impl Tree {
   /// Runs `f` on node `id` and works out from the style in effect before
   /// and after whether the change needs a layout or only a repaint.
   pub(crate) fn update_style(&mut self, id: NodeId, f: impl FnOnce(&mut Node)) -> Change {
-    self.update(id, |node| {
+    let mut fade = None;
+    let change = self.update(id, |node| {
+      let shown = node.shown_style();
       let before = node.effective_style();
       f(node);
       let after = node.effective_style();
       if before == after {
-        Change::None
-      } else if before.same_layout(&after) {
-        Change::Paint
-      } else {
-        Change::Layout
+        return Change::None;
       }
-    })
+      node.fade = None;
+      if !before.same_layout(&after) {
+        return Change::Layout;
+      }
+      // A node not yet drawn shows its style at once.
+      if let Some(transition) = after.transition.filter(|transition| transition.ms > 0)
+        && node.rect.is_some()
+      {
+        node.fades += 1;
+        node.fade = Some(Fade {
+          from: shown,
+          t: 0.0,
+          generation: node.fades,
+        });
+        fade = Some((node.fades, transition));
+      }
+      Change::Paint
+    });
+    if let Some((generation, transition)) = fade {
+      self.start_fade(id, generation, transition);
+    }
+    change
+  }
+
+  /// Advances node `id`'s fade number `generation` with the animation
+  /// clock, repainting it each tick, until it ends or another replaces it.
+  fn start_fade(&self, id: NodeId, generation: u64, transition: Transition) {
+    let tree = self.this.clone();
+    let mut started = None;
+    animation::start(Box::new(move |now| {
+      let Some(tree) = tree.upgrade() else {
+        return false;
+      };
+      let Ok(mut tree) = tree.try_borrow_mut() else {
+        return true;
+      };
+      let begun = *started.get_or_insert(now);
+      let (t, ended) = transition.progress(begun, now);
+      let change = tree.update(id, |node| {
+        if node
+          .fade
+          .as_ref()
+          .is_none_or(|fade| fade.generation != generation)
+        {
+          return Change::None;
+        }
+        if ended {
+          node.fade = None;
+        } else if let Some(fade) = &mut node.fade {
+          fade.t = t;
+        }
+        Change::Paint
+      });
+      change == Change::Paint && !ended
+    }));
   }
 
   fn update_flex(&mut self, id: NodeId, f: impl FnOnce(&mut Flex) -> Change) {
