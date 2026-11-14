@@ -2285,3 +2285,64 @@ fn the_overview_opens_from_the_command_line_launches_an_app_and_sleeps() {
   assert_ne!(reopened.rgba, open.rgba, "the order changed");
   drop(shell);
 }
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_screencopy_view_shows_the_floating_window_the_shell_opened() {
+  const GREEN: Color = Color::rgb(0x20, 0xc0, 0x40);
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1280x720", "scale", "1"]);
+  let mut shell = Shell::new(sway.connect(), |cx| {
+    cx.floating(
+      FloatingWindow::new()
+        .title("captured")
+        .width(300)
+        .height(200)
+        .style(Style::new().background(GREEN)),
+    );
+    let toplevels = cx.toplevels();
+    cx.per_output(move |_, output| {
+      let source = move || {
+        let list = toplevels.list().get();
+        let window = list.iter().find(|toplevel| toplevel.title == "captured");
+        // No window has `u64::MAX`, so the view waits.
+        CaptureSource::Toplevel(window.map_or(u64::MAX, |toplevel| toplevel.id))
+      };
+      PanelWindow::new(output)
+        .anchors(Edge::Top | Edge::Left)
+        .width(160)
+        .height(90)
+        .child(
+          ScreencopyView::new(source)
+            .live(true)
+            .style(Style::new().width(160.0).height(90.0)),
+        )
+    });
+  })
+  .expect("the root closure runs");
+  let green = |platform: &Platform| {
+    let Some(id) = shown_on(platform, "HEADLESS-1") else {
+      return false;
+    };
+    let (_, window) = platform
+      .windows()
+      .find(|(held, _)| *held == id)
+      .expect("the bar is held");
+    let view = window.view();
+    let Some(node) = view.root().children().next() else {
+      return false;
+    };
+    let Content::Capture(capture) = node.content() else {
+      return false;
+    };
+    let expected = [GREEN.r, GREEN.g, GREEN.b, 255];
+    let pixels = capture.frame.rgba.as_chunks::<4>().0;
+    pixels
+      .iter()
+      .all(|pixel| pixel.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 2))
+  };
+  run_until(&mut shell, "the window's frame in the view", |platform| {
+    green(platform)
+  });
+  assert_eq!(shell.platform().capture_sessions(), 1);
+}
