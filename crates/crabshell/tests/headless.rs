@@ -1621,8 +1621,6 @@ fn cx_idle_monitor_turns_true_when_idle_and_ends_with_its_context() {
 #[test]
 #[ignore = "needs headless Sway"]
 fn cx_global_shortcut_without_hyprland_stays_false_logs_once_and_frees_everything() {
-  use crabshell::prelude::*;
-
   // Sway lacks hyprland-global-shortcuts-v1.
   let logs = Logs::default();
   let _guard = logs.install();
