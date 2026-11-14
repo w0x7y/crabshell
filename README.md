@@ -111,7 +111,7 @@ v0.1 is the template bar plus `crabshell run`, on crates.io. phase 7 added float
 ~ [crabshell-render](crates/crabshell-render/), drawing on the cpu with tiny-skia, damage tracking, clipping, glyphs, icons and images\
 ~ [crabshell-wayland](crates/crabshell-wayland/), the event loop, layer-shell and floating windows, popups, buffers, scaling, the pointer, the keyboard, input methods, the clipboard, monitors and the session lock\
 ~ [crabshell-services](crates/crabshell-services/), the clock, sway's workspaces, audio, the tray, power, bluetooth, networks, media players, notifications, your apps, programs, files, sockets, pam, greetd and a polkit agent\
-~ [crabshell-cli](crates/crabshell-cli/), the `crabshell` command: `init`, `check`, and `run`, which rebuilds and supervises your bar\
+~ [crabshell-cli](crates/crabshell-cli/), the `crabshell` command: `init`, `check`, `ipc`, and `run`, which rebuilds and supervises your shell\
 ~ [spike](spike/) and [baseline](baseline/), the phase 0 prototype and the quickshell bar it was measured against
 
 ### tests

@@ -1,7 +1,7 @@
 [package]
 name = "crabshell-ui"
 version.workspace = true
-description = "Widgets, styles, layout, text layout, hit testing and invalidation for Crabshell"
+description = "Widgets, styles, layout, text and text editing, focus, hit testing and invalidation for Crabshell"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

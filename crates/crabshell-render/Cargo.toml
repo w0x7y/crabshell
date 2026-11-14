@@ -1,7 +1,7 @@
 [package]
 name = "crabshell-render"
 version.workspace = true
-description = "Draws Crabshell windows into pixmaps: shapes, text, icons and damage tracking"
+description = "Draws Crabshell windows into pixmaps: shapes, gradients, shadows, text, icons, images and damage tracking"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

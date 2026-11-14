@@ -1,7 +1,7 @@
 [package]
 name = "crabshell-wayland"
 version.workspace = true
-description = "Crabshell's Wayland platform: the event loop, layer-shell windows, outputs and pointer input"
+description = "Crabshell's Wayland platform: the event loop, layer-shell and floating windows, popups, input, outputs and the session lock"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
