@@ -19,8 +19,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev fonts-dejavu-core fonts-noto-color-emoji dbus tzdata
-      - name: Install libpulse for the audio service and libxkbcommon for the keyboard
-        run: sudo apt-get install -y --no-install-recommends libpulse-dev libxkbcommon-dev
+      - name: Install libpulse for audio, libxkbcommon for the keyboard and libpam for passwords
+        run: sudo apt-get install -y --no-install-recommends libpulse-dev libxkbcommon-dev libpam0g-dev
       # Ubuntu's Noto Sans is older than the one the goldens were drawn with and
       # it has no Znamenny, so both come from the notofonts commit Gentoo packages
       - name: Install the Noto fonts the goldens were drawn with
