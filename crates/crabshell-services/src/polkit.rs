@@ -29,7 +29,7 @@ use zbus::{Connection, Message, MessageStream, OwnedVariant, Variant};
 
 use self::helper::{Helper, Line, Secret};
 use crate::Shared;
-use crate::dbus::{CALL_TIMEOUT, set_changed};
+use crate::dbus::{CALL_TIMEOUT, bus_call, owner_changed, owner_rule, set_changed};
 
 const AUTHORITY: &str = "org.freedesktop.PolicyKit1";
 const AUTHORITY_PATH: &str = "/org/freedesktop/PolicyKit1/Authority";
@@ -193,8 +193,8 @@ struct State {
   queue: VecDeque<Begin>,
 }
 
-/// Stops the helper and forgets the requests when the root goes, which
-/// closes the agent's connection, so polkit drops it.
+/// Stops the helper and forgets the requests when the root goes. The
+/// agent's connection closes at the next message on it, or with the shell.
 struct StopOnDrop(Rc<Service>);
 
 impl Drop for StopOnDrop {
@@ -266,13 +266,20 @@ impl Service {
     request.read_only()
   }
 
-  /// Drops the connection and every request unanswered, stopping the
-  /// helper, as when the root or the bus goes and nobody could answer.
-  /// Touches no signal, since the root may be going.
+  /// Drops the connection and every request unanswered, as when the root
+  /// or the bus goes. Touches no signal, since the root may be going.
   fn forget(&self) {
+    if let Some(state) = self.state.borrow_mut().as_mut() {
+      state.connection = None;
+    }
+    self.drop_requests();
+  }
+
+  /// Drops every request unanswered, stopping the helper, as when polkit
+  /// goes and nobody could answer. Touches no signal.
+  fn drop_requests(&self) {
     let current = self.state.borrow_mut().as_mut().and_then(|state| {
       state.queue.clear();
-      state.connection = None;
       state.authority = None;
       state.current.take()
     });
@@ -548,8 +555,10 @@ impl Service {
 
   /// The config's answer.
   fn respond(self: &Rc<Self>, secret: Secret) {
-    if secret.0.contains(&b'\n') {
-      return tracing::warn!("a polkit answer with a line break was dropped");
+    // A line break would end the line early, and the helper, in C, would
+    // read a NUL as the end.
+    if secret.0.contains(&b'\n') || secret.0.contains(&0) {
+      return tracing::warn!("a polkit answer with a line break or NUL was dropped");
     }
     let state = self.with_current(|current| current.begin.shown.state.clone());
     match state {
@@ -670,13 +679,20 @@ fn begin_args(call: &Message, id: u64) -> Result<Begin, (&'static str, &'static 
     return Err((FAILED, "a bad cookie"));
   }
   let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
-  let names: Vec<String> = identities
+  let mut users: Vec<(u32, String)> = identities
     .iter()
     .take(MAX_IDENTITIES)
     .filter(|(kind, _)| *kind == "unix-user")
     .filter_map(|(_, details)| u32::try_from(details.get("uid")?).ok())
-    .filter_map(|uid| user_name(&passwd, uid))
+    .filter_map(|uid| Some((uid, user_name(&passwd, uid)?)))
     .collect();
+  // The session's user is asked first: polkit may list root first, as for
+  // an admin group.
+  let own = rustix::process::getuid().as_raw();
+  if let Some(at) = users.iter().position(|(uid, _)| *uid == own) {
+    users[..=at].rotate_right(1);
+  }
+  let names: Vec<String> = users.into_iter().map(|(_, name)| name).collect();
   if names.is_empty() {
     return Err((FAILED, "no user the agent knows may answer"));
   }
@@ -752,8 +768,8 @@ fn start_time() -> Option<u64> {
 }
 
 /// Joins the system bus at `address`, registers the agent with polkit,
-/// and answers polkit's calls, until the bus closes or the request is
-/// disposed.
+/// again whenever polkit starts again, and answers polkit's calls, until
+/// the bus closes or the request is disposed.
 async fn run(service: Rc<Service>, address: zbus::Address) {
   let connection = match zbus::connection::Builder::address(address).build().await {
     Ok(connection) => connection,
@@ -763,6 +779,48 @@ async fn run(service: Rc<Service>, address: zbus::Address) {
   };
   // Made before polkit can call, so no call is missed.
   let mut messages = MessageStream::from(&connection);
+  if let Err(error) = bus_call(&connection, "AddMatch", &owner_rule(AUTHORITY)).await {
+    return tracing::warn!(%error, "can't follow polkit on the system bus, so no requests arrive");
+  }
+  if let Some(state) = service.state.borrow_mut().as_mut() {
+    state.connection = Some(connection.clone());
+  }
+  register(&service, &connection).await;
+  loop {
+    let next = poll_fn(|cx| Pin::new(&mut messages).poll_next(cx)).await;
+    if !service.alive() {
+      return;
+    }
+    match next {
+      Some(Ok(message)) if message.header().message_type() == Kind::MethodCall => {
+        service.on_call(message);
+      }
+      Some(Ok(message)) => {
+        // The bus daemon sends this, so nobody else can fake it.
+        if let Some((name, owner)) = owner_changed(&message)
+          && name == AUTHORITY
+        {
+          // Its requests went with it.
+          service.drop_requests();
+          service.publish();
+          if !owner.is_empty() {
+            tracing::info!("polkit started again; registering the agent with it");
+            register(&service, &connection).await;
+          }
+        }
+      }
+      Some(Err(error)) => tracing::warn!(%error, "a bad message on the system bus"),
+      None => break,
+    }
+  }
+  tracing::warn!("the system bus closed, so no more polkit requests arrive");
+  service.forget();
+  service.publish();
+}
+
+/// Registers the agent with the polkit on `connection`, which takes its
+/// calls only from the unique name that answered. A refusal is logged.
+async fn register(service: &Rc<Service>, connection: &Connection) {
   let session = std::env::var("XDG_SESSION_ID")
     .ok()
     .filter(|id| !id.is_empty());
@@ -782,24 +840,6 @@ async fn run(service: Rc<Service>, address: zbus::Address) {
   };
   tracing::info!("registered as the polkit agent");
   if let Some(state) = service.state.borrow_mut().as_mut() {
-    state.connection = Some(connection.clone());
     state.authority = authority;
   }
-  loop {
-    let next = poll_fn(|cx| Pin::new(&mut messages).poll_next(cx)).await;
-    if !service.alive() {
-      return;
-    }
-    match next {
-      Some(Ok(message)) if message.header().message_type() == Kind::MethodCall => {
-        service.on_call(message);
-      }
-      Some(Ok(_)) => {}
-      Some(Err(error)) => tracing::warn!(%error, "a bad message on the system bus"),
-      None => break,
-    }
-  }
-  tracing::warn!("the system bus closed, so no more polkit requests arrive");
-  service.forget();
-  service.publish();
 }

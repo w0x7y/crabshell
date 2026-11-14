@@ -22,9 +22,8 @@ pub(super) struct Secret(pub(super) Vec<u8>);
 
 impl Drop for Secret {
   fn drop(&mut self) {
-    self.0.fill(0);
-    // So the zeroing isn't optimized away as a store nobody reads.
-    std::hint::black_box(&self.0);
+    // Its spare room too, which may hold bytes typed and deleted.
+    crate::pam::wipe(&mut self.0);
   }
 }
 

@@ -163,7 +163,7 @@ impl Drop for Secret {
 }
 
 /// Zeroes every byte `bytes` holds room for.
-fn wipe(bytes: &mut Vec<u8>) {
+pub(crate) fn wipe(bytes: &mut Vec<u8>) {
   bytes.clear();
   bytes.resize(bytes.capacity(), 0);
   // So the compiler can't drop the writes as dead before the free.

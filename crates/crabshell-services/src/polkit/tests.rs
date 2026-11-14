@@ -481,17 +481,18 @@ fn picking_an_identity_asks_as_that_user() {
       .expect("a request")
       .identities
   };
-  assert_eq!(identities(), ["root", user.as_str()]);
+  // The session's user first, though polkit listed root first.
+  assert_eq!(identities(), [user.as_str(), "root"]);
 
   let logs = capture_logs(|| agent.pick_identity("nobody-here"));
   assert!(logs.contains("no such identity"), "{logs}");
-  agent.pick_identity(&user);
-  assert_eq!(identities(), [user.as_str(), "root"]);
+  agent.pick_identity("root");
+  assert_eq!(identities(), ["root", user.as_str()]);
   polkit.wait_state(&agent, asking);
   agent.respond("hunter2");
   assert_eq!(polkit.answered(&answer), Ok(()));
-  let second = format!("{user} cookie-1");
-  assert_eq!(polkit.runs(), ["root cookie-1", second.as_str()]);
+  let first = format!("{user} cookie-1");
+  assert_eq!(polkit.runs(), [first.as_str(), "root cookie-1"]);
 }
 
 #[test]
@@ -611,7 +612,7 @@ fn answers_never_reach_the_logs() {
   for secret in ["wrong-secret", "secret-lines", "hunter2", "late-secret"] {
     assert!(!logs.contains(secret), "{secret} in {logs}");
   }
-  assert!(logs.contains("line break was dropped"), "{logs}");
+  assert!(logs.contains("line break or NUL was dropped"), "{logs}");
   assert!(logs.contains("an answer was dropped"), "{logs}");
 }
 
@@ -634,4 +635,66 @@ fn an_idle_agent_wakes_nothing() {
   assert_eq!(polkit.answered(&answer), Ok(()));
   polkit.wait_helper_gone();
   quiet(&mut polkit, "after a request");
+}
+
+#[test]
+fn a_polkit_that_starts_again_gets_the_agent_again() {
+  let mut polkit = Polkit::start(PASSWORD);
+  let (agent, name) = polkit.agent();
+  let _old_request = polkit.begin(&name, "cookie-1", &[0]);
+  polkit.wait_state(&agent, asking);
+  let old = polkit.authority.connection.clone();
+  polkit.shell.block_on(async move {
+    let bus = zbus::fdo::DBusProxy::new(&old).await.expect("the bus");
+    let name = AUTHORITY.try_into().expect("a bus name");
+    bus.release_name(name).await.expect("released");
+  });
+  let (new, registrations) = authority(&mut polkit.shell, &polkit.bus, true);
+  let again = Rc::clone(&registrations);
+  polkit.wait("the registration with the new polkit", move || {
+    again.borrow().len() == 1
+  });
+  assert_eq!(
+    agent.request().get_untracked(),
+    None,
+    "the old request went"
+  );
+  polkit.wait_helper_gone();
+  let from = new.connection.clone();
+  let answer = polkit.begin_from(&from, &name, "cookie-2", &[0]);
+  polkit.wait_state(&agent, asking);
+  agent.respond("hunter2");
+  assert_eq!(polkit.answered(&answer), Ok(()));
+}
+
+#[test]
+fn a_cancel_kills_a_helper_that_ignores_its_input() {
+  let mut polkit = Polkit::start("echo 'PAM_PROMPT_ECHO_OFF Password: '\nexec sleep 30\n");
+  let (agent, name) = polkit.agent();
+  let answer = polkit.begin(&name, "cookie-1", &[0]);
+  polkit.wait_state(&agent, asking);
+  agent.cancel();
+  assert_eq!(polkit.answered(&answer), Err(CANCELLED.to_owned()));
+  polkit.wait_helper_gone();
+}
+
+#[test]
+fn an_answer_with_a_nul_never_reaches_the_helper() {
+  let conversation =
+    "echo 'PAM_PROMPT_ECHO_OFF Password: '\nhead -n 1 > \"$0.answer\"\necho SUCCESS\n";
+  let mut polkit = Polkit::start(conversation);
+  let (agent, name) = polkit.agent();
+  let _answer = polkit.begin(&name, "cookie-1", &[0]);
+  polkit.wait_state(&agent, asking);
+  let logs = capture_logs(|| agent.respond("hun\0ter2"));
+  assert!(logs.contains("line break or NUL"), "{logs}");
+  polkit
+    .shell
+    .run_until(Instant::now() + Duration::from_millis(200));
+  let sent = std::fs::read(polkit.dir.path().join("helper.answer")).unwrap_or_default();
+  assert!(sent.is_empty(), "the helper read {sent:?}");
+  assert!(matches!(
+    state(agent.request().get_untracked()),
+    Some(AuthState::Asking { .. })
+  ));
 }
