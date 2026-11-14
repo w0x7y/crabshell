@@ -1654,6 +1654,27 @@ fn cx_toplevels_lists_the_shells_floating_window_and_closes_it() {
     ours().is_some_and(|toplevel| toplevel.outputs == ["HEADLESS-1"])
   });
 
+  // A new scale makes the platform tell the same list again, which
+  // isn't set, so nothing that reads it runs.
+  let runs = std::rc::Rc::new(std::cell::Cell::new(0));
+  let counted = std::rc::Rc::clone(&runs);
+  let list = toplevels.list();
+  let watcher = shell.cx().child();
+  watcher.effect(move || {
+    list.with(|_| ());
+    counted.set(counted.get() + 1);
+  });
+  Runtime::current().flush();
+  let before = runs.get();
+  sway.msg(&["output", "HEADLESS-1", "scale", "2"]);
+  for _ in 0..10 {
+    shell
+      .dispatch(Some(Duration::from_millis(30)))
+      .expect("the connection works");
+  }
+  assert_eq!(runs.get(), before, "an unchanged list was set again");
+  watcher.owner().dispose();
+
   toplevels.close(ours().expect("listed").id);
   run_until(&mut shell, "the window to close", |_| !open.get_untracked());
   run_until(&mut shell, "an empty list", |_| {

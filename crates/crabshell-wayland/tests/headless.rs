@@ -1799,15 +1799,13 @@ fn an_idle_watch_fires_after_its_timeout_and_input_ends_it() {
   );
 
   // Idle, nothing wakes the shell: one dispatch sleeps the whole time.
-  let iterations = shell.event_loop.platform().stats().iterations;
+  let started = Instant::now();
   shell
     .event_loop
     .dispatch(Some(Duration::from_secs(2)))
     .expect("the connection works");
-  assert_eq!(
-    shell.event_loop.platform().stats().iterations,
-    iterations + 1
-  );
+  let slept = started.elapsed();
+  assert!(slept >= Duration::from_millis(1900), "woke after {slept:?}");
 
   pointer.move_to(900, 500, (1920, 1080));
   run_until(&mut shell.event_loop, "back", |_| {
@@ -2104,15 +2102,14 @@ fn a_toplevel_watch_wakes_nothing_while_nothing_changes() {
   });
   settle(&mut shell.event_loop);
   let lists = heard.borrow().1;
-  let iterations = shell.event_loop.platform().stats().iterations;
+  // One dispatch is one iteration however soon it wakes, so it is timed.
+  let started = Instant::now();
   shell
     .event_loop
     .dispatch(Some(Duration::from_secs(2)))
     .expect("the connection works");
-  assert_eq!(
-    shell.event_loop.platform().stats().iterations,
-    iterations + 1
-  );
+  let slept = started.elapsed();
+  assert!(slept >= Duration::from_millis(1900), "woke after {slept:?}");
   assert_eq!(heard.borrow().1, lists, "a list came with nothing changed");
 }
 
@@ -2143,5 +2140,26 @@ fn a_toplevel_watch_that_panics_is_logged_and_the_shell_goes_on() {
     platform
       .window_info(id)
       .is_some_and(|info| info.commits > before)
+  });
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn on_labwc_a_dialog_names_its_parent_until_the_parent_closes() {
+  // Sway never says a window's parent; labwc does.
+  let labwc = Sway::start_labwc();
+  let mut shell = Shell::new(&labwc);
+  shell.wait_for_bar("HEADLESS-1");
+  let heard = watch_toplevels(&mut shell);
+  let mut app = AppWindow::new(&labwc, "org.example.App", "main");
+  app.open_child("dialog");
+  run_until(&mut shell.event_loop, "the dialog and its parent", |_| {
+    let main = titled(&heard, "main").map(|toplevel| toplevel.id);
+    main.is_some() && titled(&heard, "dialog").is_some_and(|dialog| dialog.parent == main)
+  });
+  app.close_first();
+  run_until(&mut shell.event_loop, "the dialog without a parent", |_| {
+    titled(&heard, "main").is_none()
+      && titled(&heard, "dialog").is_some_and(|dialog| dialog.parent.is_none())
   });
 }

@@ -328,7 +328,22 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Platform {
       }
       Event::Closed => {
         foreign.changed |= handle.current.is_some();
-        foreign.handles.remove(index);
+        let closed = foreign.handles.remove(index).id;
+        // The protocol doesn't promise to tell a child its parent went;
+        // wlroots does, others may not.
+        for other in &mut foreign.handles {
+          if other.pending.parent == Some(closed) {
+            other.pending.parent = None;
+          }
+          if let Some(current) = other
+            .current
+            .as_mut()
+            .filter(|current| current.parent == Some(closed))
+          {
+            current.parent = None;
+            foreign.changed = true;
+          }
+        }
       }
       _ => {}
     }

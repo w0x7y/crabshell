@@ -735,35 +735,70 @@ impl InputMethod {
 }
 
 /// Another program's window: an xdg toplevel 100 pixels square with an
-/// app id, which the platform's floating windows don't set.
+/// app id, which the platform's floating windows don't set. It can open
+/// a child window, a dialog of the first.
 #[allow(dead_code, reason = "crabshell's tests don't use it")]
 pub struct AppWindow {
   queue: EventQueue<Helper>,
-  toplevel: xdg_toplevel::XdgToplevel,
+  /// The first window, until `close_first`.
+  toplevel: Option<xdg_toplevel::XdgToplevel>,
+  child: Option<xdg_toplevel::XdgToplevel>,
+  compositor: wl_compositor::WlCompositor,
+  shm: wl_shm::WlShm,
+  wm: xdg_wm_base::XdgWmBase,
+  dir: PathBuf,
 }
 
 #[allow(dead_code, reason = "crabshell's tests don't use it")]
 impl AppWindow {
   pub fn new(sway: &Sway, app_id: &str, title: &str) -> AppWindow {
-    const SIDE: i32 = 100;
     let connection = sway.connection();
-    let (globals, mut queue) =
+    let (globals, queue) =
       registry_queue_init::<Helper>(&connection).expect("the helper's registry");
     let qh = queue.handle();
-    let compositor: wl_compositor::WlCompositor = globals
+    let compositor = globals
       .bind(&qh, 1..=4, ())
       .expect("sway offers wl_compositor");
-    let shm: wl_shm::WlShm = globals.bind(&qh, 1..=1, ()).expect("sway offers wl_shm");
-    let wm: xdg_wm_base::XdgWmBase = globals
+    let shm = globals.bind(&qh, 1..=1, ()).expect("sway offers wl_shm");
+    let wm = globals
       .bind(&qh, 1..=1, ())
       .expect("sway offers xdg_wm_base");
-    let surface = compositor.create_surface(&qh, ());
-    let toplevel = wm.get_xdg_surface(&surface, &qh, ()).get_toplevel(&qh, ());
+    let mut window = AppWindow {
+      queue,
+      toplevel: None,
+      child: None,
+      compositor,
+      shm,
+      wm,
+      dir: sway.runtime_dir().to_owned(),
+    };
+    window.toplevel = Some(window.show(app_id, title, None));
+    window
+  }
+
+  /// A new window of this program's, shown with its first frame, a
+  /// dialog of `parent` if given.
+  fn show(
+    &mut self,
+    app_id: &str,
+    title: &str,
+    parent: Option<&xdg_toplevel::XdgToplevel>,
+  ) -> xdg_toplevel::XdgToplevel {
+    const SIDE: i32 = 100;
+    let qh = self.queue.handle();
+    let surface = self.compositor.create_surface(&qh, ());
+    let toplevel = self
+      .wm
+      .get_xdg_surface(&surface, &qh, ())
+      .get_toplevel(&qh, ());
     toplevel.set_app_id(app_id.to_owned());
     toplevel.set_title(title.to_owned());
+    // Before it maps, when compositors read it.
+    toplevel.set_parent(parent);
     surface.commit();
     // The first configure, which the helper acks.
-    queue
+    self
+      .queue
       .roundtrip(&mut Helper)
       .expect("the helper's roundtrip");
     let file = File::options()
@@ -771,23 +806,42 @@ impl AppWindow {
       .write(true)
       .create(true)
       .truncate(true)
-      .open(sway.runtime_dir().join(format!("{app_id}.pixels")))
+      .open(self.dir.join(format!("{app_id}-{title}.pixels")))
       .expect("create the window's pixels");
     file
       .set_len(u64::from(SIDE.unsigned_abs().pow(2) * 4))
       .expect("size the window's pixels");
-    let pool = shm.create_pool(file.as_fd(), SIDE * SIDE * 4, &qh, ());
+    let pool = self.shm.create_pool(file.as_fd(), SIDE * SIDE * 4, &qh, ());
     let buffer = pool.create_buffer(0, SIDE, SIDE, SIDE * 4, wl_shm::Format::Argb8888, &qh, ());
     surface.attach(Some(&buffer), 0, 0);
     surface.commit();
-    queue
+    self
+      .queue
       .roundtrip(&mut Helper)
       .expect("the helper's roundtrip");
-    AppWindow { queue, toplevel }
+    toplevel
   }
 
   pub fn set_title(&mut self, title: &str) {
-    self.toplevel.set_title(title.to_owned());
+    let first = self.toplevel.as_ref().expect("the first window is open");
+    first.set_title(title.to_owned());
+    self
+      .queue
+      .roundtrip(&mut Helper)
+      .expect("the helper's roundtrip");
+  }
+
+  /// Opens a child window titled `title`, a dialog of the first.
+  pub fn open_child(&mut self, title: &str) {
+    let first = self.toplevel.clone();
+    self.child = Some(self.show("child", title, first.as_ref()));
+  }
+
+  /// Closes the first window, leaving its child open.
+  pub fn close_first(&mut self) {
+    if let Some(first) = self.toplevel.take() {
+      first.destroy();
+    }
     self
       .queue
       .roundtrip(&mut Helper)
