@@ -2,6 +2,7 @@
 //! `const fn`s, so a theme is a set of constants.
 
 use crate::animation::{Animate, Transition};
+use crate::geometry::Rect;
 
 /// An sRGB color with straight (not premultiplied) alpha.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -217,6 +218,88 @@ impl Gradient {
   }
 }
 
+/// A shadow cast by a widget's box, as CSS's `box-shadow`: the box's
+/// shape moved by `x` and `y`, grown by `spread` and blurred over `blur`
+/// logical pixels, drawn under the box. A translucent background shows
+/// it through.
+///
+/// ```
+/// use crabshell_ui::{Color, Shadow, Style};
+///
+/// const CARD: Style = Style::new()
+///     .background(Color::hex("#1e1e2e"))
+///     .radius(8.0)
+///     .shadow(Shadow::new(0.0, 4.0, 12.0, Color::rgba(0, 0, 0, 96)));
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Shadow {
+  /// How far right it is moved.
+  pub x: f32,
+  /// How far down it is moved.
+  pub y: f32,
+  /// How far its edge is blurred. 0 is a sharp edge.
+  pub blur: f32,
+  /// How much larger than the box it is on each side, or smaller when
+  /// negative.
+  pub spread: f32,
+  /// Its color.
+  pub color: Color,
+}
+
+impl Shadow {
+  /// A shadow moved by `x` and `y` and blurred over `blur`, the box's
+  /// size.
+  pub const fn new(x: f32, y: f32, blur: f32, color: Color) -> Shadow {
+    Shadow {
+      x,
+      y,
+      blur,
+      spread: 0.0,
+      color,
+    }
+  }
+
+  /// The same shadow `spread` larger on each side.
+  pub const fn spread(self, spread: f32) -> Shadow {
+    Shadow { spread, ..self }
+  }
+
+  /// The area this shadow of `rect` covers: its shape, grown by one and a
+  /// half blurs, past which the blur fades below a 255th. A shadow with a
+  /// number that isn't finite is never drawn, so it reaches only `rect`.
+  pub(crate) fn reach(&self, rect: Rect) -> Rect {
+    let grow = self.spread + 1.5 * self.blur.max(0.0);
+    if ![self.x, self.y, grow].iter().all(|n| n.is_finite()) {
+      return rect;
+    }
+    Rect::new(
+      rect.x + self.x - grow,
+      rect.y + self.y - grow,
+      (rect.width + 2.0 * grow).max(0.0),
+      (rect.height + 2.0 * grow).max(0.0),
+    )
+  }
+
+  /// `t` of the way to `to`.
+  fn lerp(&self, to: &Shadow, t: f32) -> Shadow {
+    Shadow {
+      x: self.x.lerp(&to.x, t),
+      y: self.y.lerp(&to.y, t),
+      blur: self.blur.lerp(&to.blur, t),
+      spread: self.spread.lerp(&to.spread, t),
+      color: self.color.lerp(&to.color, t),
+    }
+  }
+
+  /// This shadow, transparent.
+  fn clear(self) -> Shadow {
+    Shadow {
+      color: Color::rgba(self.color.r, self.color.g, self.color.b, 0),
+      ..self
+    }
+  }
+}
+
 /// Space between a widget's edge and its content, in logical pixels.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Padding {
@@ -252,6 +335,8 @@ pub struct Style {
   pub background: Option<Color>,
   /// Colors blending across the widget's rectangle, over the background.
   pub gradient: Option<Gradient>,
+  /// A shadow under the widget's box.
+  pub shadow: Option<Shadow>,
   /// The text color, inherited by [`Text`](crate::Text).
   pub color: Option<Color>,
   /// The text font, inherited by [`Text`](crate::Text).
@@ -273,7 +358,8 @@ pub struct Style {
   /// The height in logical pixels, instead of what the content needs.
   pub height: Option<f32>,
   /// How a change to the paint fields fades in: background, gradient,
-  /// color, border, radius and opacity. Other fields change at once.
+  /// shadow, color, border, radius and opacity. Other fields change at
+  /// once.
   pub transition: Option<Transition>,
 }
 
@@ -283,6 +369,7 @@ impl Style {
     Style {
       background: None,
       gradient: None,
+      shadow: None,
       color: None,
       font: None,
       padding: None,
@@ -308,6 +395,14 @@ impl Style {
   pub const fn gradient(self, gradient: Gradient) -> Style {
     Style {
       gradient: Some(gradient),
+      ..self
+    }
+  }
+
+  /// Sets a shadow under the box.
+  pub const fn shadow(self, shadow: Shadow) -> Style {
+    Style {
+      shadow: Some(shadow),
       ..self
     }
   }
@@ -391,7 +486,8 @@ impl Style {
   }
 
   /// Sets how a change to the paint fields fades in, as when a hover
-  /// style takes over: background, gradient, color, border, radius and opacity move
+  /// style takes over: background, gradient, shadow, color, border, radius
+  /// and opacity move
   /// over `transition`. The style being changed to says how.
   pub const fn transition(self, transition: Transition) -> Style {
     Style {
@@ -407,6 +503,7 @@ impl Style {
     Style {
       background: or(over.background, self.background),
       gradient: or(over.gradient, self.gradient),
+      shadow: or(over.shadow, self.shadow),
       color: or(over.color, self.color),
       font: or(over.font, self.font),
       padding: or(over.padding, self.padding),
@@ -488,9 +585,16 @@ impl Style {
       (Some(from), None) => from.lerp(&from.clear(), t),
       (None, None) => None,
     };
+    let shadow = match (self.shadow, to.shadow) {
+      (Some(from), Some(end)) => Some(from.lerp(&end, t)),
+      (None, Some(end)) => Some(end.clear().lerp(&end, t)),
+      (Some(from), None) => Some(from.lerp(&from.clear(), t)),
+      (None, None) => None,
+    };
     Style {
       background: color(self.background, to.background),
       gradient,
+      shadow,
       color: match (self.color, to.color) {
         (Some(from), Some(to)) => Some(from.lerp(&to, t)),
         _ => to.color,

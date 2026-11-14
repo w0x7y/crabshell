@@ -326,6 +326,32 @@ mod fades {
     assert!(damage.contains(&moved), "{moved:?} missing from {damage:?}");
   }
 
+  #[test]
+  fn a_fading_shadow_keeps_both_ends_inside_the_painted_area() {
+    use crate::Shadow;
+
+    let mut h = hover_harness();
+    let lifted = h.cx.signal(false);
+    let shadow = |y: f32| Shadow::new(0.0, y, 0.0, Color::rgb(0, 0, 0));
+    let row = Row::new().padding(30, 30).align(Align::Start).child(
+      Row::new()
+        .style(move || {
+          let y = if lifted.get() { 10.0 } else { -10.0 };
+          NORMAL.shadow(shadow(y))
+        })
+        .padding(6, 6),
+    );
+    let window = h.window(h.panel().child(row), 300.0, 90.0);
+    let rect = super::super::rect_at(&window, &[0, 0]);
+    lifted.set(true);
+    h.frame(&window);
+    assert!(animating(), "a shadow fades too");
+    let view = window.view();
+    let bounds = super::super::node_at(view.root(), &[0, 0]).bounds();
+    let both = shadow(-10.0).reach(rect).union(shadow(10.0).reach(rect));
+    assert_eq!(bounds, rect.union(both));
+  }
+
   fn hover_harness() -> Harness {
     Harness::new()
   }

@@ -1,6 +1,6 @@
 //! Colors, fonts and styles.
 
-use crate::{Border, Color, Font, Gradient, GradientShape, Padding, Style};
+use crate::{Border, Color, Font, Gradient, GradientShape, Padding, Rect, Shadow, Style};
 
 #[test]
 fn hex_parses_both_forms_in_either_case() {
@@ -176,4 +176,41 @@ fn gradients_blend_when_they_have_the_same_shape_and_colors() {
   assert_eq!(from.lerp(&radial, 0.5).gradient, radial.gradient);
   let three = Style::new().gradient(Gradient::linear(0.0, black, white).stop(0.5, black));
   assert_eq!(from.lerp(&three, 0.5).gradient, three.gradient);
+}
+
+#[test]
+fn a_shadow_reaches_past_the_box_by_its_offset_spread_and_blur() {
+  const LIFTED: Style =
+    Style::new().shadow(Shadow::new(2.0, 4.0, 8.0, Color::rgba(0, 0, 0, 128)).spread(1.0));
+  let shadow = LIFTED.shadow.expect("set by the builder");
+  assert_eq!(
+    (shadow.x, shadow.y, shadow.blur, shadow.spread),
+    (2.0, 4.0, 8.0, 1.0)
+  );
+  // Moved by 2, 4, grown by the spread and one and a half blurs.
+  let reach = shadow.reach(Rect::new(10.0, 10.0, 20.0, 10.0));
+  assert_eq!(reach, Rect::new(-1.0, 1.0, 46.0, 36.0));
+  assert_eq!(Style::new().merge(LIFTED).shadow, Some(shadow));
+  // A shadow nobody can draw reaches nowhere past the box.
+  let box_ = Rect::new(10.0, 10.0, 20.0, 10.0);
+  assert_eq!(
+    Shadow::new(f32::NAN, 0.0, 1.0, Color::rgb(0, 0, 0)).reach(box_),
+    box_
+  );
+}
+
+#[test]
+fn shadows_blend_and_fade_in_from_clear() {
+  let gray = Color::rgba(0, 0, 0, 200);
+  let from = Style::new().shadow(Shadow::new(0.0, 0.0, 2.0, gray));
+  let to = Style::new().shadow(Shadow::new(0.0, 4.0, 10.0, gray).spread(2.0));
+  let half = from.lerp(&to, 0.5).shadow.expect("both set one");
+  assert_eq!((half.y, half.blur, half.spread), (2.0, 6.0, 1.0));
+  let appearing = Style::new().lerp(&to, 0.5).shadow.expect("on its way");
+  assert_eq!(
+    (appearing.y, appearing.color),
+    (4.0, Color::rgba(0, 0, 0, 100))
+  );
+  let going = to.lerp(&Style::new(), 0.75).shadow.expect("on its way out");
+  assert_eq!(going.color, Color::rgba(0, 0, 0, 50));
 }

@@ -8,8 +8,8 @@
 
 use cosmic_text::{FontSystem, SwashCache, SwashContent, SwashImage};
 use crabshell_ui::{
-  Color, Content, Gradient, GradientShape, IconView, ImageView, InputView, NodeView, Rect, Size,
-  Style, TextSystem, TextView, WindowView,
+  Color, Content, Gradient, GradientShape, IconView, ImageView, InputView, NodeView, Rect, Shadow,
+  Size, Style, TextSystem, TextView, WindowView,
 };
 use tiny_skia::{
   FillRule, GradientStop, LinearGradient, Mask, Paint, PathBuilder, Pixmap, PixmapMut, PixmapPaint,
@@ -409,6 +409,9 @@ impl Painter<'_> {
 
   fn node_contents(&mut self, pixmap: &mut PixmapMut<'_>, node: NodeView<'_>, style: &Style) {
     self.work.nodes += 1;
+    if let Some(shadow) = style.shadow {
+      self.shadow(pixmap, node.rect(), style, &shadow);
+    }
     self.draw_box(pixmap, node.rect(), style);
     match node.content() {
       Content::Text(text) => self.text(pixmap, &text),
@@ -574,6 +577,63 @@ impl Painter<'_> {
         fill(pixmap, path, border.color, FillRule::EvenOdd);
       }
     }
+  }
+
+  /// `shadow` of the box `rect` with `style`'s corners. A sharp one is a
+  /// filled shape; a blurred one is worked out pixel by pixel in buffer
+  /// pixels, so every tile agrees, and only within one and a half blurs
+  /// of its shape, past which it fades below a 255th.
+  fn shadow(&self, pixmap: &mut PixmapMut<'_>, rect: Rect, style: &Style, shadow: &Shadow) {
+    let Grid {
+      scale, left, top, ..
+    } = self.grid;
+    let numbers = [shadow.x, shadow.y, shadow.blur, shadow.spread];
+    if shadow.color.a == 0 || !numbers.iter().all(|n| n.is_finite()) {
+      return;
+    }
+    let Some((area, radius)) = self.box_shape(rect, style) else {
+      return;
+    };
+    // The shape in buffer pixels.
+    let spread = shadow.spread * scale;
+    let Some(shape) = tiny_skia::Rect::from_ltrb(
+      area.left() + left + shadow.x * scale - spread,
+      area.top() + top + shadow.y * scale - spread,
+      area.right() + left + shadow.x * scale + spread,
+      area.bottom() + top + shadow.y * scale + spread,
+    ) else {
+      return;
+    };
+    let radius = (radius + spread).clamp(0.0, shape.width().min(shape.height()) / 2.0);
+    // CSS draws a blur as a Gaussian of half its length.
+    let sigma = shadow.blur.max(0.0) * scale / 2.0;
+    if sigma < 0.25 {
+      let mut path = PathBuilder::new();
+      let Some(shape) = shape.transform(Transform::from_translate(-left, -top)) else {
+        return;
+      };
+      rounded_rect(&mut path, shape, radius);
+      fill(pixmap, path, shadow.color, FillRule::Winding);
+      return;
+    }
+    let reach = 3.0 * sigma;
+    let columns = (shape.left() - reach - left).floor().max(0.0) as u32
+      ..((shape.right() + reach - left).ceil().max(0.0) as u32).min(pixmap.width());
+    let rows = (shape.top() - reach - top).floor().max(0.0) as u32
+      ..((shape.bottom() + reach - top).ceil().max(0.0) as u32).min(pixmap.height());
+    if columns.is_empty() || rows.is_empty() {
+      return;
+    }
+    let blurred = BlurredBox::new(shape, radius, sigma);
+    let mut mask = Vec::with_capacity(columns.len() * rows.len());
+    for row in rows.clone() {
+      let xs = columns.clone().map(|column| left + column as f32 + 0.5);
+      blurred.row(top + row as f32 + 0.5, xs, &mut mask);
+    }
+    let width = columns.len() as u32;
+    let height = rows.len() as u32;
+    let (x, y) = (columns.start as i32, rows.start as i32);
+    blend_mask(pixmap, x, y, width, height, &mask, shadow.color);
   }
 
   /// `gradient` across `area`, a box in this pixmap's pixels. It is laid
@@ -880,6 +940,111 @@ fn blend_mask(
       over(data, (y * stride + x) * 4, source);
     }
   }
+}
+
+/// A rectangle with rounded corners blurred by a Gaussian: how much of it
+/// covers each point. Away from the corners it is a plain rectangle,
+/// whose blur is the product of each axis's, from the error function.
+/// Near a corner, each row's span is blurred across and the rows are
+/// summed over eight samples of the Gaussian down.
+/// How many rows a point near a corner sums.
+const SAMPLES: usize = 8;
+
+struct BlurredBox {
+  middle: (f32, f32),
+  half: (f32, f32),
+  radius: f32,
+  sigma: f32,
+}
+
+impl BlurredBox {
+  fn new(shape: tiny_skia::Rect, radius: f32, sigma: f32) -> BlurredBox {
+    BlurredBox {
+      middle: (
+        (shape.left() + shape.right()) / 2.0,
+        (shape.top() + shape.bottom()) / 2.0,
+      ),
+      half: (shape.width() / 2.0, shape.height() / 2.0),
+      radius,
+      sigma,
+    }
+  }
+
+  /// Pushes the coverage at each of `xs` on the row at `y`, out of 255,
+  /// onto `mask`.
+  fn row(&self, y: f32, xs: impl Iterator<Item = f32>, mask: &mut Vec<u8>) {
+    let y = y - self.middle.1;
+    let (half_width, half_height) = self.half;
+    let reach = 3.0 * self.sigma;
+    let down = self.along(y, half_height);
+    let clear_of_corners = y.abs() <= half_height - self.radius - reach;
+    let rows = if clear_of_corners {
+      [(0.0, 0.0); SAMPLES]
+    } else {
+      self.rows_near(y)
+    };
+    for x in xs {
+      let x = x - self.middle.0;
+      let coverage = if clear_of_corners || x.abs() <= half_width - self.radius - reach {
+        self.along(x, half_width) * down
+      } else {
+        let sum: f32 = rows
+          .iter()
+          .map(|&(span, weight)| self.along(x, span) * weight)
+          .sum();
+        sum.clamp(0.0, 1.0)
+      };
+      mask.push((coverage * 255.0).round() as u8);
+    }
+  }
+
+  /// The blur of the span from `-half` to `half` at `p`. One the blur
+  /// stays inside of is covered whole.
+  fn along(&self, p: f32, half: f32) -> f32 {
+    if p.abs() <= half - 3.0 * self.sigma {
+      return 1.0;
+    }
+    let scale = std::f32::consts::FRAC_1_SQRT_2 / self.sigma;
+    0.5 * (erf((p + half) * scale) - erf((p - half) * scale))
+  }
+
+  /// The rows of the shape a point at height `y` near a corner sums: for
+  /// each sample within the shape and the Gaussian's reach, the row's
+  /// half span and its weight.
+  fn rows_near(&self, y: f32) -> [(f32, f32); SAMPLES] {
+    let (half_width, half_height) = self.half;
+    let reach = 3.0 * self.sigma;
+    let start = (y - half_height).clamp(-reach, reach);
+    let end = (y + half_height).clamp(-reach, reach);
+    let step = (end - start) / SAMPLES as f32;
+    std::array::from_fn(|sample| {
+      let offset = start + step * (sample as f32 + 0.5);
+      // How far into a corner's rows this one is, and how much it
+      // narrows there.
+      let row = y - offset;
+      let into_corner = (row.abs() - (half_height - self.radius)).max(0.0);
+      let span = half_width - self.radius
+        + (self.radius * self.radius - into_corner * into_corner)
+          .max(0.0)
+          .sqrt();
+      (span, gaussian(offset, self.sigma) * step)
+    })
+  }
+}
+
+/// The normal distribution's density at `x`, for a deviation of `sigma`.
+fn gaussian(x: f32, sigma: f32) -> f32 {
+  let root_two_pi = (2.0 * std::f32::consts::PI).sqrt();
+  (-(x * x) / (2.0 * sigma * sigma)).exp() / (root_two_pi * sigma)
+}
+
+/// The error function, within 5e-4, an eighth of a color level, by
+/// Abramowitz and Stegun's 7.1.27, which needs no exponential.
+fn erf(x: f32) -> f32 {
+  let a = x.abs();
+  let d = 1.0 + a * (0.278_393 + a * (0.230_389 + a * (0.000_972 + a * 0.078_108)));
+  let d = d * d;
+  (1.0 - 1.0 / (d * d)).copysign(x)
 }
 
 /// Whether a color glyph came from vector color layers (COLR), which swash

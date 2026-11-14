@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use crabshell_ui::{
   Align, Color, Column, Content, Fit, Font, Gradient, Icon, IconPixels, IconSource, Image, Menu,
-  MenuEntry, MenuToggle, Row, Stack, Style, Text, Window,
+  MenuEntry, MenuToggle, Row, Shadow, Stack, Style, Text, Window,
 };
 
 use super::{Scene, assert_golden, fixture};
@@ -139,6 +139,47 @@ fn gradients() {
               ))
               .radius(100.0)
               .padding(14, 30),
+          ),
+        ),
+    )
+  });
+}
+
+#[test]
+fn shadows() {
+  check("shadows", 240.0, 60.0, |scene| {
+    scene.panel().style(BAR).child(
+      Row::new()
+        .padding(14, 14)
+        .gap(18)
+        .align(Align::Center)
+        // A card lifted off the bar.
+        .child(
+          Row::new().style(
+            Style::new()
+              .background(Color::hex("#45475a"))
+              .radius(8.0)
+              .shadow(Shadow::new(0.0, 4.0, 10.0, Color::rgba(0, 0, 0, 200)))
+              .padding(12, 22),
+          ),
+        )
+        // A sharp shadow down and to the right.
+        .child(
+          Row::new().style(
+            Style::new()
+              .background(Color::hex("#f9e2af"))
+              .shadow(Shadow::new(4.0, 4.0, 0.0, Color::hex("#f38ba8")))
+              .padding(10, 16),
+          ),
+        )
+        // A glow spread around a pill, through its translucent fill.
+        .child(
+          Row::new().style(
+            Style::new()
+              .background(Color::rgba(0x89, 0xb4, 0xfa, 96))
+              .radius(100.0)
+              .shadow(Shadow::new(0.0, 0.0, 8.0, Color::hex("#89b4fa")).spread(2.0))
+              .padding(10, 26),
           ),
         ),
     )

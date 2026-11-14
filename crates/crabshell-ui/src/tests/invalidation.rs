@@ -519,11 +519,12 @@ fn a_widget_that_stops_drawing_is_repainted_where_it_was() {
 }
 
 #[test]
-fn a_bordered_or_gradient_widget_that_moves_is_repainted_at_both_places() {
+fn a_widget_with_a_border_gradient_or_shadow_that_moves_is_repainted_at_both_places() {
   let black = Color::rgb(9, 9, 9);
   for style in [
     Style::new().border(1.0, black),
     Style::new().gradient(crate::Gradient::radial(black, black)),
+    Style::new().shadow(crate::Shadow::new(0.0, 0.0, 0.0, black)),
   ] {
     let mut h = Harness::new();
     let label = h.cx.signal(String::from("ab"));
@@ -550,4 +551,46 @@ fn a_bordered_or_gradient_widget_that_moves_is_repainted_at_both_places() {
       );
     }
   }
+}
+
+#[test]
+fn a_shadow_widens_the_painted_area_and_a_new_one_is_laid_out() {
+  use crate::Shadow;
+
+  let mut h = Harness::new();
+  let lifted = h.cx.signal(false);
+  let row = Row::new().padding(20, 20).align(Align::Start).child(
+    Row::new()
+      .style(move || {
+        let style = Style::new().background(Color::rgb(9, 9, 9));
+        if lifted.get() {
+          style.shadow(Shadow::new(0.0, 4.0, 4.0, Color::rgb(0, 0, 0)))
+        } else {
+          style
+        }
+      })
+      .padding(6, 6),
+  );
+  let window = h.window(h.panel().child(row), 300.0, 60.0);
+  window.take_damage();
+  let rect = rect_at(&window, &[0, 0]);
+
+  lifted.set(true);
+  h.runtime.flush();
+  assert!(window.needs_layout(), "the painted area grows");
+  h.frame(&window);
+  // Down 4, and 6 past each side for the blur.
+  let reach = Rect::new(
+    rect.x - 6.0,
+    rect.y - 2.0,
+    rect.width + 12.0,
+    rect.height + 12.0,
+  );
+  let bounds = super::node_at(window.view().root(), &[0, 0]).bounds();
+  assert_eq!(bounds, rect.union(reach));
+  let damage = window.take_damage();
+  assert!(
+    damage.iter().any(|area| area.union(reach) == *area),
+    "{reach:?} missing from {damage:?}"
+  );
 }

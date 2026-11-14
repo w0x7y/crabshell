@@ -213,6 +213,13 @@ impl Tree {
     // that overflows it. Only a clipping style cuts its children's
     // overflow; otherwise it shows, as in CSS.
     let mut painted = rect;
+    // A fading shadow is drawn anywhere between its start and its end.
+    let fading = node.fade.as_ref().map(|fade| fade.from);
+    for style in [Some(node.effective_style()), fading].into_iter().flatten() {
+      if let Some(shadow) = style.shadow {
+        painted = painted.union(shadow.reach(rect));
+      }
+    }
     match &mut node.kind {
       NodeKind::Text(text) => {
         text.finish(content, fonts);

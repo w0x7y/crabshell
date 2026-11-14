@@ -555,6 +555,46 @@ fn turning_a_gradient_repaints_like_drawing_everything() {
 }
 
 #[test]
+fn moving_a_shadow_repaints_like_drawing_everything() {
+  use crabshell_ui::Shadow;
+
+  let mut scene = Scene::new();
+  let lift = scene.cx.signal(0.0_f32);
+  let panel = scene
+    .panel()
+    .style(Style::new().background(Color::rgb(30, 30, 46)))
+    .child(
+      Row::new()
+        .padding(20, 40)
+        .align(Align::Start)
+        .child(Row::new().style(move || {
+          Style::new()
+            .background(Color::hex("#89b4fa"))
+            .radius(6.0)
+            .shadow(Shadow::new(
+              lift.get(),
+              lift.get(),
+              2.0 + lift.get(),
+              Color::rgba(0, 0, 0, 160),
+            ))
+            .padding(10, 30)
+        })),
+    );
+  let window = scene.window(panel, 200.0, 80.0);
+  for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+    let mut history = DamageHistory::new();
+    let mut buffer = Buffer::new(&window, scale);
+    repaint(&mut scene, &window, &[], &mut history, &mut buffer);
+    lift.update(|lift| *lift = 9.0 - *lift);
+    scene.frame(&window);
+    let damage = window.take_damage();
+    repaint(&mut scene, &window, &damage, &mut history, &mut buffer);
+    let full = scene.full(&window, scale);
+    assert!(buffer.pixels == full.pixels, "at {scale}");
+  }
+}
+
+#[test]
 fn repainting_inside_a_clip_matches_drawing_everything() {
   let mut scene = Scene::new();
   let label = scene.cx.signal(String::from("short"));

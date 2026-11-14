@@ -87,7 +87,7 @@ pub mod prelude {
     Adjust, Align, Anchors, Animate, Border, Button, Color, Column, Cx, Easing, Edge, Fit,
     FloatingWindow, Font, Gradient, GradientShape, Icon, IconPixels, IconSource, Image, Justify,
     Key, KeyEvent, KeyboardFocus, Layer, ListView, Margins, Menu, MenuEntry, MenuToggle, Modifiers,
-    Output, Padding, PanelWindow, PopupWindow, Region, Row, ScrollView, Size, Spacer, Stack, Style,
-    Text, TextInput, Transition, Widget,
+    Output, Padding, PanelWindow, PopupWindow, Region, Row, ScrollView, Shadow, Size, Spacer,
+    Stack, Style, Text, TextInput, Transition, Widget,
   };
 }

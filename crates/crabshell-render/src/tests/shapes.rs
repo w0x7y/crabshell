@@ -351,3 +351,74 @@ mod gradients {
     assert_eq!(buffer.pixel(0, 0)[3], 0);
   }
 }
+
+mod shadows {
+  use crabshell_ui::{Align, Color, Row, Shadow, Style};
+
+  use super::super::{Buffer, Scene};
+
+  /// A 40 by 40 white box at 20, 10 casting `shadow`, in a clear 120 by
+  /// 70 window at scale 1.
+  fn cast(shadow: Shadow, radius: f32) -> Buffer {
+    let mut scene = Scene::new();
+    let row = Row::new().padding(10, 20).align(Align::Start).child(
+      Row::new().style(
+        Style::new()
+          .background(Color::rgb(255, 255, 255))
+          .radius(radius)
+          .shadow(shadow)
+          .width(40.0)
+          .height(40.0),
+      ),
+    );
+    let window = scene.window(scene.panel().child(row), 120.0, 70.0);
+    scene.full(&window, 1.0)
+  }
+
+  #[test]
+  fn a_sharp_shadow_is_the_box_moved_under_it() {
+    let black = Color::rgb(0, 0, 0);
+    let buffer = cast(Shadow::new(10.0, 10.0, 0.0, black), 0.0);
+    assert_eq!(buffer.pixel(30, 30), [255, 255, 255, 255], "the box");
+    assert_eq!(buffer.pixel(65, 55), [0, 0, 0, 255], "its shadow");
+    assert_eq!(buffer.pixel(65, 15), [0, 0, 0, 0], "above the shadow");
+    let grown = cast(Shadow::new(0.0, 0.0, 0.0, black).spread(4.0), 0.0);
+    assert_eq!(grown.pixel(63, 30), [0, 0, 0, 255], "spread past the box");
+    assert_eq!(grown.pixel(64, 30), [0, 0, 0, 0]);
+  }
+
+  #[test]
+  fn a_blurred_edge_fades_out_over_one_and_a_half_blurs() {
+    // Blur 4 is a Gaussian of deviation 2 around the box's right edge at
+    // x 60, across the tile edge at 64.
+    let buffer = cast(Shadow::new(0.0, 0.0, 4.0, Color::rgb(0, 0, 0)), 0.0);
+    let alpha = |x| i32::from(buffer.pixel(x, 30)[3]);
+    assert!((alpha(60) - 102).abs() <= 3, "{}", alpha(60));
+    assert!((alpha(62) - 27).abs() <= 3, "{}", alpha(62));
+    assert!((alpha(64) - 3).abs() <= 2, "{}", alpha(64));
+    assert_eq!(alpha(67), 0);
+    // Above the box's top edge, likewise.
+    let above = i32::from(buffer.pixel(40, 9)[3]);
+    assert!((above - 102).abs() <= 3, "{above}");
+  }
+
+  #[test]
+  fn a_shadow_follows_the_rounded_corners() {
+    let black = Color::rgb(0, 0, 0);
+    let square = cast(Shadow::new(0.0, 0.0, 4.0, black), 0.0);
+    let round = cast(Shadow::new(0.0, 0.0, 4.0, black), 16.0);
+    // Just off the corner, diagonally: the round shadow is fainter.
+    let (x, y) = (61, 8);
+    assert!(round.pixel(x, y)[3] + 10 < square.pixel(x, y)[3]);
+    // Along the straight edge, the same.
+    assert!(round.pixel(61, 30)[3].abs_diff(square.pixel(61, 30)[3]) <= 2);
+  }
+
+  #[test]
+  fn a_shadow_with_a_number_that_isnt_finite_is_not_drawn() {
+    for blur in [f32::NAN, f32::INFINITY] {
+      let buffer = cast(Shadow::new(10.0, 0.0, blur, Color::rgb(0, 0, 0)), 0.0);
+      assert_eq!(buffer.pixel(62, 30), [0, 0, 0, 0], "{blur}");
+    }
+  }
+}

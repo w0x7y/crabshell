@@ -298,6 +298,7 @@ impl Node {
         | NodeKind::Input(_)
     ) || style.background.is_some()
       || style.gradient.is_some()
+      || style.shadow.is_some()
       // A fade still shows what the style had.
       || self.fade.is_some()
       || style.border.is_some()
@@ -812,7 +813,13 @@ impl Tree {
         });
         fade = Some((node.fades, transition));
       }
-      Change::Paint
+      // A shadow reaches past the box, so the area painted is worked
+      // out again, to cover a fade's start as well as its end.
+      if before.shadow == after.shadow {
+        Change::Paint
+      } else {
+        Change::Layout
+      }
     });
     if let Some((generation, transition)) = fade {
       self.start_fade(id, generation, transition);
