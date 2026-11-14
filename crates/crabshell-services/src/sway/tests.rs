@@ -1,3 +1,4 @@
+mod events;
 mod headless;
 mod outputs;
 
@@ -464,6 +465,7 @@ fn without_provide_the_service_is_inert() {
   assert_eq!(outputs.get_untracked(), []);
   sway.focus_workspace("1");
   sway.dispatch("exit");
+  sway.on_event(&[super::SwayEventKind::Mode], |_| {});
   cx.owner().dispose();
   assert_eq!(sway.workspaces().try_get(), None);
   assert_eq!(outputs.try_get(), None);

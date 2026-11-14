@@ -7,8 +7,10 @@
 //! env -u SWAYSOCK cargo test -p crabshell-services --lib sway::tests::headless -- --ignored --test-threads=1
 //! ```
 
+use std::cell::RefCell;
+
 use super::*;
-use crate::sway::SwayOutput;
+use crate::sway::{SwayEventKind, SwayOutput};
 
 #[allow(dead_code, reason = "these tests use part of the helper")]
 #[path = "../../../../crabshell-wayland/tests/sway/mod.rs"]
@@ -119,4 +121,32 @@ fn dispatch_runs_commands_in_the_private_sway() {
   });
   assert!(logs.contains("Sway refused a command"), "{logs}");
   assert!(logs.contains("nonsense"), "{logs}");
+}
+
+#[test]
+#[ignore = "needs sway and swaymsg; run by hand"]
+fn a_handler_hears_its_kind_and_no_other_kind_wakes_the_shell() {
+  let (sway, mut shell) = start();
+  let service = shell.cx.sway();
+  let workspaces = service.workspaces();
+  let modes = Rc::new(RefCell::new(Vec::new()));
+  let keep = Rc::clone(&modes);
+  service.on_event(&[SwayEventKind::Mode], move |event| {
+    keep.borrow_mut().push(event.data.clone());
+  });
+  shell.run_until("the first list", || !workspaces.get_untracked().is_empty());
+  shell.run_for(Duration::from_millis(200));
+
+  // Ticks and an output's change: kinds no handler asked for.
+  for tick in ["a", "b", "c"] {
+    sway.msg(&["-t", "send_tick", tick]);
+  }
+  sway.msg(&["output", "HEADLESS-1", "scale", "2"]);
+  // One wakeup: the one that ends the run.
+  assert_eq!(shell.run_for(Duration::from_millis(500)), 1);
+
+  sway.msg(&["mode", "default"]);
+  shell.run_until("the mode event", || !modes.borrow().is_empty());
+  let data: serde_json::Value = serde_json::from_str(&modes.borrow()[0]).expect("JSON");
+  assert_eq!(data["change"], "default");
 }

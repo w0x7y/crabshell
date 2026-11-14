@@ -70,7 +70,7 @@ pub use polkit::{AuthRequest, AuthState, PolkitAgent};
 pub use power::{BatteryState, DeviceKind, PowerDevice, PowerProfile, PowerProfiles, UPower};
 pub use process::{IntoCommand, Process};
 pub use socket::Socket;
-pub use sway::{Sway, SwayOutput, Workspace};
+pub use sway::{Sway, SwayEvent, SwayEventKind, SwayOutput, Workspace};
 pub use tray::{MenuEntry, MenuToggle, Tray, TrayHost, TrayItem, TrayMenu, TrayStatus};
 
 /// Makes the services reachable from `cx` and every context made from it.
@@ -125,7 +125,7 @@ pub trait ServicesExt {
   /// next tick.
   fn clock(&self, precision: Precision) -> ReadSignal<jiff::Zoned>;
 
-  /// Sway's workspaces and outputs, and its commands, over the IPC socket
+  /// Sway's workspaces, outputs, commands and events, over the IPC socket
   /// at `$SWAYSOCK`, as Quickshell's `I3`. Every caller shares one
   /// connection, made on the first call.
   ///
@@ -133,8 +133,8 @@ pub trait ServicesExt {
   /// or the first connect fails, they stay empty and the service never
   /// wakes the shell. When a working connection closes, they are empty
   /// until a reconnect, tried every 2 s, works. While connected, it wakes
-  /// the shell only for a workspace event, and for an output event once a
-  /// config asked for the outputs.
+  /// the shell only for a workspace event, an output event once a config
+  /// asked for the outputs, and the kinds of event a handler asked for.
   fn sway(&self) -> Sway;
 
   /// The audio server's default sink, with its volume and mute. Every

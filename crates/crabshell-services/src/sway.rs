@@ -1,4 +1,4 @@
-//! Sway's workspaces and outputs, over Sway's IPC socket.
+//! Sway's workspaces, outputs and events, over Sway's IPC socket.
 
 mod ipc;
 #[cfg(test)]
@@ -10,6 +10,7 @@ use std::fmt::Display;
 use std::io::{ErrorKind, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
+use std::panic::{self, AssertUnwindSafe, Location};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Once;
@@ -20,8 +21,10 @@ use calloop::{Interest, RegistrationToken};
 use crabshell_reactive::{Owner, ReadSignal, Signal, untrack};
 use crabshell_ui::Cx;
 use serde::Deserialize;
+use serde::de::IgnoredAny;
 
 use crate::Shared;
+use crate::lines::panic_message;
 
 /// How long the service waits before each reconnect.
 pub(crate) const RETRY: Duration = Duration::from_secs(2);
@@ -104,6 +107,83 @@ impl From<RawOutput> for SwayOutput {
       scale: raw.scale.filter(|scale| *scale > 0.0).unwrap_or(1.0),
     }
   }
+}
+
+/// A kind of event Sway sends, for [`Sway::on_event`]. sway-ipc(7) says
+/// what each one's data holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SwayEventKind {
+  /// A workspace was made, emptied, focused, moved, renamed or marked
+  /// urgent.
+  Workspace,
+  /// An output was added, removed or changed.
+  Output,
+  /// The binding mode changed, as to `resize`.
+  Mode,
+  /// A window opened, closed or moved, or its focus, title or state
+  /// changed.
+  Window,
+  /// A bar's config changed.
+  BarconfigUpdate,
+  /// A key or mouse binding ran.
+  Binding,
+  /// Sway is exiting.
+  Shutdown,
+  /// A program sent a tick; also sent once right after subscribing.
+  Tick,
+  /// A bar was shown or hidden by its modifier.
+  BarStateUpdate,
+  /// An input device was added, removed or changed.
+  Input,
+}
+
+impl SwayEventKind {
+  const ALL: [SwayEventKind; 10] = [
+    SwayEventKind::Workspace,
+    SwayEventKind::Output,
+    SwayEventKind::Mode,
+    SwayEventKind::Window,
+    SwayEventKind::BarconfigUpdate,
+    SwayEventKind::Binding,
+    SwayEventKind::Shutdown,
+    SwayEventKind::Tick,
+    SwayEventKind::BarStateUpdate,
+    SwayEventKind::Input,
+  ];
+
+  /// Its message type and the name `SUBSCRIBE` takes, from sway-ipc(7).
+  fn wire(self) -> (u32, &'static str) {
+    match self {
+      SwayEventKind::Workspace => (ipc::WORKSPACE_EVENT, "workspace"),
+      SwayEventKind::Output => (ipc::OUTPUT_EVENT, "output"),
+      SwayEventKind::Mode => (0x8000_0002, "mode"),
+      SwayEventKind::Window => (0x8000_0003, "window"),
+      SwayEventKind::BarconfigUpdate => (0x8000_0004, "barconfig_update"),
+      SwayEventKind::Binding => (0x8000_0005, "binding"),
+      SwayEventKind::Shutdown => (0x8000_0006, "shutdown"),
+      SwayEventKind::Tick => (0x8000_0007, "tick"),
+      SwayEventKind::BarStateUpdate => (0x8000_0014, "bar_state_update"),
+      SwayEventKind::Input => (0x8000_0015, "input"),
+    }
+  }
+
+  fn from_code(code: u32) -> Option<SwayEventKind> {
+    SwayEventKind::ALL
+      .into_iter()
+      .find(|kind| kind.wire().0 == code)
+  }
+}
+
+/// One event from Sway, as Quickshell's `I3Event`, for
+/// [`Sway::on_event`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SwayEvent {
+  /// Which kind it is.
+  pub kind: SwayEventKind,
+  /// Its JSON as Sway sent it, an object sway-ipc(7) describes for each
+  /// kind: a mode event's has `change`, the mode's name, and
+  /// `pango_markup`.
+  pub data: String,
 }
 
 /// Where Sway listens.
@@ -194,6 +274,46 @@ impl Sway {
       );
     }
   }
+
+  /// Calls `handler` with each event of the `kinds` given, as Quickshell's
+  /// `I3IpcListener`, for as long as the context `cx.sway()` was called on
+  /// lives. Sway is asked only for kinds some handler wants, so a handler
+  /// of mode changes never wakes the shell for a window's.
+  ///
+  /// Sway can't unsubscribe, so once the last handler of a kind goes, the
+  /// next event of that kind makes the service connect again without it.
+  /// Events in between may be missed.
+  ///
+  /// It runs on the main thread. If it panics, that is logged with where
+  /// `on_event` was called, and it isn't called again.
+  #[track_caller]
+  pub fn on_event(&self, kinds: &[SwayEventKind], handler: impl Fn(&SwayEvent) + 'static) {
+    let Some(service) = &self.service else {
+      return;
+    };
+    let id = service.listen(kinds, Rc::new(handler), Location::caller());
+    // Dropped with the asking context's owner, which takes the handler away.
+    self.owner.signal(Unlisten(Rc::clone(service), id));
+  }
+}
+
+/// A config's handler of some kinds of events, from `on_event`.
+struct Listener {
+  id: u64,
+  kinds: Vec<SwayEventKind>,
+  handler: Rc<dyn Fn(&SwayEvent)>,
+  /// Where `on_event` was called, for the log if it panics.
+  at: &'static Location<'static>,
+}
+
+/// Takes a listener away when its context's owner drops this.
+struct Unlisten(Rc<Service>, u64);
+
+impl Drop for Unlisten {
+  fn drop(&mut self) {
+    // Dropped outside the borrow: the handler may hold a `Sway`.
+    drop(self.0.unlisten(self.1));
+  }
 }
 
 /// `cx.sway()`.
@@ -229,6 +349,10 @@ struct State {
   /// workspaces never subscribes to output events.
   outputs: Option<Signal<Vec<SwayOutput>>>,
   changed_at: Option<Instant>,
+  /// The config's handlers, in the order given.
+  listeners: Vec<Listener>,
+  /// The id the next listener gets.
+  next_listener: u64,
   connection: Option<Connection>,
   /// Whether the current outage was logged, so retries stay quiet.
   outage_logged: bool,
@@ -251,6 +375,9 @@ struct Connection {
   /// The events this connection subscribed to. Sway has no way to
   /// unsubscribe.
   subscribed: Vec<&'static str>,
+  /// Whether an event came that nothing wants, as after the last handler
+  /// of its kind went.
+  stale: bool,
 }
 
 /// Sway's answer to a `SUBSCRIBE` or to one command.
@@ -280,6 +407,8 @@ impl Service {
       workspaces,
       outputs: None,
       changed_at: None,
+      listeners: Vec::new(),
+      next_listener: 0,
       connection: None,
       outage_logged: false,
     });
@@ -309,6 +438,85 @@ impl Service {
       self.flush_with(state);
     }
     outputs.read_only()
+  }
+
+  /// Adds a handler, subscribing to the kinds no other wants yet. Its id.
+  fn listen(
+    self: &Rc<Self>,
+    kinds: &[SwayEventKind],
+    handler: Rc<dyn Fn(&SwayEvent)>,
+    at: &'static Location<'static>,
+  ) -> u64 {
+    let mut state = self.state.borrow_mut();
+    let state = state.as_mut().expect("invariant: started by cx.sway()");
+    state.next_listener += 1;
+    let id = state.next_listener;
+    state.listeners.push(Listener {
+      id,
+      kinds: kinds.to_vec(),
+      handler,
+      at,
+    });
+    let wanted = state.wanted();
+    if let Some(connection) = state.connection.as_mut() {
+      connection.subscribe(&wanted);
+      self.flush_with(state);
+    }
+    id
+  }
+
+  /// Takes a handler away, handing it back to drop outside the borrow.
+  fn unlisten(&self, id: u64) -> Option<Listener> {
+    let mut state = self.state.borrow_mut();
+    let listeners = &mut state.as_mut()?.listeners;
+    let index = listeners.iter().position(|listener| listener.id == id)?;
+    Some(listeners.remove(index))
+  }
+
+  fn listening(&self, id: u64) -> bool {
+    let state = self.state.borrow();
+    let mut listeners = state.iter().flat_map(|state| &state.listeners);
+    listeners.any(|listener| listener.id == id)
+  }
+
+  /// Hands each event to the handlers of its kind, with nothing borrowed,
+  /// since a handler may call the service. A handler that panics is logged
+  /// with where `on_event` was called, and taken away.
+  fn deliver(&self, events: Vec<SwayEvent>) {
+    for event in &events {
+      let handlers: Vec<_> = {
+        let state = self.state.borrow();
+        let listeners = state.iter().flat_map(|state| &state.listeners);
+        listeners
+          .filter(|listener| listener.kinds.contains(&event.kind))
+          .map(|listener| (listener.id, Rc::clone(&listener.handler), listener.at))
+          .collect()
+      };
+      for (id, handler, at) in handlers {
+        // A handler before this one may have taken this one's context.
+        if !self.listening(id) {
+          continue;
+        }
+        if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| handler(event))) {
+          let message = panic_message(payload.as_ref());
+          tracing::error!("Sway on_event (called at {at}) panicked: {message}");
+          drop(self.unlisten(id));
+        }
+      }
+    }
+  }
+
+  /// Connects again for only the events still wanted, since Sway has no
+  /// way to unsubscribe. The lists stay until the new ones arrive.
+  fn resubscribe(self: &Rc<Self>) {
+    if let Some(state) = self.state.borrow_mut().as_mut() {
+      self.drop_connection(state);
+    }
+    if !self.connect()
+      && let Some(state) = self.state.borrow_mut().as_mut()
+    {
+      self.disconnect(state, &"Sway took no new connection");
+    }
   }
 
   /// Connects and asks for the list and its changes. `false` if Sway
@@ -357,6 +565,7 @@ impl Service {
       outbox: Vec::new(),
       fetches: VecDeque::from([None]),
       subscribed: Vec::new(),
+      stale: false,
     };
     // Subscribe first, so no change between the two goes unseen.
     connection.subscribe(&state.wanted());
@@ -398,32 +607,52 @@ impl Service {
     alive.is_some()
   }
 
-  /// Reads what Sway sent and acts on each whole message.
+  /// Reads what Sway sent and acts on each whole message, then hands the
+  /// events to the config's handlers.
   fn on_readable(self: &Rc<Self>) {
     if !self.alive() {
       return self.close();
     }
     let mut chunk = [0; 64 * 1024];
-    let mut state = self.state.borrow_mut();
-    let state = state
+    let mut guard = self.state.borrow_mut();
+    let state = guard
       .as_mut()
       .expect("invariant: started before connecting");
     let Some(connection) = state.connection.as_mut() else {
       return;
     };
-    let broken = match connection.stream.read(&mut chunk) {
-      Ok(0) => Some("Sway closed the socket".to_owned()),
+    let taken = match connection.stream.read(&mut chunk) {
+      Ok(0) => Err("Sway closed the socket".to_owned()),
       Ok(read) => {
         connection.inbox.extend_from_slice(&chunk[..read]);
-        state.take_messages().err()
+        state.take_messages()
       }
-      Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => None,
-      Err(error) => Some(error.to_string()),
+      Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
+        Ok(Vec::new())
+      }
+      Err(error) => Err(error.to_string()),
     };
-    match broken {
-      None => self.flush_with(state),
-      Some(why) => self.disconnect(state, &why),
+    let events = match taken {
+      Ok(events) => events,
+      Err(why) => return self.disconnect(state, &why),
+    };
+    self.flush_with(state);
+    let wanted = state.wanted();
+    // Only for a subscription nothing wants now, and not with bytes
+    // unsent, which a new connection would lose.
+    let stale = state.connection.as_ref().is_some_and(|connection| {
+      connection.stale
+        && connection.outbox.is_empty()
+        && connection
+          .subscribed
+          .iter()
+          .any(|name| !wanted.contains(name))
+    });
+    drop(guard);
+    if stale {
+      self.resubscribe();
     }
+    self.deliver(events);
   }
 
   /// Writes what the socket takes, and waits for room for the rest.
@@ -542,21 +771,29 @@ impl Connection {
 }
 
 impl State {
-  /// The events the connection needs: workspace ones for the list, and
-  /// output ones once a config reads the outputs.
+  /// The events the connection needs: workspace ones for the list, output
+  /// ones once a config reads the outputs, and the handlers' kinds.
   fn wanted(&self) -> Vec<&'static str> {
     let mut wanted = vec!["workspace"];
     if self.outputs.is_some() {
       wanted.push("output");
     }
+    for kind in self.listeners.iter().flat_map(|listener| &listener.kinds) {
+      let name = kind.wire().1;
+      if !wanted.contains(&name) {
+        wanted.push(name);
+      }
+    }
     wanted
   }
 
-  /// Acts on each whole message in the inbox. An error means the stream
-  /// can't be read any further.
-  fn take_messages(&mut self) -> Result<(), String> {
+  /// Acts on each whole message in the inbox, and returns the events the
+  /// config's handlers want. An error means the stream can't be read any
+  /// further.
+  fn take_messages(&mut self) -> Result<Vec<SwayEvent>, String> {
+    let mut events = Vec::new();
     let Some(connection) = self.connection.as_mut() else {
-      return Ok(());
+      return Ok(events);
     };
     let now = Instant::now();
     while let Some((kind, payload)) = ipc::decode(&mut connection.inbox)? {
@@ -580,16 +817,6 @@ impl State {
           }
           Err(error) => tracing::warn!(%error, "a bad output list from Sway"),
         },
-        ipc::WORKSPACE_EVENT | ipc::OUTPUT_EVENT => {
-          if kind == ipc::WORKSPACE_EVENT {
-            connection.fetches.push_back(Some(now));
-            ipc::encode(ipc::GET_WORKSPACES, b"", &mut connection.outbox);
-          }
-          // A workspace event can move an output's workspace or focus.
-          if self.outputs.is_some() {
-            ipc::encode(ipc::GET_OUTPUTS, b"", &mut connection.outbox);
-          }
-        }
         ipc::SUBSCRIBE => match serde_json::from_slice::<Outcome>(&payload) {
           Ok(Outcome { success: true, .. }) => {}
           Ok(Outcome { error, .. }) => {
@@ -608,9 +835,38 @@ impl State {
           }
           Err(error) => tracing::warn!(%error, "a bad command reply from Sway"),
         },
-        kind => tracing::debug!(kind, "an unexpected message from Sway"),
+        code => {
+          let Some(kind) = SwayEventKind::from_code(code) else {
+            tracing::debug!(kind = code, "an unexpected message from Sway");
+            continue;
+          };
+          if kind == SwayEventKind::Workspace {
+            connection.fetches.push_back(Some(now));
+            ipc::encode(ipc::GET_WORKSPACES, b"", &mut connection.outbox);
+          }
+          // A workspace event can move an output's workspace or focus.
+          let outputs = self.outputs.is_some()
+            && matches!(kind, SwayEventKind::Workspace | SwayEventKind::Output);
+          if outputs {
+            ipc::encode(ipc::GET_OUTPUTS, b"", &mut connection.outbox);
+          }
+          let listened = self
+            .listeners
+            .iter()
+            .any(|listener| listener.kinds.contains(&kind));
+          if listened {
+            match String::from_utf8(payload) {
+              Ok(data) if serde_json::from_str::<IgnoredAny>(&data).is_ok() => {
+                events.push(SwayEvent { kind, data });
+              }
+              _ => tracing::warn!(?kind, "a bad event from Sway"),
+            }
+          } else if kind != SwayEventKind::Workspace && !outputs {
+            connection.stale = true;
+          }
+        }
       }
     }
-    Ok(())
+    Ok(events)
   }
 }
