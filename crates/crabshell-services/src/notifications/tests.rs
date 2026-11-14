@@ -1,0 +1,739 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::future::poll_fn;
+use std::path::PathBuf;
+use std::pin::Pin;
+use std::rc::Rc;
+use std::time::{Duration, Instant, SystemTime};
+
+use crabshell_reactive::{ReadSignal, Runtime};
+use crabshell_ui::{Cx, IconPixels, IconSource};
+use zbus::export::futures_core::Stream;
+use zbus::message::Type as Kind;
+use zbus::{Connection, MessageStream, Structure, Variant};
+
+use super::server::{RawImage, icon, image_pixels};
+use super::{
+  MAX_KEPT, NOTIFICATIONS, NOTIFICATIONS_PATH, Notification, Notifications, Service, Timeout,
+  Urgency, keep_pixels_within,
+};
+use crate::testing::{Harness, PrivateBus, capture_logs, offline};
+use crate::{Config, ServicesExt};
+
+fn online(bus: &PrivateBus) -> Config {
+  Config {
+    session_bus: Some(bus.address.parse().expect("dbus-daemon's address")),
+    ..offline()
+  }
+}
+
+fn service(notifications: &Notifications) -> Rc<Service> {
+  Rc::clone(notifications.service.as_ref().expect("the shell's server"))
+}
+
+fn wait_for(shell: &mut Harness, what: &str, done: impl Fn() -> bool) {
+  shell.retry_until(what, done, |_| {});
+}
+
+/// A shell serving notifications on `bus` with `config`, and an app's
+/// connection to the same bus.
+fn serve(bus: &PrivateBus, config: Config) -> (Harness, Notifications, Connection) {
+  let mut shell = Harness::new(config);
+  let notifications = shell.cx.notifications();
+  let server = service(&notifications);
+  wait_for(&mut shell, "the server", || server.serving());
+  let app = shell.block_on(bus.connect(&[]));
+  (shell, notifications, app)
+}
+
+/// A `Notify` call as an app makes it.
+struct Note {
+  replaces: u32,
+  app_icon: &'static str,
+  summary: String,
+  body: String,
+  actions: Vec<&'static str>,
+  hints: Vec<(&'static str, Variant<'static>)>,
+  timeout: i32,
+}
+
+fn note(summary: &str) -> Note {
+  Note {
+    replaces: 0,
+    app_icon: "",
+    summary: summary.to_owned(),
+    body: "the body".to_owned(),
+    actions: Vec::new(),
+    hints: Vec::new(),
+    timeout: -1,
+  }
+}
+
+fn notify(shell: &mut Harness, app: &Connection, note: Note) -> zbus::Result<u32> {
+  let app = app.clone();
+  shell.block_on(async move {
+    let hints: HashMap<&str, Variant<'_>> = note.hints.into_iter().collect();
+    let body = (
+      "test app",
+      note.replaces,
+      note.app_icon,
+      note.summary.as_str(),
+      note.body.as_str(),
+      note.actions,
+      hints,
+      note.timeout,
+    );
+    let call = app.call_method(
+      Some(NOTIFICATIONS),
+      NOTIFICATIONS_PATH,
+      Some(NOTIFICATIONS),
+      "Notify",
+      &body,
+    );
+    call.await?.body().deserialize::<u32>()
+  })
+}
+
+/// Calls `member` with `body` on the server, and returns the reply.
+fn call<B>(
+  shell: &mut Harness,
+  app: &Connection,
+  member: &'static str,
+  body: B,
+) -> zbus::Result<zbus::Message>
+where
+  B: serde::Serialize + zbus::DynamicType + 'static,
+{
+  let app = app.clone();
+  shell.block_on(async move {
+    let call = app.call_method(
+      Some(NOTIFICATIONS),
+      NOTIFICATIONS_PATH,
+      Some(NOTIFICATIONS),
+      member,
+      &body,
+    );
+    call.await
+  })
+}
+
+/// Every signal the server sends, as another app hears it, such as
+/// `NotificationClosed 1 3`.
+fn listen(shell: &mut Harness, bus: &PrivateBus) -> Rc<RefCell<Vec<String>>> {
+  let listener = shell.block_on(bus.connect(&[]));
+  let rule = zbus::MatchRule::builder()
+    .msg_type(Kind::Signal)
+    .interface(NOTIFICATIONS)
+    .build()
+    .expect("a match rule for the server");
+  let mut messages = shell
+    .block_on(async move { MessageStream::for_match_rule(rule, &listener, None).await })
+    .expect("a match on the private bus");
+  let heard: Rc<RefCell<Vec<String>>> = Rc::default();
+  let sink = Rc::clone(&heard);
+  shell.spawn(async move {
+    while let Some(Ok(signal)) = poll_fn(|cx| Pin::new(&mut messages).poll_next(cx)).await {
+      let member = signal
+        .header()
+        .member()
+        .map_or(String::new(), |m| m.to_string());
+      let body = signal.body();
+      let line = match member.as_str() {
+        "NotificationClosed" => body
+          .deserialize::<(u32, u32)>()
+          .map(|(id, reason)| format!("{member} {id} {reason}")),
+        _ => body
+          .deserialize::<(u32, String)>()
+          .map(|(id, key)| format!("{member} {id} {key}")),
+      };
+      sink
+        .borrow_mut()
+        .push(line.expect("a signal of the spec's type"));
+    }
+  });
+  heard
+}
+
+fn ids(signal: ReadSignal<Vec<Notification>>) -> Vec<u32> {
+  signal.get_untracked().iter().map(|n| n.id).collect()
+}
+
+fn sample(summary: &str) -> Notification {
+  Notification {
+    id: 0,
+    app_name: "app".to_owned(),
+    app_icon: String::new(),
+    summary: summary.to_owned(),
+    body: String::new(),
+    actions: Vec::new(),
+    urgency: Urgency::Normal,
+    timeout: Timeout::Default,
+    image: None,
+    desktop_entry: String::new(),
+    category: String::new(),
+    resident: false,
+    transient: false,
+    received: SystemTime::now(),
+  }
+}
+
+/// A picture hint: `width` by `height` pixels of `channels` bytes each,
+/// in rows of `stride` bytes.
+fn picture(width: i32, height: i32, stride: i32, channels: i32, data: Vec<u8>) -> Variant<'static> {
+  let alpha = channels == 4;
+  Variant::from(Structure::from((
+    width, height, stride, alpha, 8, channels, data,
+  )))
+}
+
+#[test]
+fn a_notify_shows_in_the_list_and_the_popups_and_returns_its_id() {
+  let bus = PrivateBus::start();
+  let (mut shell, notifications, app) = serve(&bus, online(&bus));
+  let mut first = note("hello");
+  first.actions = vec!["default", "Open", "reply", "Reply"];
+  first.hints = vec![
+    ("urgency", Variant::from(0u8)),
+    ("desktop-entry", Variant::from("org.example.App")),
+    ("category", Variant::from("im.received")),
+    ("resident", Variant::from(true)),
+  ];
+  first.timeout = 3000;
+  assert_eq!(notify(&mut shell, &app, first).expect("an id"), 1);
+  let list = notifications.list();
+  wait_for(&mut shell, "the notification", || ids(list) == [1]);
+  let shown = list.get_untracked()[0].clone();
+  assert_eq!(shown.app_name, "test app");
+  assert_eq!(shown.summary, "hello");
+  assert_eq!(shown.body, "the body");
+  assert_eq!(
+    shown.actions,
+    [
+      ("default".to_owned(), "Open".to_owned()),
+      ("reply".to_owned(), "Reply".to_owned())
+    ]
+  );
+  assert_eq!(shown.urgency, Urgency::Low);
+  assert_eq!(shown.timeout, Timeout::After(Duration::from_secs(3)));
+  assert_eq!(shown.desktop_entry, "org.example.App");
+  assert_eq!(shown.category, "im.received");
+  assert!(shown.resident && !shown.transient);
+  assert_eq!(shown.image, None);
+
+  assert_eq!(notify(&mut shell, &app, note("again")).expect("an id"), 2);
+  assert_eq!(ids(list), [1, 2], "oldest first");
+  assert_eq!(ids(notifications.popups()), [2, 1], "newest first");
+  assert_eq!(list.get_untracked()[1].urgency, Urgency::Normal);
+  assert_eq!(list.get_untracked()[1].timeout, Timeout::Default);
+}
+
+#[test]
+fn replacing_keeps_the_place_and_a_gone_id_names_the_new_one() {
+  let bus = PrivateBus::start();
+  let (mut shell, notifications, app) = serve(&bus, online(&bus));
+  let first = notify(&mut shell, &app, note("first")).expect("an id");
+  let second = notify(&mut shell, &app, note("second")).expect("an id");
+  let mut again = note("first, again");
+  again.replaces = first;
+  assert_eq!(notify(&mut shell, &app, again).expect("an id"), first);
+  let summaries = |signal: ReadSignal<Vec<Notification>>| -> Vec<String> {
+    signal
+      .get_untracked()
+      .into_iter()
+      .map(|n| n.summary)
+      .collect()
+  };
+  assert_eq!(summaries(notifications.list()), ["first, again", "second"]);
+  assert_eq!(ids(notifications.popups()), [second, first]);
+
+  let mut gone = note("new");
+  gone.replaces = 99;
+  assert_eq!(notify(&mut shell, &app, gone).expect("an id"), 99);
+  assert_eq!(ids(notifications.list()), [first, second, 99]);
+  assert_eq!(notify(&mut shell, &app, note("next")).expect("an id"), 3);
+}
+
+#[test]
+fn close_notification_takes_it_away_with_reason_3_and_refuses_an_unknown_id() {
+  let bus = PrivateBus::start();
+  let (mut shell, notifications, app) = serve(&bus, online(&bus));
+  let heard = listen(&mut shell, &bus);
+  let id = notify(&mut shell, &app, note("hello")).expect("an id");
+  call(&mut shell, &app, "CloseNotification", id).expect("closed");
+  assert_eq!(ids(notifications.list()), [0u32; 0]);
+  assert_eq!(ids(notifications.popups()), [0u32; 0]);
+  wait_for(&mut shell, "the signal", || !heard.borrow().is_empty());
+  assert_eq!(*heard.borrow(), [format!("NotificationClosed {id} 3")]);
+
+  let error = call(&mut shell, &app, "CloseNotification", id).expect_err("gone");
+  assert!(error.to_string().contains("InvalidArgs"), "{error}");
+}
+
+#[test]
+fn dismissing_invoking_and_clearing_tell_the_app() {
+  let bus = PrivateBus::start();
+  let (mut shell, notifications, app) = serve(&bus, online(&bus));
+  let heard = listen(&mut shell, &bus);
+  let mut plain = note("plain");
+  plain.actions = vec!["default", "Open"];
+  let plain = notify(&mut shell, &app, plain).expect("an id");
+  let mut resident = note("resident");
+  resident.actions = vec!["reply", "Reply"];
+  resident.hints = vec![("resident", Variant::from(true))];
+  let resident = notify(&mut shell, &app, resident).expect("an id");
+  let third = notify(&mut shell, &app, note("third")).expect("an id");
+  let fourth = notify(&mut shell, &app, note("fourth")).expect("an id");
+
+  notifications.invoke(plain, "default");
+  notifications.invoke(resident, "reply");
+  let logs = capture_logs(|| notifications.invoke(resident, "frobnicate"));
+  assert!(logs.contains("no such notification action"), "{logs}");
+  assert_eq!(ids(notifications.list()), [resident, third, fourth]);
+  notifications.dismiss(third);
+  assert_eq!(ids(notifications.list()), [resident, fourth]);
+  notifications.clear();
+  assert_eq!(ids(notifications.list()), [0u32; 0]);
+  assert_eq!(ids(notifications.popups()), [0u32; 0]);
+  wait_for(&mut shell, "the signals", || heard.borrow().len() == 6);
+  assert_eq!(
+    *heard.borrow(),
+    [
+      format!("ActionInvoked {plain} default"),
+      format!("NotificationClosed {plain} 2"),
+      format!("ActionInvoked {resident} reply"),
+      format!("NotificationClosed {third} 2"),
+      format!("NotificationClosed {resident} 2"),
+      format!("NotificationClosed {fourth} 2"),
+    ]
+  );
+}
+
+#[test]
+fn popups_expire_on_one_timer_that_goes_after_the_last() {
+  let bus = PrivateBus::start();
+  let config = Config {
+    popup_timeout: Duration::from_millis(400),
+    ..online(&bus)
+  };
+  let (mut shell, notifications, app) = serve(&bus, config);
+  let heard = listen(&mut shell, &bus);
+  let server = service(&notifications);
+  let usual = notify(&mut shell, &app, note("usual")).expect("an id");
+  let mut transient = note("transient");
+  transient.hints = vec![("transient", Variant::from(true))];
+  transient.timeout = 800;
+  let transient = notify(&mut shell, &app, transient).expect("an id");
+  let mut never = note("never");
+  never.timeout = 0;
+  let never = notify(&mut shell, &app, never).expect("an id");
+  let mut critical = note("critical");
+  critical.hints = vec![("urgency", Variant::from(2u8))];
+  critical.timeout = 50;
+  let critical = notify(&mut shell, &app, critical).expect("an id");
+  let (list, popups) = (notifications.list(), notifications.popups());
+  assert_eq!(ids(popups), [critical, never, transient, usual]);
+
+  wait_for(&mut shell, "the usual one to expire", || {
+    ids(popups) == [critical, never, transient]
+  });
+  assert_eq!(
+    ids(list),
+    [usual, transient, never, critical],
+    "it stays kept"
+  );
+  wait_for(&mut shell, "the transient one to expire", || {
+    ids(popups) == [critical, never]
+  });
+  assert_eq!(ids(list), [usual, never, critical], "a transient one goes");
+  wait_for(&mut shell, "its signal", || !heard.borrow().is_empty());
+
+  let timer = || server.state.borrow().as_ref().and_then(|state| state.timer);
+  assert!(timer().is_none(), "no popup left to expire");
+  assert_eq!(shell.run_until(Instant::now() + Duration::from_secs(2)), 1);
+  assert_eq!(
+    *heard.borrow(),
+    [format!("NotificationClosed {transient} 1")]
+  );
+  assert_eq!(ids(popups), [critical, never]);
+}
+
+#[test]
+fn the_methods_answer_as_the_spec_says() {
+  let bus = PrivateBus::start();
+  let (mut shell, _notifications, app) = serve(&bus, online(&bus));
+  let reply = call(&mut shell, &app, "GetCapabilities", ()).expect("the capabilities");
+  let capabilities: Vec<String> = reply.body().deserialize().expect("as");
+  assert_eq!(
+    capabilities,
+    ["actions", "body", "icon-static", "persistence"]
+  );
+  let reply = call(&mut shell, &app, "GetServerInformation", ()).expect("the server");
+  let information: (String, String, String, String) = reply.body().deserialize().expect("ssss");
+  let version = env!("CARGO_PKG_VERSION").to_owned();
+  assert_eq!(
+    information,
+    (
+      "crabshell".into(),
+      "crabshell".into(),
+      version,
+      "1.2".into()
+    )
+  );
+  let reply = call(&mut shell, &app, "Introspect", ()).expect("the introspection");
+  let xml: String = reply.body().deserialize().expect("s");
+  assert!(xml.contains(r#"<method name="Notify">"#), "{xml}");
+
+  let error = call(&mut shell, &app, "Notify", "not a notification").expect_err("refused");
+  assert!(error.to_string().contains("InvalidArgs"), "{error}");
+  let error = call(&mut shell, &app, "Frobnicate", ()).expect_err("refused");
+  assert!(error.to_string().contains("UnknownMethod"), "{error}");
+}
+
+#[test]
+fn the_shell_waits_for_another_daemon_and_steps_back_for_one_that_replaces_it() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let other = shell.block_on(bus.connect(&[NOTIFICATIONS]));
+  let mut asked = None;
+  let logs = capture_logs(|| {
+    asked = Some(shell.cx.notifications());
+    shell.run_until(Instant::now() + Duration::from_millis(300));
+  });
+  let notifications = asked.expect("the notifications");
+  assert!(
+    logs.contains("another program serves notifications"),
+    "{logs}"
+  );
+  let server = service(&notifications);
+  assert!(!server.serving());
+  // Called by its own name meanwhile, it refuses.
+  let unique = server.state.borrow().as_ref().and_then(|state| {
+    let connection = state.connection.as_ref()?;
+    Some(connection.unique_name()?.to_string())
+  });
+  let unique = unique.expect("the shell's name on the bus");
+  let app = shell.block_on(bus.connect(&[]));
+  let caller = app.clone();
+  let refused = shell.block_on(async move {
+    let information = "GetServerInformation";
+    let path = NOTIFICATIONS_PATH;
+    let call = caller.call_method(
+      Some(unique.as_str()),
+      path,
+      Some(NOTIFICATIONS),
+      information,
+      &(),
+    );
+    call.await.expect_err("not serving").to_string()
+  });
+  assert!(refused.contains("not serving"), "{refused}");
+
+  shell
+    .block_on(other.close())
+    .expect("the other daemon leaves");
+  wait_for(&mut shell, "the shell to serve", || server.serving());
+  let id = notify(&mut shell, &app, note("hello")).expect("an id");
+
+  let replacer = shell.block_on(bus.connect(&[NOTIFICATIONS]));
+  wait_for(&mut shell, "the shell to step back", || !server.serving());
+  assert_eq!(ids(notifications.list()), [id], "the history stays");
+  shell
+    .block_on(replacer.close())
+    .expect("the replacer leaves");
+  wait_for(&mut shell, "the shell to serve again", || server.serving());
+}
+
+#[test]
+fn pictures_convert_to_argb_and_bad_ones_are_refused() {
+  // Two RGB pixels in a row padded to 8 bytes, then two more unpadded.
+  let rgb = [1, 2, 3, 4, 5, 6, 0, 0, 7, 8, 9, 10, 11, 12];
+  let pixels = image_pixels(&(2, 2, 8, false, 8, 3, &rgb)).expect("a picture");
+  assert_eq!((pixels.width, pixels.height), (2, 2));
+  assert_eq!(
+    &*pixels.data,
+    [255, 1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12]
+  );
+  let rgba = [10, 20, 30, 40];
+  let pixels = image_pixels(&(1, 1, 4, true, 8, 4, &rgba)).expect("a picture");
+  assert_eq!(&*pixels.data, [40, 10, 20, 30]);
+
+  let wide = vec![0; 513 * 4];
+  let huge = vec![0; 1024 * 1024 + 4];
+  let refused: [RawImage<'_>; 9] = [
+    (513, 1, 513 * 4, true, 8, 4, &wide),
+    (0, 1, 0, true, 8, 4, &[]),
+    (-1, 1, 4, true, 8, 4, &rgba),
+    (1, 1, 4, true, 16, 4, &rgba),
+    (1, 1, 4, false, 8, 4, &rgba),
+    (2, 1, 8, true, 8, 4, &rgba),
+    (1, 1, 2, true, 8, 4, &rgba),
+    (1, 1, -4, true, 8, 4, &rgba),
+    (1, 1, 4, true, 8, 4, &huge),
+  ];
+  for raw in refused {
+    assert_eq!(image_pixels(&raw), None, "{:?}", (raw.0, raw.1, raw.2));
+  }
+}
+
+#[test]
+fn icons_and_paths_name_files_or_theme_icons() {
+  assert_eq!(
+    icon("mail-unread"),
+    Some(IconSource::Name("mail-unread".into()))
+  );
+  assert_eq!(icon("/a/b.png"), Some(IconSource::File("/a/b.png".into())));
+  assert_eq!(
+    icon("file:///tmp/a%20b%C3%A9.png"),
+    Some(IconSource::File(PathBuf::from("/tmp/a bé.png")))
+  );
+  for nothing in [
+    "",
+    "icons/x.png",
+    "http://example.com/x.png",
+    "file://host/x",
+    "file:///a%2",
+  ] {
+    assert_eq!(icon(nothing), None, "{nothing}");
+  }
+}
+
+#[test]
+fn the_picture_comes_from_the_hints_in_the_specs_order() {
+  let bus = PrivateBus::start();
+  let (mut shell, notifications, app) = serve(&bus, online(&bus));
+  let rgba = || vec![10u8, 20, 30, 40];
+  let argb = IconSource::Pixels(IconPixels {
+    width: 1,
+    height: 1,
+    data: vec![40, 10, 20, 30].into(),
+  });
+  // The app's icon, the hints, and the picture they make.
+  type Case = (
+    &'static str,
+    Vec<(&'static str, Variant<'static>)>,
+    Option<IconSource>,
+  );
+  let cases: Vec<Case> = vec![
+    (
+      "mail-unread",
+      vec![
+        ("image-data", picture(1, 1, 4, 4, rgba())),
+        ("image-path", Variant::from("/a.png")),
+      ],
+      Some(argb.clone()),
+    ),
+    (
+      "mail-unread",
+      vec![("image_data", picture(1, 1, 4, 4, rgba()))],
+      Some(argb.clone()),
+    ),
+    (
+      "mail-unread",
+      vec![("image-path", Variant::from("file:///a.png"))],
+      Some(IconSource::File("/a.png".into())),
+    ),
+    (
+      "mail-unread",
+      vec![("image_path", Variant::from("/b.png"))],
+      Some(IconSource::File("/b.png".into())),
+    ),
+    (
+      "mail-unread",
+      vec![
+        ("image-data", picture(513, 1, 513 * 4, 4, vec![0; 513 * 4])),
+        ("image-path", Variant::from(7u32)),
+        ("icon_data", picture(1, 1, 4, 4, rgba())),
+      ],
+      Some(IconSource::Name("mail-unread".into())),
+    ),
+    (
+      "",
+      vec![("icon_data", picture(1, 1, 4, 4, rgba()))],
+      Some(argb),
+    ),
+    ("", vec![("image-data", Variant::from("a picture"))], None),
+  ];
+  let expected: Vec<Option<IconSource>> = cases.iter().map(|case| case.2.clone()).collect();
+  for (app_icon, hints, _) in cases {
+    let mut sent = note("picture");
+    sent.app_icon = app_icon;
+    sent.hints = hints;
+    notify(&mut shell, &app, sent).expect("an id");
+  }
+  let images: Vec<Option<IconSource>> = notifications
+    .list()
+    .get_untracked()
+    .into_iter()
+    .map(|n| n.image)
+    .collect();
+  assert_eq!(images, expected);
+}
+
+#[test]
+fn outside_data_is_cut_to_the_caps_and_wrong_types_read_as_defaults() {
+  let bus = PrivateBus::start();
+  let (mut shell, notifications, app) = serve(&bus, online(&bus));
+  let heard = listen(&mut shell, &bus);
+  let mut big = note(&"€".repeat(400));
+  big.body = "x".repeat(20_000);
+  big.actions = std::iter::repeat_n(["key", "label"], 20)
+    .flatten()
+    .chain(["odd"])
+    .collect();
+  big.hints = vec![
+    ("urgency", Variant::from("critical")),
+    ("resident", Variant::from("yes")),
+    ("transient", Variant::from(1i32)),
+    ("desktop-entry", Variant::from(5u32)),
+    // Read by no one, and skipped unread.
+    ("x-kde-urls", Variant::from(vec!["file:///a", "file:///b"])),
+  ];
+  big.timeout = -5;
+  notify(&mut shell, &app, big).expect("an id");
+  let kept = notifications.list().get_untracked()[0].clone();
+  assert_eq!(kept.summary.len(), 1023, "cut before a split €");
+  assert_eq!(kept.body.len(), 16 * 1024);
+  assert_eq!(kept.actions.len(), 16);
+  assert_eq!(kept.urgency, Urgency::Normal);
+  assert!(!kept.resident);
+  assert!(
+    kept.transient,
+    "an integer flag counts, as notify-send -h int:transient:1 sends"
+  );
+  assert_eq!(kept.desktop_entry, "");
+  assert_eq!(kept.timeout, Timeout::Default);
+
+  let server = service(&notifications);
+  for _ in 0..MAX_KEPT {
+    server.notify(0, sample("one more"));
+  }
+  let list = notifications.list();
+  assert_eq!(list.get_untracked().len(), MAX_KEPT);
+  assert_eq!(ids(list)[0], 2, "the oldest went");
+  wait_for(&mut shell, "its signal", || !heard.borrow().is_empty());
+  assert_eq!(*heard.borrow(), ["NotificationClosed 1 1"]);
+  assert_eq!(notifications.popups().get_untracked().len(), MAX_KEPT);
+}
+
+#[test]
+fn pictures_past_the_budget_fall_back_to_the_app_icon_oldest_first() {
+  let with_pixels = |app_icon: &str, bytes: usize| Notification {
+    app_icon: app_icon.to_owned(),
+    image: Some(IconSource::Pixels(IconPixels {
+      width: 1,
+      height: 1,
+      data: vec![0; bytes].into(),
+    })),
+    ..sample("picture")
+  };
+  let mut history = [
+    with_pixels("oldest", 8),
+    with_pixels("old", 4),
+    sample("none"),
+    with_pixels("new", 4),
+  ];
+  keep_pixels_within(&mut history, 8);
+  let images: Vec<_> = history.iter().map(|n| n.image.clone()).collect();
+  assert_eq!(images[0], Some(IconSource::Name("oldest".into())));
+  assert!(matches!(images[1], Some(IconSource::Pixels(_))));
+  assert_eq!(images[2], None);
+  assert!(matches!(images[3], Some(IconSource::Pixels(_))));
+}
+
+#[test]
+fn ids_skip_zero_and_those_kept_when_they_wrap() {
+  let shell = Harness::new(offline());
+  let notifications = shell.cx.notifications();
+  let server = service(&notifications);
+  let set_next = |id| server.state.borrow_mut().as_mut().expect("started").next_id = id;
+  set_next(u32::MAX);
+  assert_eq!(server.notify(0, sample("last")), u32::MAX);
+  assert_eq!(server.notify(0, sample("wrapped")), 1);
+  set_next(u32::MAX);
+  assert_eq!(server.notify(0, sample("past both")), 2);
+}
+
+#[test]
+fn an_idle_server_wakes_nothing_and_no_session_bus_is_quiet() {
+  let bus = PrivateBus::start();
+  let (mut shell, notifications, app) = serve(&bus, online(&bus));
+  let mut never = note("stays");
+  never.timeout = 0;
+  notify(&mut shell, &app, never).expect("an id");
+  assert_eq!(ids(notifications.popups()), [1]);
+  shell.run_until(Instant::now() + Duration::from_millis(200));
+  assert_eq!(shell.run_until(Instant::now() + Duration::from_secs(2)), 1);
+
+  let mut shell = Harness::new(offline());
+  let logs = capture_logs(|| {
+    let notifications = shell.cx.notifications();
+    let woke = shell.run_until(Instant::now() + Duration::from_millis(200));
+    assert_eq!(woke, 1);
+    assert_eq!(ids(notifications.list()), [0u32; 0]);
+  });
+  assert!(logs.contains("no session bus"), "{logs}");
+
+  let mut shell = Harness::new(Config {
+    session_bus: Some(
+      "unix:path=/nonexistent/crabshell-test-bus"
+        .parse()
+        .expect("an address"),
+    ),
+    ..offline()
+  });
+  let logs = capture_logs(|| {
+    shell.cx.notifications();
+    shell.run_until(Instant::now() + Duration::from_millis(100));
+  });
+  assert!(logs.contains("can't reach the session bus"), "{logs}");
+  assert_eq!(
+    shell.run_until(Instant::now() + Duration::from_millis(500)),
+    1
+  );
+}
+
+#[test]
+fn every_caller_shares_one_server_and_without_provide_it_is_empty() {
+  let shell = Harness::new(offline());
+  let list = shell.cx.notifications().list();
+  let output = shell.cx.child();
+  assert_eq!(output.notifications().list(), list);
+  output.owner().dispose();
+  assert!(list.try_get().is_some());
+
+  let cx = Cx::new(Runtime::current().new_owner());
+  let list = cx.notifications().list();
+  assert_eq!(list.get_untracked(), []);
+  cx.owner().dispose();
+  assert_eq!(list.try_get(), None);
+}
+
+#[test]
+fn disposing_the_root_frees_the_server_and_its_timer() {
+  let runtime = Runtime::current();
+  let before = runtime.node_count();
+  let bus = PrivateBus::start();
+  let config = Config {
+    popup_timeout: Duration::from_millis(100),
+    ..online(&bus)
+  };
+  let (mut shell, notifications, app) = serve(&bus, config);
+  notify(&mut shell, &app, note("hello")).expect("an id");
+  let server = service(&notifications);
+  shell.cx.owner().dispose();
+  assert_eq!(runtime.node_count(), before);
+  // The timer finds the history gone and doesn't come back.
+  shell.run_until(Instant::now() + Duration::from_millis(300));
+  assert!(
+    server
+      .state
+      .borrow()
+      .as_ref()
+      .and_then(|state| state.timer)
+      .is_none()
+  );
+  assert_eq!(
+    shell.run_until(Instant::now() + Duration::from_millis(500)),
+    1
+  );
+}

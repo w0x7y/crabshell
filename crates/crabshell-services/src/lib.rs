@@ -1,5 +1,5 @@
-//! The services a Crabshell bar reads: the clock, Sway's workspaces, audio
-//! and the tray.
+//! The services a Crabshell bar reads: the clock, Sway's workspaces, audio,
+//! the tray, power and notifications.
 //!
 //! The shell calls [`provide`] once, with its root context and event loop.
 //! After that, any context hands out services through [`ServicesExt`],
@@ -18,6 +18,7 @@ mod audio;
 mod bluetooth;
 mod clock;
 mod dbus;
+mod notifications;
 mod power;
 mod sway;
 #[cfg(test)]
@@ -44,6 +45,7 @@ use crabshell_ui::Cx;
 pub use audio::{Audio, AudioNode, AudioStream, Sink};
 pub use bluetooth::{Adapter, Bluetooth, BluetoothDevice};
 pub use clock::Precision;
+pub use notifications::{Notification, Notifications, Timeout, Urgency};
 pub use power::{BatteryState, DeviceKind, PowerDevice, PowerProfile, PowerProfiles, UPower};
 pub use sway::{Sway, Workspace};
 pub use tray::{MenuEntry, MenuToggle, Tray, TrayHost, TrayItem, TrayMenu, TrayStatus};
@@ -68,6 +70,7 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(power::UPowerService::new(Rc::clone(&shared)));
   cx.provide(power::ProfilesService::new(Rc::clone(&shared)));
   cx.provide(bluetooth::BluetoothService::new(Rc::clone(&shared)));
+  cx.provide(notifications::Service::new(Rc::clone(&shared)));
 }
 
 /// The services a context hands out.
@@ -133,6 +136,17 @@ pub trait ServicesExt {
   /// does while BlueZ isn't there, and wakes the shell only when BlueZ
   /// says something changed.
   fn bluetooth(&self) -> Bluetooth;
+
+  /// The notification server on the session bus: what apps sent, and
+  /// the popups still showing. Every caller shares one connection, which
+  /// starts on the loop's next turn and never waits for the bus.
+  ///
+  /// The shell serves while no other program does. While another daemon
+  /// has the name, the shell waits for it to leave, and keeps what it was
+  /// sent if one takes the name over. With no session bus the lists stay
+  /// empty and the service never wakes the shell. It wakes the shell only
+  /// when an app calls and when a popup expires.
+  fn notifications(&self) -> Notifications;
 }
 
 impl ServicesExt for Cx {
@@ -162,6 +176,10 @@ impl ServicesExt for Cx {
 
   fn bluetooth(&self) -> Bluetooth {
     bluetooth::bluetooth(self)
+  }
+
+  fn notifications(&self) -> Notifications {
+    notifications::notifications(self)
   }
 }
 
@@ -376,13 +394,17 @@ struct Config {
   /// The system bus, where logind, timedated, UPower,
   /// power-profiles-daemon and BlueZ are. `None` for none.
   system_bus: Option<zbus::Address>,
-  /// The session bus, where tray items are. `None` for none.
+  /// The session bus, where tray items and notifying apps are. `None` for
+  /// none.
   session_bus: Option<zbus::Address>,
   /// Sway's IPC socket, from `SWAYSOCK`. `None` when that is unset.
   sway: Option<sway::Socket>,
   /// The audio server. `None` for none, so a test never reaches the
   /// user's.
   audio: Option<audio::Server>,
+  /// How long a popup shows when its app leaves that to the server: 5 s,
+  /// and less in tests.
+  popup_timeout: Duration,
 }
 
 impl Config {
@@ -408,6 +430,7 @@ impl Config {
         retry: audio::RETRY,
         retry_for: audio::RETRY_FOR,
       }),
+      popup_timeout: notifications::POPUP_TIMEOUT,
     }
   }
 }

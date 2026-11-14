@@ -109,6 +109,7 @@ pub(crate) fn offline() -> Config {
     session_bus: None,
     sway: None,
     audio: None,
+    popup_timeout: crate::notifications::POPUP_TIMEOUT,
   }
 }
 
