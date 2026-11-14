@@ -57,6 +57,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod animation;
 mod cx;
 mod edit;
 mod floating;
@@ -81,6 +82,7 @@ mod window;
 #[cfg(test)]
 mod tests;
 
+pub use animation::{Animate, Easing, Transition, advance_animations, animating};
 pub use cx::Cx;
 pub use floating::{FloatingConfig, FloatingWindow, WindowRequest};
 pub use geometry::{Point, Rect, Size};

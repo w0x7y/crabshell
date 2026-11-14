@@ -18,11 +18,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crabshell_reactive::{Runtime, Signal};
-use crabshell_ui::FloatingWindow;
 use crabshell_ui::{
   Align, Button, Color, Column, Content, Cx, Edge, Key, KeyEvent, KeyboardFocus, Margins, Output,
   PanelWindow, PopupWindow, Rect, Region, Row, Spacer, Style, Text, TextInput, Window,
 };
+use crabshell_ui::{FloatingWindow, Transition};
 use crabshell_wayland::{Event, EventLoop, Platform, WindowId};
 use sway::{Image, InputMethod, Sway, VirtualKeyboard, VirtualPointer, keys, run_until, settle};
 
@@ -76,6 +76,8 @@ struct Setup {
   keyboard: KeyboardFocus,
   /// Whether the bar's text field takes the focus as it is built.
   field: bool,
+  /// Whether the bar has a box whose width animates with `wide`.
+  animated: bool,
 }
 
 /// A bar across the top that opens nothing.
@@ -86,6 +88,7 @@ const PLAIN: Setup = Setup {
   margins: Margins::all(0),
   keyboard: KeyboardFocus::None,
   field: false,
+  animated: false,
 };
 
 /// What the test bar's bindings read and write.
@@ -109,6 +112,8 @@ struct Knobs {
   keyboard: Signal<KeyboardFocus>,
   /// What the bar's text field holds.
   typed: Signal<String>,
+  /// The animated box's target: wide or narrow.
+  wide: Signal<bool>,
 }
 
 /// A popup with two entries: the first opens another menu beside it, and
@@ -210,6 +215,28 @@ fn bar(cx: &Cx, output: &str, knobs: Knobs) -> Window {
           },
         )
         .child(Spacer::new())
+        .children_keyed(
+          move || {
+            if knobs.setup.animated {
+              vec![()]
+            } else {
+              Vec::new()
+            }
+          },
+          |_| (),
+          move |cx, _| {
+            let width = cx.animate(
+              move || if knobs.wide.get() { 200.0 } else { 20.0 },
+              Transition::new(300),
+            );
+            Row::new().style(move || {
+              Style::new()
+                .width(width.get())
+                .height(10.0)
+                .background(Color::hex("#a6e3a1"))
+            })
+          },
+        )
         // Only some tests want a text field.
         .children_keyed(
           move || {
@@ -260,6 +287,7 @@ impl Shell {
       keys: cx.signal(Vec::new()),
       keyboard: cx.signal(setup.keyboard),
       typed: cx.signal(String::new()),
+      wide: cx.signal(false),
     };
     let mut event_loop = sway.connect();
     let built = Rc::new(RefCell::new(Vec::new()));
@@ -920,6 +948,76 @@ fn fullscreen_mode(tree: &str, title: &str) -> Option<String> {
   let view = &tree[tree.find(&format!("\"name\":\"{title}\""))?..];
   let mode = &view[view.find("\"fullscreen_mode\":")? + "\"fullscreen_mode\":".len()..];
   Some(mode.chars().take_while(char::is_ascii_digit).collect())
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn an_animation_draws_frames_while_it_moves_and_then_nothing_wakes() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let setup = Setup {
+    animated: true,
+    ..PLAIN
+  };
+  let mut shell = Shell::build(&sway, setup);
+  let id = shell.wait_for_bar("HEADLESS-1");
+  let commits = |shell: &mut Shell| {
+    shell
+      .event_loop
+      .platform()
+      .window_info(id)
+      .expect("the bar is held")
+      .commits
+  };
+  let before = commits(&mut shell);
+  let woke = shell.event_loop.platform().stats().iterations;
+  shell.knobs.wide.set(true);
+  settle(&mut shell.event_loop);
+  // A tick a frame, not a busy loop: settling's own 20 ms dispatches and
+  // the frames come to well under 400 iterations.
+  let iterations = shell.event_loop.platform().stats().iterations - woke;
+  assert!(
+    iterations < 400,
+    "{iterations} loop iterations for one animation"
+  );
+  // 300 ms at 60 Hz is about 18 frames; frame callbacks may merge some.
+  let frames = commits(&mut shell) - before;
+  assert!(
+    (6..=40).contains(&frames),
+    "{frames} frames for a 300 ms animation"
+  );
+  let (_, window) = shell
+    .event_loop
+    .platform()
+    .windows()
+    .find(|(held, _)| *held == id)
+    .expect("the bar is held");
+  // The animated box is the row's one child 10 pixels tall.
+  let wide = window
+    .view()
+    .root()
+    .children()
+    .next()
+    .and_then(|row| row.children().find(|child| child.rect().height == 10.0))
+    .map(|animated| animated.rect().width);
+  assert_eq!(wide, Some(200.0));
+
+  // Ended: one dispatch sleeps the whole time.
+  let iterations = shell.event_loop.platform().stats().iterations;
+  let started = std::time::Instant::now();
+  shell
+    .event_loop
+    .dispatch(Some(Duration::from_secs(2)))
+    .expect("the connection works");
+  assert!(
+    started.elapsed() >= Duration::from_millis(1900),
+    "{:?}",
+    started.elapsed()
+  );
+  assert_eq!(
+    shell.event_loop.platform().stats().iterations,
+    iterations + 1
+  );
 }
 
 /// Sway's tree, without whitespace, for looking up windows in.

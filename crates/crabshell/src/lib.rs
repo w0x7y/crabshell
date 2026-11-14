@@ -84,9 +84,10 @@ pub mod prelude {
     Precision, ServicesExt, Sink, Tray, TrayHost, TrayItem, TrayMenu, TrayStatus, Workspace,
   };
   pub use crabshell_ui::{
-    Adjust, Align, Anchors, Border, Button, Color, Column, Cx, Edge, Fit, FloatingWindow, Font,
-    Icon, IconPixels, IconSource, Image, Justify, Key, KeyEvent, KeyboardFocus, Layer, ListView,
-    Margins, Menu, MenuEntry, MenuToggle, Modifiers, Output, Padding, PanelWindow, PopupWindow,
-    Region, Row, ScrollView, Size, Spacer, Stack, Style, Text, TextInput, Widget,
+    Adjust, Align, Anchors, Animate, Border, Button, Color, Column, Cx, Easing, Edge, Fit,
+    FloatingWindow, Font, Icon, IconPixels, IconSource, Image, Justify, Key, KeyEvent,
+    KeyboardFocus, Layer, ListView, Margins, Menu, MenuEntry, MenuToggle, Modifiers, Output,
+    Padding, PanelWindow, PopupWindow, Region, Row, ScrollView, Size, Spacer, Stack, Style, Text,
+    TextInput, Transition, Widget,
   };
 }

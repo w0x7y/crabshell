@@ -1,7 +1,8 @@
 //! The event loop, and [`Platform`], the state every event reaches.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use calloop::timer::{TimeoutAction, Timer};
 use calloop::{LoopHandle, LoopSignal};
 use crabshell_reactive::Runtime;
 use crabshell_render::{BufferAge, Canvas, DamageHistory, PixelFormat, PixelRect, Renderer};
@@ -323,6 +324,8 @@ pub struct Platform {
   pub(crate) last_button: Option<(WlSeat, u32)>,
   /// Whether that last button event was a press, still held.
   pub(crate) button_held: bool,
+  /// Whether the animation timer is in the loop.
+  ticking: bool,
   renderer: Renderer,
   /// The icon theme set, for snapshots' renderers.
   icon_theme: Option<String>,
@@ -399,6 +402,7 @@ impl Platform {
       text_inputs: Vec::new(),
       last_button: None,
       button_held: false,
+      ticking: false,
       renderer: Renderer::new(),
       icon_theme: None,
       text: TextSystem::new(),
@@ -411,6 +415,44 @@ impl Platform {
       platform.add_data_device(&qh, &seat);
     }
     Ok(platform)
+  }
+
+  /// Starts the animation timer if an animation runs and it isn't
+  /// running: it fires once a frame of the fastest output, advances the
+  /// animations, and leaves the loop once none runs, so a shell where
+  /// nothing moves isn't woken.
+  fn tick_animations(&mut self) {
+    if self.ticking || !crabshell_ui::animating() {
+      return;
+    }
+    let frame = self.frame_interval();
+    let ticked =
+      self
+        .handle
+        .insert_source(Timer::immediate(), move |_, _, platform: &mut Platform| {
+          if crabshell_ui::advance_animations(Instant::now()) {
+            TimeoutAction::ToDuration(frame)
+          } else {
+            platform.ticking = false;
+            TimeoutAction::Drop
+          }
+        });
+    match ticked {
+      Ok(_) => self.ticking = true,
+      Err(error) => tracing::warn!(%error, "couldn't start the animation timer"),
+    }
+  }
+
+  /// A frame of the fastest output, or of 60 Hz without one.
+  pub(crate) fn frame_interval(&self) -> Duration {
+    let fastest = self
+      .known
+      .iter()
+      .filter_map(|(_, info)| info.mode.map(|mode| mode.refresh_mhz))
+      .max()
+      .filter(|&mhz| mhz >= 1_000)
+      .unwrap_or(60_000);
+    Duration::from_micros(1_000_000_000 / u64::from(fastest))
   }
 
   /// The handle other sources are added with.
@@ -614,6 +656,7 @@ impl Platform {
       }
     }
     self.sync_text_inputs();
+    self.tick_animations();
     if let Err(error) = self.connection.flush() {
       tracing::warn!(%error, "couldn't flush the Wayland connection");
     }
