@@ -72,6 +72,7 @@ mod blur;
 mod buffers;
 mod clipboard;
 mod events;
+mod ext_toplevels;
 mod foreign_toplevels;
 mod handlers;
 mod idle;

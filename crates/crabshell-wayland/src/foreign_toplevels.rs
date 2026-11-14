@@ -72,6 +72,15 @@ impl Foreign {
     Some(&handle.proxy)
   }
 
+  /// Each listed toplevel's id, app id and title, in the order the
+  /// compositor announced them.
+  pub(crate) fn names(&self) -> impl Iterator<Item = (u64, (&str, &str))> {
+    self.handles.iter().filter_map(|handle| {
+      let state = handle.current.as_ref()?;
+      Some((handle.id, (state.app_id.as_str(), state.title.as_str())))
+    })
+  }
+
   /// Notes that `output` came, went or got its name: the names listed
   /// change if a toplevel is on it.
   pub(crate) fn output_changed(&mut self, output: &WlOutput) {

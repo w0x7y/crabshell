@@ -1,6 +1,7 @@
 //! What screencopy views show, captured through
 //! `ext-image-copy-capture-v1`: outputs, with
-//! `ext-output-image-capture-source-v1`.
+//! `ext-output-image-capture-source-v1`, and windows, with
+//! `ext-foreign-toplevel-image-capture-source-v1`.
 //!
 //! Each view a shown window holds gets one session for its source, and a
 //! shared-memory buffer of the size the session asks for. A frame copies
@@ -18,6 +19,7 @@ use smithay_client_toolkit::reexports::client::{
 };
 use smithay_client_toolkit::shm::Shm;
 use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
+use wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1;
 use wayland_protocols::ext::image_capture_source::v1::client::{
   ext_image_capture_source_v1::ExtImageCaptureSourceV1,
   ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1,
@@ -28,6 +30,7 @@ use wayland_protocols::ext::image_copy_capture::v1::client::{
   ext_image_copy_capture_session_v1::{self, ExtImageCopyCaptureSessionV1},
 };
 
+use crate::ext_toplevels::ExtToplevels;
 use crate::platform::Platform;
 use crate::windows::WindowId;
 
@@ -56,6 +59,8 @@ pub(crate) struct Captures {
   asked: bool,
   manager: Option<ExtImageCopyCaptureManagerV1>,
   outputs: Option<ExtOutputImageCaptureSourceManagerV1>,
+  /// Windows to capture, once a view of one asks.
+  pub(crate) toplevels: ExtToplevels,
   views: Vec<View>,
 }
 
@@ -74,6 +79,7 @@ struct View {
 #[derive(Clone, PartialEq)]
 enum Target {
   Output(WlOutput),
+  Toplevel(ExtForeignToplevelHandleV1),
 }
 
 /// A capture session and its buffer, destroyed when dropped.
@@ -121,6 +127,10 @@ impl Captures {
     let manager = self.manager.as_ref()?;
     let source = match target {
       Target::Output(output) => self.outputs.as_ref()?.create_source(output, qh, ()),
+      Target::Toplevel(handle) => {
+        let sources = self.toplevels.sources.as_ref()?;
+        sources.create_source(handle, qh, ())
+      }
     };
     let options = if cursors {
       Options::PaintCursors
@@ -249,20 +259,16 @@ impl Platform {
     if !std::mem::replace(&mut self.captures.asked, true) {
       self.bind_captures();
     }
+    let targets: Vec<Option<Target>> = wanted
+      .iter()
+      .map(|(_, request)| self.target(&request.source))
+      .collect();
     let captures = &mut self.captures;
     captures.views.retain(|view| {
       let id = view.request.id;
       wanted.iter().any(|(_, request)| request.id == id)
     });
-    for (window, request) in wanted {
-      let target = match &request.source {
-        CaptureSource::Output(name) => self
-          .known
-          .iter()
-          .find(|(_, info)| info.name == *name)
-          .map(|(output, _)| Target::Output(output.clone())),
-        _ => None,
-      };
+    for ((window, request), target) in wanted.into_iter().zip(targets) {
       let index = captures
         .views
         .iter()
@@ -292,6 +298,18 @@ impl Platform {
         Some(index) => captures.views[index] = view,
         None => captures.views.push(view),
       }
+    }
+  }
+
+  /// What `source` is now, if it is there.
+  fn target(&mut self, source: &CaptureSource) -> Option<Target> {
+    match source {
+      CaptureSource::Output(name) => {
+        let (output, _) = self.known.iter().find(|(_, info)| info.name == *name)?;
+        Some(Target::Output(output.clone()))
+      }
+      CaptureSource::Toplevel(id) => self.toplevel_handle(*id).map(Target::Toplevel),
+      _ => None,
     }
   }
 

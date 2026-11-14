@@ -2378,3 +2378,86 @@ fn unplugging_the_output_ends_its_session_and_keeps_the_last_frame() {
   });
   assert!(shows(event_loop.platform(), viewer, RED));
 }
+
+const GREEN: Color = Color::rgb(0x20, 0xc0, 0x40);
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn views_of_windows_show_their_pixels_and_keep_the_last_frame() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1280x720", "scale", "1"]);
+  let runtime = Runtime::current();
+  let cx = Cx::new(runtime.new_owner());
+  let mut event_loop = sway.connect();
+  let heard: Rc<RefCell<Vec<Toplevel>>> = Rc::default();
+  let log = Rc::clone(&heard);
+  event_loop
+    .platform()
+    .watch_toplevels(move |list| *log.borrow_mut() = list.to_vec());
+  // An id no window has yet is waited for.
+  let source = cx.signal(CaptureSource::Toplevel(u64::MAX));
+  let viewer = PanelWindow::new(&Output::new("HEADLESS-1"))
+    .anchors(Edge::Top | Edge::Left)
+    .width(VIEW.0)
+    .height(VIEW.1)
+    .child(
+      Row::new().child(
+        ScreencopyView::new(move || source.get())
+          .live(true)
+          .style(Style::new().width(VIEW.0 as f32).height(VIEW.1 as f32)),
+      ),
+    );
+  let viewer = event_loop.platform().add_window(Window::new(&cx, viewer));
+  let open = cx.signal(true);
+  let floating = FloatingWindow::new()
+    .title("captured")
+    .width(300)
+    .height(200)
+    .visible(move || open.get())
+    .style(Style::new().background(GREEN));
+  event_loop
+    .platform()
+    .add_window(Window::floating(&cx, floating));
+  run_until(&mut event_loop, "the window listed", |_| {
+    heard
+      .borrow()
+      .iter()
+      .any(|toplevel| toplevel.title == "captured")
+  });
+  settle(&mut event_loop);
+  assert_eq!(event_loop.platform().capture_sessions(), 0);
+
+  let id = heard.borrow()[0].id;
+  source.set(CaptureSource::Toplevel(id));
+  run_until(&mut event_loop, "the window's frame", |platform| {
+    frame_of(platform, viewer).is_some_and(|frame| all_of(&frame.rgba, GREEN))
+  });
+  assert_eq!(event_loop.platform().capture_sessions(), 1);
+
+  open.set(false);
+  run_until(&mut event_loop, "the session to end", |platform| {
+    platform.capture_sessions() == 0
+  });
+  let frame = frame_of(event_loop.platform(), viewer).expect("the last frame stays");
+  assert!(all_of(&frame.rgba, GREEN));
+
+  // Another program's window, with an app id, pairs too. Its 100 pixel
+  // square of zeros shows black, and isn't scaled up.
+  let _app = AppWindow::new(&sway, "org.example.App", "another program");
+  let other = |heard: &Rc<RefCell<Vec<Toplevel>>>| {
+    let heard = heard.borrow();
+    let found = heard
+      .iter()
+      .find(|toplevel| toplevel.app_id == "org.example.App");
+    found.map(|toplevel| toplevel.id)
+  };
+  run_until(&mut event_loop, "the other window listed", |_| {
+    other(&heard).is_some()
+  });
+  source.set(CaptureSource::Toplevel(other(&heard).expect("listed")));
+  run_until(&mut event_loop, "the other window's frame", |platform| {
+    frame_of(platform, viewer).is_some_and(|frame| {
+      (frame.width, frame.height) == (100, 100) && all_of(&frame.rgba, Color::rgb(0, 0, 0))
+    })
+  });
+}
