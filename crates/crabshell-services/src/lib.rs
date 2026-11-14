@@ -18,6 +18,9 @@ mod audio;
 mod bluetooth;
 mod clock;
 mod dbus;
+// Used by the service, in the next commit.
+#[allow(dead_code)]
+mod desktop_entries;
 mod file;
 mod lines;
 mod mpris;
