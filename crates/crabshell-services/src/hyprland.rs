@@ -18,12 +18,21 @@ use std::sync::Once;
 use calloop::{Interest, RegistrationToken};
 use crabshell_reactive::{ReadSignal, Signal};
 use crabshell_ui::Cx;
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer};
 
 use crate::Shared;
 use crate::dbus::set_changed;
 use crate::lines::Lines;
+
+/// The largest reply read from one request; a larger one is dropped.
+pub(crate) const MAX_REPLY: usize = 8 * 1024 * 1024;
+
+/// The longest text kept, cut at a character.
+pub(crate) const MAX_TEXT: usize = 4 * 1024;
+
+/// The most workspaces, monitors or windows kept; the rest are left out.
+pub(crate) const MAX_LIST: usize = 4096;
 
 /// One of Hyprland's workspaces, as `j/workspaces` describes it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -421,6 +430,7 @@ impl Service {
     let mut stale = [false; 4];
     for line in lines {
       let Some((name, _)) = line.split_once(">>") else {
+        let line = cut(line);
         tracing::warn!(line, "a line from Hyprland's event socket without `>>`");
         continue;
       };
@@ -451,6 +461,7 @@ impl Service {
     let request = &mut state.requests[at];
     let failed = match request.stream.read(&mut chunk) {
       Ok(0) => None,
+      Ok(read) if request.reply.len() + read > MAX_REPLY => Some(String::from("over 8 MiB")),
       Ok(read) => return request.reply.extend_from_slice(&chunk[..read]),
       Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
         return;
@@ -566,7 +577,7 @@ impl State {
 
 impl Raw {
   /// Keeps what `reply` says for `query`. A reply that doesn't parse is
-  /// logged and the last one kept.
+  /// logged and the last one kept; an entry that doesn't is left out.
   fn apply(&mut self, query: Query, reply: &[u8]) {
     match query {
       Query::Workspaces => {
@@ -592,11 +603,33 @@ impl Raw {
   }
 }
 
-/// A JSON list of `what`s. `None`, logged, for a reply that isn't one.
+/// The entries of a JSON list of `what`s, at most [`MAX_LIST`], leaving
+/// out those that don't parse. `None`, logged, for a reply that isn't a
+/// list.
 fn list<T: DeserializeOwned>(what: &str, reply: &[u8]) -> Option<Vec<T>> {
-  serde_json::from_slice(reply)
+  let entries: Vec<serde_json::Value> = serde_json::from_slice(reply)
     .inspect_err(|error| tracing::warn!(%error, "a bad {what} list from Hyprland"))
-    .ok()
+    .ok()?;
+  if entries.len() > MAX_LIST {
+    let listed = entries.len();
+    tracing::warn!(
+      listed,
+      "Hyprland listed more {what}s than the {MAX_LIST} kept"
+    );
+  }
+  let mut bad = 0;
+  let list = entries
+    .into_iter()
+    .take(MAX_LIST)
+    .filter_map(|entry| serde_json::from_value(entry).inspect_err(|_| bad += 1).ok())
+    .collect();
+  if bad > 0 {
+    tracing::warn!(
+      bad,
+      "Hyprland described some {what}s badly; they are left out"
+    );
+  }
+  Some(list)
 }
 
 /// A workspace as a monitor or a window names it: by number while it has
@@ -604,7 +637,9 @@ fn list<T: DeserializeOwned>(what: &str, reply: &[u8]) -> Option<Vec<T>> {
 #[derive(Deserialize)]
 struct WorkspaceRef {
   id: Option<i64>,
+  #[serde(default, deserialize_with = "some_text")]
   address: Option<String>,
+  #[serde(deserialize_with = "text")]
   name: String,
 }
 
@@ -621,6 +656,7 @@ impl WorkspaceRef {
 struct RawWorkspace {
   #[serde(flatten)]
   at: WorkspaceRef,
+  #[serde(deserialize_with = "text")]
   monitor: String,
   windows: u32,
 }
@@ -628,7 +664,9 @@ struct RawWorkspace {
 #[derive(Deserialize)]
 struct RawMonitor {
   id: i64,
+  #[serde(deserialize_with = "text")]
   name: String,
+  #[serde(deserialize_with = "text")]
   description: String,
   focused: bool,
   x: i32,
@@ -642,8 +680,11 @@ struct RawMonitor {
 
 #[derive(Deserialize)]
 struct RawWindow {
+  #[serde(deserialize_with = "text")]
   address: String,
+  #[serde(deserialize_with = "text")]
   class: String,
+  #[serde(deserialize_with = "text")]
   title: String,
   workspace: WorkspaceRef,
   monitor: i64,
@@ -672,5 +713,23 @@ impl Fullscreen {
 /// `j/activewindow`'s reply: the focused window, or `{}` for none.
 #[derive(Deserialize)]
 struct ActiveWindow {
+  #[serde(default, deserialize_with = "some_text")]
   address: Option<String>,
+}
+
+/// A string from Hyprland, cut to [`MAX_TEXT`].
+fn text<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+  String::deserialize(deserializer).map(cut)
+}
+
+fn some_text<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+  text(deserializer).map(Some)
+}
+
+/// `text` cut to [`MAX_TEXT`] bytes at a character.
+fn cut(mut text: String) -> String {
+  if text.len() > MAX_TEXT {
+    text.truncate(text.floor_char_boundary(MAX_TEXT));
+  }
+  text
 }

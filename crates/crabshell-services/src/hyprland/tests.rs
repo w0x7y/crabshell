@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use super::{Hyprland, HyprlandMonitor, HyprlandToplevel, HyprlandWorkspace};
+use super::{
+  Hyprland, HyprlandMonitor, HyprlandToplevel, HyprlandWorkspace, MAX_LIST, MAX_REPLY, MAX_TEXT,
+};
 use crate::testing::{Harness, TempDir, capture_logs, offline};
 use crate::{Config, ServicesExt};
 
@@ -452,11 +454,105 @@ fn the_event_socket_closing_is_logged_and_empties_the_lists() {
 }
 
 #[test]
+fn bad_replies_and_lines_are_logged_and_skipped() {
+  let fake = FakeHyprland::new();
+  let (mut shell, hyprland, mut events) = connect(&fake);
+  events
+    .write_all(b"no separator\nmonitoraddedv2>>2,DP-2,Acer\n")
+    .expect("events");
+  let logs = capture_logs(|| {
+    run(&mut shell);
+    // One workspace Hyprland got wrong among good ones.
+    let workspaces = WORKSPACES.replacen(r#""windows":0"#, r#""windows":"none""#, 1);
+    fake.answer(&[
+      ("j/workspaces", &workspaces),
+      ("j/monitors", "{not json"),
+      ("j/clients", "[1, 2]"),
+    ]);
+    run(&mut shell);
+  });
+  assert!(logs.contains("no separator"), "{logs}");
+  assert!(logs.contains("a bad monitor list from Hyprland"), "{logs}");
+  let mut expected = expected_workspaces();
+  expected.remove(1);
+  assert_eq!(hyprland.workspaces().get_untracked(), expected);
+  assert_eq!(hyprland.monitors().get_untracked().len(), 2, "kept");
+  assert!(hyprland.toplevels().get_untracked().is_empty());
+}
+
+#[test]
+fn a_reply_over_the_cap_is_dropped() {
+  let fake = FakeHyprland::new();
+  let (mut shell, hyprland, mut events) = connect(&fake);
+  events
+    .write_all(b"openwindow>>5c3,1,a,b\n")
+    .expect("events");
+  run(&mut shell);
+  let clients = take_clients(&fake);
+  let writer = std::thread::spawn(move || {
+    let mut stream = clients.stream;
+    let _ = stream.write_all(&vec![b' '; MAX_REPLY + 1]);
+  });
+  let logs = capture_logs(|| {
+    shell.retry_until("the writer done", || writer.is_finished(), |_| {});
+  });
+  writer.join().expect("the writer");
+  assert!(logs.contains("over 8 MiB"), "{logs}");
+  assert_eq!(hyprland.toplevels().get_untracked(), expected_toplevels());
+}
+
+#[test]
+fn long_texts_are_cut_at_a_character_and_long_lists_capped() {
+  let fake = FakeHyprland::new();
+  let (mut shell, hyprland, mut events) = connect(&fake);
+  events
+    .write_all(b"openwindow>>5c3,1,a,b\n")
+    .expect("events");
+  run(&mut shell);
+  let long = "é".repeat(MAX_TEXT);
+  let window = |n: usize| {
+    let title = if n == 0 { long.as_str() } else { "t" };
+    format!(
+      r#"{{"address":"0x{n:x}","workspace":{{"id":1,"name":"1"}},"floating":false,"monitor":0,"class":"c","title":"{title}","fullscreen":0}}"#
+    )
+  };
+  let clients = format!(
+    "[{}]",
+    (0..=MAX_LIST).map(window).collect::<Vec<_>>().join(",")
+  );
+  let request = take_clients(&fake);
+  let writer = std::thread::spawn(move || request.answer(&clients));
+  let logs = capture_logs(|| {
+    shell.retry_until(
+      "the long list",
+      || !hyprland.toplevels().get_untracked().is_empty() && writer.is_finished(),
+      |_| {},
+    );
+  });
+  let toplevels = hyprland.toplevels().get_untracked();
+  assert_eq!(toplevels.len(), MAX_LIST);
+  assert!(logs.contains("windows"), "{logs}");
+  assert_eq!(toplevels[0].title, "é".repeat(MAX_TEXT / 2));
+}
+
+#[test]
 fn a_quiet_connection_wakes_nothing() {
   let fake = FakeHyprland::new();
   let (mut shell, _hyprland, _events) = connect(&fake);
   let wakeups = shell.run_until(Instant::now() + Duration::from_millis(500));
   assert_eq!(wakeups, 1, "only the run's own deadline");
+}
+
+/// The waiting read of the windows. The other waiting reads are answered.
+fn take_clients(fake: &FakeHyprland) -> Request {
+  let (mut clients, others): (Vec<_>, Vec<_>) = fake
+    .requests()
+    .into_iter()
+    .partition(|request| request.command == "j/clients");
+  for request in others {
+    request.answer(WORKSPACES);
+  }
+  clients.pop().expect("a read of the windows")
 }
 
 /// What `f` returns and what it logged.
