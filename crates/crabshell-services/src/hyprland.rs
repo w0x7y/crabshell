@@ -388,6 +388,14 @@ struct Recheck {
   active: bool,
 }
 
+/// What became of a request [`Service::send`] tried.
+enum Sent {
+  Out,
+  /// Hyprland's backlog is full, so it waits.
+  Full,
+  Failed,
+}
+
 /// What a request asks Hyprland.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Asked {
@@ -497,8 +505,7 @@ impl Service {
       return false;
     };
     let path = dir.join(".socket2.sock");
-    let opened = UnixStream::connect(&path).and_then(|stream| {
-      stream.set_nonblocking(true)?;
+    let opened = open(&path).and_then(|stream| {
       let fd = stream.as_fd().try_clone_to_owned()?;
       Ok((stream, fd))
     });
@@ -617,50 +624,51 @@ impl Service {
     self.dispatch(&format!("workspace {target}"));
   }
 
-  /// Sends `command` on a connection of its own, or once fewer than
-  /// [`MAX_IN_FLIGHT`] are, so connecting never waits for Hyprland.
+  /// Sends `command` on a connection of its own, after what waits. At
+  /// most [`MAX_IN_FLIGHT`] are out, and a connect never waits: while
+  /// Hyprland's backlog is full, the rest wait for a request to end or
+  /// another to be made.
   fn request(self: &Rc<Self>, state: &mut State, command: &str, asked: Asked) {
-    if state.requests.len() >= MAX_IN_FLIGHT {
-      return state.queued.push_back((asked, command.to_owned()));
-    }
-    if !self.send(state, command, asked) {
-      match asked {
-        Asked::List(query) => {
-          state.reading[query as usize] = Reading::Idle;
-          state.answered(query);
-        }
-        Asked::Status => {
-          // The switches waiting for it go, as a dispatch would.
-          state.status_asked = false;
-          state.focusing.clear();
-        }
-        Asked::Dispatch => {}
-      }
-    }
+    state.queued.push_back((asked, command.to_owned()));
+    self.send_queued(state);
   }
 
   /// Sends what waits, while fewer than [`MAX_IN_FLIGHT`] requests are
-  /// out.
+  /// out and Hyprland's backlog has room.
   fn send_queued(self: &Rc<Self>, state: &mut State) {
     while state.requests.len() < MAX_IN_FLIGHT {
       let Some((asked, command)) = state.queued.pop_front() else {
         return;
       };
-      self.request(state, &command, asked);
+      match self.send(state, &command, asked) {
+        Sent::Out => {}
+        Sent::Full => return state.queued.push_front((asked, command)),
+        Sent::Failed => match asked {
+          Asked::List(query) => {
+            state.reading[query as usize] = Reading::Idle;
+            state.answered(query);
+          }
+          Asked::Status => {
+            // The switches waiting for it go, as a dispatch would.
+            state.status_asked = false;
+            state.focusing.clear();
+          }
+          Asked::Dispatch => {}
+        },
+      }
     }
   }
 
-  /// Connects and sends `command`. `false`, logged once, if Hyprland
+  /// Connects and sends `command`. `Failed`, logged once, if Hyprland
   /// can't be reached.
-  fn send(self: &Rc<Self>, state: &mut State, command: &str, asked: Asked) -> bool {
+  fn send(self: &Rc<Self>, state: &mut State, command: &str, asked: Asked) -> Sent {
     let (Some(dir), Some(event_loop)) = (&self.shared.config.hyprland, self.shared.event_loop())
     else {
-      return false;
+      return Sent::Failed;
     };
     let path = dir.join(".socket.sock");
     let command = command.as_bytes();
-    let opened = UnixStream::connect(&path).and_then(|mut stream| {
-      stream.set_nonblocking(true)?;
+    let opened = open(&path).and_then(|mut stream| {
       // One write: Hyprland takes what has arrived as the whole request.
       if stream.write(command)? < command.len() {
         return Err(std::io::Error::other("the request didn't fit the socket"));
@@ -672,12 +680,13 @@ impl Service {
     });
     let (stream, fd) = match opened {
       Ok(opened) => opened,
+      Err(error) if error.kind() == ErrorKind::WouldBlock => return Sent::Full,
       Err(error) => {
         if !std::mem::replace(&mut state.request_failure_logged, true) {
           let path = path.display();
           tracing::warn!(%path, %error, "can't send Hyprland a request");
         }
-        return false;
+        return Sent::Failed;
       }
     };
     state.request_failure_logged = false;
@@ -686,7 +695,7 @@ impl Service {
     let service = Rc::clone(self);
     let read = Box::new(move || service.on_reply(id));
     let Some(reader) = event_loop.insert_fd(fd, Interest::READ, read) else {
-      return false;
+      return Sent::Failed;
     };
     state.requests.push(Request {
       id,
@@ -695,7 +704,7 @@ impl Service {
       reader,
       reply: Vec::new(),
     });
-    true
+    Sent::Out
   }
 
   /// Whether the lists are still there: their owner, the root, isn't
@@ -1274,6 +1283,21 @@ fn text<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> 
 
 fn some_text<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
   text(deserializer).map(Some)
+}
+
+/// A non-blocking connection to the Unix socket at `path`, made without
+/// waiting: a listen backlog that is full is `WouldBlock`.
+fn open(path: &Path) -> std::io::Result<UnixStream> {
+  use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
+  let flags = SocketFlags::NONBLOCK | SocketFlags::CLOEXEC;
+  let fd = rustix::net::socket_with(AddressFamily::UNIX, SocketType::STREAM, flags, None)?;
+  match rustix::net::connect(&fd, &SocketAddrUnix::new(path)?) {
+    Ok(()) => Ok(UnixStream::from(fd)),
+    // A Unix socket never connects in the background; were one to, it
+    // would be as full.
+    Err(rustix::io::Errno::INPROGRESS) => Err(ErrorKind::WouldBlock.into()),
+    Err(errno) => Err(errno.into()),
+  }
 }
 
 /// `text` cut to [`MAX_TEXT`] bytes at a character.

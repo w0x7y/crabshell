@@ -1290,3 +1290,73 @@ fn a_shown_special_workspace_hyprland_0_57_names_by_address_is_marked() {
     Some((true, true))
   );
 }
+
+/// A listening socket at `path` whose backlog holds one connection that
+/// isn't accepted yet, as Hyprland's holds ten.
+fn listen_with_room_for_one(path: &std::path::Path) -> UnixListener {
+  use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
+  let flags = SocketFlags::NONBLOCK | SocketFlags::CLOEXEC;
+  let fd = rustix::net::socket_with(AddressFamily::UNIX, SocketType::STREAM, flags, None)
+    .expect("a socket");
+  let address = SocketAddrUnix::new(path).expect("a socket path");
+  rustix::net::bind(&fd, &address).expect("bound");
+  rustix::net::listen(&fd, 0).expect("listening");
+  UnixListener::from(fd)
+}
+
+/// Runs `f`, and ends the test binary if it takes over 10 s, as a connect
+/// that waits for a full backlog would.
+fn without_waiting<R>(f: impl FnOnce() -> R) -> R {
+  use std::sync::Arc;
+  use std::sync::atomic::AtomicBool;
+  let done = Arc::new(AtomicBool::new(false));
+  let flag = Arc::clone(&done);
+  let watchdog = std::thread::spawn(move || {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !flag.load(Ordering::Relaxed) {
+      if Instant::now() > deadline {
+        eprintln!("the shell waited for a full backlog");
+        std::process::abort();
+      }
+      std::thread::sleep(Duration::from_millis(20));
+    }
+  });
+  let result = f();
+  done.store(true, Ordering::Relaxed);
+  watchdog.join().expect("the watchdog");
+  result
+}
+
+#[test]
+fn a_full_backlog_queues_a_request_until_one_ends_or_another_is_made() {
+  let mut fake = FakeHyprland::new();
+  let socket = fake.dir.join(".socket.sock");
+  std::fs::remove_file(&socket).expect("the request socket");
+  fake.requests = listen_with_room_for_one(&socket);
+  let mut shell = Harness::new(fake.config());
+  let hyprland = without_waiting(|| shell.cx.hyprland());
+  let _events = fake.events();
+  // One read fits the backlog; each of the others goes once one ends.
+  let mut asked = Vec::new();
+  for _ in 0..4 {
+    asked.extend(fake.answer(&replies()));
+    run(&mut shell);
+  }
+  assert_eq!(
+    asked,
+    ["j/workspaces", "j/monitors", "j/clients", "j/activewindow"]
+  );
+  assert_eq!(hyprland.workspaces().get_untracked(), expected_workspaces());
+
+  // Another program fills the backlog while none of the shell's is out.
+  let other = UnixStream::connect(&socket).expect("another program");
+  without_waiting(|| hyprland.dispatch("workspace 1"));
+  run(&mut shell);
+  let (taken, _) = fake.requests.accept().expect("the other program");
+  drop((other, taken));
+  // The next request tries the waiting one first.
+  without_waiting(|| hyprland.dispatch("workspace 2"));
+  assert_eq!(fake.answer(&[]), ["dispatch workspace 1"]);
+  run(&mut shell);
+  assert_eq!(fake.answer(&[]), ["dispatch workspace 2"]);
+}
