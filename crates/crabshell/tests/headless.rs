@@ -686,6 +686,15 @@ fn measure_the_counter_bar() {
     "desktop example with every Phase 9 service started, {}\n",
     measure(&started)
   );
+  drop(started);
+  // Then Phase 10's overview, opened over IPC at once, listing its
+  // applications and another program's window, with the wallpaper's
+  // colors and `uname`. Its first frame is the opened overview's.
+  let overview = Overview::new();
+  let _window = AppWindow::new(&sway, "org.example.notes", "notes");
+  let opened = overview.start(&sway);
+  ipc_call(&sway, "overview", "open");
+  report += &format!("overview example opened over IPC, {}\n", measure(&opened));
   eprint!("{report}");
   let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("headless");
   std::fs::create_dir_all(&dir).expect("create the output directory");
