@@ -23,8 +23,10 @@ use crabshell_ui::{
   PanelWindow, PopupWindow, Rect, Region, Row, Spacer, Style, Text, TextInput, Window,
 };
 use crabshell_ui::{FloatingWindow, Transition};
-use crabshell_wayland::{Event, EventLoop, Platform, WindowId};
-use sway::{Image, InputMethod, Sway, VirtualKeyboard, VirtualPointer, keys, run_until, settle};
+use crabshell_wayland::{Event, EventLoop, Platform, Toplevel, WindowId};
+use sway::{
+  AppWindow, Image, InputMethod, Sway, VirtualKeyboard, VirtualPointer, keys, run_until, settle,
+};
 
 /// Set in the child that [`sway_refuses_to_start_beside_a_swaysock`] runs.
 const GUARD_CHILD: &str = "CRABSHELL_GUARD_CHILD";
@@ -1885,6 +1887,251 @@ fn an_idle_watch_that_panics_is_logged_and_the_shell_goes_on() {
     logs.text().contains("an idle watch panicked: idle panic")
   });
   // Still drawing.
+  let before = shell
+    .event_loop
+    .platform()
+    .window_info(id)
+    .expect("held")
+    .commits;
+  shell.knobs.label.set(String::from("after"));
+  run_until(&mut shell.event_loop, "a frame", |platform| {
+    platform
+      .window_info(id)
+      .is_some_and(|info| info.commits > before)
+  });
+}
+
+/// What a toplevel watch heard: the last list, and how many lists came.
+type Heard = Rc<RefCell<(Vec<Toplevel>, u32)>>;
+
+fn watch_toplevels(shell: &mut Shell) -> Heard {
+  let heard = Heard::default();
+  let log = Rc::clone(&heard);
+  shell.event_loop.platform().watch_toplevels(move |list| {
+    let mut log = log.borrow_mut();
+    *log = (list.to_vec(), log.1 + 1);
+  });
+  heard
+}
+
+/// The toplevel titled `title` in the last list heard.
+fn titled(heard: &Heard, title: &str) -> Option<Toplevel> {
+  let heard = heard.borrow();
+  heard
+    .0
+    .iter()
+    .find(|toplevel| toplevel.title == title)
+    .cloned()
+}
+
+/// Shows a floating window titled `title`, which hides when asked to
+/// close, and its title and visibility.
+fn show_floating(shell: &mut Shell, title: &str) -> (Signal<String>, Signal<bool>) {
+  let cx = Cx::new(shell.runtime.new_owner());
+  let (title, open) = (cx.signal(title.to_owned()), cx.signal(true));
+  let window = FloatingWindow::new()
+    .title(move || title.get())
+    .width(300)
+    .height(200)
+    .visible(move || open.get())
+    .on_close(move |_| open.set(false))
+    .child(Text::new("floating"));
+  shell
+    .event_loop
+    .platform()
+    .add_window(Window::floating(&cx, window));
+  (title, open)
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn toplevels_are_listed_with_their_title_app_id_and_outputs() {
+  let sway = Sway::start();
+  let mut shell = Shell::new(&sway);
+  shell.wait_for_bar("HEADLESS-1");
+  let (title, open) = show_floating(&mut shell, "crabshell-floating");
+  let heard = watch_toplevels(&mut shell);
+  // Sway lists a window before it says which output it is on.
+  run_until(&mut shell.event_loop, "the floating window", |_| {
+    titled(&heard, "crabshell-floating").is_some_and(|toplevel| toplevel.outputs == ["HEADLESS-1"])
+  });
+  let ours = titled(&heard, "crabshell-floating").expect("listed");
+  // A floating window sets no app id, and the bar is no toplevel.
+  assert_eq!(ours.app_id, "");
+  assert_eq!(heard.borrow().0.len(), 1);
+
+  title.set(String::from("renamed"));
+  run_until(&mut shell.event_loop, "the new title", |_| {
+    titled(&heard, "renamed").is_some_and(|toplevel| toplevel.id == ours.id)
+  });
+  sway.msg(&["create_output"]);
+  sway.msg(&[
+    "[title=renamed]",
+    "move",
+    "container",
+    "to",
+    "output",
+    "HEADLESS-2",
+  ]);
+  run_until(
+    &mut shell.event_loop,
+    "the window on the new output",
+    |_| titled(&heard, "renamed").is_some_and(|toplevel| toplevel.outputs == ["HEADLESS-2"]),
+  );
+
+  let _app = AppWindow::new(&sway, "org.example.App", "another program");
+  run_until(&mut shell.event_loop, "the other program's window", |_| {
+    titled(&heard, "another program").is_some_and(|toplevel| toplevel.app_id == "org.example.App")
+  });
+  // Hidden, the floating window's toplevel goes.
+  open.set(false);
+  run_until(&mut shell.event_loop, "the floating window gone", |_| {
+    titled(&heard, "renamed").is_none() && heard.borrow().0.len() == 1
+  });
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn toplevel_requests_reach_the_window() {
+  let sway = Sway::start();
+  let mut shell = Shell::new(&sway);
+  shell.wait_for_bar("HEADLESS-1");
+  let (_, open) = show_floating(&mut shell, "crabshell-floating");
+  let heard = watch_toplevels(&mut shell);
+  run_until(&mut shell.event_loop, "the floating window", |_| {
+    titled(&heard, "crabshell-floating").is_some()
+  });
+  // Opened last, the other program's window takes the focus.
+  let _app = AppWindow::new(&sway, "org.example.App", "another program");
+  run_until(&mut shell.event_loop, "the other window focused", |_| {
+    titled(&heard, "another program").is_some_and(|toplevel| toplevel.activated)
+  });
+  let ours = || titled(&heard, "crabshell-floating").expect("listed");
+  let id = ours().id;
+  assert!(!ours().activated);
+
+  shell.event_loop.platform().activate_toplevel(id);
+  run_until(&mut shell.event_loop, "activated", |_| ours().activated);
+  shell
+    .event_loop
+    .platform()
+    .set_toplevel_fullscreen(id, true);
+  run_until(&mut shell.event_loop, "fullscreen", |_| {
+    ours().fullscreen
+      && fullscreen_mode(&sway_tree(&sway), "crabshell-floating").as_deref() == Some("1")
+  });
+  shell
+    .event_loop
+    .platform()
+    .set_toplevel_fullscreen(id, false);
+  run_until(&mut shell.event_loop, "not fullscreen", |_| {
+    !ours().fullscreen
+  });
+  // Sway ignores maximize and minimize; labwc's test below has them.
+
+  // An unknown id is ignored.
+  shell.event_loop.platform().close_toplevel(u64::MAX);
+  shell.event_loop.platform().close_toplevel(id);
+  run_until(&mut shell.event_loop, "the window to close", |_| {
+    !open.get_untracked()
+  });
+}
+
+#[test]
+#[ignore = "needs headless labwc"]
+fn on_labwc_maximize_and_minimize_reach_the_window() {
+  let labwc = Sway::start_labwc();
+  let mut shell = Shell::new(&labwc);
+  shell.wait_for_bar("HEADLESS-1");
+  show_floating(&mut shell, "crabshell-floating");
+  let heard = watch_toplevels(&mut shell);
+  run_until(&mut shell.event_loop, "the floating window", |_| {
+    titled(&heard, "crabshell-floating").is_some()
+  });
+  let ours = || titled(&heard, "crabshell-floating").expect("listed");
+  let id = ours().id;
+  for maximized in [true, false] {
+    let platform = shell.event_loop.platform();
+    platform.set_toplevel_maximized(id, maximized);
+    run_until(&mut shell.event_loop, "maximized", |_| {
+      ours().maximized == maximized
+    });
+  }
+  for minimized in [true, false] {
+    let platform = shell.event_loop.platform();
+    platform.set_toplevel_minimized(id, minimized);
+    run_until(&mut shell.event_loop, "minimized", |_| {
+      ours().minimized == minimized
+    });
+  }
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn nothing_hears_of_toplevels_until_a_watch_asks() {
+  let sway = Sway::start();
+  let mut shell = Shell::new(&sway);
+  shell.wait_for_bar("HEADLESS-1");
+  settle(&mut shell.event_loop);
+  let wakeups = shell.event_loop.platform().stats().wayland_wakeups;
+  let mut app = AppWindow::new(&sway, "org.example.App", "before");
+  app.set_title("after");
+  let until = Instant::now() + Duration::from_millis(500);
+  while Instant::now() < until {
+    shell
+      .event_loop
+      .dispatch(Some(Duration::from_millis(100)))
+      .expect("the connection works");
+  }
+  assert_eq!(shell.event_loop.platform().stats().wayland_wakeups, wakeups);
+
+  let heard = watch_toplevels(&mut shell);
+  run_until(&mut shell.event_loop, "the other program's window", |_| {
+    titled(&heard, "after").is_some()
+  });
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_toplevel_watch_wakes_nothing_while_nothing_changes() {
+  let sway = Sway::start();
+  let mut shell = Shell::new(&sway);
+  shell.wait_for_bar("HEADLESS-1");
+  show_floating(&mut shell, "crabshell-floating");
+  let heard = watch_toplevels(&mut shell);
+  run_until(&mut shell.event_loop, "the floating window", |_| {
+    titled(&heard, "crabshell-floating").is_some()
+  });
+  settle(&mut shell.event_loop);
+  let lists = heard.borrow().1;
+  let iterations = shell.event_loop.platform().stats().iterations;
+  shell
+    .event_loop
+    .dispatch(Some(Duration::from_secs(2)))
+    .expect("the connection works");
+  assert_eq!(
+    shell.event_loop.platform().stats().iterations,
+    iterations + 1
+  );
+  assert_eq!(heard.borrow().1, lists, "a list came with nothing changed");
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_toplevel_watch_that_panics_is_logged_and_the_shell_goes_on() {
+  let (logs, _logging) = capture_logs();
+  let sway = Sway::start();
+  let mut shell = Shell::new(&sway);
+  let id = shell.wait_for_bar("HEADLESS-1");
+  shell
+    .event_loop
+    .platform()
+    .watch_toplevels(|_| panic!("toplevel panic"));
+  run_until(&mut shell.event_loop, "the panic logged", |_| {
+    logs
+      .text()
+      .contains("a toplevel watch panicked: toplevel panic")
+  });
   let before = shell
     .event_loop
     .platform()

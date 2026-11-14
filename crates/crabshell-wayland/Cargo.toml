@@ -19,6 +19,7 @@ crabshell-ui.workspace = true
 smithay-client-toolkit.workspace = true
 tracing.workspace = true
 wayland-protocols.workspace = true
+wayland-protocols-wlr.workspace = true
 
 [dev-dependencies]
 # The headless Sway tests decode grim's screenshots.

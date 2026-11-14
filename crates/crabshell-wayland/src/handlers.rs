@@ -185,6 +185,7 @@ impl OutputHandler for Platform {
       return;
     };
     tracing::info!(name = info.name, mode = ?info.mode, scale = info.scale, "output added");
+    self.foreign.output_changed(&output);
     self.known.push((output, info.clone()));
     self.notify(Event::OutputAdded(info));
   }
@@ -196,6 +197,7 @@ impl OutputHandler for Platform {
     let Some(info) = self.outputs.info(&output).as_ref().and_then(describe) else {
       return;
     };
+    self.foreign.output_changed(&output);
     match self.known.iter_mut().find(|(known, _)| *known == output) {
       Some((_, known)) => *known = info,
       // It has a name only now.
@@ -213,6 +215,7 @@ impl OutputHandler for Platform {
       return;
     };
     let (_, info) = self.known.remove(index);
+    self.foreign.output_changed(&output);
     let dropped = self.windows.drop_output(&output, &info.name);
     tracing::info!(name = info.name, windows = dropped, "output removed");
     self.notify(Event::OutputRemoved(info));

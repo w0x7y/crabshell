@@ -34,6 +34,7 @@ use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 use crate::blur::Effects;
 use crate::clipboard::Offered;
 use crate::events::{self, Event, Listener};
+use crate::foreign_toplevels::Foreign;
 use crate::idle::Idle;
 use crate::keyboard::SeatKeyboard;
 use crate::outputs::OutputInfo;
@@ -326,6 +327,8 @@ pub struct Platform {
   pub(crate) effects: Effects,
   /// The compositor's idle protocols and the watches on them.
   pub(crate) idle: Idle,
+  /// Every program's windows, once a watch asks.
+  pub(crate) foreign: Foreign,
   pub(crate) text_inputs: Vec<SeatTextInput>,
   /// The seat and serial of the last button press or release on one of
   /// the windows, which a popup's grab needs.
@@ -418,6 +421,7 @@ impl Platform {
       text_inputs_manager,
       effects,
       idle,
+      foreign: Foreign::default(),
       data_devices_manager,
       data_devices: Vec::new(),
       offered: None,
@@ -609,11 +613,13 @@ impl Platform {
     self.stats
   }
 
-  /// The work after the sources are dispatched: flush, take new popups
-  /// and close the ones that asked, set up new surfaces, apply changed
-  /// settings, lay out, draw, flush the connection.
+  /// The work after the sources are dispatched: report the toplevels,
+  /// flush, take new popups and close the ones that asked, set up new
+  /// surfaces, apply changed settings, lay out, draw, flush the
+  /// connection.
   pub(crate) fn after_dispatch(&mut self) {
     self.stats.iterations += 1;
+    self.report_toplevels();
     // Effects created in a flush run in it, so every popup opened so far,
     // by a handler or an effect, has its bindings run.
     self.runtime.flush();

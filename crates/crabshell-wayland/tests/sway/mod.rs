@@ -12,9 +12,14 @@ use std::time::{Duration, Instant};
 
 use crabshell_wayland::{EventLoop, Platform};
 use smithay_client_toolkit::reexports::client::globals::{GlobalListContents, registry_queue_init};
-use smithay_client_toolkit::reexports::client::protocol::{wl_pointer, wl_registry, wl_seat};
+use smithay_client_toolkit::reexports::client::protocol::{
+  wl_buffer, wl_compositor, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface,
+};
 use smithay_client_toolkit::reexports::client::{
   Connection, Dispatch, EventQueue, QueueHandle, delegate_noop,
+};
+use smithay_client_toolkit::reexports::protocols::xdg::shell::client::{
+  xdg_surface, xdg_toplevel, xdg_wm_base,
 };
 use smithay_client_toolkit::reexports::protocols_misc::zwp_input_method_v2::client::{
   zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
@@ -728,3 +733,101 @@ impl InputMethod {
     self.poll();
   }
 }
+
+/// Another program's window: an xdg toplevel 100 pixels square with an
+/// app id, which the platform's floating windows don't set.
+#[allow(dead_code, reason = "crabshell's tests don't use it")]
+pub struct AppWindow {
+  queue: EventQueue<Helper>,
+  toplevel: xdg_toplevel::XdgToplevel,
+}
+
+#[allow(dead_code, reason = "crabshell's tests don't use it")]
+impl AppWindow {
+  pub fn new(sway: &Sway, app_id: &str, title: &str) -> AppWindow {
+    const SIDE: i32 = 100;
+    let connection = sway.connection();
+    let (globals, mut queue) =
+      registry_queue_init::<Helper>(&connection).expect("the helper's registry");
+    let qh = queue.handle();
+    let compositor: wl_compositor::WlCompositor = globals
+      .bind(&qh, 1..=4, ())
+      .expect("sway offers wl_compositor");
+    let shm: wl_shm::WlShm = globals.bind(&qh, 1..=1, ()).expect("sway offers wl_shm");
+    let wm: xdg_wm_base::XdgWmBase = globals
+      .bind(&qh, 1..=1, ())
+      .expect("sway offers xdg_wm_base");
+    let surface = compositor.create_surface(&qh, ());
+    let toplevel = wm.get_xdg_surface(&surface, &qh, ()).get_toplevel(&qh, ());
+    toplevel.set_app_id(app_id.to_owned());
+    toplevel.set_title(title.to_owned());
+    surface.commit();
+    // The first configure, which the helper acks.
+    queue
+      .roundtrip(&mut Helper)
+      .expect("the helper's roundtrip");
+    let file = File::options()
+      .read(true)
+      .write(true)
+      .create(true)
+      .truncate(true)
+      .open(sway.runtime_dir().join(format!("{app_id}.pixels")))
+      .expect("create the window's pixels");
+    file
+      .set_len(u64::from(SIDE.unsigned_abs().pow(2) * 4))
+      .expect("size the window's pixels");
+    let pool = shm.create_pool(file.as_fd(), SIDE * SIDE * 4, &qh, ());
+    let buffer = pool.create_buffer(0, SIDE, SIDE, SIDE * 4, wl_shm::Format::Argb8888, &qh, ());
+    surface.attach(Some(&buffer), 0, 0);
+    surface.commit();
+    queue
+      .roundtrip(&mut Helper)
+      .expect("the helper's roundtrip");
+    AppWindow { queue, toplevel }
+  }
+
+  pub fn set_title(&mut self, title: &str) {
+    self.toplevel.set_title(title.to_owned());
+    self
+      .queue
+      .roundtrip(&mut Helper)
+      .expect("the helper's roundtrip");
+  }
+}
+
+impl Dispatch<xdg_surface::XdgSurface, ()> for Helper {
+  fn event(
+    _: &mut Helper,
+    surface: &xdg_surface::XdgSurface,
+    event: xdg_surface::Event,
+    _: &(),
+    _: &Connection,
+    _: &QueueHandle<Helper>,
+  ) {
+    if let xdg_surface::Event::Configure { serial } = event {
+      surface.ack_configure(serial);
+    }
+  }
+}
+
+impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Helper {
+  fn event(
+    _: &mut Helper,
+    wm: &xdg_wm_base::XdgWmBase,
+    event: xdg_wm_base::Event,
+    _: &(),
+    _: &Connection,
+    _: &QueueHandle<Helper>,
+  ) {
+    if let xdg_wm_base::Event::Ping { serial } = event {
+      wm.pong(serial);
+    }
+  }
+}
+
+delegate_noop!(Helper: wl_compositor::WlCompositor);
+delegate_noop!(Helper: wl_shm_pool::WlShmPool);
+delegate_noop!(Helper: ignore wl_shm::WlShm);
+delegate_noop!(Helper: ignore wl_buffer::WlBuffer);
+delegate_noop!(Helper: ignore wl_surface::WlSurface);
+delegate_noop!(Helper: ignore xdg_toplevel::XdgToplevel);

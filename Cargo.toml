@@ -52,6 +52,8 @@ tracing-subscriber = { version = "=0.3.23", default-features = false, features =
 # The version sctk 0.21.1 uses, so there is one copy. "staging" has
 # wp_fractional_scale_v1.
 wayland-protocols = { version = "=0.32.13", default-features = false, features = ["client", "staging", "unstable"] }
+# The version sctk 0.21.1 uses. For wlr-foreign-toplevel-management.
+wayland-protocols-wlr = { version = "=0.3.12", default-features = false, features = ["client"] }
 zbus = { version = "=6.2.1", default-features = false, features = ["default-rt", "proxy"] }
 
 # The workspace's own crates.

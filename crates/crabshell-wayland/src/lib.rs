@@ -68,6 +68,7 @@ mod blur;
 mod buffers;
 mod clipboard;
 mod events;
+mod foreign_toplevels;
 mod handlers;
 mod idle;
 mod keyboard;
@@ -87,6 +88,7 @@ mod tests;
 
 pub use calloop::{LoopHandle, LoopSignal};
 pub use events::Event;
+pub use foreign_toplevels::Toplevel;
 pub use idle::IdleWatch;
 pub use outputs::{Mode, OutputInfo};
 pub use platform::{Error, EventLoop, Platform, Snapshot, Stats, WindowInfo};

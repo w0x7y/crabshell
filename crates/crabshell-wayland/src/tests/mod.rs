@@ -2,6 +2,7 @@
 
 mod buffers;
 mod events;
+mod foreign_toplevels;
 mod keyboard;
 mod outputs;
 mod pacing;
