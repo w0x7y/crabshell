@@ -553,6 +553,8 @@ pub(crate) struct NodeInfo {
   description: String,
   volumes: ChannelVolumes,
   muted: bool,
+  /// A sink's monitor: a source, but not one listed.
+  monitor: bool,
 }
 
 impl NodeInfo {
@@ -731,16 +733,21 @@ impl Pulse {
     self.when_ready(|intro| {
       let mut found = Vec::new();
       let on_result = move |result: ListResult<&SinkInfo>| match result {
-        ListResult::Item(info) => found.extend(node(
-          info.index,
-          &info.name,
-          &info.description,
-          info.volume,
-          info.mute,
-        )),
-        ListResult::End | ListResult::Error => {
+        ListResult::Item(info) => {
+          let read = node(
+            info.index,
+            &info.name,
+            &info.description,
+            info.volume,
+            info.mute,
+          );
+          found.extend(read);
+        }
+        ListResult::End => {
           let _ = sender.send((generation, Event::Sinks(std::mem::take(&mut found))));
         }
+        // The last list stays.
+        ListResult::Error => tracing::warn!("the audio server didn't list its sinks"),
       };
       intro.get_sink_info_list(on_pa_thread(on_result));
     });
@@ -751,20 +758,21 @@ impl Pulse {
     self.when_ready(|intro| {
       let mut found = Vec::new();
       let on_result = move |result: ListResult<&SourceInfo>| match result {
-        // A sink's monitor isn't a source a person picks.
-        ListResult::Item(info) if info.monitor_of_sink.is_none() => {
-          found.extend(node(
+        ListResult::Item(info) => {
+          let read = node(
             info.index,
             &info.name,
             &info.description,
             info.volume,
             info.mute,
-          ));
+          );
+          let monitor = info.monitor_of_sink.is_some();
+          found.extend(read.map(|node| NodeInfo { monitor, ..node }));
         }
-        ListResult::Item(_) => {}
-        ListResult::End | ListResult::Error => {
+        ListResult::End => {
           let _ = sender.send((generation, Event::Sources(std::mem::take(&mut found))));
         }
+        ListResult::Error => tracing::warn!("the audio server didn't list its sources"),
       };
       intro.get_source_info_list(on_pa_thread(on_result));
     });
@@ -777,9 +785,10 @@ impl Pulse {
       let on_result = move |result: ListResult<&SinkInputInfo>| match result {
         ListResult::Item(info) if info.volume.is_valid() => found.push(StreamInfo::read(info)),
         ListResult::Item(_) => {}
-        ListResult::End | ListResult::Error => {
+        ListResult::End => {
           let _ = sender.send((generation, Event::Streams(std::mem::take(&mut found))));
         }
+        ListResult::Error => tracing::warn!("the audio server didn't list its streams"),
       };
       intro.get_sink_input_info_list(on_pa_thread(on_result));
     });
@@ -819,7 +828,10 @@ impl Pulse {
       .and_then(|name| sources.iter().find(|source| source.name == *name))
       .map(NodeInfo::node);
     set_changed(self.lists.sinks, capped(sinks));
-    set_changed(self.lists.sources, capped(sources));
+    // A sink's monitor isn't a source a person picks, though it can be
+    // the default, as while recording what plays.
+    let listed: Vec<NodeInfo> = sources.iter().filter(|s| !s.monitor).cloned().collect();
+    set_changed(self.lists.sources, capped(&listed));
     set_changed(self.lists.streams, streams);
     set_changed(self.lists.default_source, default);
   }
@@ -1056,14 +1068,14 @@ fn node(
     description: description.as_deref().unwrap_or(name).to_owned(),
     volumes,
     muted,
+    monitor: false,
   })
 }
 
-/// `volumes` with every channel at `percent`, at most 100.
-fn at(mut volumes: ChannelVolumes, percent: u32) -> ChannelVolumes {
-  let norm = u64::from(Volume::NORMAL.0);
-  let level = (u64::from(percent.min(100)) * norm + 50) / 100;
-  // At most norm, which fits.
-  volumes.set(volumes.len(), Volume(level as u32));
-  volumes
+/// `volumes` moved so their average is `percent`, at most 100, keeping
+/// the channels' balance as [`changed`] does.
+fn at(volumes: ChannelVolumes, percent: u32) -> ChannelVolumes {
+  let shown = self::percent(volumes.avg());
+  // Both at most a few thousand, which fit.
+  changed(volumes, percent.min(100) as i32 - shown.min(10_000) as i32)
 }

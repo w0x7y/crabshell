@@ -11,7 +11,7 @@ use crabshell_reactive::Runtime;
 use crabshell_ui::Cx;
 use libpulse_binding::volume::{ChannelVolumes, Volume};
 
-use super::{AudioService, Event, Info, SETTLE, Server, StreamInfo, changed, percent};
+use super::{AudioService, Event, Info, NodeInfo, SETTLE, Server, StreamInfo, changed, percent};
 use crate::{Config, ServicesExt};
 use fake::{
   Client, FakePulse, GET_SERVER_INFO, GET_SINK_INFO, GET_SINK_INFO_LIST, GET_SINK_INPUT_INFO_LIST,
@@ -785,4 +785,61 @@ fn stream_commands_name_their_stream_and_an_unknown_one_sends_nothing() {
   );
   let moved = String::from_utf8_lossy(&sent[2].1).into_owned();
   assert!(moved.contains("headphones"), "{moved}");
+}
+
+fn node_info(index: u32, name: &str, volumes: &[u32], monitor: bool) -> NodeInfo {
+  NodeInfo {
+    index,
+    name: name.to_owned(),
+    description: name.to_owned(),
+    volumes: channels(volumes),
+    muted: false,
+    monitor,
+  }
+}
+
+#[test]
+fn a_stream_names_its_sink_and_a_monitor_can_be_the_default_source() {
+  let _one = one_at_a_time();
+  let fake = FakePulse::new("names");
+  let (shell, _client) = connected(&fake);
+  let audio = shell.cx.audio();
+  shell.send(Event::Sinks(vec![node_info(
+    3, "speakers", &[NORM; 2], false,
+  )]));
+  shell.send(Event::Streams(vec![StreamInfo {
+    index: 7,
+    app_name: "player".to_owned(),
+    title: String::new(),
+    icon_name: String::new(),
+    sink: 3,
+    volumes: channels(&[NORM; 2]),
+    muted: false,
+  }]));
+  assert_eq!(audio.streams().get_untracked()[0].sink, "speakers");
+
+  // Recording what plays: the default source is the sink's monitor,
+  // which the list leaves out.
+  shell.send(Event::Sources(vec![
+    node_info(1, "microphone", &[NORM; 2], false),
+    node_info(2, "speakers.monitor", &[NORM; 2], true),
+  ]));
+  shell.send(Event::DefaultSource(Some("speakers.monitor".to_owned())));
+  let names: Vec<String> = audio
+    .sources()
+    .get_untracked()
+    .into_iter()
+    .map(|s| s.name)
+    .collect();
+  assert_eq!(names, ["microphone"]);
+  let default = audio.default_source().get_untracked().map(|s| s.name);
+  assert_eq!(default, Some("speakers.monitor".to_owned()));
+}
+
+#[test]
+fn setting_a_volume_keeps_the_balance() {
+  // 80% left and 100% right, an average of 90%, set to 50%.
+  let set = super::at(channels(&[level(80), level(100)]), 50);
+  let percents: Vec<u32> = raw(set).into_iter().map(|v| percent(Volume(v))).collect();
+  assert_eq!(percents, [40, 60]);
 }
