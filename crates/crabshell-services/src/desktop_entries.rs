@@ -491,7 +491,11 @@ impl Scan<'_> {
     self.watch(dir, |change| {
       let name = change.name.as_ref().map(Path::new);
       let entry = name.is_some_and(|name| name.extension() == Some(OsStr::new("desktop")));
-      name.is_none() || entry || change.mask.contains(EventMask::ISDIR)
+      // A link made or removed carries no ISDIR, and may lead to a
+      // directory: anything but a written file or a cache counts.
+      let linked = !change.mask.contains(EventMask::CLOSE_WRITE)
+        && name.is_some_and(|name| name.extension() != Some(OsStr::new("cache")));
+      name.is_none() || entry || linked || change.mask.contains(EventMask::ISDIR)
     });
     let Ok(read) = std::fs::read_dir(dir) else {
       return;
@@ -503,7 +507,10 @@ impl Scan<'_> {
       // Followed through links, as packages often link their entries in.
       match path.metadata() {
         Ok(meta) if meta.is_dir() => self.dir(root, &path),
-        Ok(_) if path.extension() == Some(OsStr::new("desktop")) => self.file(root, &path),
+        // A regular file only: opening a FIFO would wait for a writer.
+        Ok(meta) if meta.is_file() && path.extension() == Some(OsStr::new("desktop")) => {
+          self.file(root, &path);
+        }
         _ => {}
       }
     }

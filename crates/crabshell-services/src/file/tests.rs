@@ -287,3 +287,107 @@ fn a_json_file_in_a_directory_not_made_yet_makes_it_and_then_follows_it() {
   run(&mut shell, 50);
   assert_eq!(settings.get_untracked().volume, 90, "followed once made");
 }
+
+/// A value whose `Serialize` panics past a limit and whose `PartialEq`
+/// always holds the shell up to it, as a config's own may.
+#[derive(Clone, Debug, Deserialize)]
+struct Fragile(u32);
+
+impl PartialEq for Fragile {
+  fn eq(&self, other: &Fragile) -> bool {
+    self.0 == other.0
+  }
+}
+
+impl Serialize for Fragile {
+  fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    assert!(self.0 < 100, "too big to write: {}", self.0);
+    serializer.serialize_u32(self.0)
+  }
+}
+
+#[test]
+fn a_panicking_serialize_is_logged_and_the_file_goes_on() {
+  let dir = Dir::new();
+  let path = dir.join("fragile.json");
+  std::fs::write(&path, "1").unwrap();
+  let mut shell = Harness::new(offline());
+  let value = shell.cx.json_file(&path, Fragile(0));
+  Runtime::current().flush();
+  // From the loop: a file whose value can't be written back.
+  let logs = capture_logs(|| {
+    std::fs::write(&path, "500").unwrap();
+    run(&mut shell, 50);
+  });
+  assert!(
+    logs.contains("reading it panicked: too big to write: 500"),
+    "{logs}"
+  );
+  // Set by the config.
+  let logs = capture_logs(|| {
+    value.set(Fragile(200));
+    Runtime::current().flush();
+  });
+  assert!(
+    logs.contains("turning the value into JSON panicked: too big to write: 200"),
+    "{logs}"
+  );
+  // Both go on: a set is written and an outside edit is read.
+  value.set(Fragile(7));
+  Runtime::current().flush();
+  assert_eq!(std::fs::read_to_string(&path).unwrap(), "7\n");
+  std::fs::write(&path, "9").unwrap();
+  run(&mut shell, 50);
+  assert_eq!(value.get_untracked(), Fragile(9));
+}
+
+#[test]
+fn a_set_before_the_first_flush_is_written() {
+  let dir = Dir::new();
+  let path = dir.join("count.json");
+  let shell = Harness::new(offline());
+  let count = shell.cx.json_file(&path, 0_u32);
+  count.update(|count| *count += 1);
+  Runtime::current().flush();
+  assert_eq!(std::fs::read_to_string(&path).unwrap(), "1\n");
+}
+
+#[test]
+fn a_file_view_follows_its_directory_made_later_and_made_again() {
+  let dir = Dir::new();
+  let path = dir.join("later/deeper/note");
+  let mut shell = Harness::new(offline());
+  let text = shell.cx.file_view(&path).text();
+  std::fs::create_dir_all(dir.join("later/deeper")).unwrap();
+  run(&mut shell, 50);
+  std::fs::write(&path, "one").unwrap();
+  run(&mut shell, 50);
+  assert_eq!(text.get_untracked().as_deref(), Some("one"));
+  std::fs::remove_dir_all(dir.join("later")).unwrap();
+  run(&mut shell, 50);
+  assert_eq!(text.get_untracked(), None);
+  std::fs::create_dir_all(dir.join("later/deeper")).unwrap();
+  run(&mut shell, 50);
+  std::fs::write(&path, "two").unwrap();
+  run(&mut shell, 50);
+  assert_eq!(text.get_untracked().as_deref(), Some("two"));
+}
+
+#[test]
+fn a_file_view_doesnt_show_a_file_made_but_not_written_yet() {
+  use std::io::Write;
+  let dir = Dir::new();
+  let path = dir.join("note");
+  let mut shell = Harness::new(offline());
+  let text = shell.cx.file_view(&path).text();
+  let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+  let kept = std::rc::Rc::clone(&seen);
+  shell.cx.effect(move || kept.borrow_mut().push(text.get()));
+  Runtime::current().flush();
+  let mut file = std::fs::File::create(&path).unwrap();
+  run(&mut shell, 50);
+  file.write_all(b"full").unwrap();
+  drop(file);
+  run(&mut shell, 50);
+  assert_eq!(*seen.borrow(), [None, Some(String::from("full"))]);
+}

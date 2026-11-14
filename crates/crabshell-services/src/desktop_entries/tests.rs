@@ -388,3 +388,34 @@ fn what_cant_start_is_logged_and_runs_nothing() {
     assert!(logs.contains(line), "{line}: {logs}");
   }
 }
+
+#[test]
+fn a_linked_directory_added_or_removed_shows() {
+  let dirs = Dirs::new();
+  let elsewhere = dirs.0.path().join("elsewhere");
+  write(&elsewhere, "linked.desktop", &app("Linked", "linked", ""));
+  let (mut shell, entries) = shell(dirs.sources());
+  run(&mut shell, 50);
+  std::os::unix::fs::symlink(&elsewhere, dirs.user().join("foo")).expect("a link");
+  run(&mut shell, 300);
+  assert_eq!(ids(&entries), ["foo-linked"]);
+  std::fs::remove_file(dirs.user().join("foo")).expect("the link removed");
+  run(&mut shell, 300);
+  assert!(ids(&entries).is_empty());
+}
+
+#[test]
+fn a_fifo_named_like_an_entry_is_skipped() {
+  let dirs = Dirs::new();
+  write(&dirs.user(), "a.desktop", &app("A", "a", ""));
+  let fifo = dirs.user().join("trap.desktop");
+  let made = std::process::Command::new("mkfifo")
+    .arg(&fifo)
+    .status()
+    .expect("mkfifo runs");
+  assert!(made.success());
+  let (mut shell, entries) = shell(dirs.sources());
+  // Opening the FIFO would block here for good.
+  run(&mut shell, 50);
+  assert_eq!(ids(&entries), ["a"]);
+}

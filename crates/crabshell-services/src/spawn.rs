@@ -39,14 +39,17 @@ pub(crate) fn spawn(shared: &Rc<Shared>, command: &mut Command) -> io::Result<u3
 /// with crabshell-cli's `supervise::TUNABLE`.
 const TUNABLE: &str = "glibc.malloc.mmap_threshold=131072";
 
-/// Takes the shell's own glibc tunable out of what `command` inherits, so
-/// the programs it starts run as they would anywhere else.
+/// Takes what is the shell's own out of what `command` inherits, so the
+/// programs it starts run as they would anywhere else: the supervisor's
+/// socket, which a crabshell started from a launched terminal would
+/// otherwise take for its own, and the shell's glibc tunable.
 pub(crate) fn untune(command: &mut Command) {
   untune_from(command, std::env::var_os("GLIBC_TUNABLES"));
 }
 
 /// [`untune`], given the shell's `GLIBC_TUNABLES`.
 fn untune_from(command: &mut Command, ours: Option<std::ffi::OsString>) {
+  command.env_remove("CRABSHELL_CONTROL");
   if ours.is_some_and(|value| value == TUNABLE) {
     command.env_remove("GLIBC_TUNABLES");
   }
@@ -159,5 +162,11 @@ mod tests {
     assert!(removed(Some(super::TUNABLE)));
     assert!(!removed(Some("glibc.malloc.arena_max=2")), "the user's own");
     assert!(!removed(None));
+    let mut command = Command::new("true");
+    super::untune_from(&mut command, None);
+    let control = command
+      .get_envs()
+      .any(|(name, value)| name == OsStr::new("CRABSHELL_CONTROL") && value.is_none());
+    assert!(control, "the supervisor's socket isn't passed on");
   }
 }

@@ -5,6 +5,7 @@
 mod tests;
 
 use std::cell::{Cell, RefCell};
+use std::ffi::OsString;
 use std::io::{ErrorKind, Read, Write};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -12,12 +13,13 @@ use std::rc::{Rc, Weak};
 
 use crabshell_reactive::{ReadSignal, Signal, untrack};
 use crabshell_ui::Cx;
+use inotify::EventMask;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use crate::Shared;
 use crate::lines::panic_message;
 use crate::watch::{self, Watch};
-use serde::de::DeserializeOwned;
 
 /// The largest file read; a larger one reads as missing, and that is
 /// logged.
@@ -27,32 +29,98 @@ pub(crate) const MAX_FILE: u64 = 16 * 1024 * 1024;
 /// to watch files.
 pub(crate) struct Files(pub(crate) Rc<Shared>);
 
-/// Calls `reread` when the file at `path` may have changed: written,
-/// replaced, made or removed. `None` if its directory can't be watched,
-/// as while it doesn't exist, which is logged; a write that makes it
-/// watches again.
+/// Follows the file at a path through whatever happens to the directories
+/// on the way: one not made yet is waited for from the nearest one that
+/// is there, and one removed, renamed or made again is followed anew.
 // shortcut: watches the directory the path names, not a link's target's,
 // so an edit through another name of a linked file isn't seen; follow
 // the link when a config needs that.
-fn watch_file(shared: &Rc<Shared>, path: &Path, reread: impl Fn() + 'static) -> Option<Watch> {
-  let (dir, name) = (path.parent()?, path.file_name()?.to_owned());
-  let dir = if dir.as_os_str().is_empty() {
-    Path::new(".")
-  } else {
-    dir
-  };
-  let on_change = move |change: &watch::Change| {
-    // `None`: the directory itself changed, or changes were lost.
-    if change.name.as_ref().is_none_or(|changed| *changed == name) {
-      reread();
+struct Follow {
+  shared: Rc<Shared>,
+  path: PathBuf,
+  watch: RefCell<Option<Watch>>,
+  /// Reads the file again.
+  changed: Box<dyn Fn()>,
+}
+
+impl Follow {
+  /// Calls `changed` when the file at `path` may have changed: written,
+  /// replaced or removed.
+  fn new(shared: &Rc<Shared>, path: PathBuf, changed: impl Fn() + 'static) -> Rc<Follow> {
+    let follow = Rc::new(Follow {
+      shared: Rc::clone(shared),
+      path,
+      watch: RefCell::new(None),
+      changed: Box::new(changed),
+    });
+    follow.rewatch();
+    follow
+  }
+
+  /// Watches the file's directory, or while it is missing the nearest
+  /// directory above it that is there, for the next name on the way.
+  fn rewatch(self: &Rc<Self>) {
+    self.watch.replace(None);
+    let (Some(dir), Some(name)) = (self.path.parent(), self.path.file_name()) else {
+      return;
+    };
+    let mut dir = if dir.as_os_str().is_empty() {
+      Path::new(".")
+    } else {
+      dir
+    };
+    let mut next: OsString = name.to_owned();
+    let own = dir.is_dir();
+    while !dir.is_dir() {
+      let (Some(above), Some(name)) = (dir.parent(), dir.file_name()) else {
+        return;
+      };
+      next = name.to_owned();
+      dir = if above.as_os_str().is_empty() {
+        Path::new(".")
+      } else {
+        above
+      };
     }
-  };
-  watch::watch(shared, dir, on_change)
-    .inspect_err(|error| {
-      let path = path.display();
-      tracing::info!(%path, %error, "can't watch the file, so changes to it aren't seen");
-    })
-    .ok()
+    let weak = Rc::downgrade(self);
+    let listener = move |change: &watch::Change| {
+      let Some(follow) = weak.upgrade() else {
+        return;
+      };
+      let moved = EventMask::DELETE_SELF | EventMask::MOVE_SELF;
+      match &change.name {
+        // The directory itself went, or changes were lost: start over.
+        None => {
+          if change.mask.intersects(moved) || change.mask.contains(EventMask::Q_OVERFLOW) {
+            follow.rewatch();
+          }
+          (follow.changed)();
+        }
+        // Not on a create, when a writer hasn't written yet: its close
+        // comes next.
+        Some(changed) if *changed == next && own => {
+          if !change.mask.contains(EventMask::CREATE) {
+            (follow.changed)();
+          }
+        }
+        // A directory on the way came or went.
+        Some(changed) if *changed == next => {
+          follow.rewatch();
+          (follow.changed)();
+        }
+        Some(_) => {}
+      }
+    };
+    match watch::watch(&self.shared, dir, listener) {
+      Ok(watch) => {
+        self.watch.replace(Some(watch));
+      }
+      Err(error) => {
+        let path = self.path.display();
+        tracing::info!(%path, %error, "can't watch the file, so changes to it aren't seen");
+      }
+    }
+  }
 }
 
 /// Keeps a file's watch for as long as the opening context's owner.
@@ -67,9 +135,7 @@ pub struct FileView {
 
 struct ViewInner {
   path: PathBuf,
-  /// `None` when the shell provided no services.
-  shared: Option<Rc<Shared>>,
-  watch: RefCell<Option<Watch>>,
+  follow: RefCell<Option<Rc<Follow>>>,
   /// Lives under the opening context's owner.
   text: Signal<Option<String>>,
   /// The last error logged, so a file that stays missing logs once.
@@ -80,13 +146,20 @@ struct ViewInner {
 pub(crate) fn file_view(cx: &Cx, path: PathBuf) -> FileView {
   let inner = Rc::new(ViewInner {
     text: cx.signal(None),
-    shared: cx.service::<Files>().map(|files| Rc::clone(&files.0)),
-    watch: RefCell::new(None),
+    follow: RefCell::new(None),
     path,
     logged: RefCell::new(None),
   });
   inner.reread();
-  inner.watch();
+  if let Some(files) = cx.service::<Files>() {
+    let weak = Rc::downgrade(&inner);
+    let follow = Follow::new(&files.0, inner.path.clone(), move || {
+      if let Some(inner) = Weak::upgrade(&weak) {
+        inner.reread();
+      }
+    });
+    inner.follow.replace(Some(follow));
+  }
   // So `text()` follows the file even once every `FileView` is dropped.
   cx.owner().signal(Keep(Rc::clone(&inner)));
   FileView { inner }
@@ -100,17 +173,14 @@ impl FileView {
   }
 
   /// Replaces the file's text, through a new file beside it renamed over
-  /// it, so a reader never sees half of it. A link is followed and the
-  /// file it names is replaced, keeping its permissions. A failure is
-  /// logged and the text stays as it was.
+  /// it, so a reader never sees half of it, making its directory if it is
+  /// missing. A link is followed and the file it names is replaced,
+  /// keeping its permissions. A failure is logged and the text stays as
+  /// it was.
   pub fn write(&self, text: impl AsRef<str>) {
     let text = text.as_ref();
     match write_whole(&self.inner.path, text.as_bytes()) {
-      Ok(()) => {
-        set(self.inner.text, Some(text.to_owned()));
-        // Its directory may be new.
-        self.inner.watch();
-      }
+      Ok(()) => set(self.inner.text, Some(text.to_owned())),
       Err(error) => {
         let path = self.inner.path.display();
         tracing::warn!(%path, %error, "couldn't write the file");
@@ -120,20 +190,6 @@ impl FileView {
 }
 
 impl ViewInner {
-  /// Follows the file's changes, unless it does already or can't.
-  fn watch(self: &Rc<Self>) {
-    let (Some(shared), true) = (&self.shared, self.watch.borrow().is_none()) else {
-      return;
-    };
-    let weak = Rc::downgrade(self);
-    let watch = watch_file(shared, &self.path, move || {
-      if let Some(inner) = Weak::upgrade(&weak) {
-        inner.reread();
-      }
-    });
-    self.watch.replace(watch);
-  }
-
   /// Reads the file again and shows what it holds now.
   fn reread(&self) {
     let text = match read_text(&self.path) {
@@ -165,23 +221,31 @@ where
     // What the file holds, as far as this shell knows.
     on_disk: RefCell::new(None),
     logged: RefCell::new(None),
-    shared: cx.service::<Files>().map(|files| Rc::clone(&files.0)),
-    watch: RefCell::new(None),
+    follow: RefCell::new(None),
   });
   file.reread();
-  file.watch();
+  if let Some(files) = cx.service::<Files>() {
+    let weak = Rc::downgrade(&file);
+    let follow = Follow::new(&files.0, file.path.clone(), move || {
+      if let Some(file) = Weak::upgrade(&weak) {
+        file.reread();
+      }
+    });
+    file.follow.replace(Some(follow));
+  }
+  // The value it starts from, so the first run doesn't make a missing
+  // file the config never set.
+  let start = untrack(|| value.try_with(|value| file.to_json(value))).flatten();
   let writer = Rc::clone(&file);
   let first = Cell::new(true);
-  // Writes what the config sets, not the value it starts from, so a
-  // missing file isn't made until then. A value just read from the file
-  // is already there, so it isn't written back. A `Serialize` that
-  // panics is the effect's to catch and log.
   cx.effect(move || {
-    let text = value.with(|value| serde_json::to_string_pretty(value));
-    if !first.replace(false) {
+    let text = value.with(|value| writer.to_json(value));
+    let unset = first.replace(false) && start.is_some() && text == start;
+    if let (Some(text), false) = (text, unset) {
       untrack(|| writer.write(text));
     }
-  });
+  })
+  .named(format!("cx.json_file {}", file.path.display()));
   value
 }
 
@@ -191,32 +255,17 @@ struct JsonInner<T: 'static> {
   on_disk: RefCell<Option<String>>,
   /// The last read problem logged, so it logs once until it reads again.
   logged: RefCell<Option<String>>,
-  /// `None` when the shell provided no services.
-  shared: Option<Rc<Shared>>,
-  /// Held by the effect that writes, which lives with the context.
-  watch: RefCell<Option<Watch>>,
+  follow: RefCell<Option<Rc<Follow>>>,
 }
 
 impl<T> JsonInner<T>
 where
   T: Serialize + DeserializeOwned + PartialEq + 'static,
 {
-  /// Follows the file's changes, unless it does already or can't.
-  fn watch(self: &Rc<Self>) {
-    let (Some(shared), true) = (&self.shared, self.watch.borrow().is_none()) else {
-      return;
-    };
-    let weak = Rc::downgrade(self);
-    let watch = watch_file(shared, &self.path, move || {
-      if let Some(file) = Weak::upgrade(&weak) {
-        file.reread();
-      }
-    });
-    self.watch.replace(watch);
-  }
-
   /// Reads the file again. A missing file keeps the value; one that
-  /// isn't the type's JSON is logged and keeps it too.
+  /// isn't the type's JSON is logged and keeps it too. The config's
+  /// `Deserialize`, `Serialize` and `PartialEq` may panic, and this may
+  /// run from the loop, where nothing else would catch them.
   fn reread(&self) {
     let text = match read_text(&self.path) {
       Ok(text) => text,
@@ -225,44 +274,50 @@ where
         return;
       }
     };
-    // A `Deserialize` of the config's may panic; this may run from the
-    // loop, where nothing else would catch it.
-    let parsed = panic::catch_unwind(AssertUnwindSafe(|| serde_json::from_str::<T>(&text)));
-    let parsed = match parsed {
-      Ok(parsed) => parsed,
+    let applied = panic::catch_unwind(AssertUnwindSafe(|| {
+      let read = serde_json::from_str::<T>(&text)?;
+      let normal = serde_json::to_string_pretty(&read).unwrap_or_else(|_| text.clone());
+      self.on_disk.replace(Some(normal));
+      set(self.value, read);
+      serde_json::Result::Ok(())
+    }));
+    match applied {
+      Ok(Ok(())) => {
+        self.logged.replace(None);
+      }
+      Ok(Err(error)) => self.log_once(format!("the file isn't the JSON expected: {error}")),
       Err(payload) => {
         let message = panic_message(payload.as_ref());
-        return self.log_once(format!("reading it panicked: {message}"));
+        self.log_once(format!("reading it panicked: {message}"));
       }
-    };
-    match parsed {
-      Ok(read) => {
-        self.logged.replace(None);
-        self
-          .on_disk
-          .replace(Some(normalized::<T>(&read).unwrap_or(text)));
-        set(self.value, read);
-      }
-      Err(error) => self.log_once(format!("the file isn't the JSON expected: {error}")),
     }
   }
 
-  fn write(self: &Rc<Self>, text: serde_json::Result<String>) {
-    let text = match text {
-      Ok(text) => text,
-      Err(error) => {
-        let path = self.path.display();
-        return tracing::warn!(%path, %error, "couldn't turn the value into JSON");
+  /// `value` as JSON, or `None` when the config's `Serialize` fails or
+  /// panics, which is logged.
+  fn to_json(&self, value: &T) -> Option<String> {
+    let path = self.path.display();
+    match panic::catch_unwind(AssertUnwindSafe(|| serde_json::to_string_pretty(value))) {
+      Ok(Ok(text)) => Some(text),
+      Ok(Err(error)) => {
+        tracing::warn!(%path, %error, "couldn't turn the value into JSON");
+        None
       }
-    };
+      Err(payload) => {
+        let message = panic_message(payload.as_ref());
+        tracing::error!("cx.json_file {path}: turning the value into JSON panicked: {message}");
+        None
+      }
+    }
+  }
+
+  fn write(&self, text: String) {
     if self.on_disk.borrow().as_deref() == Some(text.as_str()) {
       return;
     }
     match write_whole(&self.path, format!("{text}\n").as_bytes()) {
       Ok(()) => {
         self.on_disk.replace(Some(text));
-        // Its directory may be new.
-        self.watch();
       }
       Err(error) => {
         let path = self.path.display();
@@ -278,12 +333,6 @@ where
       self.logged.replace(Some(problem));
     }
   }
-}
-
-/// `value` as this module writes it, to tell whether the file already
-/// holds it.
-fn normalized<T: Serialize>(value: &T) -> Option<String> {
-  serde_json::to_string_pretty(value).ok()
 }
 
 /// The whole of `path` as UTF-8, up to [`MAX_FILE`].
