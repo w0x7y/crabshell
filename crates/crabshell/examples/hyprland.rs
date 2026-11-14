@@ -35,7 +35,9 @@ pub fn bar(cx: &Cx, output: &Output) -> PanelWindow {
         .padding(4, 8)
         .child(Row::new().gap(4).children_keyed(
           move || {
-            let on = |w: &HyprlandWorkspace| w.monitor == monitor;
+            // A special workspace is toggled, not switched to.
+            let on =
+              |w: &HyprlandWorkspace| w.monitor == monitor && !w.name.starts_with("special:");
             workspaces.with(|all| all.iter().filter(|w| on(w)).cloned().collect::<Vec<_>>())
           },
           |w| w.name.clone(),
@@ -49,10 +51,12 @@ pub fn bar(cx: &Cx, output: &Output) -> PanelWindow {
               })
               .on_click(move |_| {
                 let ws = ws.get();
-                // A named workspace has no number to switch by.
-                let target = ws
-                  .id
-                  .map_or(format!("name:{}", ws.name), |id| id.to_string());
+                // A named workspace has no number, or before Hyprland 0.57
+                // a negative one, which would read as a relative move.
+                let target = match ws.id {
+                  Some(id) if id > 0 => id.to_string(),
+                  _ => format!("name:{}", ws.name),
+                };
                 hyprland.focus_workspace(&target);
               })
           },
