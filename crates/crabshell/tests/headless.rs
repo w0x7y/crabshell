@@ -51,6 +51,13 @@ mod v0_1;
 #[path = "../examples/launcher.rs"]
 mod launcher;
 
+#[allow(
+  dead_code,
+  reason = "the example's bar is tested; its main isn't run here"
+)]
+#[path = "../examples/effects.rs"]
+mod effects;
+
 #[allow(dead_code, reason = "the services' own tests use the rest")]
 #[path = "../../crabshell-services/tests/pipewire/mod.rs"]
 mod pipewire;
@@ -1634,4 +1641,100 @@ fn the_launcher_types_scrolls_opens_windows_and_matches_its_goldens() {
     started.elapsed()
   );
   assert_eq!(shell.platform().stats().iterations, before + 1);
+}
+
+/// How far the effects bar's indicator has slid, from the width of the
+/// spacer before it.
+fn indicator_offset(platform: &Platform, id: WindowId) -> f32 {
+  let (_, window) = platform
+    .windows()
+    .find(|(held, _)| *held == id)
+    .expect("the bar is held");
+  let view = window.view();
+  // The row, the tabs' column, the indicator's row, then its spacer.
+  view
+    .root()
+    .children()
+    .next()
+    .and_then(|row| row.children().next())
+    .and_then(|column| column.children().nth(1))
+    .and_then(|indicator| indicator.children().next())
+    .map_or(f32::NAN, |spacer| spacer.rect().width)
+}
+
+/// Phase 8's exit check: the effects bar matches its goldens at each
+/// scale; hovering a tab and picking another draws frames only while the
+/// fade and the slide run, then the bar sleeps; and its blur, which Sway
+/// can't give, is logged once.
+#[test]
+#[ignore = "needs headless Sway"]
+fn the_effects_bar_draws_only_while_it_moves_and_matches_its_goldens() {
+  for (scale, factor, suffix) in [("1", 1.0, "1x"), ("1.5", 1.5, "1.5x"), ("2", 2.0, "2x")] {
+    let sway = Sway::start();
+    sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", scale]);
+    let mut shell = Shell::new(sway.connect(), |cx| cx.per_output(effects::effects))
+      .expect("the root closure runs");
+    run_until(&mut shell, "the bar's first frame", |platform| {
+      shown_on(platform, "HEADLESS-1").is_some()
+    });
+    settle(&mut shell);
+    check_golden(
+      &format!("effects@{suffix}"),
+      &sway.screenshot("HEADLESS-1"),
+      (48.0 * factor) as u32,
+    );
+  }
+
+  let logs = Logs::default();
+  let _logging = logs.install();
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let mut shell = Shell::new(sway.connect(), |cx| cx.per_output(effects::effects))
+    .expect("the root closure runs");
+  run_until(&mut shell, "the bar's first frame", |platform| {
+    shown_on(platform, "HEADLESS-1").is_some()
+  });
+  let id = shown_on(shell.platform(), "HEADLESS-1").expect("the bar is shown");
+  let mut pointer = VirtualPointer::new(&sway);
+  settle(&mut shell);
+  assert_eq!(indicator_offset(shell.platform(), id), 0.0);
+
+  // The third tab: 12 in, past two 40-pixel tabs and their 4-pixel gaps.
+  let before = shell.platform().stats();
+  pointer.move_to(12 + 2 * 44 + 20, 20, (1920, 1080));
+  pointer.click();
+  run_until(
+    &mut shell,
+    "the indicator under the third tab",
+    |platform| indicator_offset(platform, id) == 88.0,
+  );
+  settle(&mut shell);
+  let after = shell.platform().stats();
+  let frames = after.commits - before.commits;
+  // 250 ms at 60 Hz is about 15 frames; frame callbacks may merge some.
+  assert!((6..=60).contains(&frames), "{frames} frames for the slide");
+  let iterations = after.iterations - before.iterations;
+  assert!(
+    iterations < 400,
+    "{iterations} loop iterations for one slide"
+  );
+  eprintln!(
+    "the slide and fade took {frames} frames, drawn in {:.2} ms each",
+    (after.drawing - before.drawing).as_secs_f64() * 1000.0 / frames as f64
+  );
+
+  // Ended: one dispatch sleeps the whole time.
+  let before = shell.platform().stats().iterations;
+  let started = Instant::now();
+  shell
+    .dispatch(Some(Duration::from_secs(2)))
+    .expect("the connection works");
+  assert!(started.elapsed() >= Duration::from_millis(1900));
+  assert_eq!(shell.platform().stats().iterations, before + 1);
+  assert_eq!(
+    logs.text().matches("can't blur behind windows").count(),
+    1,
+    "{}",
+    logs.text()
+  );
 }

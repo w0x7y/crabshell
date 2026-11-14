@@ -220,6 +220,8 @@ pub struct Stats {
   pub wayland_wakeups: u64,
   /// Frames committed, over all windows.
   pub commits: u64,
+  /// Time spent drawing the frames committed.
+  pub drawing: Duration,
 }
 
 /// What a window's surface last showed.
@@ -662,10 +664,12 @@ impl Platform {
           pointer.show(entry.window.cursor());
         }
       }
-      if surface.frames.pacing.should_draw(entry.window.has_damage())
-        && surface.draw(&entry.window, renderer, text, qh)
-      {
-        stats.commits += 1;
+      if surface.frames.pacing.should_draw(entry.window.has_damage()) {
+        let started = Instant::now();
+        if surface.draw(&entry.window, renderer, text, qh) {
+          stats.commits += 1;
+          stats.drawing += started.elapsed();
+        }
       }
     }
     self.sync_text_inputs();

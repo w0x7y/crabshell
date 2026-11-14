@@ -64,8 +64,8 @@ impl Surface {
     let Some(manager) = effects.manager.as_ref().filter(|_| effects.blur) else {
       if !std::mem::replace(&mut effects.warned, true) {
         tracing::warn!(
-          "the compositor can't blur behind windows (it lacks ext-background-effect-v1), so \
-           they show unblurred"
+          "the compositor can't blur behind windows: it lacks ext-background-effect-v1, or \
+           its blur is off, so they show unblurred"
         );
       }
       return;
