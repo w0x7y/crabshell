@@ -137,6 +137,8 @@ pub(crate) enum Role {
   Popup(PopupRole),
   /// A floating window's `xdg_toplevel`.
   Toplevel(ToplevelWindow),
+  /// A lock surface, while the session locks.
+  Lock(crate::lock::LockRole),
 }
 
 /// A popup's `xdg_popup` and how it was placed.
@@ -222,6 +224,7 @@ impl Surface {
       Role::Layer(layer) => layer.wl_surface(),
       Role::Popup(popup) => popup.popup.wl_surface(),
       Role::Toplevel(window) => window.wl_surface(),
+      Role::Lock(lock) => &lock.wl_surface,
     }
   }
 
@@ -229,7 +232,7 @@ impl Surface {
   pub(crate) fn popup(&self) -> Option<&PopupRole> {
     match &self.role {
       Role::Popup(popup) => Some(popup),
-      Role::Layer(_) | Role::Toplevel(_) => None,
+      Role::Layer(_) | Role::Toplevel(_) | Role::Lock(_) => None,
     }
   }
 
@@ -404,6 +407,7 @@ impl Surface {
       Role::Layer(layer) => layer.wl_surface(),
       Role::Popup(popup) => popup.popup.wl_surface(),
       Role::Toplevel(window) => window.wl_surface(),
+      Role::Lock(lock) => &lock.wl_surface,
     };
     if let Err(error) = slot.buffer.shm.attach_to(surface) {
       tracing::warn!(%error, "couldn't attach a buffer");

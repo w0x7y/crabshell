@@ -37,6 +37,7 @@ use crate::events::{self, Event, Listener};
 use crate::foreign_toplevels::Foreign;
 use crate::idle::Idle;
 use crate::keyboard::SeatKeyboard;
+use crate::lock::Locks;
 use crate::outputs::OutputInfo;
 use crate::pointer::Cursor;
 use crate::scale::Scale;
@@ -330,6 +331,8 @@ pub struct Platform {
   pub(crate) idle: Idle,
   /// Every program's windows, once a watch asks.
   pub(crate) foreign: Foreign,
+  /// The session locks.
+  pub(crate) locks: Locks,
   /// What screencopy views show.
   pub(crate) captures: Captures,
   pub(crate) text_inputs: Vec<SeatTextInput>,
@@ -393,6 +396,7 @@ impl Platform {
       warned: false,
     };
     let data_devices_manager = DataDeviceManagerState::bind(globals, &qh).ok();
+    let locks = Locks::new(globals.bind(&qh, 1..=1, ()).ok());
     tracing::debug!(
       fractional = fractional.is_some(),
       text_input = text_inputs_manager.is_some(),
@@ -425,6 +429,7 @@ impl Platform {
       effects,
       idle,
       foreign: Foreign::default(),
+      locks,
       captures: Captures::default(),
       data_devices_manager,
       data_devices: Vec::new(),
@@ -627,6 +632,10 @@ impl Platform {
     // Effects created in a flush run in it, so every popup opened so far,
     // by a handler or an effect, has its bindings run.
     self.runtime.flush();
+    // What it set or built has bindings to run before the layout.
+    if self.update_locks() {
+      self.runtime.flush();
+    }
     self.take_popups();
     self
       .windows

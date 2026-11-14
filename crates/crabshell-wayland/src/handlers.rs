@@ -186,7 +186,8 @@ impl OutputHandler for Platform {
     };
     tracing::info!(name = info.name, mode = ?info.mode, scale = info.scale, "output added");
     self.foreign.output_changed(&output);
-    self.known.push((output, info.clone()));
+    self.known.push((output.clone(), info.clone()));
+    self.lock_output(&output);
     self.notify(Event::OutputAdded(info));
   }
 
@@ -202,7 +203,8 @@ impl OutputHandler for Platform {
       Some((_, known)) => *known = info,
       // It has a name only now.
       None => {
-        self.known.push((output, info.clone()));
+        self.known.push((output.clone(), info.clone()));
+        self.lock_output(&output);
         self.notify(Event::OutputAdded(info));
       }
     }

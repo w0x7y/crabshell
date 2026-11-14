@@ -17,13 +17,14 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crabshell_reactive::{Runtime, Signal};
+use crabshell_reactive::{ReadSignal, Runtime, Signal};
 use crabshell_ui::{
   Align, Button, Color, Column, Content, Cx, Edge, Key, KeyEvent, KeyboardFocus, Margins, Output,
   PanelWindow, PopupWindow, Rect, Region, Row, Spacer, Style, Text, TextInput, Window,
 };
 use crabshell_ui::{CaptureFrame, CaptureSource, FloatingWindow, ScreencopyView, Transition};
-use crabshell_wayland::{Event, EventLoop, Platform, Toplevel, WindowId};
+use crabshell_ui::{Lock, SessionLock};
+use crabshell_wayland::{Event, EventLoop, LockId, Platform, Toplevel, WindowId};
 use sway::{
   AppWindow, Image, InputMethod, Sway, VirtualKeyboard, VirtualPointer, keys, run_until, settle,
 };
@@ -2566,4 +2567,244 @@ fn a_one_shot_view_that_grows_captures_again_at_its_new_size() {
     "a frame cut for the larger box",
     |platform| frame_of(platform, viewer).is_some_and(|frame| frame.width == 320),
   );
+}
+
+/// The lock screen's background.
+const MAGENTA: Color = Color::rgb(0xff, 0x00, 0xff);
+
+/// The bar's background.
+const BAR: Color = Color::rgb(0x1e, 0x1e, 0x2e);
+
+/// What a test lock screen reads and writes.
+#[derive(Clone, Copy)]
+struct Locker {
+  /// Its `locked`.
+  on: Signal<bool>,
+  /// What its text fields hold.
+  typed: Signal<String>,
+  /// What the compositor says.
+  locked: ReadSignal<bool>,
+  id: LockId,
+}
+
+/// Adds a lock screen to `event_loop`'s platform, under `cx`: magenta,
+/// with each output's name, a text field that takes the focus and a
+/// button that unlocks. It locks once `on` turns true.
+fn add_locker(event_loop: &mut EventLoop, cx: &Cx) -> Locker {
+  let on = cx.signal(false);
+  let typed = cx.signal(String::new());
+  let lock = Lock::new(
+    cx,
+    SessionLock::new()
+      .locked(move || on.get())
+      .style(Style::new().background(MAGENTA).color(Color::rgb(0, 0, 0)))
+      .surface(move |_, output| {
+        Column::new()
+          .child(Text::new(output.name()))
+          .child(TextInput::new(typed).focus(true))
+          .child(Button::new(Text::new("unlock")).on_click(move |_| on.set(false)))
+      }),
+  );
+  let locked = lock.locked();
+  let id = event_loop.platform().add_session_lock(lock);
+  Locker {
+    on,
+    typed,
+    locked,
+    id,
+  }
+}
+
+/// The lock surfaces held, by output, in the order they came.
+fn lock_surfaces(platform: &Platform) -> Vec<(String, WindowId)> {
+  platform
+    .windows()
+    .filter(|(_, window)| window.view().root().path().starts_with("SessionLock["))
+    .map(|(id, window)| (window.output().name(), id))
+    .collect()
+}
+
+/// Dispatches until the compositor says the session is `locked`, as
+/// `locker` hears it, and returns how long that took.
+fn wait_locked(event_loop: &mut EventLoop, locker: Locker, locked: bool) -> Duration {
+  let started = Instant::now();
+  run_until(event_loop, &format!("locked to be {locked}"), |_| {
+    locker.locked.get_untracked() == locked
+  });
+  started.elapsed()
+}
+
+/// Two outputs, HEADLESS-1 at 1280 by 720 and HEADLESS-2 at 640 by 360
+/// and scale 2, each with the test bar.
+fn two_outputs(sway: &Sway) -> Shell {
+  sway.msg(&["output", "HEADLESS-1", "mode", "1280x720", "scale", "1"]);
+  sway.msg(&["create_output"]);
+  sway.msg(&["output", "HEADLESS-2", "mode", "640x360", "scale", "2"]);
+  let mut shell = Shell::new(sway);
+  shell.wait_for_bar("HEADLESS-1");
+  shell.wait_for_bar("HEADLESS-2");
+  shell
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn locking_covers_every_output_and_unlocking_shows_the_bars_again() {
+  let sway = Sway::start();
+  let mut shell = two_outputs(&sway);
+  shell.runtime.flush();
+  let before = shell.runtime.node_count();
+  let cx = Cx::new(shell.runtime.new_owner());
+  let locker = add_locker(&mut shell.event_loop, &cx);
+  shell.runtime.flush();
+  let nodes = shell.runtime.node_count();
+
+  locker.on.set(true);
+  let took = wait_locked(&mut shell.event_loop, locker, true);
+  eprintln!("the compositor locked {took:?} after the shell asked");
+  let platform = shell.event_loop.platform();
+  let surfaces = lock_surfaces(platform);
+  let names: Vec<&str> = surfaces.iter().map(|(name, _)| name.as_str()).collect();
+  assert_eq!(names, ["HEADLESS-1", "HEADLESS-2"]);
+  let info = |id| platform.window_info(id).expect("held");
+  assert_eq!(info(surfaces[0].1).size, Some((1280, 720)));
+  assert_eq!(info(surfaces[1].1).size, Some((320, 180)));
+  assert_eq!(info(surfaces[1].1).buffer_size, Some((640, 360)));
+  // Right of the centered button there is no text: all magenta, the
+  // bars' tops too.
+  wait_for_color(
+    &sway,
+    &mut shell.event_loop,
+    "HEADLESS-1",
+    (700, 0, 580, 720),
+    MAGENTA,
+  );
+  wait_for_color(
+    &sway,
+    &mut shell.event_loop,
+    "HEADLESS-2",
+    (400, 0, 240, 360),
+    MAGENTA,
+  );
+
+  locker.on.set(false);
+  wait_locked(&mut shell.event_loop, locker, false);
+  assert!(lock_surfaces(shell.event_loop.platform()).is_empty());
+  wait_for_color(
+    &sway,
+    &mut shell.event_loop,
+    "HEADLESS-1",
+    (600, 0, 300, 30),
+    BAR,
+  );
+  shell.runtime.flush();
+  assert_eq!(shell.runtime.node_count(), nodes, "the surfaces are freed");
+
+  shell.event_loop.platform().remove_session_lock(locker.id);
+  assert_eq!(shell.event_loop.platform().session_locks(), 0);
+  cx.owner().dispose();
+  shell.runtime.flush();
+  assert_eq!(shell.runtime.node_count(), before, "the lock is freed");
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn an_output_added_while_locked_gets_a_surface_and_one_unplugged_drops_it() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1280x720", "scale", "1"]);
+  let mut shell = Shell::new(&sway);
+  shell.wait_for_bar("HEADLESS-1");
+  let cx = Cx::new(shell.runtime.new_owner());
+  let locker = add_locker(&mut shell.event_loop, &cx);
+  locker.on.set(true);
+  wait_locked(&mut shell.event_loop, locker, true);
+
+  sway.msg(&["create_output"]);
+  sway.msg(&["output", "HEADLESS-2", "mode", "640x360", "scale", "1"]);
+  run_until(
+    &mut shell.event_loop,
+    "HEADLESS-2's lock surface",
+    |platform| {
+      lock_surfaces(platform).iter().any(|(name, id)| {
+        name == "HEADLESS-2"
+          && platform
+            .window_info(*id)
+            .is_some_and(|info| info.commits > 0)
+      })
+    },
+  );
+  wait_for_color(
+    &sway,
+    &mut shell.event_loop,
+    "HEADLESS-2",
+    (400, 0, 240, 360),
+    MAGENTA,
+  );
+
+  sway.msg(&["output", "HEADLESS-2", "unplug"]);
+  run_until(
+    &mut shell.event_loop,
+    "HEADLESS-2's surface to go",
+    |platform| {
+      lock_surfaces(platform)
+        .iter()
+        .all(|(name, _)| name == "HEADLESS-1")
+    },
+  );
+  assert!(locker.locked.get_untracked(), "still locked");
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn typing_reaches_a_field_on_the_lock_surface_and_a_click_unlocks() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1280x720", "scale", "1"]);
+  // As on a real seat, the keyboard is there when the surface maps.
+  let mut keyboard = VirtualKeyboard::new(&sway);
+  let mut pointer = VirtualPointer::new(&sway);
+  let mut shell = Shell::new(&sway);
+  shell.wait_for_bar("HEADLESS-1");
+  let cx = Cx::new(shell.runtime.new_owner());
+  let locker = add_locker(&mut shell.event_loop, &cx);
+  locker.on.set(true);
+  wait_locked(&mut shell.event_loop, locker, true);
+  settle(&mut shell.event_loop);
+
+  keyboard.tap(keys::H);
+  keyboard.tap(keys::I);
+  run_until(&mut shell.event_loop, "the typing", |_| {
+    locker.typed.get_untracked() == "hi"
+  });
+
+  let platform = shell.event_loop.platform();
+  let (_, id) = lock_surfaces(platform)[0];
+  let (_, window) = platform
+    .windows()
+    .find(|(held, _)| *held == id)
+    .expect("held");
+  let view = window.view();
+  let column = view.root().children().next().expect("the column");
+  let button = column.children().nth(2).expect("the unlock button").rect();
+  drop(view);
+  let (x, y) = center(button, (0.0, 0.0));
+  pointer.move_to(x as u32, y as u32, (1280, 720));
+  pointer.click();
+  wait_locked(&mut shell.event_loop, locker, false);
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_second_lock_after_the_first_ended_locks_again() {
+  let sway = Sway::start();
+  let mut shell = Shell::new(&sway);
+  shell.wait_for_bar("HEADLESS-1");
+  let cx = Cx::new(shell.runtime.new_owner());
+  let locker = add_locker(&mut shell.event_loop, &cx);
+  for _ in 0..2 {
+    locker.on.set(true);
+    wait_locked(&mut shell.event_loop, locker, true);
+    assert_eq!(lock_surfaces(shell.event_loop.platform()).len(), 1);
+    locker.on.set(false);
+    wait_locked(&mut shell.event_loop, locker, false);
+    assert!(lock_surfaces(shell.event_loop.platform()).is_empty());
+  }
 }

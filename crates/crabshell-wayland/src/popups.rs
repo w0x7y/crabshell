@@ -83,10 +83,22 @@ impl Platform {
       parent_surface.popup().is_some(),
       parent.window.surface().anchors.edge(),
     );
-    let (layer, parent_xdg, may_grab) = match &parent_surface.role {
-      Role::Layer(layer) => (Some(layer.clone()), None, true),
-      Role::Popup(popup) => (None, Some(popup.popup.xdg_surface().clone()), popup.grabbed),
-      Role::Toplevel(window) => (None, Some(window.xdg_surface().clone()), true),
+    let parent = match &parent_surface.role {
+      Role::Layer(layer) => Some((Some(layer.clone()), None, true)),
+      Role::Popup(popup) => Some((None, Some(popup.popup.xdg_surface().clone()), popup.grabbed)),
+      Role::Toplevel(window) => Some((None, Some(window.xdg_surface().clone()), true)),
+      // No protocol makes a lock surface a popup's parent.
+      Role::Lock(_) => None,
+    };
+    let Some((layer, parent_xdg, may_grab)) = parent else {
+      let entry = &mut self.windows.entries[index];
+      if !std::mem::replace(&mut entry.refused, true) {
+        tracing::warn!(
+          popup = entry.window.view().root().path(),
+          "a lock surface can't open popups"
+        );
+      }
+      return;
     };
     let placement = entry.window.placement();
     let grab = self.last_button.clone().filter(|_| may_grab);

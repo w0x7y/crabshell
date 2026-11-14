@@ -62,6 +62,9 @@
 //!   source through `ext-image-copy-capture-v1`, bound when the first one
 //!   shows. A live view asks for each next frame, which the compositor
 //!   sends only once the source changes.
+//! - A session lock from [`Platform::add_session_lock`] locks through
+//!   `ext-session-lock-v1` while its `locked` says to, with a lock surface
+//!   on every output, drawn like any other window.
 //!
 //! [`Window`]: crabshell_ui::Window
 
@@ -77,6 +80,7 @@ mod foreign_toplevels;
 mod handlers;
 mod idle;
 mod keyboard;
+mod lock;
 mod outputs;
 mod pacing;
 mod platform;
@@ -96,6 +100,7 @@ pub use calloop::{LoopHandle, LoopSignal};
 pub use events::Event;
 pub use foreign_toplevels::Toplevel;
 pub use idle::IdleWatch;
+pub use lock::LockId;
 pub use outputs::{Mode, OutputInfo};
 pub use platform::{Error, EventLoop, Platform, Snapshot, Stats, WindowInfo};
 pub use windows::WindowId;
