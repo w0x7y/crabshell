@@ -255,15 +255,28 @@ API rules settled in Phase 9, desktop services:
 - `Player::position_at(now)` works out where playback is, since MPRIS doesn't say as it moves.
 - The prelude adds the services' types: `UPower`, `PowerDevice`, `DeviceKind`, `BatteryState`, `PowerProfiles`, `PowerProfile`, `Bluetooth`, `BluetoothAdapter`, `BluetoothDevice`, `Network`, `NetworkDevice`, `NetworkKind`, `NetworkState`, `WifiNetwork`, `Mpris`, `Player`, `PlaybackStatus`, `LoopStatus`, `Notifications`, `Notification`, `Urgency`, `Timeout`, `AudioNode` and `AudioStream`. The desktop example shows them together.
 
+API rules settled in Phase 10, launchers and system integration:
+
+- `Button::hovered(signal)` writes whether the pointer is over the button or anything inside it, inner buttons included, so an outer button can show controls on hover; `hover_style` still shows only on the deepest button. Buttons may share one signal, which is `true` while any of them has the pointer. `Shadow::cut_out()` leaves a shadow out under its box, as CSS always does, so translucent glass shows what is behind it.
+- `cx.process(|| command)` runs a program and gives a `Process`: `running()`, `exit_status()`, `stdout()` and `stderr()` signals, `on_line` for each line it prints, `with_stdin` with `write` and `close_stdin`, `kill` and `restart`. `command` returns a `std::process::Command` or a list such as `["uptime", "-p"]` (`IntoCommand`), and runs again when a signal it read changes. `cx.exec_detached(command)` starts a program that runs on its own, as a launcher does.
+- `cx.socket(path)` connects to a Unix socket: `connected()`, `on_line`, `write`, `reconnect` and `close`. `cx.file_view(path)` gives a `FileView` whose `text()` follows the file and whose `write` replaces it. `cx.json_file(path, default)` gives a `Signal<T>` kept in step with a JSON file both ways.
+- `cx.desktop_entries()` gives the installed applications as `DesktopEntry`s with their `DesktopAction`s, `lookup(app_id)` for a window's entry, `launch(id)` and `launch_action(id, action)`.
+- `cx.ipc(target, function, handler)` comes from `ShellExt`, with a handler `Fn(&[String]) -> Result<String, String>`. `crabshell ipc <target> <function> [args...]` calls it and prints its `Ok` text or reports its `Err`; `crabshell ipc` lists the handlers.
+- `cx.quantize_colors(path, depth)` comes from `ShellExt` and gives a `ReadSignal<Vec<Color>>` of up to 2^`depth` main colors of an image, found off the loop's thread; `path` takes a value or a closure.
+- `cx.toplevels()` comes from `ShellExt` and gives `Toplevels`, a `Copy` handle: `list()` is a `ReadSignal<Vec<Toplevel>>` of every program's windows, and `activate`, `close`, `set_maximized`, `set_minimized` and `set_fullscreen` take a window's `id`.
+- `ScreencopyView::new(source)` shows a `CaptureSource`, an output by name or a window by its `Toplevel` id, once or `live`, sized by its style and drawn with a `fit`; every property takes a value or a closure.
+- The prelude adds `untrack`, `Process`, `IntoCommand`, `Socket`, `FileView`, `DesktopEntries`, `DesktopEntry`, `DesktopAction`, `Toplevels`, `Toplevel`, `ScreencopyView` and `CaptureSource`. The overview example shows them together.
+
 ## Process model and reload
 
 Two processes run. The `crabshell` CLI, installed once per machine, is the supervisor. The shell is the user's own compiled binary, which links the `crabshell` library.
 
-v0.1 has three CLI commands:
+The CLI has four commands; v0.1 had the first three:
 
 - `crabshell init` copies the template into `~/.config/crabshell/`. It refuses if the directory already exists.
 - `crabshell run` builds the config, starts the shell, watches for edits and supervises.
 - `crabshell check` runs `cargo check` and prints errors, for editors and scripts.
+- `crabshell ipc [<target> <function> [args...]]` calls a running shell's `cx.ipc` handlers, or lists them (Phase 10).
 
 What `crabshell run` does:
 
@@ -305,6 +318,14 @@ Rules settled while building the watcher and reload (Phase 5, step 4):
 - The supervisor logs each build's duration, and the time from the old shell's exit to the new one's `ready`.
 - A build blocks the loop. A signal that arrives meanwhile is handled when it ends.
 - Every crate's tests run their buses on a private `dbus-daemon` whose config lists no service directories, since `--session` would start real services, such as the desktop's notification daemon. `crabshell-cli`'s other tests get a session bus address that leads nowhere, and none of its tests passes on the desktop's `DISPLAY`, `XAUTHORITY`, `WAYLAND_DISPLAY` or `SWAYSOCK`: libpulse alone reads X's root window, which would start the desktop's Xwayland.
+
+Rules settled for IPC and the supervisor (Phase 10):
+
+- The shell serves `cx.ipc` handlers at `$XDG_RUNTIME_DIR/crabshell/ipc-<display>.sock`, named for the last part of `WAYLAND_DISPLAY` (`wayland-0` without it), in the directory `persist` makes private. It binds only at the first registration, replaces a file already there, and removes it at exit only if its device and inode are still its own, so an old shell never removes a newer one's. A newer registration under the same names replaces the older and outlives the older one's owner.
+- One request per connection: a line of JSON, `{"target","function","args"}` or `{"list":true}`, answered with `{"ok"}` or `{"error"}`. Requests are capped at 64 KiB and replies at 1 MiB; at most 16 connections are open, each closed 5 s after it opened. Connections are edge-triggered, so one waiting for its request sleeps. An accept that fails while a connection waits, as with no file descriptors left, rests the listener for 1 s instead of spinning. A panicking handler, or the drop of one replaced, is logged with where it was registered; the handler is disabled and the client told.
+- `crabshell ipc` finds the socket the same way, gives the exchange 5 s, reads the reply to its newline, and exits 0, 1 for an error or no shell, or 2 for bad arguments.
+- The supervisor starts the shell with glibc's `mmap` threshold fixed at 128 KiB (`GLIBC_TUNABLES=glibc.malloc.mmap_threshold=131072`, added to the user's own unless that sets it). Without it, glibc raises the threshold to the size of each large block freed, so a second decoded wallpaper's buffers stay in the heap: 41 MiB for a 4K image, measured. The shell's own spawns take it back out, and the supervisor's socket variable too.
+- Before it exits for a reload or a lost compositor, the shell stops every program `cx.process` started, since `exit` skips the drops that would. A shell ended by a signal leaves them running: handling SIGTERM would block it in every thread, and programs the shell starts would inherit that.
 
 Panic handling inside the shell:
 
@@ -370,25 +391,26 @@ More required tests:
 
 ## Widgets, layout and styles
 
-v0.1 shipped ten widgets, Phase 7 added five, and the phases after it add the rest a full shell needs (see "Beyond v0.1"). All but one are in `crabshell-ui`. `Tray` is in `crabshell-services`, because it needs the tray service and `crabshell-ui` can't depend on services; the prelude re-exports it. Users build everything else by combining them.
+v0.1 shipped ten widgets, Phase 7 added five, Phase 10 one, and the phases after it add the rest a full shell needs (see "Beyond v0.1"). All but one are in `crabshell-ui`. `Tray` is in `crabshell-services`, because it needs the tray service and `crabshell-ui` can't depend on services; the prelude re-exports it. Users build everything else by combining them.
 
-| Widget           | What it does                                                                                                                |
-| ---------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `PanelWindow`    | A layer-shell surface on one output with anchors, size, exclusive zone, layer, margins, keyboard focus and an input mask.   |
-| `FloatingWindow` | An ordinary `xdg_toplevel` window with a title, size limits, maximized, fullscreen and `visible`, shown with `cx.floating`. |
-| `PopupWindow`    | An `xdg_popup` anchored to a widget's rectangle. Tray menus use it.                                                         |
-| `Row`, `Column`  | Flex layout with `gap`, `padding`, `align` and `justify`.                                                                   |
-| `Stack`          | Children drawn on top of each other in one cell.                                                                            |
-| `Spacer`         | Takes the leftover space in a `Row` or `Column`.                                                                            |
-| `Text`           | One line by default, with `ellipsis` and `max_lines`.                                                                       |
-| `Icon`           | A freedesktop icon name, an SVG or PNG path, or raw ARGB pixels from a tray item.                                           |
-| `Button`         | A clickable box with `hover_style`, `pressed_style` and `focus_style`, plus click, press, scroll and key handlers.          |
-| `Image`          | A PNG, JPEG, GIF, WebP or SVG file at a fixed size, filled, contained or covered.                                           |
-| `ScrollView`     | Shows part of a taller child, cut to its box, scrolled by the wheel or by its offset signal.                                |
-| `ListView`       | A scrolling list of rows of one height that builds only the rows in view, with a `current` row kept in view.                |
-| `TextInput`      | A one-line text field with a caret, selection, placeholder, password dots, the clipboard and input methods.                 |
-| `Menu`           | A vertical list of buttons built from a DBusMenu layout, with separators, checkmarks and submenus as nested popups.         |
-| `Tray`           | One icon button per tray item, each opening its `Menu`. Built only from the widgets above.                                  |
+| Widget           | What it does                                                                                                                  |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `PanelWindow`    | A layer-shell surface on one output with anchors, size, exclusive zone, layer, margins, keyboard focus and an input mask.     |
+| `FloatingWindow` | An ordinary `xdg_toplevel` window with a title, size limits, maximized, fullscreen and `visible`, shown with `cx.floating`.   |
+| `PopupWindow`    | An `xdg_popup` anchored to a widget's rectangle. Tray menus use it.                                                           |
+| `Row`, `Column`  | Flex layout with `gap`, `padding`, `align` and `justify`.                                                                     |
+| `Stack`          | Children drawn on top of each other in one cell.                                                                              |
+| `Spacer`         | Takes the leftover space in a `Row` or `Column`.                                                                              |
+| `Text`           | One line by default, with `ellipsis` and `max_lines`.                                                                         |
+| `Icon`           | A freedesktop icon name, an SVG or PNG path, or raw ARGB pixels from a tray item.                                             |
+| `Button`         | A clickable box with `hover_style`, `pressed_style`, `focus_style` and `hovered`, plus click, press, scroll and key handlers. |
+| `Image`          | A PNG, JPEG, GIF, WebP or SVG file at a fixed size, filled, contained or covered.                                             |
+| `ScrollView`     | Shows part of a taller child, cut to its box, scrolled by the wheel or by its offset signal.                                  |
+| `ListView`       | A scrolling list of rows of one height that builds only the rows in view, with a `current` row kept in view.                  |
+| `TextInput`      | A one-line text field with a caret, selection, placeholder, password dots, the clipboard and input methods.                   |
+| `Menu`           | A vertical list of buttons built from a DBusMenu layout, with separators, checkmarks and submenus as nested popups.           |
+| `Tray`           | One icon button per tray item, each opening its `Menu`. Built only from the widgets above.                                    |
+| `ScreencopyView` | An output or a window, captured once or live, sized by its style.                                                             |
 
 ### Layout
 
@@ -454,6 +476,12 @@ Rules settled while building `crabshell-ui` (Phase 7):
 - A text field edits by grapheme and word through unicode-segmentation, places its caret and selection with cosmic-text so right-to-left text works, scrolls sideways to keep the caret in view, and is cut to its content box. Text set from outside puts the caret at the end, and line breaks become spaces. Ctrl+C and Ctrl+X copy the selection, Ctrl+V pastes, and a password field pastes but never copies. Enter runs `on_accept`, or without one goes on to the window.
 - An input method sees the focused field only while the window has the keyboard and never a password. Its preedit shows underlined at the caret, replacing the selection, and moving the focus drops it.
 - A floating window's settings are read after the first flush, like a panel's. Move and resize requests are honored only while a pointer button is held.
+
+Rules settled while building `crabshell-ui` (Phase 10):
+
+- A screencopy view draws nothing until its first frame. A new source drops the frame it showed, and a frame the same as the one shown repaints nothing, so a live view of its own output settles. `Window::captures` lists the views shown with a box, for the platform.
+
+- A button's `hovered` signal is `true` while the pointer is over a node on the path from the window down to the hovered button, so leaving an inner button for its outer one's text keeps the outer one hovered. It is written only on a change, once per signal for buttons sharing it, and goes `false` when the pointer leaves the window, the button is removed, its window is dropped, or a floating window is hidden. The signal belongs to the config: the button only writes it.
 
 Rules settled while building `crabshell-ui` (Phase 8):
 
@@ -531,6 +559,13 @@ Rules settled while building `crabshell-render` (Phase 7):
 - Limits on image files: 32 MiB, 8192 pixels a side and 24 million pixels, told to each decoder before it allocates; SVG images up to 4 MiB. A GIF frame with no pixels is refused. Cached pictures past 32 MiB, like icons past 128, are dropped once no recent draw used them. The cache key holds the file's modification time, so a file rewritten in place, or one that appears after a failure, is read again.
 - An image is placed and sized apart, so one past the window's edge is cut there instead of squeezed.
 
+Rules settled while building `crabshell-render` (Phase 10):
+
+- A captured frame is turned upright from the transform the compositor reports, and kept scaled down, its shape kept, to the least size that covers its view's box at the largest output scale; never up. Buffers in ABGR, ARGB, XBGR or XRGB 8888 are read, the X formats as opaque. The renderer keeps one scaled copy per view, dropped as soon as the platform ends the view, or 16 draws after its last use.
+
+- A cut-out shadow is masked by the box's own shape, filled as its background is, so its edge meets the background's antialiasing; a sharp one is clipped by the inverted mask, a blurred one multiplied by it, in each tile.
+- `quantize_colors(path, depth, size)` decodes with `Image`'s loaders and caps, halves the picture until its longer side is at most `size` (0 keeps it), skips pixels under alpha 128, and splits at the median of the widest channel into at most 2^`depth` boxes, `depth` clamped to 8. Equal channel values stay on one side, so two boxes never give one color. The colors are each box's mean, sorted by pixel count, then by their bytes. A 1920×1080 JPEG takes about 25 ms at size 128, release build.
+
 Rules settled while building `crabshell-render` (Phase 8):
 
 - A gradient is laid out in buffer pixels and moved onto each tile, so tiles agree. A linear one takes CSS's angle, with its line long enough for the ends to meet the corners. A radial one is a circle from the middle to the farthest corner. A clear stop fades each side out in its neighbor's color, as CSS blends with the alpha applied. Nothing is dithered, so a subtle gradient across a wide bar shows steps.
@@ -541,18 +576,21 @@ Rules settled while building `crabshell-render` (Phase 8):
 
 `crabshell-wayland` uses `smithay-client-toolkit` (sctk) on a single-threaded `calloop` event loop. Everything that touches widgets or signals runs on that one thread.
 
-| Protocol                                                 | Used for                                         |
-| -------------------------------------------------------- | ------------------------------------------------ |
-| `wl_compositor`, `wl_shm`                                | Surfaces and CPU buffers                         |
-| `wl_output` version 4                                    | Output names such as `DP-1`, plus mode and scale |
-| `zwlr_layer_shell_v1`                                    | `PanelWindow`                                    |
-| `xdg_wm_base`, through `zwlr_layer_surface_v1.get_popup` | `PopupWindow`                                    |
-| `xdg_toplevel`, `zxdg_decoration_manager_v1`             | `FloatingWindow`, with server-side decorations   |
-| `wp_fractional_scale_v1`, `wp_viewporter`                | Fractional scaling                               |
-| `wp_cursor_shape_v1`                                     | Cursor shapes                                    |
-| `wl_seat`, pointer and keyboard                          | Clicks, hover, scroll and keys                   |
-| `zwp_text_input_v3`                                      | Input methods in text fields                     |
-| `wl_data_device_manager`                                 | The clipboard                                    |
+| Protocol                                                                                                                                                                  | Used for                                         |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `wl_compositor`, `wl_shm`                                                                                                                                                 | Surfaces and CPU buffers                         |
+| `wl_output` version 4                                                                                                                                                     | Output names such as `DP-1`, plus mode and scale |
+| `zwlr_layer_shell_v1`                                                                                                                                                     | `PanelWindow`                                    |
+| `xdg_wm_base`, through `zwlr_layer_surface_v1.get_popup`                                                                                                                  | `PopupWindow`                                    |
+| `xdg_toplevel`, `zxdg_decoration_manager_v1`                                                                                                                              | `FloatingWindow`, with server-side decorations   |
+| `wp_fractional_scale_v1`, `wp_viewporter`                                                                                                                                 | Fractional scaling                               |
+| `wp_cursor_shape_v1`                                                                                                                                                      | Cursor shapes                                    |
+| `wl_seat`, pointer and keyboard                                                                                                                                           | Clicks, hover, scroll and keys                   |
+| `zwp_text_input_v3`                                                                                                                                                       | Input methods in text fields                     |
+| `wl_data_device_manager`                                                                                                                                                  | The clipboard                                    |
+| `ext_idle_notifier_v1`, `zwp_idle_inhibit_manager_v1`                                                                                                                     | Idle watches and inhibitors (Phase 9)            |
+| `zwlr_foreign_toplevel_manager_v1`                                                                                                                                        | Every program's windows (Phase 10)               |
+| `ext_image_copy_capture_manager_v1`, `ext_output_image_capture_source_manager_v1`, `ext_foreign_toplevel_list_v1`, `ext_foreign_toplevel_image_capture_source_manager_v1` | `ScreencopyView` (Phase 10)                      |
 
 ### Event loop
 
@@ -661,22 +699,36 @@ Rules settled while building `crabshell-wayland` (Phase 9):
 - Idle binds `ext_idle_notifier_v1` and `zwp_idle_inhibit_manager_v1`, both version 1. A watch is a notification on the first seat, so a watch made before any seat exists never fires, and one whose seat goes stays as it was. A panicking callback is logged and the shell goes on.
 - A window's idle inhibitor is made once its surface is configured, while its `inhibit_idle` is true, and goes with the surface. Headless Sway honors one on a layer surface.
 
+Rules settled while building `crabshell-wayland` (Phase 10):
+
+- Toplevels bind `zwlr_foreign_toplevel_manager_v1`, versions 1 to 3, at the first `watch_toplevels`, so a shell that never asks hears nothing. Without it, that is logged once and the list stays empty.
+- A handle counts at its first `done`, and changes at each later one. The watch hears the whole list once per dispatch that changed something. `closed` drops and destroys a handle and clears it as any other's parent, as the protocol doesn't promise to say; `finished` empties the list for good. Outputs are named from the outputs the platform knows, one not announced yet left out until it is.
+- Titles and app ids are cut to 4 KiB at a character; past 1024 toplevels the rest are destroyed and logged once. Activate uses the first seat; fullscreen names no output and needs version 2.
+- Headless Sway honors activate, fullscreen and close, ignores maximize and minimize, and never says a window's parent; labwc does all of them, so its tests cover those.
+- Screencopy binds its protocols when a shown window first holds a view, and the ext toplevel list when a view of a window first does. Each view of a shown window gets a session for its source, waiting while the source isn't there, with a buffer of the size and format announced; a format `wl_shm` doesn't take too is never used. Sources past 8192 pixels a side or 24 million pixels are logged and show nothing.
+- A one-shot view ends its session after its frame. A live view asks for the next frame once its window drew the last one, so it takes no more than the window shows and nothing while the window can't draw; a frame the same as before asks again at once, which the compositor answers only when the source changes. A view whose box outgrows its frame, or a higher scale, captures again.
+- `buffer_constraints` starts a new session; any other failure is tried again once. A stopped source ends the session and keeps the last frame; an output announced again gets a new session.
+- Window views pair an `ext_foreign_toplevel_handle_v1` with the wlr toplevel of the same app id and title, oldest unpaired first, freeing a pair whose wlr toplevel went. Two windows with the same app id and title may swap.
+
 ## Services
 
 v0.1 had four services in `crabshell-services`, and Phase 9 added six; the phases after it add Quickshell's others (see "Beyond v0.1"). Each one owns its connection, runs on the main thread, and hands out `ReadSignal`s plus a few methods. Every service is created on first use and shared by all bars, so two outputs never mean two connections.
 
-| Service        | Signals and methods                                                                                                                                                                                                                                                                               | Source                                                              | Crate                         |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ----------------------------- |
-| Workspaces     | `workspaces()` gives `Vec<Workspace>` with id, name, output, focused, visible, urgent. `focus_workspace(name)`.                                                                                                                                                                                   | Sway IPC at `$SWAYSOCK`                                             | Own framing with `serde_json` |
-| Tray           | `items()` gives `Vec<TrayItem>` with id (bus name and path), app_id, title, status, icon_name, icon_pixmaps, attention_icon_name, icon_theme_path, tooltip, item_is_menu and menu. `activate`, `secondary_activate`, `scroll`, `menu()`, `open_menu`, `open_submenu`, `close_menu`, `menu_event`. | StatusNotifierItem and `com.canonical.dbusmenu` on the session bus  | `zbus`                        |
-| Audio          | `default_sink()` gives `Option<Sink>` with name, volume_percent, muted. `change_volume(percent)`, `toggle_mute()`.                                                                                                                                                                                | PulseAudio protocol, served by pipewire-pulse on PipeWire systems   | `libpulse-binding`            |
-| Clock          | `clock(precision)` gives a `jiff::Zoned`                                                                                                                                                                                                                                                          | System time and time zone                                           | `jiff`                        |
-| UPower         | `devices()`, `display_device()` give `PowerDevice`s with kind, state, percent, present, times to empty and full, energy rate. `on_battery()`.                                                                                                                                                     | UPower on the system bus                                            | `zbus`                        |
-| Power profiles | `active()`, `available()` give `PowerProfile`s. `set(profile)`.                                                                                                                                                                                                                                   | power-profiles-daemon on the system bus                             | `zbus`                        |
-| Bluetooth      | `adapters()`, `devices()` with name, address, powered, discovering, connected, paired, trusted, battery. `set_powered`, `start_discovery`, `stop_discovery`, `connect`, `disconnect`, `pair`, `set_trusted`, `forget`.                                                                            | BlueZ on the system bus                                             | `zbus`                        |
-| Network        | `wifi_enabled()`, `devices()` with kind, state and connection, `wifi_networks()` with SSID, strength, secured, connected. `set_wifi_enabled`, `scan`, `connect`, `disconnect`.                                                                                                                    | NetworkManager on the system bus                                    | `zbus`                        |
-| Media players  | `players()` gives `Player`s with status, track, artists, art, length, position and what each can do. `play_pause`, `next`, `previous`, `seek`, `set_position`, `set_volume`, `set_shuffle`, `set_loop`, `raise`.                                                                                  | MPRIS on the session bus                                            | `zbus`                        |
-| Notifications  | `list()`, the history, and `popups()`, the ones still showing. `dismiss`, `invoke`, `clear`.                                                                                                                                                                                                      | The shell serves `org.freedesktop.Notifications` on the session bus | `zbus`                        |
+| Service           | Signals and methods                                                                                                                                                                                                                                                                               | Source                                                              | Crate                         |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ----------------------------- |
+| Workspaces        | `workspaces()` gives `Vec<Workspace>` with id, name, output, focused, visible, urgent. `focus_workspace(name)`.                                                                                                                                                                                   | Sway IPC at `$SWAYSOCK`                                             | Own framing with `serde_json` |
+| Tray              | `items()` gives `Vec<TrayItem>` with id (bus name and path), app_id, title, status, icon_name, icon_pixmaps, attention_icon_name, icon_theme_path, tooltip, item_is_menu and menu. `activate`, `secondary_activate`, `scroll`, `menu()`, `open_menu`, `open_submenu`, `close_menu`, `menu_event`. | StatusNotifierItem and `com.canonical.dbusmenu` on the session bus  | `zbus`                        |
+| Audio             | `default_sink()` gives `Option<Sink>` with name, volume_percent, muted. `change_volume(percent)`, `toggle_mute()`.                                                                                                                                                                                | PulseAudio protocol, served by pipewire-pulse on PipeWire systems   | `libpulse-binding`            |
+| Clock             | `clock(precision)` gives a `jiff::Zoned`                                                                                                                                                                                                                                                          | System time and time zone                                           | `jiff`                        |
+| UPower            | `devices()`, `display_device()` give `PowerDevice`s with kind, state, percent, present, times to empty and full, energy rate. `on_battery()`.                                                                                                                                                     | UPower on the system bus                                            | `zbus`                        |
+| Power profiles    | `active()`, `available()` give `PowerProfile`s. `set(profile)`.                                                                                                                                                                                                                                   | power-profiles-daemon on the system bus                             | `zbus`                        |
+| Bluetooth         | `adapters()`, `devices()` with name, address, powered, discovering, connected, paired, trusted, battery. `set_powered`, `start_discovery`, `stop_discovery`, `connect`, `disconnect`, `pair`, `set_trusted`, `forget`.                                                                            | BlueZ on the system bus                                             | `zbus`                        |
+| Network           | `wifi_enabled()`, `devices()` with kind, state and connection, `wifi_networks()` with SSID, strength, secured, connected. `set_wifi_enabled`, `scan`, `connect`, `disconnect`.                                                                                                                    | NetworkManager on the system bus                                    | `zbus`                        |
+| Media players     | `players()` gives `Player`s with status, track, artists, art, length, position and what each can do. `play_pause`, `next`, `previous`, `seek`, `set_position`, `set_volume`, `set_shuffle`, `set_loop`, `raise`.                                                                                  | MPRIS on the session bus                                            | `zbus`                        |
+| Notifications     | `list()`, the history, and `popups()`, the ones still showing. `dismiss`, `invoke`, `clear`.                                                                                                                                                                                                      | The shell serves `org.freedesktop.Notifications` on the session bus | `zbus`                        |
+| Desktop entries   | `applications()` gives `DesktopEntry`s with name, comment, icon, exec, categories, keywords, actions and `no_display`. `lookup(app_id)`, `launch(id)`, `launch_action(id, action)`.                                                                                                               | `.desktop` files in the XDG data directories                        | `inotify`, `rustix`           |
+| Programs          | `cx.process(command)` gives a `Process`: `running`, `exit_status`, `stdout`, `stderr`, `on_line`, `write`, `close_stdin`, `kill`, `restart`. `cx.exec_detached(command)`.                                                                                                                         | Programs the shell starts                                           | `rustix`                      |
+| Files and sockets | `cx.file_view(path)`, `cx.json_file(path, default)`, `cx.socket(path)`.                                                                                                                                                                                                                           | Files and Unix sockets                                              | `inotify`, `serde_json`       |
 
 ### Workspaces
 
@@ -744,6 +796,18 @@ Rules settled while building `crabshell-services` (Phase 9):
 - Notifications: the shell queues for `org.freedesktop.Notifications` and lets another daemon replace it, serving while it holds the name and keeping the history through a loss. It offers actions, body, icon-static and persistence. Tags in a body are taken out and entities decoded. A popup shows for its timeout, 5 s by default, and a critical one or one that never expires until dismissed; one loop timer exists only while a popup waits to expire. Summaries are cut to 1 KiB, bodies to 4 KiB and other strings to 256 bytes; at most 16 actions, 256 notifications and 8 MiB of pictures are kept.
 - Audio: sinks, sources and streams are read whole on each of their events. A failed read keeps the last list. A sink's monitor isn't listed as a source, but can be the default source. Setting a volume keeps the channels' balance. Peak level meters aren't there yet: they would need a stream reading the sound many times a second.
 
+Rules settled while building `crabshell-services` (Phase 10):
+
+- Programs run in a process group of their own, with their outputs through non-blocking pipes, so a script can open `/dev/stdout`. A program starts on the loop's next turn, so `on_line` and `with_stdin` set at once apply. Each output keeps up to 1 MiB in its signal, and nothing after a character that didn't fit; lines reach `on_line` past that, and a line over 1 MiB is dropped and logged. Input written before the start waits for it; `close_stdin` closes once everything written is sent; 4 MiB unread closes it at once.
+- A program's end comes from a pidfd. What is left in its pipes is read then, up to 1 MiB each, as a program it started may hold them open and keep printing. A run reaped behind the shell's back ends with no status rather than spinning. A restart, `kill` or the context going sends `SIGTERM` to the group; a stopped run, and every `exec_detached` program, is reaped through a pidfd that leaves the loop once the child is gone. A panicking command stops the run before and is logged with where `cx.process` was called; the next change tries again.
+- Programs the shell starts don't inherit the supervisor's socket variable or the shell's own glibc tunable.
+- Sockets connect at once and never retry on their own. A refused write stops writing, but reading goes on to the end, which, like a reset, still passes on the last line. 4 MiB unwritten closes the socket. Lines read before the config closes or reconnects aren't passed on after. A socket closes with its context and never connects after.
+- Files are read on the main thread, up to 16 MiB, as UTF-8. They are followed through inotify on their directory, or while it is missing the nearest directory above it, watched again when a directory on the way comes, goes or moves; read again on a close after writing, a rename or a removal, not on a create, when nothing is written yet. A write goes through a new file renamed over the old, making the directory if it is missing, following a link and keeping the permissions.
+- A JSON file writes only a value the config set, not the one it started from, and never writes back what it just read. The config's `Serialize`, `Deserialize` and `PartialEq` are caught: a panic is logged with the path, and the value and the file go on.
+- One inotify instance per shell, in the loop only while a watch is alive.
+- Desktop entries come from `applications/` under `$XDG_DATA_HOME` and each of `$XDG_DATA_DIRS`, recursively, links followed and each directory read once. The first file with an ID decides it, even one left out for `Hidden`, its type or a missing `TryExec`. `NoDisplay` and `OnlyShowIn`/`NotShowIn` against `XDG_CURRENT_DESKTOP` set `no_display`. Localized keys follow `LC_ALL`, `LC_MESSAGES` and `LANG` in the spec's order. Exec is parsed strictly by the spec's quoting rules with no shell: `%f %F %u %U` and the deprecated codes are dropped, `%i`, `%c` and `%k` expand, and a malformed line or an unknown code runs nothing. A `Terminal` entry runs in `xdg-terminal-exec`; one that only D-Bus can start is refused for now.
+- The list is read on the loop's next turn after the first call, and again once the files have been still for 100 ms after a change to an entry, a directory or a link; the timer exists only after a change. Files over 64 KiB, lines over 4 KiB, more than 10,000 entries and anything but regular files are left out. `lookup` tries the ID, then the ID ignoring case, then `StartupWMClass`, then the ID's last dotted part.
+
 Rules settled while building the `Tray` widget (Phase 4, step 5):
 
 - `Tray::new()` takes `icon_size` (16 by default) and `menu_style`, the menu popup's style (light text on dark gray by default). Both take a value or a closure.
@@ -756,17 +820,17 @@ Rules settled while building the `Tray` widget (Phase 4, step 5):
 
 One Cargo workspace with seven crates. Each crate owns one area, so an agent can work inside one without touching the others.
 
-| Crate                | Owns                                                                                        | Depends on           | Main external crates                                                        |
-| -------------------- | ------------------------------------------------------------------------------------------- | -------------------- | --------------------------------------------------------------------------- |
-| `crabshell-reactive` | Signals, memos, effects, owners, flush                                                      | none                 | `slotmap`                                                                   |
-| `crabshell-ui`       | `Cx`, widgets, styles, layout, text layout, hit testing, focus, invalidation                | reactive             | `taffy`, `cosmic-text`, `fontconfig`, `unicode-segmentation`                |
-| `crabshell-render`   | Drawing into pixmaps, damage tracking, glyphs, icons, images                                | ui                   | `tiny-skia`, `resvg`, `png`, `swash`, `zune-jpeg`, `gif`, `image-webp`      |
-| `crabshell-wayland`  | Event loop, windows, popups, outputs, pointer, keyboard, text input, clipboard, shm buffers | reactive, ui, render | `smithay-client-toolkit` (with `xkbcommon`), `calloop`, `wayland-protocols` |
-| `crabshell-services` | Workspaces, tray, audio, clock, power, Bluetooth, network, media players, notifications     | reactive, ui         | `zbus`, `serde_json`, `libpulse-binding`, `jiff`, `calloop`, `serde`        |
-| `crabshell`          | Public API, `run()`, `prelude`, `cx.persist`                                                | all of the above     | `serde`, `serde_json`, tracing-subscriber                                   |
-| `crabshell-cli`      | The `crabshell` binary with `init`, `run`, `check` and the supervisor                       | none                 | `calloop`, `rustix`, `serde_json`, `inotify`, `zbus`                        |
+| Crate                | Owns                                                                                                                               | Depends on           | Main external crates                                                                                 |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | -------------------- | ---------------------------------------------------------------------------------------------------- |
+| `crabshell-reactive` | Signals, memos, effects, owners, flush                                                                                             | none                 | `slotmap`                                                                                            |
+| `crabshell-ui`       | `Cx`, widgets, styles, layout, text layout, hit testing, focus, invalidation                                                       | reactive             | `taffy`, `cosmic-text`, `fontconfig`, `unicode-segmentation`                                         |
+| `crabshell-render`   | Drawing into pixmaps, damage tracking, glyphs, icons, images                                                                       | ui                   | `tiny-skia`, `resvg`, `png`, `swash`, `zune-jpeg`, `gif`, `image-webp`                               |
+| `crabshell-wayland`  | Event loop, windows, popups, outputs, pointer, keyboard, text input, clipboard, shm buffers, idle, toplevels                       | reactive, ui, render | `smithay-client-toolkit` (with `xkbcommon`), `calloop`, `wayland-protocols`, `wayland-protocols-wlr` |
+| `crabshell-services` | Workspaces, tray, audio, clock, power, Bluetooth, network, media players, notifications, desktop entries, programs, files, sockets | reactive, ui         | `zbus`, `serde_json`, `libpulse-binding`, `jiff`, `calloop`, `serde`, `inotify`, `rustix`            |
+| `crabshell`          | Public API, `run()`, `prelude`, `cx.persist`, `cx.ipc`, `cx.quantize_colors`, `cx.toplevels`                                       | all of the above     | `serde`, `serde_json`, tracing-subscriber                                                            |
+| `crabshell-cli`      | The `crabshell` binary with `init`, `run`, `check`, `ipc` and the supervisor                                                       | none                 | `calloop`, `rustix`, `serde_json`, `inotify`, `zbus`                                                 |
 
-`Cx` lives in `crabshell-ui` and carries a map of services keyed by type. `crabshell-services` adds `cx.sway()`, `cx.audio()`, `cx.tray()`, `cx.clock()` and Phase 9's services through an extension trait, so `crabshell-ui` never depends on services.
+`Cx` lives in `crabshell-ui` and carries a map of services keyed by type. `crabshell-services` adds `cx.sway()`, `cx.audio()`, `cx.tray()`, `cx.clock()` and the services of Phases 9 and 10 through an extension trait, so `crabshell-ui` never depends on services.
 
 ### Dependency policy
 
@@ -908,6 +972,21 @@ Measured on 2026-11-14 with `measure_the_counter_bar`, release builds on one 192
 
 The phase added no dependency. Every service starts only when a config asks for it, so the counter and the v0.1 bar moved by a few hundred KiB, within the run-to-run noise.
 
+### Phase 10 results
+
+Measured on 2026-11-14 with `measure_the_counter_bar`, release builds on one 1920×1080 headless Sway output at scale 1. "Before" is 207887c, built in a second checkout. The overview example is opened over IPC as it starts, with its applications, another program's window and its picture, the wallpaper's colors and `uname`; its first frame counts the wait for that call.
+
+| Metric                                      | Before Phase 10 | After Phase 10 |
+| ------------------------------------------- | --------------- | -------------- |
+| Counter example RSS                         | 16.2 MiB        | 16.5 MiB       |
+| Counter first frame                         | 9.1 ms          | 10.1 ms        |
+| v0.1 bar RSS                                | 19.7 MiB        | 19.9 MiB       |
+| Desktop example RSS                         | 20.0 MiB        | 20.3 MiB       |
+| Overview example RSS, open                  | none            | 19.4 MiB       |
+| Idle wakeups, counter, desktop and overview | 0               | 0              |
+
+The measurement starts its shells with a cleared environment, so without the glibc tunable `crabshell run` sets. One run with it gave 16.9 MiB for the counter, 19.8 for the bar, 20.4 for the desktop and 19.3 for the overview, all within the noise, and first frames of 10.1, 15.2, 14.9 and 67.3 ms. What it saves comes later: 41 MiB kept after a second 4K wallpaper without it, 0.4 MiB with it.
+
 ## Phases
 
 Seven phases to v0.1, totaling 16 to 26 weeks of focused work, all guesses, then the phases in "Beyond v0.1". A phase is done only when its exit check passes. Phase 0 is a go/no-go gate for the whole project.
@@ -949,6 +1028,8 @@ Phase 7 passed on 2026-11-14, built in the commits from aa5d8c5 to a0b82d8 after
 Phase 8 passed on 2026-11-14, built in the commits from 5c301c4 to 1cb98f5 after a review per step. Its exit check, in `crates/crabshell/tests/headless.rs`, runs the effects example on headless Sway: a bar with a translucent gradient that asks the compositor to blur behind it, tabs whose hover color fades in, an indicator that slides under the picked tab with `cx.animate`, and a card with a soft shadow. It matches its goldens at scales 1, 1.5 and 2. Picking a tab draws 15 frames while the slide and the fade run, then one dispatch sleeps for 2 s. Sway lacks the blur protocol, which is logged once. The CPU renderer draws each of those frames in well under a millisecond, so the GPU backend waits. Gaps left for later phases: blur is untested against a compositor that has `ext-background-effect-v1`, one shadow per style and no inset shadows, no dithering, no springs, and layout values animate only through `cx.animate` driving a style's size, which lays the window out each frame. The same day the maintainer's own Quickshell bar, the rime islands, was rebuilt as a Crabshell config and checked by eye on the laptop's SwayFX session, blur included. What it couldn't rebuild was left out: its panels, now playing, network, Bluetooth, battery and keyboard layout, which later phases bring, and two things no phase lists yet: a shadow cut out under translucent glass, and rotating or scaling a widget.
 
 Phase 9 passed on 2026-11-14, built in the commits from 1954fa0 to afe1fbd after a review per step; agents built MPRIS, notifications, Bluetooth and networking in worktrees of their own, and each was reviewed before its fixes went in. Its exit check, in `crates/crabshell/tests/headless.rs`, runs the desktop example on headless Sway with every Phase 9 service started on private buses and a private pipewire-pulse. It matches its goldens at scales 1, 1.5 and 2, a notification sent with `gdbus` shows as a toast and goes when it expires, and then the shell wakes nothing for 10 s. Each service is tested against a fake daemon on a private bus, and audio also against a private PipeWire. Gaps left for later phases: audio level meters and PipeWire's links, saved network connections and connectivity checks, a Bluetooth pairing agent of the shell's own, and notifications lost while a reload swaps the shell. The same day the rime config gained now playing, Wi-Fi, Bluetooth, the battery and toasts, and the maintainer checked it by hand on the laptop against the real NetworkManager, BlueZ, UPower, power-profiles-daemon, VLC and the session's notification bus. Idle, it woke 12 times a minute, each time for a daemon's signal, such as the Wi-Fi strength or the battery, or for the clock. The check found three things: a config must name its icon theme, since the default is `hicolor`; VLC sends no title for a file without tags; and cosmic-text 0.19 keeps the leading space on the last line of wrapped text that ends in an ellipsis. The player's buttons need a widget's hover as a signal, and the islands a shadow cut out under translucent glass, so both go to Phase 10.
+
+Phase 10 passed on 2026-11-14, built in the commits from 40db193 to 69d4e1b after a review per step; agents built the IPC handler, the color quantizer, toplevels, desktop entries and screencopy in worktrees of their own, and each was reviewed before its fixes went in. Its exit check, in `crates/crabshell/tests/headless.rs`, runs the overview example on headless Sway: closed until an IPC call opens it, it lists the applications from desktop entries in private XDG directories, another program's window with a live picture of it, the wallpaper's main colors and what `uname -s` printed. It matches its goldens at scales 1, 1.5 and 2, wakes nothing for 10 s while open, launches an application on a click, keeps it in a JSON file of recent ones, and lists it first when opened again. Gaps left for later phases: no server sockets, since `cx.ipc` covers calls into the shell; a shell ended by a signal leaves the programs its config started running; an application only D-Bus can start isn't launched, and the Exec parser refuses entries that break the spec's quoting; a desktop-entry directory behind a link swapped later, as on NixOS, isn't followed until a restart; a file is read again when its writer closes it, not while it writes; views of one source don't share a capture, and live views clipped or scrolled out of sight keep capturing; and window views pair by app id and title, so two windows alike may swap.
 
 ## Rules for AI agents
 

@@ -465,6 +465,49 @@ let offset = cx.animate(move || picked.get() as f32 * 44.0, Transition::new(250)
                 keeps the screen awake
               </td>
             </tr>
+            <tr>
+              <td><code>cx.desktop_entries()</code></td>
+              <td>
+                your installed apps, with <code>launch</code> and
+                <code>lookup(app_id)</code> to find a window's icon
+              </td>
+            </tr>
+            <tr>
+              <td><code>cx.process(|| ["uptime", "-p"])</code></td>
+              <td>
+                runs a program: <code>stdout()</code>, <code>on_line</code>,
+                <code>exit_status()</code>, and it runs again when a signal the
+                command read changes. <code>cx.exec_detached</code> starts one
+                that runs on its own
+              </td>
+            </tr>
+            <tr>
+              <td><code>cx.file_view(path)</code></td>
+              <td>
+                a file's <code>text()</code>, followed as it changes.
+                <code>cx.json_file(path, default)</code> keeps a
+                <code>Signal</code> and a json file in step both ways, and
+                <code>cx.socket(path)</code> talks to a unix socket
+              </td>
+            </tr>
+            <tr>
+              <td><code>cx.ipc(target, function, handler)</code></td>
+              <td>
+                a function <code>crabshell ipc target function args</code>
+                calls from the command line
+              </td>
+            </tr>
+            <tr>
+              <td><code>cx.toplevels()</code></td>
+              <td>
+                every program's windows, with <code>activate</code>,
+                <code>close</code> and the rest
+              </td>
+            </tr>
+            <tr>
+              <td><code>cx.quantize_colors(path, depth)</code></td>
+              <td>an image's main colors, as for a theme from a wallpaper</td>
+            </tr>
           </tbody>
         </table>
       </div>
