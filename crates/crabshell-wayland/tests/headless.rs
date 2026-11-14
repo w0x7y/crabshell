@@ -22,7 +22,7 @@ use crabshell_ui::{
   Align, Button, Color, Column, Content, Cx, Edge, Key, KeyEvent, KeyboardFocus, Margins, Output,
   PanelWindow, PopupWindow, Rect, Region, Row, Spacer, Style, Text, TextInput, Window,
 };
-use crabshell_ui::{FloatingWindow, Transition};
+use crabshell_ui::{CaptureFrame, CaptureSource, FloatingWindow, ScreencopyView, Transition};
 use crabshell_wayland::{Event, EventLoop, Platform, Toplevel, WindowId};
 use sway::{
   AppWindow, Image, InputMethod, Sway, VirtualKeyboard, VirtualPointer, keys, run_until, settle,
@@ -2162,4 +2162,219 @@ fn on_labwc_a_dialog_names_its_parent_until_the_parent_closes() {
     titled(&heard, "main").is_none()
       && titled(&heard, "dialog").is_some_and(|dialog| dialog.parent.is_none())
   });
+}
+
+const RED: Color = Color::rgb(0xe0, 0x20, 0x20);
+const BLUE: Color = Color::rgb(0x20, 0x40, 0xe0);
+
+/// The test view's size, half of HEADLESS-2's 640 by 360.
+const VIEW: (u32, u32) = (320, 180);
+
+/// What the screencopy tests change: HEADLESS-2's color, and the view's
+/// source, liveness and presence.
+#[derive(Clone, Copy)]
+struct Screens {
+  color: Signal<Color>,
+  source: Signal<CaptureSource>,
+  live: Signal<bool>,
+  shown: Signal<bool>,
+}
+
+/// A loop with HEADLESS-2, 640 by 360, filled with `RED` by a panel, and
+/// once that shows, a panel in HEADLESS-1's corner with one view of
+/// HEADLESS-2, `VIEW` in size. Returns once the view has its first frame.
+fn screens(sway: &Sway, live: bool) -> (EventLoop, Screens, WindowId) {
+  sway.msg(&["output", "HEADLESS-1", "mode", "1280x720", "scale", "1"]);
+  sway.msg(&["create_output"]);
+  sway.msg(&["output", "HEADLESS-2", "mode", "640x360", "scale", "1"]);
+  let runtime = Runtime::current();
+  let cx = Cx::new(runtime.new_owner());
+  let knobs = Screens {
+    color: cx.signal(RED),
+    source: cx.signal(CaptureSource::Output(String::from("HEADLESS-2"))),
+    live: cx.signal(live),
+    shown: cx.signal(true),
+  };
+  let mut event_loop = sway.connect();
+  let fill = PanelWindow::new(&Output::new("HEADLESS-2"))
+    .anchors(Edge::Top | Edge::Bottom | Edge::Left | Edge::Right)
+    .style(move || Style::new().background(knobs.color.get()));
+  event_loop.platform().add_window(Window::new(&cx, fill));
+  wait_for_color(sway, &mut event_loop, "HEADLESS-2", (0, 0, 640, 360), RED);
+  let view = move |_: &Cx, _| {
+    ScreencopyView::new(move || knobs.source.get())
+      .live(move || knobs.live.get())
+      .style(Style::new().width(VIEW.0 as f32).height(VIEW.1 as f32))
+  };
+  let viewer = PanelWindow::new(&Output::new("HEADLESS-1"))
+    .anchors(Edge::Top | Edge::Left)
+    .width(VIEW.0)
+    .height(VIEW.1)
+    .child(Row::new().children_keyed(
+      move || if knobs.shown.get() { vec![0] } else { vec![] },
+      |key| *key,
+      view,
+    ));
+  let viewer = event_loop.platform().add_window(Window::new(&cx, viewer));
+  run_until(&mut event_loop, "the view's first frame", |platform| {
+    frame_of(platform, viewer).is_some()
+  });
+  (event_loop, knobs, viewer)
+}
+
+/// The frame the test view shows, if any.
+fn frame_of(platform: &Platform, viewer: WindowId) -> Option<CaptureFrame> {
+  let (_, window) = platform.windows().find(|(id, _)| *id == viewer)?;
+  let view = window.view();
+  let row = view.root().children().next()?;
+  let node = row.children().next()?;
+  match node.content() {
+    Content::Capture(capture) => Some(capture.frame.clone()),
+    _ => None,
+  }
+}
+
+/// Whether every pixel of `rgba` is `color`, opaque, within 2/255.
+fn all_of(rgba: &[u8], color: Color) -> bool {
+  let expected = [color.r, color.g, color.b, 255];
+  rgba
+    .as_chunks::<4>()
+    .0
+    .iter()
+    .all(|pixel| pixel.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 2))
+}
+
+/// Whether the test view's frame is all `color`, at the size it needs.
+fn shows(platform: &Platform, viewer: WindowId, color: Color) -> bool {
+  frame_of(platform, viewer)
+    .is_some_and(|frame| (frame.width, frame.height) == VIEW && all_of(&frame.rgba, color))
+}
+
+/// The pixels of `shot` in `x`, `y`, `width`, `height`.
+fn area(shot: &Image, (x, y, width, height): (u32, u32, u32, u32)) -> Vec<u8> {
+  (y..y + height)
+    .flat_map(|row| {
+      let start = (row * shot.width + x) as usize * 4;
+      shot.rgba[start..start + width as usize * 4].to_vec()
+    })
+    .collect()
+}
+
+/// Dispatches until `output` shows `color` over `rect` in grim's
+/// screenshots.
+fn wait_for_color(
+  sway: &Sway,
+  event_loop: &mut EventLoop,
+  output: &str,
+  rect: (u32, u32, u32, u32),
+  color: Color,
+) {
+  let deadline = Instant::now() + Duration::from_secs(10);
+  while !all_of(&area(&sway.screenshot(output), rect), color) {
+    assert!(Instant::now() < deadline, "{output} never showed {color:?}");
+    event_loop
+      .dispatch(Some(Duration::from_millis(50)))
+      .expect("the connection works");
+  }
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_view_shows_an_outputs_pixels_once_and_ends_its_session() {
+  let sway = Sway::start();
+  let (mut event_loop, knobs, viewer) = screens(&sway, false);
+  assert!(shows(event_loop.platform(), viewer, RED));
+  assert_eq!(event_loop.platform().capture_sessions(), 0, "one frame");
+  settle(&mut event_loop);
+  wait_for_color(
+    &sway,
+    &mut event_loop,
+    "HEADLESS-1",
+    (0, 0, VIEW.0, VIEW.1),
+    RED,
+  );
+
+  knobs.color.set(BLUE);
+  wait_for_color(&sway, &mut event_loop, "HEADLESS-2", (0, 0, 640, 360), BLUE);
+  settle(&mut event_loop);
+  assert!(
+    shows(event_loop.platform(), viewer, RED),
+    "still the one frame"
+  );
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_live_view_follows_its_output_and_sleeps_while_it_doesnt_change() {
+  let sway = Sway::start();
+  let (mut event_loop, knobs, viewer) = screens(&sway, true);
+  assert_eq!(event_loop.platform().capture_sessions(), 1);
+  knobs.color.set(BLUE);
+  run_until(&mut event_loop, "a frame of the new color", |platform| {
+    shows(platform, viewer, BLUE)
+  });
+  settle(&mut event_loop);
+  wait_for_color(
+    &sway,
+    &mut event_loop,
+    "HEADLESS-1",
+    (0, 0, VIEW.0, VIEW.1),
+    BLUE,
+  );
+
+  // Nothing changes, so the compositor sends nothing.
+  let iterations = event_loop.platform().stats().iterations;
+  let started = Instant::now();
+  event_loop
+    .dispatch(Some(Duration::from_secs(2)))
+    .expect("the connection works");
+  assert!(started.elapsed() >= Duration::from_millis(1900));
+  assert_eq!(event_loop.platform().stats().iterations, iterations + 1);
+  assert_eq!(event_loop.platform().capture_sessions(), 1);
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_view_gone_moved_or_waiting_has_no_session() {
+  let sway = Sway::start();
+  let (mut event_loop, knobs, viewer) = screens(&sway, true);
+  let sessions = |event_loop: &mut EventLoop| event_loop.platform().capture_sessions();
+  knobs.shown.set(false);
+  run_until(&mut event_loop, "the view gone", |platform| {
+    platform.capture_sessions() == 0
+  });
+  knobs.shown.set(true);
+  run_until(&mut event_loop, "a new view", |platform| {
+    platform.capture_sessions() == 1
+  });
+
+  // An output not there yet is waited for.
+  knobs
+    .source
+    .set(CaptureSource::Output(String::from("HEADLESS-3")));
+  run_until(&mut event_loop, "the new source", |platform| {
+    platform.capture_sessions() == 0
+  });
+  sway.msg(&["create_output"]);
+  run_until(&mut event_loop, "HEADLESS-3 captured", |platform| {
+    platform.capture_sessions() == 1 && frame_of(platform, viewer).is_some()
+  });
+
+  event_loop.platform().remove_window(viewer);
+  event_loop
+    .dispatch(Some(Duration::ZERO))
+    .expect("the connection works");
+  assert_eq!(sessions(&mut event_loop), 0, "the window took it");
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn unplugging_the_output_ends_its_session_and_keeps_the_last_frame() {
+  let sway = Sway::start();
+  let (mut event_loop, _, viewer) = screens(&sway, true);
+  sway.msg(&["output", "HEADLESS-2", "unplug"]);
+  run_until(&mut event_loop, "the session to end", |platform| {
+    platform.capture_sessions() == 0
+  });
+  assert!(shows(event_loop.platform(), viewer, RED));
 }

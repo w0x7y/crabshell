@@ -40,6 +40,7 @@ use crate::keyboard::SeatKeyboard;
 use crate::outputs::OutputInfo;
 use crate::pointer::Cursor;
 use crate::scale::Scale;
+use crate::screencopy::Captures;
 use crate::surface::{self, Role, Surface};
 use crate::text_input::SeatTextInput;
 use crate::windows::{Entry, WindowId, Windows};
@@ -329,6 +330,8 @@ pub struct Platform {
   pub(crate) idle: Idle,
   /// Every program's windows, once a watch asks.
   pub(crate) foreign: Foreign,
+  /// What screencopy views show.
+  pub(crate) captures: Captures,
   pub(crate) text_inputs: Vec<SeatTextInput>,
   /// The seat and serial of the last button press or release on one of
   /// the windows, which a popup's grab needs.
@@ -422,6 +425,7 @@ impl Platform {
       effects,
       idle,
       foreign: Foreign::default(),
+      captures: Captures::default(),
       data_devices_manager,
       data_devices: Vec::new(),
       offered: None,
@@ -615,8 +619,8 @@ impl Platform {
 
   /// The work after the sources are dispatched: report the toplevels,
   /// flush, take new popups and close the ones that asked, set up new
-  /// surfaces, apply changed settings, lay out, draw, flush the
-  /// connection.
+  /// surfaces, apply changed settings, lay out, draw, start and end
+  /// captures, flush the connection.
   pub(crate) fn after_dispatch(&mut self) {
     self.stats.iterations += 1;
     self.report_toplevels();
@@ -690,6 +694,7 @@ impl Platform {
         }
       }
     }
+    self.sync_captures();
     self.sync_text_inputs();
     self.tick_animations();
     if let Err(error) = self.connection.flush() {
