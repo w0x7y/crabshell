@@ -643,14 +643,31 @@ impl Painter<'_> {
     let (left, top) = (area.left() + self.grid.left, area.top() + self.grid.top);
     let (width, height) = (area.width(), area.height());
     let middle = tiny_skia::Point::from_xy(left + width / 2.0, top + height / 2.0);
-    let stops = gradient
-      .stops()
-      .iter()
-      .map(|&(at, color)| {
-        let color = tiny_skia::Color::from_rgba8(color.r, color.g, color.b, color.a);
-        GradientStop::new(at, color)
-      })
-      .collect();
+    let given = gradient.stops();
+    let mut stops = Vec::with_capacity(given.len() * 2);
+    let stop = |at: f32, color: Color, alpha: u8| {
+      GradientStop::new(
+        at,
+        tiny_skia::Color::from_rgba8(color.r, color.g, color.b, alpha),
+      )
+    };
+    for (index, &(at, color)) in given.iter().enumerate() {
+      if color.a > 0 {
+        stops.push(stop(at, color, color.a));
+        continue;
+      }
+      // tiny-skia blends colors before their alpha, so a clear stop
+      // would fade through its own color. As in CSS, each side fades
+      // out in its neighbor's.
+      for neighbor in [index.checked_sub(1), Some(index + 1)]
+        .into_iter()
+        .flatten()
+      {
+        if let Some(&(_, near)) = given.get(neighbor) {
+          stops.push(stop(at, near, 0));
+        }
+      }
+    }
     let moved = Transform::from_translate(-self.grid.left, -self.grid.top);
     match gradient.shape {
       GradientShape::Linear(angle) => {

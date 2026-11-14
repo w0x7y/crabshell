@@ -307,6 +307,26 @@ mod gradients {
   }
 
   #[test]
+  fn a_clear_stop_fades_each_side_out_in_its_own_color() {
+    // As CSS: blended with alpha applied, red fades out without darkening
+    // toward the clear stop's black.
+    let clear = Color::rgba(0, 0, 0, 0);
+    let fading = filled(Gradient::linear(90.0, RED, BLUE).stop(0.5, clear));
+    let [r, g, b, a] = fading.pixel(25, 5);
+    assert!(
+      a.abs_diff(124) <= 3 && r.abs_diff(a) <= 2 && g == 0 && b == 0,
+      "{:?}",
+      [r, g, b, a]
+    );
+    let [r, g, b, a] = fading.pixel(75, 5);
+    assert!(
+      a.abs_diff(130) <= 3 && b.abs_diff(a) <= 2 && g == 0 && r == 0,
+      "{:?}",
+      [r, g, b, a]
+    );
+  }
+
+  #[test]
   fn a_radial_gradient_reaches_the_farthest_corner() {
     let round = filled(Gradient::radial(RED, BLUE));
     assert!(
