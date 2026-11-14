@@ -22,3 +22,24 @@ fn a_compositor_without_damage_buffer_is_refused() {
     "the compositor offers wl_compositor version 1, but Crabshell needs 4"
   );
 }
+
+#[test]
+fn animations_tick_once_a_frame_of_the_fastest_output() {
+  use std::time::Duration;
+
+  use crate::platform::frame_interval;
+
+  assert_eq!(
+    frame_interval([60_000, 144_000].into_iter()),
+    Duration::from_micros(6_944)
+  );
+  assert_eq!(
+    frame_interval([].into_iter()),
+    Duration::from_micros(16_666)
+  );
+  // Outputs with no refresh rate count as 60 Hz.
+  assert_eq!(
+    frame_interval([0].into_iter()),
+    Duration::from_micros(16_666)
+  );
+}

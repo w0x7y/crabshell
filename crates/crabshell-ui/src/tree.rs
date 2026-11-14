@@ -821,33 +821,40 @@ impl Tree {
   /// clock, repainting it each tick, until it ends or another replaces it.
   fn start_fade(&self, id: NodeId, generation: u64, transition: Transition) {
     let tree = self.this.clone();
-    let mut started = None;
-    animation::start(Box::new(move |now| {
-      let Some(tree) = tree.upgrade() else {
-        return false;
-      };
-      let Ok(mut tree) = tree.try_borrow_mut() else {
-        return true;
-      };
-      let begun = *started.get_or_insert(now);
-      let (t, ended) = transition.progress(begun, now);
-      let change = tree.update(id, |node| {
-        if node
-          .fade
-          .as_ref()
-          .is_none_or(|fade| fade.generation != generation)
-        {
-          return Change::None;
-        }
-        if ended {
-          node.fade = None;
-        } else if let Some(fade) = &mut node.fade {
-          fade.t = t;
-        }
-        Change::Paint
-      });
-      change == Change::Paint && !ended
-    }));
+    let mut started = animation::start_time();
+    let label = self.node(id).map_or_else(
+      || Rc::from("a fade"),
+      |node| format!("{}.transition", node.path).into(),
+    );
+    animation::start(
+      label,
+      Box::new(move |now| {
+        let Some(tree) = tree.upgrade() else {
+          return false;
+        };
+        let Ok(mut tree) = tree.try_borrow_mut() else {
+          return true;
+        };
+        let begun = *started.get_or_insert(now);
+        let (t, ended) = transition.progress(begun, now);
+        let change = tree.update(id, |node| {
+          if node
+            .fade
+            .as_ref()
+            .is_none_or(|fade| fade.generation != generation)
+          {
+            return Change::None;
+          }
+          if ended {
+            node.fade = None;
+          } else if let Some(fade) = &mut node.fade {
+            fade.t = t;
+          }
+          Change::Paint
+        });
+        change == Change::Paint && !ended
+      }),
+    );
   }
 
   fn update_flex(&mut self, id: NodeId, f: impl FnOnce(&mut Flex) -> Change) {

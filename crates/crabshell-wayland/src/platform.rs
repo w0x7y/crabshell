@@ -445,14 +445,12 @@ impl Platform {
 
   /// A frame of the fastest output, or of 60 Hz without one.
   pub(crate) fn frame_interval(&self) -> Duration {
-    let fastest = self
-      .known
-      .iter()
-      .filter_map(|(_, info)| info.mode.map(|mode| mode.refresh_mhz))
-      .max()
-      .filter(|&mhz| mhz >= 1_000)
-      .unwrap_or(60_000);
-    Duration::from_micros(1_000_000_000 / u64::from(fastest))
+    frame_interval(
+      self
+        .known
+        .iter()
+        .filter_map(|(_, info)| info.mode.map(|mode| mode.refresh_mhz)),
+    )
   }
 
   /// The handle other sources are added with.
@@ -753,6 +751,16 @@ impl Platform {
   pub(crate) fn notify(&mut self, event: Event) {
     events::notify(self, listener_slot, &event);
   }
+}
+
+/// A frame of the fastest of these refresh rates, in millihertz, or of
+/// 60 Hz without one of at least 1 Hz.
+pub(crate) fn frame_interval(refresh_mhz: impl Iterator<Item = u32>) -> Duration {
+  let fastest = refresh_mhz
+    .max()
+    .filter(|&mhz| mhz >= 1_000)
+    .unwrap_or(60_000);
+  Duration::from_micros(1_000_000_000 / u64::from(fastest))
 }
 
 fn listener_slot(platform: &mut Platform) -> &mut Option<Listener<Platform>> {

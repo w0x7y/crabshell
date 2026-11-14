@@ -75,15 +75,41 @@ fn a_new_target_while_moving_starts_from_where_it_is() {
   assert!(close(value.get(), 50.0));
   target.set(0.0);
   h.runtime.flush();
-  // The old animation stops; the new one starts at 50 on its first tick.
-  let later = start + Duration::from_millis(60);
-  advance_animations(later);
-  assert!(close(value.get(), 50.0), "{}", value.get());
-  advance_animations(later + Duration::from_millis(50));
+  // The old animation stops; the new one goes from 50 and counts from the
+  // last tick, so it has moved by the next.
+  advance_animations(start + Duration::from_millis(60));
+  assert!(close(value.get(), 45.0), "{}", value.get());
+  advance_animations(start + Duration::from_millis(100));
   assert!(close(value.get(), 25.0), "{}", value.get());
-  advance_animations(later + Duration::from_millis(100));
+  advance_animations(start + Duration::from_millis(150));
   assert_eq!(value.get(), 0.0);
   assert!(!animating());
+}
+
+#[test]
+fn a_target_that_changes_every_tick_still_moves() {
+  let h = Harness::new();
+  let target = h.cx.signal(0.0_f32);
+  let value = h.cx.animate(
+    move || target.get(),
+    Transition::new(100).easing(Easing::Linear),
+  );
+  h.runtime.flush();
+  let start = Instant::now();
+  let mut last = 0.0;
+  for tick in 0..10_u64 {
+    target.set(100.0 + tick as f32);
+    h.runtime.flush();
+    advance_animations(start + Duration::from_millis(10 * tick));
+    if tick > 0 {
+      assert!(
+        value.get() > last,
+        "tick {tick}: {} after {last}",
+        value.get()
+      );
+    }
+    last = value.get();
+  }
 }
 
 #[test]
@@ -94,8 +120,9 @@ fn a_zero_transition_jumps_and_a_gone_owner_stops_its_animation() {
   h.runtime.flush();
   target.set(Color::rgb(255, 255, 255));
   h.runtime.flush();
-  assert!(!advance_animations(Instant::now()));
+  // In the same flush, with no tick.
   assert_eq!(jump.get(), Color::rgb(255, 255, 255));
+  assert!(!animating());
 
   let child = h.cx.child();
   let other = h.cx.signal(0.0_f32);
@@ -140,10 +167,9 @@ fn a_panicking_animation_is_logged_and_dropped() {
   let logs = capture_logs(|| {
     advance_animations(Instant::now());
   });
-  assert!(
-    logs.contains("an animation panicked and stops: lerp failure"),
-    "{logs}"
-  );
+  assert!(logs.contains("animation cx.animate at "), "{logs}");
+  assert!(logs.contains("tests/animation.rs"), "{logs}");
+  assert!(logs.contains("panicked and stops: lerp failure"), "{logs}");
   assert!(!animating());
 }
 
@@ -204,13 +230,11 @@ mod fades {
     advance_animations(start);
     advance_animations(start + Duration::from_millis(50));
     window.pointer_leave();
-    // The way back starts at the halfway color, with NORMAL's transition.
-    let later = start + Duration::from_millis(60);
-    advance_animations(later);
-    assert_eq!(background(&window), Some(Color::rgb(100, 50, 0)));
-    advance_animations(later + Duration::from_millis(50));
+    // The way back starts at the halfway color and counts from that tick,
+    // with NORMAL's transition.
+    advance_animations(start + Duration::from_millis(100));
     assert_eq!(background(&window), Some(Color::rgb(50, 25, 0)));
-    assert!(!advance_animations(later + Duration::from_millis(100)));
+    assert!(!advance_animations(start + Duration::from_millis(150)));
     assert_eq!(background(&window), Some(Color::rgb(0, 0, 0)));
   }
 

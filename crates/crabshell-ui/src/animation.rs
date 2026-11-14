@@ -163,13 +163,28 @@ impl Animate for Color {
 type Step = Box<dyn FnMut(Instant) -> bool>;
 
 thread_local! {
-  /// Everything is on one thread, so the clock is too.
-  static RUNNING: RefCell<Vec<Step>> = const { RefCell::new(Vec::new()) };
+  /// Everything is on one thread, so the clock is too. Each animation is
+  /// named for log lines.
+  static RUNNING: RefCell<Vec<(Rc<str>, Step)>> = const { RefCell::new(Vec::new()) };
+  /// When the clock last ticked.
+  static LAST_TICK: Cell<Option<Instant>> = const { Cell::new(None) };
 }
 
-/// Starts `step` at the next [`advance_animations`].
-pub(crate) fn start(step: Step) {
-  RUNNING.with(|running| running.borrow_mut().push(step));
+/// Starts `step`, named `label` for log lines, at the next
+/// [`advance_animations`].
+pub(crate) fn start(label: Rc<str>, step: Step) {
+  RUNNING.with(|running| running.borrow_mut().push((label, step)));
+}
+
+/// When an animation starting now should count from: the clock's last
+/// tick while it runs, so one that replaces another moves at the very
+/// next tick, or `None` when it is still, so the first tick is time 0.
+pub(crate) fn start_time() -> Option<Instant> {
+  if animating() {
+    LAST_TICK.with(Cell::get)
+  } else {
+    None
+  }
 }
 
 /// Whether an animation is running, so the platform should advance the
@@ -183,17 +198,19 @@ pub fn animating() -> bool {
 /// it began, so `now` there is its time 0. One that panics is logged and
 /// dropped.
 pub fn advance_animations(now: Instant) -> bool {
+  LAST_TICK.with(|last| last.set(Some(now)));
   let steps = RUNNING.with(|running| std::mem::take(&mut *running.borrow_mut()));
   let mut kept = Vec::with_capacity(steps.len());
-  for mut step in steps {
+  for (label, mut step) in steps {
     match panic::catch_unwind(AssertUnwindSafe(|| step(now))) {
-      Ok(true) => kept.push(step),
-      Ok(false) => {}
+      Ok(true) => kept.push((label, step)),
+      Ok(false) => drop_isolated(&label, step),
       Err(payload) => {
         tracing::error!(
-          "an animation panicked and stops: {}",
+          "animation {label} panicked and stops: {}",
           panic_message(payload.as_ref())
-        )
+        );
+        drop_isolated(&label, step);
       }
     }
   }
@@ -204,6 +221,16 @@ pub fn advance_animations(now: Instant) -> bool {
     *running = kept;
     !running.is_empty()
   })
+}
+
+/// Drops a finished step, and the user's values it holds, isolated.
+fn drop_isolated(label: &str, step: Step) {
+  if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(move || drop(step))) {
+    tracing::error!(
+      "dropping animation {label} panicked: {}",
+      panic_message(payload.as_ref())
+    );
+  }
 }
 
 impl Cx {
@@ -221,11 +248,13 @@ impl Cx {
   ///     // Read `offset.get()` in a binding, such as a style's width.
   /// }
   /// ```
+  #[track_caller]
   pub fn animate<T: Animate>(
     &self,
     mut target: impl FnMut() -> T + 'static,
     transition: Transition,
   ) -> ReadSignal<T> {
+    let label: Rc<str> = format!("cx.animate at {}", std::panic::Location::caller()).into();
     let first = untrack(&mut target);
     let value = self.signal(first.clone());
     let mut last = first;
@@ -242,18 +271,26 @@ impl Cx {
       };
       let current = generation.get() + 1;
       generation.set(current);
+      // No time to take: the new value shows in this flush.
+      if transition.ms == 0 {
+        value.try_set(to);
+        return;
+      }
       let generation = Rc::clone(&generation);
-      let mut started = None;
-      start(Box::new(move |now| {
-        if generation.get() != current {
-          return false;
-        }
-        let begun = *started.get_or_insert(now);
-        let (t, ended) = transition.progress(begun, now);
-        let next = if ended { to.clone() } else { from.lerp(&to, t) };
-        // A value whose owner is gone stops its animation.
-        value.try_set(next) && !ended
-      }));
+      let mut started = start_time();
+      start(
+        Rc::clone(&label),
+        Box::new(move |now| {
+          if generation.get() != current {
+            return false;
+          }
+          let begun = *started.get_or_insert(now);
+          let (t, ended) = transition.progress(begun, now);
+          let next = if ended { to.clone() } else { from.lerp(&to, t) };
+          // A value whose owner is gone stops its animation.
+          value.try_set(next) && !ended
+        }),
+      );
     });
     value.read_only()
   }
