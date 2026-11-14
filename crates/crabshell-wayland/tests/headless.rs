@@ -2808,3 +2808,177 @@ fn a_second_lock_after_the_first_ended_locks_again() {
     assert!(lock_surfaces(shell.event_loop.platform()).is_empty());
   }
 }
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_new_locker_takes_over_from_one_that_died_while_locked() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1280x720", "scale", "1"]);
+  let runtime = Runtime::current();
+  let cx = Cx::new(runtime.new_owner());
+  let mut first = sway.connect();
+  let locker = add_locker(&mut first, &cx);
+  locker.on.set(true);
+  wait_locked(&mut first, locker, true);
+  // Its connection closes, as when the shell crashes or exits for a
+  // reload.
+  drop(first);
+  // Sway keeps the session locked and shows red in its place.
+  let deadline = Instant::now() + Duration::from_secs(10);
+  let red = Color::rgb(0xff, 0x00, 0x00);
+  while !all_of(
+    &area(&sway.screenshot("HEADLESS-1"), (0, 0, 1280, 720)),
+    red,
+  ) {
+    assert!(Instant::now() < deadline, "Sway never showed red");
+    std::thread::sleep(Duration::from_millis(50));
+  }
+
+  let mut second = sway.connect();
+  let locker = add_locker(&mut second, &cx);
+  locker.on.set(true);
+  let took = wait_locked(&mut second, locker, true);
+  eprintln!("a new locker locked {took:?} after asking");
+  wait_for_color(
+    &sway,
+    &mut second,
+    "HEADLESS-1",
+    (700, 0, 580, 720),
+    MAGENTA,
+  );
+  locker.on.set(false);
+  wait_locked(&mut second, locker, false);
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_lock_another_client_holds_is_refused_and_asked_again_later() {
+  let (logs, _logging) = capture_logs();
+  let sway = Sway::start();
+  let runtime = Runtime::current();
+  let cx = Cx::new(runtime.new_owner());
+  let mut holder = sway.connect();
+  let held = add_locker(&mut holder, &cx);
+  held.on.set(true);
+  wait_locked(&mut holder, held, true);
+
+  let mut second = sway.connect();
+  let refused = add_locker(&mut second, &cx);
+  refused.on.set(true);
+  run_until(&mut second, "the refusal", |_| {
+    logs
+      .text()
+      .contains("the compositor refused or ended the session lock")
+  });
+  assert!(!refused.locked.get_untracked());
+  assert!(lock_surfaces(second.platform()).is_empty());
+
+  held.on.set(false);
+  wait_locked(&mut holder, held, false);
+  // Still true: asked again only once it turns false and true.
+  settle(&mut second);
+  assert!(!refused.locked.get_untracked());
+  refused.on.set(false);
+  settle(&mut second);
+  refused.on.set(true);
+  wait_locked(&mut second, refused, true);
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_locked_session_wakes_nothing_while_nothing_changes() {
+  let sway = Sway::start();
+  let mut shell = Shell::new(&sway);
+  shell.wait_for_bar("HEADLESS-1");
+  let cx = Cx::new(shell.runtime.new_owner());
+  let locker = add_locker(&mut shell.event_loop, &cx);
+  locker.on.set(true);
+  wait_locked(&mut shell.event_loop, locker, true);
+  settle(&mut shell.event_loop);
+  let before = shell.event_loop.platform().stats();
+  let started = Instant::now();
+  shell
+    .event_loop
+    .dispatch(Some(Duration::from_secs(2)))
+    .expect("the connection works");
+  let slept = started.elapsed();
+  assert!(slept >= Duration::from_millis(1900), "woke after {slept:?}");
+  let after = shell.event_loop.platform().stats();
+  assert_eq!(after.commits, before.commits, "frames");
+  assert_eq!(after.wayland_wakeups, before.wayland_wakeups, "events");
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_lock_dropped_while_locked_leaves_the_session_locked() {
+  let (logs, _logging) = capture_logs();
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1280x720", "scale", "1"]);
+  let mut shell = Shell::new(&sway);
+  shell.wait_for_bar("HEADLESS-1");
+  let cx = Cx::new(shell.runtime.new_owner());
+  let locker = add_locker(&mut shell.event_loop, &cx);
+  locker.on.set(true);
+  wait_locked(&mut shell.event_loop, locker, true);
+
+  shell.event_loop.platform().remove_session_lock(locker.id);
+  cx.owner().dispose();
+  settle(&mut shell.event_loop);
+  assert!(lock_surfaces(shell.event_loop.platform()).is_empty());
+  assert!(
+    logs.text().contains("the session stays locked"),
+    "{}",
+    logs.text()
+  );
+  // Sway blanks the output in black, the bar included.
+  let black = Color::rgb(0, 0, 0);
+  wait_for_color(
+    &sway,
+    &mut shell.event_loop,
+    "HEADLESS-1",
+    (0, 0, 1280, 720),
+    black,
+  );
+  assert_eq!(shell.event_loop.platform().session_locks(), 1, "kept");
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_popup_from_a_lock_surface_is_logged_once_and_never_shown() {
+  let (logs, _logging) = capture_logs();
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1280x720", "scale", "1"]);
+  let mut pointer = VirtualPointer::new(&sway);
+  let mut event_loop = sway.connect();
+  let cx = Cx::new(Runtime::current().new_owner());
+  let lock = Lock::new(
+    &cx,
+    SessionLock::new().locked(true).surface(|_, _| {
+      Row::new().child(
+        Button::new(Text::new("menu"))
+          .on_click(|cx| cx.open_popup(|_| PopupWindow::new().child(Text::new("entry")))),
+      )
+    }),
+  );
+  let locked = lock.locked();
+  event_loop.platform().add_session_lock(lock);
+  run_until(&mut event_loop, "the lock", |_| locked.get_untracked());
+  settle(&mut event_loop);
+  pointer.move_to(10, 8, (1280, 720));
+  pointer.click();
+  settle(&mut event_loop);
+  let platform = event_loop.platform();
+  let popups = popups(platform);
+  assert_eq!(popups.len(), 1, "the click opened a popup");
+  assert!(!platform.window_info(popups[0]).expect("held").shown);
+  // Once, not at every turn of the loop since.
+  assert_eq!(
+    logs
+      .text()
+      .matches("a lock surface can't open popups")
+      .count(),
+    1,
+    "{}",
+    logs.text()
+  );
+}
