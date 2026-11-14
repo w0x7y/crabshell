@@ -405,6 +405,13 @@ mod shadows {
     let grown = cast(Shadow::new(0.0, 0.0, 0.0, black).spread(4.0), 0.0);
     assert_eq!(grown.pixel(63, 30), [0, 0, 0, 255], "spread past the box");
     assert_eq!(grown.pixel(64, 30), [0, 0, 0, 0]);
+    // As CSS: a square box's spread keeps square corners, and a rounded
+    // one's grow by less than the spread while the radius is smaller.
+    assert_eq!(grown.pixel(16, 6), [0, 0, 0, 255], "a square corner");
+    let rounded = cast(Shadow::new(0.0, 0.0, 0.0, black).spread(8.0), 2.0);
+    // A 10 pixel corner radius would leave this pixel clear; CSS's 6.6
+    // covers it.
+    assert!(rounded.pixel(14, 4)[3] > 128, "{:?}", rounded.pixel(14, 4));
   }
 
   #[test]

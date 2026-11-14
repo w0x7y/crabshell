@@ -604,7 +604,14 @@ impl Painter<'_> {
     ) else {
       return;
     };
-    let radius = (radius + spread).clamp(0.0, shape.width().min(shape.height()) / 2.0);
+    // As CSS: a corner smaller than the spread grows by less, so a square
+    // box keeps square corners.
+    let radius = if spread > 0.0 && radius < spread {
+      radius + spread * (1.0 + (radius / spread - 1.0).powi(3))
+    } else {
+      radius + spread
+    };
+    let radius = radius.clamp(0.0, shape.width().min(shape.height()) / 2.0);
     // CSS draws a blur as a Gaussian of half its length.
     let sigma = shadow.blur.max(0.0) * scale / 2.0;
     if sigma < 0.25 {
@@ -959,14 +966,14 @@ fn blend_mask(
   }
 }
 
+/// How many rows a point near a corner sums.
+const SAMPLES: usize = 8;
+
 /// A rectangle with rounded corners blurred by a Gaussian: how much of it
 /// covers each point. Away from the corners it is a plain rectangle,
 /// whose blur is the product of each axis's, from the error function.
 /// Near a corner, each row's span is blurred across and the rows are
 /// summed over eight samples of the Gaussian down.
-/// How many rows a point near a corner sums.
-const SAMPLES: usize = 8;
-
 struct BlurredBox {
   middle: (f32, f32),
   half: (f32, f32),

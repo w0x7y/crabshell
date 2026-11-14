@@ -191,6 +191,13 @@ fn a_shadow_reaches_past_the_box_by_its_offset_spread_and_blur() {
   let reach = shadow.reach(Rect::new(10.0, 10.0, 20.0, 10.0));
   assert_eq!(reach, Rect::new(-1.0, 1.0, 46.0, 36.0));
   assert_eq!(Style::new().merge(LIFTED).shadow, Some(shadow));
+  // A spread that swallows the box still reaches between its edges, so a
+  // fade from it to another shadow stays inside the two.
+  let gone = Shadow::new(-100.0, 0.0, 0.0, Color::rgb(0, 0, 0)).spread(-50.0);
+  assert_eq!(
+    gone.reach(Rect::new(10.0, 10.0, 20.0, 20.0)),
+    Rect::new(-120.0, -20.0, 80.0, 80.0)
+  );
   // A shadow nobody can draw reaches nowhere past the box.
   let box_ = Rect::new(10.0, 10.0, 20.0, 10.0);
   assert_eq!(

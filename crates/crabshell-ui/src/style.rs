@@ -265,18 +265,22 @@ impl Shadow {
   }
 
   /// The area this shadow of `rect` covers: its shape, grown by one and a
-  /// half blurs, past which the blur fades below a 255th. A shadow with a
+  /// half blurs, past which the blur fades below a 255th. A spread that
+  /// swallows the box still reaches between the edges it would have, so
+  /// a fade from it stays within its start and end. A shadow with a
   /// number that isn't finite is never drawn, so it reaches only `rect`.
   pub(crate) fn reach(&self, rect: Rect) -> Rect {
     let grow = self.spread + 1.5 * self.blur.max(0.0);
     if ![self.x, self.y, grow].iter().all(|n| n.is_finite()) {
       return rect;
     }
+    let (left, right) = (rect.x + self.x - grow, rect.right() + self.x + grow);
+    let (top, bottom) = (rect.y + self.y - grow, rect.bottom() + self.y + grow);
     Rect::new(
-      rect.x + self.x - grow,
-      rect.y + self.y - grow,
-      (rect.width + 2.0 * grow).max(0.0),
-      (rect.height + 2.0 * grow).max(0.0),
+      left.min(right),
+      top.min(bottom),
+      (right - left).abs(),
+      (bottom - top).abs(),
     )
   }
 
