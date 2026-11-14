@@ -8,10 +8,13 @@
 
 use cosmic_text::{FontSystem, SwashCache, SwashContent, SwashImage};
 use crabshell_ui::{
-  Color, Content, IconView, ImageView, InputView, NodeView, Rect, Size, Style, TextSystem,
-  TextView, WindowView,
+  Color, Content, Gradient, GradientShape, IconView, ImageView, InputView, NodeView, Rect, Size,
+  Style, TextSystem, TextView, WindowView,
 };
-use tiny_skia::{FillRule, Mask, Paint, PathBuilder, Pixmap, PixmapMut, PixmapPaint, Transform};
+use tiny_skia::{
+  FillRule, GradientStop, LinearGradient, Mask, Paint, PathBuilder, Pixmap, PixmapMut, PixmapPaint,
+  RadialGradient, Shader, SpreadMode, Transform,
+};
 
 use crate::damage::{BufferAge, DamageHistory, PixelRect};
 use crate::icons::Icons;
@@ -521,7 +524,7 @@ impl Painter<'_> {
 
   /// The background and border of a widget's rectangle.
   fn draw_box(&self, pixmap: &mut PixmapMut<'_>, rect: Rect, style: &Style) {
-    if style.background.is_none() && style.border.is_none() {
+    if style.background.is_none() && style.gradient.is_none() && style.border.is_none() {
       return;
     }
     let Some((area, radius)) = self.box_shape(rect, style) else {
@@ -535,6 +538,24 @@ impl Painter<'_> {
       let mut path = PathBuilder::new();
       rounded_rect(&mut path, area, radius);
       fill(pixmap, path, color, FillRule::Winding);
+    }
+    if let Some(gradient) = style.gradient {
+      let mut path = PathBuilder::new();
+      rounded_rect(&mut path, area, radius);
+      if let (Some(path), Some(shader)) = (path.finish(), self.shader(&gradient, area)) {
+        let paint = Paint {
+          shader,
+          anti_alias: true,
+          ..Paint::default()
+        };
+        pixmap.fill_path(
+          &path,
+          &paint,
+          FillRule::Winding,
+          Transform::identity(),
+          None,
+        );
+      }
     }
     if let Some(border) = style.border {
       let width = self.border_width(style);
@@ -551,6 +572,40 @@ impl Painter<'_> {
           rounded_rect(&mut path, inner, (radius - width).max(0.0));
         }
         fill(pixmap, path, border.color, FillRule::EvenOdd);
+      }
+    }
+  }
+
+  /// `gradient` across `area`, a box in this pixmap's pixels. It is laid
+  /// out in buffer pixels and moved onto the pixmap, so every tile works
+  /// out the same color for a pixel.
+  fn shader(&self, gradient: &Gradient, area: tiny_skia::Rect) -> Option<Shader<'static>> {
+    let (left, top) = (area.left() + self.grid.left, area.top() + self.grid.top);
+    let (width, height) = (area.width(), area.height());
+    let middle = tiny_skia::Point::from_xy(left + width / 2.0, top + height / 2.0);
+    let stops = gradient
+      .stops()
+      .iter()
+      .map(|&(at, color)| {
+        let color = tiny_skia::Color::from_rgba8(color.r, color.g, color.b, color.a);
+        GradientStop::new(at, color)
+      })
+      .collect();
+    let moved = Transform::from_translate(-self.grid.left, -self.grid.top);
+    match gradient.shape {
+      GradientShape::Linear(angle) => {
+        // As CSS: 0 degrees points up, and the line is long enough for
+        // its ends to meet the corners.
+        let (sin, cos) = angle.to_radians().sin_cos();
+        let half = (width * sin.abs() + height * cos.abs()) / 2.0;
+        let (dx, dy) = (sin * half, -cos * half);
+        let start = tiny_skia::Point::from_xy(middle.x - dx, middle.y - dy);
+        let end = tiny_skia::Point::from_xy(middle.x + dx, middle.y + dy);
+        LinearGradient::new(start, end, stops, SpreadMode::Pad, moved)
+      }
+      GradientShape::Radial => {
+        let reach = (width * width + height * height).sqrt() / 2.0;
+        RadialGradient::new(middle, 0.0, middle, reach, stops, SpreadMode::Pad, moved)
       }
     }
   }

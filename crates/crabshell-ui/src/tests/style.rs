@@ -1,6 +1,6 @@
 //! Colors, fonts and styles.
 
-use crate::{Border, Color, Font, Padding, Style};
+use crate::{Border, Color, Font, Gradient, GradientShape, Padding, Style};
 
 #[test]
 fn hex_parses_both_forms_in_either_case() {
@@ -119,4 +119,61 @@ fn a_style_blends_its_paint_fields_and_takes_the_rest_from_the_end() {
     from.lerp(&to, 1.0).background,
     Some(Color::rgba(0, 0, 0, 0))
   );
+}
+
+#[test]
+fn a_gradient_keeps_its_ends_and_the_stops_between_in_order() {
+  const RED: Color = Color::rgb(255, 0, 0);
+  const BLUE: Color = Color::rgb(0, 0, 255);
+  const SKY: Style = Style::new().gradient(
+    Gradient::linear(90.0, RED, BLUE)
+      .stop(0.25, Color::rgb(0, 255, 0))
+      .stop(0.75, Color::rgb(9, 9, 9)),
+  );
+  let gradient = SKY.gradient.expect("set by the builder");
+  assert_eq!(gradient.shape, GradientShape::Linear(90.0));
+  assert_eq!(
+    gradient.stops(),
+    [
+      (0.0, RED),
+      (0.25, Color::rgb(0, 255, 0)),
+      (0.75, Color::rgb(9, 9, 9)),
+      (1.0, BLUE)
+    ]
+  );
+  assert_eq!(
+    Gradient::radial(RED, BLUE).stops(),
+    [(0.0, RED), (1.0, BLUE)]
+  );
+  assert_eq!(Style::new().merge(SKY).gradient, Some(gradient));
+  assert!(Style::new().same_layout(&SKY), "a gradient is paint only");
+}
+
+#[test]
+#[should_panic(expected = "at most four colors")]
+fn a_fifth_gradient_color_is_refused() {
+  let black = Color::rgb(0, 0, 0);
+  let _ = Gradient::radial(black, black)
+    .stop(0.2, black)
+    .stop(0.4, black)
+    .stop(0.6, black);
+}
+
+#[test]
+fn gradients_blend_when_they_have_the_same_shape_and_colors() {
+  let black = Color::rgb(0, 0, 0);
+  let white = Color::rgb(200, 200, 200);
+  let from = Style::new().gradient(Gradient::linear(0.0, black, black));
+  let to = Style::new().gradient(Gradient::linear(90.0, white, black));
+  let half = from.lerp(&to, 0.5).gradient.expect("both set one");
+  assert_eq!(half.shape, GradientShape::Linear(45.0));
+  assert_eq!(half.stops()[0], (0.0, Color::rgb(100, 100, 100)));
+  // One that appears fades in from transparent.
+  let appearing = Style::new().lerp(&to, 0.5).gradient.expect("on its way");
+  assert_eq!(appearing.stops()[0].1, Color::rgba(200, 200, 200, 128));
+  // Different shapes, or a different number of colors, switch at once.
+  let radial = Style::new().gradient(Gradient::radial(black, white));
+  assert_eq!(from.lerp(&radial, 0.5).gradient, radial.gradient);
+  let three = Style::new().gradient(Gradient::linear(0.0, black, white).stop(0.5, black));
+  assert_eq!(from.lerp(&three, 0.5).gradient, three.gradient);
 }

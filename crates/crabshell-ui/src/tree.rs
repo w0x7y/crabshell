@@ -297,6 +297,7 @@ impl Node {
         | NodeKind::Image(_)
         | NodeKind::Input(_)
     ) || style.background.is_some()
+      || style.gradient.is_some()
       || style.border.is_some()
   }
 

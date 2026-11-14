@@ -111,6 +111,112 @@ pub struct Border {
   pub color: Color,
 }
 
+/// Colors that blend into each other across a widget's box, drawn over
+/// its background with the same corners.
+///
+/// ```
+/// use crabshell_ui::{Color, Gradient, Style};
+///
+/// const DUSK: Style = Style::new().gradient(
+///     Gradient::linear(90.0, Color::hex("#1e1e2e"), Color::hex("#45475a"))
+///         .stop(0.5, Color::hex("#313244")),
+/// );
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Gradient {
+  /// Which way the colors run.
+  pub shape: GradientShape,
+  /// The first `count` hold each color and where it sits, from 0 at the
+  /// start to 1 at the end.
+  stops: [(f32, Color); 4],
+  count: u8,
+}
+
+/// Which way a [`Gradient`]'s colors run.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GradientShape {
+  /// Along a line through the middle at this many degrees, as in CSS: 0
+  /// runs from the bottom up, 90 from left to right, 180 from the top
+  /// down. Its ends meet the corners.
+  Linear(f32),
+  /// In circles out from the middle to the farthest corner.
+  Radial,
+}
+
+impl Gradient {
+  /// A gradient from `from` to `to` along a line at `angle` degrees: 0
+  /// runs from the bottom up, 90 from left to right.
+  pub const fn linear(angle: f32, from: Color, to: Color) -> Gradient {
+    Gradient::new(GradientShape::Linear(angle), from, to)
+  }
+
+  /// A gradient from `from` in the middle to `to` at the farthest corner.
+  pub const fn radial(from: Color, to: Color) -> Gradient {
+    Gradient::new(GradientShape::Radial, from, to)
+  }
+
+  const fn new(shape: GradientShape, from: Color, to: Color) -> Gradient {
+    Gradient {
+      shape,
+      stops: [(0.0, from), (1.0, to), (1.0, to), (1.0, to)],
+      count: 2,
+    }
+  }
+
+  /// Adds `color` at `at`, from 0 to 1, before the end color. Add them
+  /// in order. A gradient has at most four colors, so a third stop
+  /// panics.
+  pub const fn stop(self, at: f32, color: Color) -> Gradient {
+    assert!(self.count < 4, "a gradient has at most four colors");
+    let mut stops = self.stops;
+    let last = self.count as usize - 1;
+    stops[last + 1] = stops[last];
+    stops[last] = (at, color);
+    Gradient {
+      stops,
+      count: self.count + 1,
+      ..self
+    }
+  }
+
+  /// Each color and where it sits, from the start to the end.
+  pub fn stops(&self) -> &[(f32, Color)] {
+    &self.stops[..usize::from(self.count)]
+  }
+
+  /// `t` of the way from this gradient to `to`, or `None` when their
+  /// shapes or numbers of colors differ.
+  fn lerp(&self, to: &Gradient, t: f32) -> Option<Gradient> {
+    let shape = match (self.shape, to.shape) {
+      (GradientShape::Linear(from), GradientShape::Linear(to)) => {
+        GradientShape::Linear(from.lerp(&to, t))
+      }
+      (GradientShape::Radial, GradientShape::Radial) => GradientShape::Radial,
+      _ => return None,
+    };
+    if self.count != to.count {
+      return None;
+    }
+    let mut stops = to.stops;
+    for (stop, (from, to)) in stops.iter_mut().zip(self.stops.iter().zip(to.stops)) {
+      *stop = (from.0.lerp(&to.0, t), from.1.lerp(&to.1, t));
+    }
+    Some(Gradient {
+      shape,
+      stops,
+      count: to.count,
+    })
+  }
+
+  /// This gradient with every color transparent.
+  fn clear(mut self) -> Gradient {
+    for (_, color) in &mut self.stops {
+      color.a = 0;
+    }
+    self
+  }
+}
+
 /// Space between a widget's edge and its content, in logical pixels.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Padding {
@@ -144,6 +250,8 @@ pub struct Padding {
 pub struct Style {
   /// Fills the widget's rectangle.
   pub background: Option<Color>,
+  /// Colors blending across the widget's rectangle, over the background.
+  pub gradient: Option<Gradient>,
   /// The text color, inherited by [`Text`](crate::Text).
   pub color: Option<Color>,
   /// The text font, inherited by [`Text`](crate::Text).
@@ -164,8 +272,8 @@ pub struct Style {
   pub width: Option<f32>,
   /// The height in logical pixels, instead of what the content needs.
   pub height: Option<f32>,
-  /// How a change to the paint fields fades in: background, color,
-  /// border, radius and opacity. Other fields change at once.
+  /// How a change to the paint fields fades in: background, gradient,
+  /// color, border, radius and opacity. Other fields change at once.
   pub transition: Option<Transition>,
 }
 
@@ -174,6 +282,7 @@ impl Style {
   pub const fn new() -> Style {
     Style {
       background: None,
+      gradient: None,
       color: None,
       font: None,
       padding: None,
@@ -191,6 +300,14 @@ impl Style {
   pub const fn background(self, color: Color) -> Style {
     Style {
       background: Some(color),
+      ..self
+    }
+  }
+
+  /// Sets a gradient, drawn over the background.
+  pub const fn gradient(self, gradient: Gradient) -> Style {
+    Style {
+      gradient: Some(gradient),
       ..self
     }
   }
@@ -274,7 +391,7 @@ impl Style {
   }
 
   /// Sets how a change to the paint fields fades in, as when a hover
-  /// style takes over: background, color, border, radius and opacity move
+  /// style takes over: background, gradient, color, border, radius and opacity move
   /// over `transition`. The style being changed to says how.
   pub const fn transition(self, transition: Transition) -> Style {
     Style {
@@ -289,6 +406,7 @@ impl Style {
   pub const fn merge(self, over: Style) -> Style {
     Style {
       background: or(over.background, self.background),
+      gradient: or(over.gradient, self.gradient),
       color: or(over.color, self.color),
       font: or(over.font, self.font),
       padding: or(over.padding, self.padding),
@@ -331,7 +449,8 @@ impl Style {
   /// field is `to`'s. A field only one side sets fades from or to nothing:
   /// a color from or to its transparent self, a border from or to 0 wide.
   /// A text color only one sets changes at the end, as the other comes
-  /// from an ancestor.
+  /// from an ancestor. Gradients of different shapes or numbers of colors
+  /// change at once.
   pub(crate) fn lerp(&self, to: &Style, t: f32) -> Style {
     let color = |from: Option<Color>, to: Option<Color>| match (from, to) {
       (Some(from), Some(to)) => Some(from.lerp(&to, t)),
@@ -363,8 +482,15 @@ impl Style {
       (None, None) => None,
       (from, to) => Some(from.unwrap_or(none).lerp(&to.unwrap_or(none), t)),
     };
+    let gradient = match (self.gradient, to.gradient) {
+      (Some(from), Some(end)) => from.lerp(&end, t).or(to.gradient),
+      (None, Some(end)) => end.clear().lerp(&end, t),
+      (Some(from), None) => from.lerp(&from.clear(), t),
+      (None, None) => None,
+    };
     Style {
       background: color(self.background, to.background),
+      gradient,
       color: match (self.color, to.color) {
         (Some(from), Some(to)) => Some(from.lerp(&to, t)),
         _ => to.color,

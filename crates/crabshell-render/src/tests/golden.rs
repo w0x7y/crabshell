@@ -4,8 +4,8 @@
 use std::rc::Rc;
 
 use crabshell_ui::{
-  Align, Color, Column, Content, Fit, Font, Icon, IconPixels, IconSource, Image, Menu, MenuEntry,
-  MenuToggle, Row, Stack, Style, Text, Window,
+  Align, Color, Column, Content, Fit, Font, Gradient, Icon, IconPixels, IconSource, Image, Menu,
+  MenuEntry, MenuToggle, Row, Stack, Style, Text, Window,
 };
 
 use super::{Scene, assert_golden, fixture};
@@ -87,6 +87,58 @@ fn styles() {
               .background(Color::rgba(255, 255, 255, 96))
               .border(0.5, Color::hex("#cba6f7"))
               .padding(8, 8),
+          ),
+        ),
+    )
+  });
+}
+
+#[test]
+fn gradients() {
+  check("gradients", 220.0, 40.0, |scene| {
+    scene.panel().style(BAR).child(
+      Row::new()
+        .padding(4, 6)
+        .gap(6)
+        .align(Align::Center)
+        // Left to right, rounded.
+        .child(
+          Row::new().style(
+            Style::new()
+              .gradient(Gradient::linear(
+                90.0,
+                Color::hex("#f38ba8"),
+                Color::hex("#89b4fa"),
+              ))
+              .radius(6.0)
+              .padding(10, 20),
+          ),
+        )
+        // Four colors at a slant, under a border.
+        .child(
+          Row::new().style(
+            Style::new()
+              .gradient(
+                Gradient::linear(135.0, Color::hex("#a6e3a1"), Color::hex("#cba6f7"))
+                  .stop(0.3, Color::hex("#f9e2af"))
+                  .stop(0.6, Color::hex("#fab387")),
+              )
+              .border(2.0, Color::hex("#cdd6f4"))
+              .radius(4.0)
+              .padding(10, 24),
+          ),
+        )
+        // A round glow from the middle, fading out over a background.
+        .child(
+          Row::new().style(
+            Style::new()
+              .background(Color::hex("#313244"))
+              .gradient(Gradient::radial(
+                Color::rgba(0xf9, 0xe2, 0xaf, 255),
+                Color::rgba(0xf9, 0xe2, 0xaf, 0),
+              ))
+              .radius(100.0)
+              .padding(14, 30),
           ),
         ),
     )

@@ -519,26 +519,35 @@ fn a_widget_that_stops_drawing_is_repainted_where_it_was() {
 }
 
 #[test]
-fn a_bordered_widget_that_moves_is_repainted_at_both_places() {
-  let mut h = Harness::new();
-  let label = h.cx.signal(String::from("ab"));
-  let row = Row::new()
-    .align(Align::Start)
-    .child(Text::new(move || label.get()))
-    .child(
-      Row::new()
-        .style(Style::new().border(1.0, Color::rgb(9, 9, 9)))
-        .padding(6, 6)
-        .child(Icon::new("x").size(8)),
-    );
-  let window = h.window(h.panel().child(row), 300.0, 30.0);
-  window.take_damage();
-  let old = rect_at(&window, &[0, 1]);
+fn a_bordered_or_gradient_widget_that_moves_is_repainted_at_both_places() {
+  let black = Color::rgb(9, 9, 9);
+  for style in [
+    Style::new().border(1.0, black),
+    Style::new().gradient(crate::Gradient::radial(black, black)),
+  ] {
+    let mut h = Harness::new();
+    let label = h.cx.signal(String::from("ab"));
+    let row = Row::new()
+      .align(Align::Start)
+      .child(Text::new(move || label.get()))
+      .child(
+        Row::new()
+          .style(style)
+          .padding(6, 6)
+          .child(Icon::new("x").size(8)),
+      );
+    let window = h.window(h.panel().child(row), 300.0, 30.0);
+    window.take_damage();
+    let old = rect_at(&window, &[0, 1]);
 
-  label.set(String::from("a much longer label"));
-  h.frame(&window);
-  let damage = window.take_damage();
-  for rect in [old, rect_at(&window, &[0, 1])] {
-    assert!(damage.contains(&rect), "{rect:?} missing from {damage:?}");
+    label.set(String::from("a much longer label"));
+    h.frame(&window);
+    let damage = window.take_damage();
+    for rect in [old, rect_at(&window, &[0, 1])] {
+      assert!(
+        damage.contains(&rect),
+        "{style:?}: {rect:?} missing from {damage:?}"
+      );
+    }
   }
 }

@@ -85,9 +85,9 @@ pub mod prelude {
   };
   pub use crabshell_ui::{
     Adjust, Align, Anchors, Animate, Border, Button, Color, Column, Cx, Easing, Edge, Fit,
-    FloatingWindow, Font, Icon, IconPixels, IconSource, Image, Justify, Key, KeyEvent,
-    KeyboardFocus, Layer, ListView, Margins, Menu, MenuEntry, MenuToggle, Modifiers, Output,
-    Padding, PanelWindow, PopupWindow, Region, Row, ScrollView, Size, Spacer, Stack, Style, Text,
-    TextInput, Transition, Widget,
+    FloatingWindow, Font, Gradient, GradientShape, Icon, IconPixels, IconSource, Image, Justify,
+    Key, KeyEvent, KeyboardFocus, Layer, ListView, Margins, Menu, MenuEntry, MenuToggle, Modifiers,
+    Output, Padding, PanelWindow, PopupWindow, Region, Row, ScrollView, Size, Spacer, Stack, Style,
+    Text, TextInput, Transition, Widget,
   };
 }

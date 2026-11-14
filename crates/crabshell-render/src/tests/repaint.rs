@@ -517,6 +517,44 @@ fn a_repaint_whose_edge_cuts_a_rounded_corner_matches_drawing_everything() {
 }
 
 #[test]
+fn turning_a_gradient_repaints_like_drawing_everything() {
+  use crabshell_ui::Gradient;
+
+  let mut scene = Scene::new();
+  let angle = scene.cx.signal(0.0_f32);
+  let panel = scene
+    .panel()
+    .style(Style::new().background(Color::rgb(30, 30, 46)))
+    .child(
+      Row::new()
+        .padding(5, 50)
+        .align(Align::Start)
+        .child(Row::new().style(move || {
+          Style::new()
+            .gradient(
+              Gradient::linear(angle.get(), Color::hex("#f38ba8"), Color::hex("#89b4fa"))
+                .stop(0.5, Color::rgba(0, 0, 0, 0)),
+            )
+            .radius(8.0)
+            .padding(12, 40)
+        })),
+    );
+  let window = scene.window(panel, 200.0, 40.0);
+  for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+    let mut history = DamageHistory::new();
+    let mut buffer = Buffer::new(&window, scale);
+    repaint(&mut scene, &window, &[], &mut history, &mut buffer);
+    angle.update(|angle| *angle += 70.0);
+    scene.frame(&window);
+    let damage = window.take_damage();
+    assert!(!damage.is_empty(), "a gradient change repaints");
+    repaint(&mut scene, &window, &damage, &mut history, &mut buffer);
+    let full = scene.full(&window, scale);
+    assert!(buffer.pixels == full.pixels, "at {scale}");
+  }
+}
+
+#[test]
 fn repainting_inside_a_clip_matches_drawing_everything() {
   let mut scene = Scene::new();
   let label = scene.cx.signal(String::from("short"));

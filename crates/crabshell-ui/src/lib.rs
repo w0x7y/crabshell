@@ -93,7 +93,7 @@ pub use popup::{Adjust, Placement, PopupWindow};
 pub use prop::{IntoProp, Prop};
 pub use region::Region;
 pub use scroll::{ListView, ScrollView};
-pub use style::{Border, Color, Font, Padding, Style};
+pub use style::{Border, Color, Font, Gradient, GradientShape, Padding, Style};
 pub use text::TextSystem;
 pub use text_input::{FieldState, Preedit, TextInput};
 pub use view::{Content, IconView, ImageView, InputView, NodeView, TextView, WindowView};

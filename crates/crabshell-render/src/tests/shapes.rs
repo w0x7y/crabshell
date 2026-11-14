@@ -238,3 +238,116 @@ fn a_repaint_skips_widgets_outside_the_damage() {
   // 64-pixel tile; not all 43 nodes.
   assert!(after - before <= 12, "{} nodes drawn", after - before);
 }
+
+mod gradients {
+  use crabshell_ui::{Align, Color, Gradient, Row, Style};
+
+  use super::super::Scene;
+  use super::close;
+
+  const RED: Color = Color::rgb(255, 0, 0);
+  const BLUE: Color = Color::rgb(0, 0, 255);
+
+  /// The buffer of a 100 by 20 window filled with `gradient`, at scale 1.
+  fn filled(gradient: Gradient) -> super::super::Buffer {
+    let mut scene = Scene::new();
+    let window = scene.window(
+      scene.panel().style(Style::new().gradient(gradient)),
+      100.0,
+      20.0,
+    );
+    scene.full(&window, 1.0)
+  }
+
+  #[test]
+  fn a_linear_gradient_runs_at_its_angle_from_edge_to_edge() {
+    let across = filled(Gradient::linear(90.0, RED, BLUE));
+    assert!(
+      close(across.pixel(0, 10), [254, 0, 1]),
+      "{:?}",
+      across.pixel(0, 10)
+    );
+    assert!(
+      close(across.pixel(50, 0), [126, 0, 129]),
+      "{:?}",
+      across.pixel(50, 0)
+    );
+    assert!(
+      close(across.pixel(99, 19), [1, 0, 254]),
+      "{:?}",
+      across.pixel(99, 19)
+    );
+    let down = filled(Gradient::linear(180.0, RED, BLUE));
+    assert!(
+      close(down.pixel(70, 0), [249, 0, 6]),
+      "{:?}",
+      down.pixel(70, 0)
+    );
+    assert!(
+      close(down.pixel(70, 19), [6, 0, 249]),
+      "{:?}",
+      down.pixel(70, 19)
+    );
+  }
+
+  #[test]
+  fn a_middle_stop_sits_where_it_says() {
+    let green = Color::rgb(0, 255, 0);
+    let three = filled(Gradient::linear(90.0, RED, BLUE).stop(0.2, green));
+    assert!(
+      close(three.pixel(20, 5), [0, 253, 2]),
+      "{:?}",
+      three.pixel(20, 5)
+    );
+    assert!(
+      close(three.pixel(60, 5), [0, 126, 129]),
+      "{:?}",
+      three.pixel(60, 5)
+    );
+  }
+
+  #[test]
+  fn a_radial_gradient_reaches_the_farthest_corner() {
+    let round = filled(Gradient::radial(RED, BLUE));
+    assert!(
+      close(round.pixel(50, 10), [252, 0, 3]),
+      "{:?}",
+      round.pixel(50, 10)
+    );
+    assert!(
+      close(round.pixel(0, 0), [3, 0, 252]),
+      "{:?}",
+      round.pixel(0, 0)
+    );
+  }
+
+  #[test]
+  fn a_gradient_goes_over_the_background_inside_the_corners() {
+    let mut scene = Scene::new();
+    let window = scene.window(
+      scene.panel().child(
+        Row::new().align(Align::Start).child(
+          Row::new().style(
+            Style::new()
+              .background(Color::rgb(0, 255, 0))
+              .gradient(Gradient::linear(90.0, Color::rgba(0, 0, 255, 0), BLUE))
+              .radius(10.0)
+              .width(40.0)
+              .height(20.0),
+          ),
+        ),
+      ),
+      100.0,
+      20.0,
+    );
+    let buffer = scene.full(&window, 1.0);
+    // Transparent blue at the left shows the green under it.
+    assert!(
+      close(buffer.pixel(1, 10), [0, 245, 10]),
+      "{:?}",
+      buffer.pixel(1, 10)
+    );
+    // Outside the rounded corner, nothing.
+    assert_eq!(buffer.pixel(0, 0)[3], 0);
+  }
+}
