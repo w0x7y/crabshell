@@ -19,6 +19,7 @@ mod bluetooth;
 mod clock;
 mod dbus;
 mod mpris;
+mod network;
 mod notifications;
 mod power;
 mod sway;
@@ -47,6 +48,7 @@ pub use audio::{Audio, AudioNode, AudioStream, Sink};
 pub use bluetooth::{Bluetooth, BluetoothAdapter, BluetoothDevice};
 pub use clock::Precision;
 pub use mpris::{LoopStatus, Mpris, PlaybackStatus, Player};
+pub use network::{Network, NetworkDevice, NetworkKind, NetworkState, WifiNetwork};
 pub use notifications::{Notification, Notifications, Timeout, Urgency};
 pub use power::{BatteryState, DeviceKind, PowerDevice, PowerProfile, PowerProfiles, UPower};
 pub use sway::{Sway, Workspace};
@@ -74,6 +76,7 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(bluetooth::BluetoothService::new(Rc::clone(&shared)));
   cx.provide(notifications::Service::new(Rc::clone(&shared)));
   cx.provide(mpris::Service::new(Rc::clone(&shared)));
+  cx.provide(network::NetworkService::new(Rc::clone(&shared)));
 }
 
 /// The services a context hands out.
@@ -161,6 +164,12 @@ pub trait ServicesExt {
   /// something changed. MPRIS doesn't say when the position moves, so a
   /// bar works it out with [`Player::position_at`].
   fn mpris(&self) -> Mpris;
+
+  /// Network devices and Wi-Fi networks, from NetworkManager on the
+  /// system bus. Every caller shares one connection. It behaves as
+  /// [`upower`](Self::upower) does while NetworkManager isn't there, and
+  /// wakes the shell only when NetworkManager says something changed.
+  fn network(&self) -> Network;
 }
 
 impl ServicesExt for Cx {
@@ -198,6 +207,10 @@ impl ServicesExt for Cx {
 
   fn mpris(&self) -> Mpris {
     mpris::mpris(self)
+  }
+
+  fn network(&self) -> Network {
+    network::network(self)
   }
 }
 
@@ -410,7 +423,7 @@ struct Config {
   /// when `TZ` is set, since it names the zone then, as it does for libc.
   localtime: Option<PathBuf>,
   /// The system bus, where logind, timedated, UPower,
-  /// power-profiles-daemon and BlueZ are. `None` for none.
+  /// power-profiles-daemon, BlueZ and NetworkManager are. `None` for none.
   system_bus: Option<zbus::Address>,
   /// The session bus, where tray items, notifying apps and media
   /// players are. `None` for none.
