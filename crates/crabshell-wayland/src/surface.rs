@@ -189,6 +189,8 @@ pub(crate) struct Surface {
   pub(crate) blur_sent: Option<(Option<Region>, (u32, u32))>,
   /// The idle inhibitor, while the window asks for one.
   pub(crate) inhibitor: Option<crate::idle::Inhibitor>,
+  /// The shortcuts inhibitor, while the window asks for one.
+  pub(crate) shortcuts_inhibitor: Option<crate::shortcuts_inhibit::ShortcutsInhibitor>,
 }
 
 impl Surface {
@@ -216,6 +218,7 @@ impl Surface {
       blur: None,
       blur_sent: None,
       inhibitor: None,
+      shortcuts_inhibitor: None,
     }
   }
 

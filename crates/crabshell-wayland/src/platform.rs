@@ -42,6 +42,7 @@ use crate::outputs::OutputInfo;
 use crate::pointer::Cursor;
 use crate::scale::Scale;
 use crate::screencopy::Captures;
+use crate::shortcuts_inhibit::ShortcutsInhibit;
 use crate::surface::{self, Role, Surface};
 use crate::text_input::SeatTextInput;
 use crate::windows::{Entry, WindowId, Windows};
@@ -330,6 +331,8 @@ pub struct Platform {
   pub(crate) effects: Effects,
   /// The compositor's idle protocols and the watches on them.
   pub(crate) idle: Idle,
+  /// Handing the compositor's shortcuts to windows.
+  pub(crate) shortcuts_inhibit: ShortcutsInhibit,
   /// Every program's windows, once a watch asks.
   pub(crate) foreign: Foreign,
   /// The workspaces, once a watch asks.
@@ -393,6 +396,7 @@ impl Platform {
       globals.bind(&qh, 1..=1, ()).ok(),
       globals.bind(&qh, 1..=1, ()).ok(),
     );
+    let shortcuts_inhibit = ShortcutsInhibit::new(globals.bind(&qh, 1..=1, ()).ok());
     let effects = Effects {
       manager: globals.bind(&qh, 1..=1, ()).ok(),
       blur: false,
@@ -406,6 +410,7 @@ impl Platform {
       background_effects = effects.manager.is_some(),
       idle_notify = idle.notifier.is_some(),
       idle_inhibit = idle.inhibit.is_some(),
+      shortcuts_inhibit = shortcuts_inhibit.manager.is_some(),
       "bound the compositor's globals"
     );
     let mut platform = Platform {
@@ -431,6 +436,7 @@ impl Platform {
       text_inputs_manager,
       effects,
       idle,
+      shortcuts_inhibit,
       foreign: Foreign::default(),
       windowsets: Windowsets::default(),
       locks,
@@ -657,6 +663,8 @@ impl Platform {
       compositor,
       effects,
       idle,
+      shortcuts_inhibit,
+      seats,
       ..
     } = self;
     // The windows that draw, whose live views may ask for their next
@@ -688,6 +696,7 @@ impl Platform {
         surface.send_mask(compositor, entry.window.surface().mask.as_ref());
       }
       surface.inhibit_idle(idle, entry.window.inhibits_idle(), qh);
+      surface.inhibit_shortcuts(shortcuts_inhibit, (entry.id, &entry.window), seats, qh);
       if surface.blur_outdated() {
         surface.send_blur(effects, compositor, entry.window.blur().as_ref(), qh);
       }

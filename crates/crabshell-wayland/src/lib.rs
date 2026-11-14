@@ -88,6 +88,7 @@ mod pointer;
 mod popups;
 mod scale;
 mod screencopy;
+mod shortcuts_inhibit;
 mod surface;
 mod text_input;
 mod toplevels;

@@ -123,6 +123,10 @@ struct Knobs {
   blurred: Signal<bool>,
   /// Whether the bar keeps the screen from idling.
   awake: Signal<bool>,
+  /// Whether the bar asks for the compositor's shortcuts.
+  inhibit: Signal<bool>,
+  /// Whether the compositor says it gives them.
+  inhibited: Signal<bool>,
 }
 
 /// A popup with two entries: the first opens another menu beside it, and
@@ -179,6 +183,8 @@ fn bar(cx: &Cx, output: &str, knobs: Knobs) -> Window {
         .then(|| Region::rect(0, 0, 100_000, 100_000))
     })
     .inhibit_idle(move || knobs.awake.get())
+    .inhibit_shortcuts(move || knobs.inhibit.get())
+    .shortcuts_inhibited(knobs.inhibited)
     .on_key(move |_, event| {
       knobs.keys.update(|keys| keys.push(event.clone()));
       false
@@ -306,6 +312,8 @@ impl Shell {
       wide: cx.signal(false),
       blurred: cx.signal(false),
       awake: cx.signal(false),
+      inhibit: cx.signal(false),
+      inhibited: cx.signal(false),
     };
     let mut event_loop = sway.connect();
     let built = Rc::new(RefCell::new(Vec::new()));
@@ -797,6 +805,83 @@ fn a_bar_takes_the_keyboard_once_its_focus_changes() {
   run_until(&mut shell.event_loop, "the a key", |_| {
     knobs.keys.with_untracked(|keys| keys.len() == 1)
   });
+}
+
+/// Whether an x reached the bar's `on_key`.
+fn got_x(knobs: Knobs) -> bool {
+  knobs
+    .keys
+    .with_untracked(|keys| keys.iter().any(|key| key.key == Key::Character('x')))
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_bar_that_inhibits_shortcuts_gets_the_keys_sway_binds() {
+  let sway = Sway::start();
+  sway.msg(&["bindsym", "x", "workspace", "number", "7"]);
+  let (mut shell, mut keyboard) = typing(&sway);
+  let knobs = shell.knobs;
+  keyboard.tap(keys::X);
+  settle(&mut shell.event_loop);
+  assert!(!got_x(knobs), "Sway's binding let x through");
+  assert!(
+    sway.msg(&["-r", "-t", "get_workspaces"]).contains("\"7\""),
+    "Sway's binding didn't run"
+  );
+
+  knobs.inhibit.set(true);
+  run_until(&mut shell.event_loop, "Sway to honor it", |_| {
+    knobs.inhibited.get_untracked()
+  });
+  settle(&mut shell.event_loop);
+  // Inhibiting, nothing wakes the shell: one dispatch sleeps the whole
+  // time.
+  let started = Instant::now();
+  shell
+    .event_loop
+    .dispatch(Some(Duration::from_secs(2)))
+    .expect("the connection works");
+  let slept = started.elapsed();
+  assert!(slept >= Duration::from_millis(1900), "woke after {slept:?}");
+  keyboard.tap(keys::X);
+  run_until(&mut shell.event_loop, "x at the bar", |_| got_x(knobs));
+
+  // Asked no more, Sway takes x again.
+  knobs.inhibit.set(false);
+  run_until(&mut shell.event_loop, "the inhibitor gone", |_| {
+    !knobs.inhibited.get_untracked()
+  });
+  let typed = knobs.keys.with_untracked(Vec::len);
+  keyboard.tap(keys::X);
+  settle(&mut shell.event_loop);
+  assert_eq!(knobs.keys.with_untracked(Vec::len), typed);
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn shortcuts_inhibited_follows_sway_and_turns_false_as_the_bar_goes() {
+  let sway = Sway::start();
+  let (mut shell, _keyboard) = typing(&sway);
+  let knobs = shell.knobs;
+  knobs.inhibit.set(true);
+  run_until(&mut shell.event_loop, "Sway to honor it", |_| {
+    knobs.inhibited.get_untracked()
+  });
+  sway.msg(&["seat", "-", "shortcuts_inhibitor", "deactivate"]);
+  run_until(&mut shell.event_loop, "Sway taking them back", |_| {
+    !knobs.inhibited.get_untracked()
+  });
+  sway.msg(&["seat", "-", "shortcuts_inhibitor", "activate"]);
+  run_until(&mut shell.event_loop, "Sway giving them again", |_| {
+    knobs.inhibited.get_untracked()
+  });
+
+  // The output goes, and the bar's inhibitor with it.
+  sway.msg(&["output", "HEADLESS-1", "unplug"]);
+  run_until(&mut shell.event_loop, "the bar gone", |platform| {
+    platform.windows().next().is_none()
+  });
+  assert!(!knobs.inhibited.get_untracked());
 }
 
 #[test]
