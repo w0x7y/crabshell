@@ -2,26 +2,21 @@
 
 # crabshell
 
-a full rust replacement for quickshell: everything quickshell does, crabshell will do. your whole desktop shell is a rust crate, with bars, popups, notifications, launchers, lock screens, osds and the rest. the first milestone, v0.1, is a bar for sway and other wlroots compositors, a checkpoint that proves the approach works before the rest of quickshell's features follow
-
-status: v0.1 is on crates.io, and phases 7 to 10 are done on main. bars draw, take clicks, follow monitors as they come and go, and show the clock, sway's workspaces, the volume and the tray with its menus. `crabshell run` rebuilds your bar when you save it and swaps the running one in about a second. on main, windows also take the keyboard, with text fields, input methods and the clipboard, and there are floating windows, scrolling lists, images and clipping. styles fade between each other, values slide to their targets, boxes take gradients and shadows, and windows can ask the compositor to blur what's behind them, all without waking while nothing moves. the shell also follows the battery and power profile, bluetooth, networks, media players and every audio device, serves notifications, and notices when you step away. it lists and launches your installed apps, runs programs and reads what they print, follows files, json files and sockets, answers `crabshell ipc` from the command line, lists every window, and picks the main colors out of a wallpaper
+a rust replacement for quickshell: your whole desktop shell is a rust crate, and everything quickshell does, crabshell will do. v0.1, a bar for sway and other wlroots compositors, is on crates.io. main also has floating windows and keyboard input, animations and blur, desktop services like bluetooth, networks, media players and notifications, launchers, and a lock screen, greeter and polkit agent. hyprland and more compositors come next. [the roadmap](docs/site/roadmap.html) shows each phase, and [the features page](docs/site/features.html) goes through every quickshell type
 
 ### ai disclosure
 
-this project makes heavy use of ai agents. they write the code, the tests and most of the docs, and other agents review each step against [the design doc](docs/design.md). a person sets the direction, makes the design calls, reads the reviews and checks the results by hand on a real desktop
+ai agents write the code, the tests and most of the docs, and other agents review each step against [the design doc](docs/design.md). a person sets the direction, makes the design calls, reads the reviews and checks the results by hand on a real desktop
 
 ### get started
 
 you need
 
 ~ rust 1.99 or newer\
-~ sway, or another wlroots compositor with layer-shell, like labwc. only sway shows workspaces for now\
+~ sway or another wlroots compositor with layer-shell, like labwc. only sway shows workspaces for now\
 ~ linux 5.3 or newer\
-~ pkg-config, fontconfig, libpulse, libxkbcommon and libpam with their development files, like `pkg-config libfontconfig1-dev libpulse-dev libxkbcommon-dev libpam0g-dev` on debian or ubuntu\
-~ pulseaudio or pipewire-pulse running, for the volume\
-~ a d-bus session bus for the tray, and a notification daemon like mako or dunst for build errors
-
-install the `crabshell` command, make a config, and run it
+~ pkg-config, and fontconfig, libpulse, libxkbcommon and libpam with their development files: `pkg-config libfontconfig1-dev libpulse-dev libxkbcommon-dev libpam0g-dev` on debian or ubuntu\
+~ pulseaudio or pipewire-pulse for the volume, a d-bus session bus for the tray, and a notification daemon like mako for build errors
 
 ```sh
 cargo install --locked crabshell-cli
@@ -29,21 +24,13 @@ crabshell init
 crabshell run
 ```
 
-`init` writes a config to `~/.config/crabshell`, a normal cargo project that depends on the `crabshell` crate. it never overwrites one that's already there. to build against a clone of this repository instead, run `crabshell init --path <clone>`. the first `crabshell run` compiles the whole toolkit, which takes a few minutes. then a 30 px bar shows up at the top of every monitor: sway's workspaces at the left, the tray, the volume and the clock at the right. stop any other bar first, or both will reserve space
+`init` writes a cargo project to `~/.config/crabshell` and never overwrites one. `crabshell init --path <clone>` builds against a clone of this repository instead. the first run compiles the toolkit, which takes a few minutes, then a bar shows up at the top of every monitor with sway's workspaces, the tray, the volume and the clock. stop any other bar first
 
-to start it with sway instead, add this to your sway config. sway's `exec` may not see `~/.cargo/bin`, so give the full path, and make sure `cargo` is on the `PATH` your session starts with
-
-```
-exec ~/.cargo/bin/crabshell run
-```
+to start it with sway, add `exec ~/.cargo/bin/crabshell run` to your sway config, with `cargo` on the `PATH` your session starts with
 
 ### edit it
 
-with `crabshell run` running, from a terminal or from sway, change `~/.config/crabshell/src/main.rs`. when you save, it rebuilds, the running bar saves its state and exits, and the new one starts. a one-line edit takes about a second, and the bar is gone for about 20 ms. run only one `crabshell run` at a time, or you get two bars
-
-if your edit doesn't build, the old bar stays up, the full error prints in the terminal and a notification shows its first line. if the new bar crashes, `crabshell run` starts it again, waiting longer each time, and after three quick crashes it goes back to the last build that ran for a minute, if there is one
-
-`crabshell check` checks the config without running it, for editors and scripts
+change `~/.config/crabshell/src/main.rs` while `crabshell run` runs. each save rebuilds it and swaps the bar in about a second. if the edit doesn't build, the old bar stays and the error shows in the terminal and a notification. a crashing bar restarts, and after three quick crashes `crabshell run` goes back to the last build that worked. `crabshell check` checks a config without running it
 
 ### a config
 
@@ -72,69 +59,42 @@ fn bar(cx: &Cx, output: &Output) -> PanelWindow {
 }
 ```
 
-every widget property takes a value or a closure. a closure runs again when a signal it reads changes, and only what changed is redrawn. `per_output` builds windows for every monitor, now and later, and drops them when the monitor goes. `cx.persist` keeps a value across reloads. the full example, with styles and hover, is [examples/counter.rs](crates/crabshell/examples/counter.rs)
-
-to try the examples without a config, from a clone of this repository
-
-```sh
-cargo run --release -p crabshell --example counter
-cargo run --release -p crabshell --example bar
-cargo run --release -p crabshell --example launcher
-```
-
-the launcher is an overlay with a search field over a scrolling list of apps and an about window: type to filter, up and down to pick, enter to launch
+every widget property takes a value or a closure. a closure runs again when a signal it reads changes, and only what changed is redrawn. `per_output` builds windows for every monitor, now and later. the [examples](crates/crabshell/examples/) show the rest. from a clone, `cargo run --release -p crabshell --example launcher` runs one, and so do `counter`, `bar`, `effects` and `desktop`
 
 ### docs
 
-~ [docs/site](docs/site/index.html), getting started, writing a config, how it fits together, the roadmap and every quickshell feature with what crabshell has today. open `docs/site/index.html` in a browser\
-~ [the design doc](docs/design.md), every decision and every rule settled while building each crate
+~ [the site](docs/site/index.html), with getting started, writing a config, how it fits together, the roadmap and the features. open it in a browser\
+~ [the design doc](docs/design.md), with every decision and every rule settled while building each crate
 
 ### numbers
 
-measured on headless sway, from [the design doc](docs/design.md#performance-targets)
+on headless sway with one 1920×1080 output, the counter example uses 16.7 MiB and draws its first frame in 9.5 ms, and the v0.1 bar uses 20.2 MiB. neither wakes while idle, except the bar's clock once a minute. on a 1280×720 output, a reload rebuilds a one-line edit in 0.7 s and leaves no bar for 13 to 19 ms. quickshell drawing the [phase 0 test bar](spike/RESULTS.md) used 125 MiB and took 219 ms to its first frame. the [design doc](docs/design.md#performance-targets) has every phase's numbers
 
-~ the v0.1 bar, one 1920×1080 output: 18.7 MiB of memory, first frame in 10.8 ms\
-~ the counter example: 15.8 MiB, zero wakeups while idle\
-~ a reload, one 1280×720 output: 0.7 s to rebuild after a one-line edit, then 13 to 19 ms with no bar
+### crates
 
-for comparison, quickshell drawing the [phase 0 test bar](spike/RESULTS.md) uses 125 MiB and needs 219 ms to its first frame
-
-### where it's going
-
-v0.1 is the template bar plus `crabshell run`, on crates.io. phase 7 added floating windows and keyboard input, phase 8 animations and effects, phase 9 desktop services, phase 10 launchers and system integration, and phase 11 the lock screen, a greetd greeter and a polkit agent. next come hyprland, niri and more compositors, until every quickshell feature is covered. the plan is in [the design doc](docs/design.md#beyond-v01), and [docs/site/roadmap.html](docs/site/roadmap.html) shows where each phase stands
-
-### what's in it
-
-~ [crabshell](crates/crabshell/), `run()`, `per_output`, `cx.floating`, `cx.persist`, `cx.session_lock`, the prelude and the examples\
+~ [crabshell](crates/crabshell/), `run()`, `per_output`, windows, the session lock, the prelude and the examples\
 ~ [crabshell-reactive](crates/crabshell-reactive/), signals, memos, effects and owners\
-~ [crabshell-ui](crates/crabshell-ui/), widgets, styles, layout, text, text editing, focus and hit testing\
-~ [crabshell-render](crates/crabshell-render/), drawing on the cpu with tiny-skia, damage tracking, clipping, glyphs, icons and images\
-~ [crabshell-wayland](crates/crabshell-wayland/), the event loop, layer-shell and floating windows, popups, buffers, scaling, the pointer, the keyboard, input methods, the clipboard, monitors and the session lock\
-~ [crabshell-services](crates/crabshell-services/), the clock, sway's workspaces, audio, the tray, power, bluetooth, networks, media players, notifications, your apps, programs, files, sockets, pam, greetd and a polkit agent\
-~ [crabshell-cli](crates/crabshell-cli/), the `crabshell` command: `init`, `check`, `ipc`, and `run`, which rebuilds and supervises your shell\
+~ [crabshell-ui](crates/crabshell-ui/), widgets, styles, layout, text and focus\
+~ [crabshell-render](crates/crabshell-render/), drawing on the cpu with tiny-skia, and damage tracking\
+~ [crabshell-wayland](crates/crabshell-wayland/), the event loop, windows, input and monitors\
+~ [crabshell-services](crates/crabshell-services/), workspaces, audio, the tray, d-bus services, programs, files and logins\
+~ [crabshell-cli](crates/crabshell-cli/), the `crabshell` command: `init`, `check`, `ipc` and `run`\
 ~ [spike](spike/) and [baseline](baseline/), the phase 0 prototype and the quickshell bar it was measured against
 
 ### tests
 
 ```sh
 cargo test --workspace
-```
-
-they need `dbus-daemon` and `dbus-monitor` for the tray and notification tests, and the golden images expect noto sans as your `sans-serif`, plus dejavu sans. ci runs fmt, clippy and these tests on every push. the headless sway tests only run on your machine
-
-the headless sway tests are skipped by default. run them from any terminal, without your session's `SWAYSOCK` so nothing can reach your sway. they refuse to start with it set
-
-```sh
 env -u SWAYSOCK cargo test -p crabshell-wayland --test headless -- --ignored --test-threads=1
 env -u SWAYSOCK cargo test -p crabshell --test headless -- --ignored --test-threads=1
 env -u SWAYSOCK cargo test -p crabshell-cli --test exit_check -- --ignored --nocapture
 ```
 
-they need `sway`, `swaymsg`, `grim` and `labwc`, `wl-copy` and `wl-paste` for the clipboard, plus `pipewire` and `pactl` for the audio ones. each test runs its own private sway from a copy of `sway`. the copy drops swayfx's `cap_sys_nice`, so it never goes realtime and a realtime cpu limit of 0 can't kill it. the audio ones also run their own pipewire-pulse, so your volume never moves. the last one builds a config from the template and checks reloads, crashes and the fallback to the last good build. `CRABSHELL_BLESS=1` rewrites the golden images
+the first needs `dbus-daemon` and `dbus-monitor`, and its golden images expect noto sans as your `sans-serif`, plus dejavu sans. ci runs it with fmt and clippy on every push. the other three run only on your machine. each test starts a private sway from a copy of `sway`, so nothing reaches your session, and they refuse to start with `SWAYSOCK` set. they need `sway`, `swaymsg`, `grim`, `labwc`, `wl-copy`, `wl-paste`, `pipewire` and `pactl`. `CRABSHELL_BLESS=1` rewrites the golden images
 
 ### formatting
 
-2 spaces everywhere. `cargo fmt --all` reads it from [rustfmt.toml](rustfmt.toml), and the python, markdown, yaml and the docs site get
+2 spaces everywhere. `cargo fmt --all` reads [rustfmt.toml](rustfmt.toml), and the rest gets
 
 ```sh
 ruff format --config indent-width=2 baseline/
