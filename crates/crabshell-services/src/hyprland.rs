@@ -11,6 +11,7 @@ use std::cell::RefCell;
 use std::io::{ErrorKind, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::Once;
 
@@ -22,6 +23,7 @@ use serde::de::DeserializeOwned;
 
 use crate::Shared;
 use crate::dbus::set_changed;
+use crate::lines::Lines;
 
 /// One of Hyprland's workspaces, as `j/workspaces` describes it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -164,6 +166,35 @@ impl Query {
       Query::ActiveWindow => "j/activewindow",
     }
   }
+
+  /// What reads again after the event `name`. Hyprland sends an event's
+  /// two versions together, and both count, for a Hyprland that lacks
+  /// one.
+  fn after(name: &str) -> &'static [Query] {
+    use Query::{ActiveWindow, Clients, Monitors, Workspaces};
+    match name.strip_suffix("v2").unwrap_or(name) {
+      "workspace" | "focusedmon" | "createworkspace" | "destroyworkspace" | "activespecial" => {
+        &[Workspaces, Monitors]
+      }
+      // Windows name their workspace and monitor too.
+      "moveworkspace" | "renameworkspace" | "changeworkspaceid" | "monitoradded"
+      | "monitorremoved" | "configreloaded" => &[Workspaces, Monitors, Clients],
+      "openwindow" | "closewindow" | "movewindow" => &[Workspaces, Clients],
+      "windowtitle" | "changefloatingmode" | "fullscreen" => &[Clients],
+      "activewindow" => &[ActiveWindow],
+      _ => &[],
+    }
+  }
+}
+
+/// Where the reading of one list stands.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reading {
+  Idle,
+  Busy,
+  /// Busy, and an event came meanwhile, which the answer may predate, so
+  /// it reads again when done.
+  Stale,
 }
 
 type Lists = (
@@ -182,6 +213,10 @@ struct State {
   workspaces: Signal<Vec<HyprlandWorkspace>>,
   monitors: Signal<Vec<HyprlandMonitor>>,
   toplevels: Signal<Vec<HyprlandToplevel>>,
+  /// The event socket, while it is open.
+  events: Option<Events>,
+  /// By [`Query`].
+  reading: [Reading; 4],
   /// Requests waiting for their reply.
   requests: Vec<Request>,
   next_request: u64,
@@ -201,6 +236,12 @@ struct Raw {
   active: Option<String>,
 }
 
+struct Events {
+  stream: UnixStream,
+  reader: RegistrationToken,
+  lines: Lines,
+}
+
 struct Request {
   id: u64,
   query: Query,
@@ -217,7 +258,7 @@ impl Service {
     }
   }
 
-  /// The lists, reading them from Hyprland if this is the first ask.
+  /// The lists, connecting to Hyprland if this is the first ask.
   fn start(self: &Rc<Self>) -> Lists {
     if self.state.borrow().is_none() {
       let root = &self.shared.root;
@@ -225,26 +266,75 @@ impl Service {
         workspaces: root.signal(Vec::new()),
         monitors: root.signal(Vec::new()),
         toplevels: root.signal(Vec::new()),
+        events: None,
+        reading: [Reading::Idle; 4],
         requests: Vec::new(),
         next_request: 0,
         request_failure_logged: false,
         raw: Raw::default(),
       });
-      if self.shared.config.hyprland.is_none() {
-        tracing::info!(
+      match &self.shared.config.hyprland {
+        None => tracing::info!(
           "HYPRLAND_INSTANCE_SIGNATURE or XDG_RUNTIME_DIR is unset, so there is no Hyprland to show"
-        );
-      } else {
-        let mut state = self.state.borrow_mut();
-        let state = state.as_mut().expect("invariant: started above");
-        for query in Query::ALL {
-          self.request(state, query);
-        }
+        ),
+        Some(dir) => self.connect(dir),
       }
     }
     let state = self.state.borrow();
     let state = state.as_ref().expect("invariant: started above");
     (state.workspaces, state.monitors, state.toplevels)
+  }
+
+  /// Opens the event socket, then reads every list, so no change between
+  /// the two goes unseen. A failure is logged and never retried, so a
+  /// stale signature never wakes the shell.
+  fn connect(self: &Rc<Self>, dir: &Path) {
+    let Some(event_loop) = self.shared.event_loop() else {
+      return;
+    };
+    let path = dir.join(".socket2.sock");
+    let opened = UnixStream::connect(&path).and_then(|stream| {
+      stream.set_nonblocking(true)?;
+      let fd = stream.as_fd().try_clone_to_owned()?;
+      Ok((stream, fd))
+    });
+    let (stream, fd) = match opened {
+      Ok(opened) => opened,
+      Err(error) => {
+        let path = path.display();
+        return tracing::warn!(%path, %error, "can't connect to Hyprland, so its lists stay empty");
+      }
+    };
+    let service = Rc::clone(self);
+    let read = Box::new(move || service.on_events());
+    let Some(reader) = event_loop.insert_fd(fd, Interest::READ, read) else {
+      return;
+    };
+    let mut state = self.state.borrow_mut();
+    let state = state
+      .as_mut()
+      .expect("invariant: started before connecting");
+    state.events = Some(Events {
+      stream,
+      reader,
+      lines: Lines::default(),
+    });
+    for query in Query::ALL {
+      self.read(state, query);
+    }
+  }
+
+  /// Reads `query`'s list, or once more after the read under way.
+  fn read(self: &Rc<Self>, state: &mut State, query: Query) {
+    let reading = &mut state.reading[query as usize];
+    if *reading != Reading::Idle {
+      *reading = Reading::Stale;
+      return;
+    }
+    *reading = Reading::Busy;
+    if !self.request(state, query) {
+      state.reading[query as usize] = Reading::Idle;
+    }
   }
 
   /// Sends `query`'s request on a connection of its own. `false`, logged
@@ -293,9 +383,65 @@ impl Service {
     true
   }
 
+  /// Whether the lists are still there: their owner, the root, isn't
+  /// disposed.
+  fn alive(&self) -> bool {
+    let state = self.state.borrow();
+    let alive = state
+      .as_ref()
+      .and_then(|state| state.workspaces.try_with(|_| ()));
+    alive.is_some()
+  }
+
+  /// Reads what came on the event socket, and reads again what the
+  /// events changed.
+  fn on_events(self: &Rc<Self>) {
+    if !self.alive() {
+      return self.close();
+    }
+    let mut chunk = [0; 64 * 1024];
+    let mut state = self.state.borrow_mut();
+    let state = state
+      .as_mut()
+      .expect("invariant: started before connecting");
+    let Some(events) = state.events.as_mut() else {
+      return;
+    };
+    let lines = match events.stream.read(&mut chunk) {
+      Ok(0) => return self.lost(state, "Hyprland closed its event socket"),
+      Ok(read) => events
+        .lines
+        .push(&chunk[..read], &"Hyprland's event socket"),
+      Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
+        return;
+      }
+      Err(error) => return self.lost(state, &error.to_string()),
+    };
+    // A burst of events reads each list once.
+    let mut stale = [false; 4];
+    for line in lines {
+      let Some((name, _)) = line.split_once(">>") else {
+        tracing::warn!(line, "a line from Hyprland's event socket without `>>`");
+        continue;
+      };
+      for &query in Query::after(name) {
+        stale[query as usize] = true;
+      }
+    }
+    for query in Query::ALL
+      .into_iter()
+      .filter(|&query| stale[query as usize])
+    {
+      self.read(state, query);
+    }
+  }
+
   /// Reads what came of a reply, and acts on it once Hyprland closed the
   /// connection.
   fn on_reply(self: &Rc<Self>, id: u64) {
+    if !self.alive() {
+      return self.close();
+    }
     let mut chunk = [0; 64 * 1024];
     let mut state = self.state.borrow_mut();
     let state = state.as_mut().expect("invariant: started before reading");
@@ -326,7 +472,40 @@ impl Service {
       }
       None => state.raw.apply(query, &request.reply),
     }
+    let reading = std::mem::replace(&mut state.reading[query as usize], Reading::Idle);
+    if reading == Reading::Stale {
+      self.read(state, query);
+    }
     state.show();
+  }
+
+  /// Drops every connection and empties the lists. Hyprland doesn't
+  /// come back under the same signature, so nothing reconnects.
+  fn lost(&self, state: &mut State, why: &str) {
+    tracing::warn!(why, "lost Hyprland; its lists are empty");
+    self.drop_connections(state);
+    state.raw = Raw::default();
+    state.show();
+  }
+
+  /// Closes every connection for good, once the lists are gone.
+  fn close(&self) {
+    if let Some(state) = self.state.borrow_mut().as_mut() {
+      self.drop_connections(state);
+    }
+  }
+
+  fn drop_connections(&self, state: &mut State) {
+    let events = state.events.take();
+    let requests = std::mem::take(&mut state.requests);
+    state.reading = [Reading::Idle; 4];
+    let Some(event_loop) = self.shared.event_loop() else {
+      return;
+    };
+    let readers = events.map(|events| events.reader).into_iter();
+    for reader in readers.chain(requests.into_iter().map(|request| request.reader)) {
+      event_loop.remove(reader);
+    }
   }
 }
 

@@ -8,12 +8,13 @@ use super::{Hyprland, HyprlandMonitor, HyprlandToplevel, HyprlandWorkspace};
 use crate::testing::{Harness, TempDir, capture_logs, offline};
 use crate::{Config, ServicesExt};
 
-/// A stand-in for Hyprland: its request socket in a short temporary
+/// A stand-in for Hyprland: its two sockets in a short temporary
 /// directory, since socket paths are capped at 108 bytes. The directory
 /// goes on drop.
 struct FakeHyprland {
   dir: PathBuf,
   requests: UnixListener,
+  events: UnixListener,
 }
 
 impl FakeHyprland {
@@ -34,6 +35,7 @@ impl FakeHyprland {
     };
     FakeHyprland {
       requests: listen(".socket.sock"),
+      events: listen(".socket2.sock"),
       dir,
     }
   }
@@ -43,6 +45,13 @@ impl FakeHyprland {
       hyprland: Some(self.dir.clone()),
       ..offline()
     }
+  }
+
+  /// The shell's event connection, made at its first `cx.hyprland()`.
+  fn events(&self) -> UnixStream {
+    let (stream, _) = self.events.accept().expect("an event connection");
+    stream.set_nonblocking(false).expect("a blocking stream");
+    stream
   }
 
   /// Every request the shell sent and Hyprland hasn't taken yet, in the
@@ -190,14 +199,16 @@ fn expected_toplevels() -> Vec<HyprlandToplevel> {
   ]
 }
 
-/// A shell connected to `fake`, its first reads answered.
-fn connect(fake: &FakeHyprland) -> (Harness, Hyprland) {
+/// A shell connected to `fake`, its first reads answered, and the event
+/// connection's other end.
+fn connect(fake: &FakeHyprland) -> (Harness, Hyprland, UnixStream) {
   let mut shell = Harness::new(fake.config());
   let hyprland = shell.cx.hyprland();
+  let events = fake.events();
   fake.answer(&replies());
   run(&mut shell);
   assert_eq!(hyprland.workspaces().get_untracked(), expected_workspaces());
-  (shell, hyprland)
+  (shell, hyprland, events)
 }
 
 #[test]
@@ -205,6 +216,7 @@ fn the_lists_are_read_whole_at_the_start() {
   let fake = FakeHyprland::new();
   let mut shell = Harness::new(fake.config());
   let hyprland = shell.cx.hyprland();
+  let _events = fake.events();
   let commands = fake.answer(&replies());
   assert_eq!(
     commands,
@@ -251,6 +263,7 @@ fn workspaces_hyprland_0_57_leaves_unnumbered_are_matched_by_address() {
   let fake = FakeHyprland::new();
   let mut shell = Harness::new(fake.config());
   let hyprland = shell.cx.hyprland();
+  let _events = fake.events();
   fake.answer(&[
     (
       "j/workspaces",
@@ -307,21 +320,141 @@ fn missing_sockets_leave_the_lists_empty_and_are_logged_once() {
     ..offline()
   });
   let (hyprland, logs) = capture_logs_with(|| shell.cx.hyprland());
-  assert_eq!(
-    logs.matches("can't send Hyprland a request").count(),
-    1,
-    "{logs}"
-  );
+  assert!(logs.contains("can't connect to Hyprland"), "{logs}");
   let (_, again) = capture_logs_with(|| shell.cx.hyprland());
   assert!(again.is_empty(), "{again}");
   assert!(hyprland.monitors().get_untracked().is_empty());
   assert_eq!(run(&mut shell), 1, "nothing wakes the shell");
+
+  // Only the event socket: four reads fail, and one is logged.
+  let _events = UnixListener::bind(dir.path().join(".socket2.sock")).expect("a socket");
+  let mut shell = Harness::new(Config {
+    hyprland: Some(dir.path().to_owned()),
+    ..offline()
+  });
+  let (_, logs) = capture_logs_with(|| shell.cx.hyprland());
+  let failures = logs.matches("can't send Hyprland a request").count();
+  assert_eq!(failures, 1, "{logs}");
+  assert_eq!(run(&mut shell), 1, "nothing wakes the shell");
+}
+
+#[test]
+fn an_event_reads_its_lists_again() {
+  let fake = FakeHyprland::new();
+  let (mut shell, hyprland, mut events) = connect(&fake);
+  // A switch to workspace 3, as Hyprland announces it: both versions.
+  events
+    .write_all(b"workspace>>3\nworkspacev2>>3,3\n")
+    .expect("events");
+  run(&mut shell);
+  let monitors = MONITORS.replacen(r#"{"id":1,"name":"1"}"#, r#"{"id":3,"name":"3"}"#, 1);
+  let commands = fake.answer(&[("j/workspaces", WORKSPACES), ("j/monitors", &monitors)]);
+  assert_eq!(commands, ["j/workspaces", "j/monitors"]);
+  run(&mut shell);
+  assert_eq!(
+    hyprland.workspaces().get_untracked(),
+    [
+      workspace(1, "DP-1", 1, false, false),
+      workspace(2, "HDMI-A-1", 0, false, true),
+      workspace(3, "DP-1", 1, true, true),
+    ]
+  );
+  assert_eq!(hyprland.monitors().get_untracked()[0].active_workspace, "3");
+
+  events.write_all(b"activewindowv2>>5b2\n").expect("events");
+  run(&mut shell);
+  let active = r#"{"address":"0x5b2"}"#;
+  assert_eq!(
+    fake.answer(&[("j/activewindow", active)]),
+    ["j/activewindow"]
+  );
+  run(&mut shell);
+  let focused = hyprland.toplevels().get_untracked();
+  assert!(!focused[0].focused && focused[1].focused);
+
+  events
+    .write_all(b"windowtitlev2>>5b2,New\n")
+    .expect("events");
+  run(&mut shell);
+  assert_eq!(fake.answer(&[("j/clients", CLIENTS)]), ["j/clients"]);
+  run(&mut shell);
+  events
+    .write_all(b"openwindow>>5c3,1,foot,foot\n")
+    .expect("events");
+  run(&mut shell);
+  assert_eq!(fake.answer(&replies()), ["j/workspaces", "j/clients"]);
+  run(&mut shell);
+  events
+    .write_all(b"monitoraddedv2>>2,DP-2,Acer\n")
+    .expect("events");
+  run(&mut shell);
+  assert_eq!(
+    fake.answer(&replies()),
+    ["j/workspaces", "j/monitors", "j/clients"]
+  );
+  run(&mut shell);
+  events.write_all(b"submap>>resize\n").expect("events");
+  run(&mut shell);
+  assert!(fake.requests().is_empty(), "nothing shown changes");
+}
+
+#[test]
+fn events_during_a_read_read_once_more_after_it() {
+  let fake = FakeHyprland::new();
+  let (mut shell, hyprland, mut events) = connect(&fake);
+  events.write_all(b"workspacev2>>3,3\n").expect("events");
+  run(&mut shell);
+  let held = fake.requests();
+  let commands: Vec<_> = held.iter().map(|request| request.command.clone()).collect();
+  assert_eq!(commands, ["j/workspaces", "j/monitors"]);
+  for _ in 0..3 {
+    events.write_all(b"workspacev2>>2,2\n").expect("events");
+    run(&mut shell);
+    assert!(fake.requests().is_empty(), "one read of a list at a time");
+  }
+  let monitors = MONITORS.replacen(r#"{"id":1,"name":"1"}"#, r#"{"id":3,"name":"3"}"#, 1);
+  for request in held {
+    let reply = if request.command == "j/monitors" {
+      monitors.as_str()
+    } else {
+      WORKSPACES
+    };
+    request.answer(reply);
+  }
+  run(&mut shell);
+  assert!(
+    hyprland.workspaces().get_untracked()[2].focused,
+    "the answer that was in flight shows"
+  );
+  assert_eq!(
+    fake.answer(&replies()),
+    ["j/workspaces", "j/monitors"],
+    "then one more read catches up"
+  );
+  run(&mut shell);
+  assert_eq!(hyprland.workspaces().get_untracked(), expected_workspaces());
+  assert!(fake.requests().is_empty());
+}
+
+#[test]
+fn the_event_socket_closing_is_logged_and_empties_the_lists() {
+  let fake = FakeHyprland::new();
+  let (mut shell, hyprland, events) = connect(&fake);
+  drop(events);
+  let logs = capture_logs(|| {
+    run(&mut shell);
+  });
+  assert!(logs.contains("Hyprland closed its event socket"), "{logs}");
+  assert!(hyprland.workspaces().get_untracked().is_empty());
+  assert!(hyprland.monitors().get_untracked().is_empty());
+  assert!(hyprland.toplevels().get_untracked().is_empty());
+  assert_eq!(run(&mut shell), 1, "nothing reconnects");
 }
 
 #[test]
 fn a_quiet_connection_wakes_nothing() {
   let fake = FakeHyprland::new();
-  let (mut shell, _hyprland) = connect(&fake);
+  let (mut shell, _hyprland, _events) = connect(&fake);
   let wakeups = shell.run_until(Instant::now() + Duration::from_millis(500));
   assert_eq!(wakeups, 1, "only the run's own deadline");
 }

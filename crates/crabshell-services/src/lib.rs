@@ -140,13 +140,16 @@ pub trait ServicesExt {
   /// asked for the outputs, and the kinds of event a handler asked for.
   fn sway(&self) -> Sway;
 
-  /// Hyprland's workspaces, monitors and windows, over its request
-  /// socket in `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/`.
-  /// Every caller shares one copy of the lists, read on the first call.
+  /// Hyprland's workspaces, monitors and windows, over its IPC sockets
+  /// in `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/`. Every
+  /// caller shares one event connection, made on the first call.
   ///
   /// The lists are empty while Hyprland isn't there: when the signature
-  /// is unset or its socket is missing, they stay empty, which is logged
-  /// once, and the service never wakes the shell.
+  /// is unset or its sockets are missing, they stay empty, which is
+  /// logged once, and the service never wakes the shell. When Hyprland
+  /// closes its event socket, the lists empty and nothing reconnects.
+  /// While connected, it wakes the shell only when Hyprland sends
+  /// something.
   fn hyprland(&self) -> Hyprland;
 
   /// The audio server's default sink, with its volume and mute. Every
