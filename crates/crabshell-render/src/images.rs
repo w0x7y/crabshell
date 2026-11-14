@@ -9,7 +9,7 @@ use std::path::Path;
 
 use crabshell_ui::Fit;
 use resvg::usvg;
-use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
+use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, PixmapRef, Transform};
 use zune_jpeg::JpegDecoder;
 use zune_jpeg::zune_core::bytestream::ZCursor;
 use zune_jpeg::zune_core::colorspace::ColorSpace;
@@ -37,7 +37,7 @@ pub(crate) fn rasterize(path: &Path, width: u32, height: u32, fit: Fit) -> Resul
   }
   match decode(path)? {
     Picture::Svg(tree) => svg(&tree, width, height, fit),
-    Picture::Pixels(image) => scale(&image, width, height, fit),
+    Picture::Pixels(image) => scale(image.as_ref(), width, height, fit),
   }
 }
 
@@ -177,7 +177,12 @@ pub(crate) fn svg(tree: &usvg::Tree, width: u32, height: u32, fit: Fit) -> Resul
 /// `image` scaled into a `width` by `height` pixmap as `fit` says. An
 /// image more than twice the size is first halved, averaging each 2 by 2
 /// block, so detail shrinks smoothly instead of flickering.
-pub(crate) fn scale(image: &Pixmap, width: u32, height: u32, fit: Fit) -> Result<Pixmap, String> {
+pub(crate) fn scale(
+  image: PixmapRef<'_>,
+  width: u32,
+  height: u32,
+  fit: Fit,
+) -> Result<Pixmap, String> {
   let mut halved;
   let mut image = image;
   loop {
@@ -192,7 +197,7 @@ pub(crate) fn scale(image: &Pixmap, width: u32, height: u32, fit: Fit) -> Result
       break;
     }
     halved = halve(image)?;
-    image = &halved;
+    image = halved.as_ref();
   }
   let mut pixmap = Pixmap::new(width, height).ok_or("an image with no pixels")?;
   let transform = placement(
@@ -204,7 +209,7 @@ pub(crate) fn scale(image: &Pixmap, width: u32, height: u32, fit: Fit) -> Result
     quality: FilterQuality::Bicubic,
     ..PixmapPaint::default()
   };
-  pixmap.draw_pixmap(0, 0, image.as_ref(), &paint, transform, None);
+  pixmap.draw_pixmap(0, 0, image, &paint, transform, None);
   Ok(pixmap)
 }
 

@@ -36,7 +36,7 @@ pub fn quantize_colors(path: &Path, depth: u8, size: u32) -> Result<Vec<Color>, 
   let image = match images::decode(path)? {
     Picture::Pixels(mut image) => {
       while size > 0 && image.width().max(image.height()) > size {
-        image = halve(&image)?;
+        image = halve(image.as_ref())?;
       }
       image
     }

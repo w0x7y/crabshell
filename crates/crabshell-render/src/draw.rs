@@ -8,8 +8,8 @@
 
 use cosmic_text::{FontSystem, SwashCache, SwashContent, SwashImage};
 use crabshell_ui::{
-  Color, Content, Gradient, GradientShape, IconView, ImageView, InputView, NodeView, Rect, Shadow,
-  Size, Style, TextSystem, TextView, WindowView,
+  CaptureView, Color, Content, Gradient, GradientShape, IconView, ImageView, InputView, NodeView,
+  Rect, Shadow, Size, Style, TextSystem, TextView, WindowView,
 };
 use tiny_skia::{
   FillRule, GradientStop, LinearGradient, Mask, Paint, PathBuilder, Pixmap, PixmapMut, PixmapPaint,
@@ -129,6 +129,12 @@ impl Renderer {
   #[cfg(test)]
   pub(crate) fn rasterized_icons(&self) -> usize {
     self.icons.rasterized()
+  }
+
+  /// The number of screencopy frames kept scaled, for tests.
+  #[cfg(test)]
+  pub(crate) fn cached_captures(&self) -> usize {
+    self.icons.captures()
   }
 
   /// Draws the laid-out window `view` into `canvas` and returns the areas
@@ -417,8 +423,7 @@ impl Painter<'_> {
       Content::Text(text) => self.text(pixmap, &text),
       Content::Icon(icon) => self.icon(pixmap, &icon),
       Content::Image(image) => self.image(pixmap, &image),
-      // The renderer draws frames from the next commit on.
-      Content::Capture(_) => {}
+      Content::Capture(capture) => self.capture(pixmap, &capture),
       Content::Input(input) => self.input(pixmap, &input),
       Content::None => {}
     }
@@ -832,39 +837,47 @@ impl Painter<'_> {
 
   /// An image, scaled to its box in pixels.
   fn image(&mut self, pixmap: &mut PixmapMut<'_>, image: &ImageView<'_>) {
+    let Some((x, y, width, height)) = self.picture_area(pixmap, image.rect) else {
+      return;
+    };
+    if let Some(pixels) = self.icons.image(image.path, width, height, image.fit) {
+      draw_at(pixmap, x, y, pixels);
+    }
+  }
+
+  /// A screencopy view's frame, scaled to its box in pixels.
+  fn capture(&mut self, pixmap: &mut PixmapMut<'_>, capture: &CaptureView<'_>) {
+    let Some((x, y, width, height)) = self.picture_area(pixmap, capture.rect) else {
+      return;
+    };
+    let frame = capture.frame;
+    if let Some(pixels) = self
+      .icons
+      .capture(capture.id, frame, width, height, capture.fit)
+    {
+      draw_at(pixmap, x, y, pixels);
+    }
+  }
+
+  /// Where a picture in `rect` goes in the pixmap, and its size in
+  /// pixels; `None` if it covers no pixel of it. Placed and sized apart,
+  /// as an icon is, so a picture past the window's edge is cut there
+  /// instead of squeezed inside it.
+  fn picture_area(&self, pixmap: &PixmapMut<'_>, rect: Rect) -> Option<(i32, i32, u32, u32)> {
     let Grid {
       scale, left, top, ..
     } = self.grid;
-    // Placed and sized apart, as an icon is, so an image past the
-    // window's edge is cut there instead of squeezed inside it.
-    let rect = image.rect;
     let (width, height) = ((rect.width * scale).round(), (rect.height * scale).round());
     let (x, y) = (
       (rect.x * scale).round() - left,
       (rect.y * scale).round() - top,
     );
     if !(width >= 1.0 && height >= 1.0) {
-      return;
+      return None;
     }
-    let Some(area) = tiny_skia::Rect::from_xywh(x, y, width, height) else {
-      return;
-    };
-    if !visible(pixmap, area) {
-      return;
-    }
-    if let Some(pixels) = self
-      .icons
-      .image(image.path, width as u32, height as u32, image.fit)
-    {
-      pixmap.draw_pixmap(
-        x as i32,
-        y as i32,
-        pixels.as_ref(),
-        &PixmapPaint::default(),
-        Transform::identity(),
-        None,
-      );
-    }
+    let area = tiny_skia::Rect::from_xywh(x, y, width, height)?;
+    // `as` saturates, so a huge box stays in range.
+    visible(pixmap, area).then_some((x as i32, y as i32, width as u32, height as u32))
   }
 
   /// An icon, rasterized at its size in pixels.
@@ -892,6 +905,12 @@ impl Painter<'_> {
       );
     }
   }
+}
+
+/// Draws `pixels` unscaled with its corner at `x`, `y`.
+fn draw_at(pixmap: &mut PixmapMut<'_>, x: i32, y: i32, pixels: &Pixmap) {
+  let paint = PixmapPaint::default();
+  pixmap.draw_pixmap(x, y, pixels.as_ref(), &paint, Transform::identity(), None);
 }
 
 /// Whether any of `area` lies inside the pixmap.

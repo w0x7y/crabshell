@@ -133,7 +133,7 @@ fn fine_detail_averages_out_instead_of_aliasing() {
     let value = if index % 2 == 0 { 0 } else { 255 };
     *pixel = [value, value, value, 255];
   }
-  let small = scale(&columns, 3, 1, Fit::Fill).expect("scaled");
+  let small = scale(columns.as_ref(), 3, 1, Fit::Fill).expect("scaled");
   for x in 0..3 {
     let gray = small.pixel(x, 0).expect("inside").red();
     assert!((100..=156).contains(&gray), "pixel {x} is {gray}, not gray");

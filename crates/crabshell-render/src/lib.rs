@@ -67,12 +67,16 @@
 //!   the window's damage covers text that overflows its widget.
 //! - Icons are rasterized at their size in pixels and cached by source and
 //!   that size.
+//! - A screencopy view's frame is scaled to its box and kept, one per
+//!   view, until a new frame or box replaces it. [`capture_frame`] turns
+//!   a compositor's buffer into such a frame, scaled down to the view.
 //! - [`quantize_colors`] decodes an image file as `Image` does and finds
 //!   its main colors by median cut, as for a theme taken from a wallpaper.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod capture;
 mod colors;
 mod damage;
 mod draw;
@@ -83,6 +87,7 @@ mod theme;
 #[cfg(test)]
 mod tests;
 
+pub use capture::{capture_frame, frame_size};
 pub use colors::quantize_colors;
 pub use damage::{BufferAge, DamageHistory, PixelRect};
 pub use draw::{Canvas, CanvasError, PixelFormat, Renderer};

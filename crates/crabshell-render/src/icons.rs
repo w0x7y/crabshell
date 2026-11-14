@@ -7,9 +7,9 @@ use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use crabshell_ui::{Fit, IconPixels, IconSource};
+use crabshell_ui::{CaptureFrame, Fit, IconPixels, IconSource};
 use resvg::usvg;
-use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
+use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, PixmapRef, Transform};
 
 use crate::theme::Themes;
 
@@ -52,6 +52,20 @@ pub(crate) struct Icons {
   failed: HashSet<Key>,
   /// How many icons were rasterized, for tests.
   rasterized: usize,
+  /// Each screencopy view's frame, scaled to its box: one a view, replaced
+  /// when its frame or box changes.
+  captures: HashMap<u64, Capture>,
+}
+
+struct Capture {
+  /// The frame scaled, by its shared allocation.
+  frame: Shared,
+  width: u32,
+  height: u32,
+  fit: Fit,
+  /// `None` if the frame couldn't be scaled; drawn as nothing.
+  pixmap: Option<Pixmap>,
+  used: u64,
 }
 
 /// What an icon was rasterized from, and at what size.
@@ -135,6 +149,7 @@ impl Icons {
       frame: 0,
       failed: HashSet::new(),
       rasterized: 0,
+      captures: HashMap::new(),
     }
   }
 
@@ -152,6 +167,12 @@ impl Icons {
   #[cfg(test)]
   pub(crate) fn rasterized(&self) -> usize {
     self.rasterized
+  }
+
+  /// The number of screencopy frames scaled and kept, for tests.
+  #[cfg(test)]
+  pub(crate) fn captures(&self) -> usize {
+    self.captures.len()
   }
 
   /// The icon `source` as a `side` by `side` pixmap, rasterized on first
@@ -226,6 +247,52 @@ impl Icons {
     self.used(&key)
   }
 
+  /// View `view`'s `frame` scaled to `width` by `height` pixels as `fit`
+  /// says. Each view keeps one, scaled again when its frame or box
+  /// changes. `None` if the frame's pixels don't fit its size.
+  pub(crate) fn capture(
+    &mut self,
+    view: u64,
+    frame: &CaptureFrame,
+    width: u32,
+    height: u32,
+    fit: Fit,
+  ) -> Option<&Pixmap> {
+    let shared = Shared(Rc::clone(&frame.rgba));
+    let kept = self.captures.get(&view).is_some_and(|kept| {
+      kept.frame == shared && (kept.width, kept.height, kept.fit) == (width, height, fit)
+    });
+    if !kept {
+      let scaled = PixmapRef::from_bytes(&frame.rgba, frame.width, frame.height)
+        .ok_or_else(|| {
+          format!(
+            "{} bytes for {}x{}",
+            frame.rgba.len(),
+            frame.width,
+            frame.height
+          )
+        })
+        .and_then(|source| crate::images::scale(source, width, height, fit));
+      if let Err(error) = &scaled {
+        tracing::warn!(%error, "couldn't draw a captured frame");
+      }
+      self.captures.insert(
+        view,
+        Capture {
+          frame: shared,
+          width,
+          height,
+          fit,
+          pixmap: scaled.ok(),
+          used: self.frame,
+        },
+      );
+    }
+    let kept = self.captures.get_mut(&view)?;
+    kept.used = self.frame;
+    kept.pixmap.as_ref()
+  }
+
   /// Caches what rasterizing `key` gave. A failure is cached as nothing
   /// and logged once, with `what` it was.
   fn store(&mut self, key: Key, rasterized: Result<Pixmap, String>, what: impl FnOnce() -> String) {
@@ -254,8 +321,11 @@ impl Icons {
   }
 
   /// Ends a draw: past [`CAPACITY`], icons no draw used within the last
-  /// [`RECENT`] are dropped.
+  /// [`RECENT`] are dropped. Captured frames go after as many draws
+  /// whatever their number, since each is as large as its view.
   pub(crate) fn end_frame(&mut self) {
+    let recent = self.frame.saturating_sub(RECENT - 1);
+    self.captures.retain(|_, kept| kept.used >= recent);
     let bytes: usize = self
       .cache
       .values()
@@ -464,7 +534,7 @@ fn fit(image: &Pixmap, side: u32) -> Result<Pixmap, String> {
   let mut halved;
   let mut image = image;
   while image.width().max(image.height()) > side * 2 {
-    halved = halve(image)?;
+    halved = halve(image.as_ref())?;
     image = &halved;
   }
   let mut pixmap = empty(side)?;
@@ -483,7 +553,7 @@ fn fit(image: &Pixmap, side: u32) -> Result<Pixmap, String> {
 
 /// `image` at half its size, rounded up, each pixel the average of the 2 by
 /// 2 block it covers. Premultiplied pixels average correctly.
-pub(crate) fn halve(image: &Pixmap) -> Result<Pixmap, String> {
+pub(crate) fn halve(image: PixmapRef<'_>) -> Result<Pixmap, String> {
   let (width, height) = (image.width(), image.height());
   let (half_width, half_height) = (width.div_ceil(2), height.div_ceil(2));
   let mut half = Pixmap::new(half_width, half_height).ok_or("an icon with no pixels")?;
