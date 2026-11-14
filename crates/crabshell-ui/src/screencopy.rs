@@ -238,23 +238,28 @@ impl Window {
       .collect()
   }
 
-  /// Shows `frame` in view `id`, repainting only that view. A frame the
-  /// same as the one shown repaints nothing, so a live view of its own
-  /// output settles. A view no longer in the window is ignored.
-  pub fn show_capture(&self, id: u64, frame: CaptureFrame) {
+  /// Shows `frame` in view `id`, repainting only that view, and returns
+  /// whether it did. A frame the same as the one shown repaints nothing,
+  /// so a live view of its own output settles. A view no longer in the
+  /// window is ignored.
+  pub fn show_capture(&self, id: u64, frame: CaptureFrame) -> bool {
     let mut tree = borrow(&self.tree);
     let found = tree.captures.iter().copied().find(|&node| {
       matches!(tree.node(node).map(|node| &node.kind),
         Some(NodeKind::Capture(capture)) if capture.id == id)
     });
-    if let Some(node) = found {
-      tree.update(node, |node| match &mut node.kind {
-        NodeKind::Capture(capture) if capture.frame.as_ref() != Some(&frame) => {
-          capture.frame = Some(frame);
-          Change::Paint
-        }
-        _ => Change::None,
-      });
-    }
+    let Some(node) = found else {
+      return false;
+    };
+    let mut shown = false;
+    tree.update(node, |node| match &mut node.kind {
+      NodeKind::Capture(capture) if capture.frame.as_ref() != Some(&frame) => {
+        capture.frame = Some(frame);
+        shown = true;
+        Change::Paint
+      }
+      _ => Change::None,
+    });
+    shown
   }
 }

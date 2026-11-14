@@ -340,7 +340,7 @@ pub struct Platform {
   pub(crate) button_held: bool,
   /// Whether the animation timer is in the loop.
   ticking: bool,
-  renderer: Renderer,
+  pub(crate) renderer: Renderer,
   /// The icon theme set, for snapshots' renderers.
   icon_theme: Option<String>,
   pub(crate) text: TextSystem,
@@ -645,6 +645,9 @@ impl Platform {
       idle,
       ..
     } = self;
+    // The windows that draw, whose live views may ask for their next
+    // frame.
+    let mut drawn = Vec::new();
     for entry in windows.entries.iter_mut() {
       if entry.surface.is_some() && entry.window.take_surface_changed() {
         // Settings layer-shell would refuse are never sent; the
@@ -691,10 +694,12 @@ impl Platform {
         if surface.draw(&entry.window, renderer, text, qh) {
           stats.commits += 1;
           stats.drawing += started.elapsed();
+          drawn.push(entry.id);
         }
       }
     }
     self.sync_captures();
+    self.paced_captures(&drawn);
     self.sync_text_inputs();
     self.tick_animations();
     if let Err(error) = self.connection.flush() {

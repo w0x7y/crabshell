@@ -5,7 +5,7 @@ use std::rc::Rc;
 use crabshell_ui::{CaptureFrame, CaptureSource, Fit, Row, ScreencopyView, Style};
 
 use super::Scene;
-use crate::{PixelFormat, capture_frame, frame_size};
+use crate::{PixelFormat, Turn, capture_frame, frame_size};
 
 #[test]
 fn a_frame_is_kept_just_large_enough_to_cover_its_view() {
@@ -25,26 +25,58 @@ fn a_frame_is_kept_just_large_enough_to_cover_its_view() {
 fn a_buffer_becomes_premultiplied_rgba_scaled_down() {
   // 4 by 2, B, G, R, A: a translucent red, premultiplied.
   let bgra = [0, 0, 128, 128].repeat(8);
-  let frame = capture_frame(&bgra, 4, 2, PixelFormat::Argb8888, false, (2, 1));
+  let frame = capture_frame(
+    &bgra,
+    4,
+    2,
+    PixelFormat::Argb8888,
+    false,
+    Turn::default(),
+    (2, 1),
+  );
   let frame = frame.expect("the bytes fit");
   assert_eq!((frame.width, frame.height), (2, 1));
   assert_eq!(&frame.rgba[..], [128, 0, 0, 128].repeat(2));
 
   // XRGB's fourth byte is anything; the frame is opaque.
   let bgrx = [255, 0, 0, 7].repeat(8);
-  let frame = capture_frame(&bgrx, 4, 2, PixelFormat::Argb8888, true, (4, 2));
+  let frame = capture_frame(
+    &bgrx,
+    4,
+    2,
+    PixelFormat::Argb8888,
+    true,
+    Turn::default(),
+    (4, 2),
+  );
   let frame = frame.expect("the bytes fit");
   assert_eq!((frame.width, frame.height), (4, 2));
   assert_eq!(&frame.rgba[..], [0, 0, 255, 255].repeat(8));
 
   // XBGR is R, G, B, X already. Halved, it is still opaque.
-  let frame = capture_frame(&bgrx, 4, 2, PixelFormat::Abgr8888, true, (2, 1));
+  let frame = capture_frame(
+    &bgrx,
+    4,
+    2,
+    PixelFormat::Abgr8888,
+    true,
+    Turn::default(),
+    (2, 1),
+  );
   assert_eq!(
     &frame.expect("the bytes fit").rgba[..],
     [255, 0, 0, 255].repeat(2)
   );
 
-  let short = capture_frame(&bgrx[4..], 4, 2, PixelFormat::Argb8888, true, (4, 2));
+  let short = capture_frame(
+    &bgrx[4..],
+    4,
+    2,
+    PixelFormat::Argb8888,
+    true,
+    Turn::default(),
+    (4, 2),
+  );
   assert_eq!(short, None);
 }
 
@@ -96,6 +128,14 @@ fn a_view_draws_its_frame_scaled_into_its_box_from_one_kept_copy() {
   assert_eq!(drawn.pixel(60, 20), [0, 255, 0, 255]);
   assert_eq!(drawn.pixel(22, 20), [0, 0, 0, 0]);
 
+  // The platform drops a gone view's copy at once.
+  scene.renderer.forget_captures(&[id + 1]);
+  assert_eq!(scene.renderer.cached_captures(), 1, "another view's");
+  scene.renderer.forget_captures(&[id]);
+  assert_eq!(scene.renderer.cached_captures(), 0);
+  scene.full(&window, 2.0);
+  assert_eq!(scene.renderer.cached_captures(), 1);
+
   // Gone from the window, its copy goes after a few draws.
   drop(window);
   let other = scene.window(scene.panel(), 10.0, 10.0);
@@ -103,4 +143,33 @@ fn a_view_draws_its_frame_scaled_into_its_box_from_one_kept_copy() {
     scene.full(&other, 1.0);
   }
   assert_eq!(scene.renderer.cached_captures(), 0);
+}
+
+#[test]
+fn a_turned_frame_is_turned_back_upright() {
+  // Two pixels, red then blue, in BGRA.
+  let pixels = [0, 0, 255, 255, 255, 0, 0, 255];
+  let (red, blue) = ([255, 0, 0, 255], [0, 0, 255, 255]);
+  let turned = |quarters, flipped| {
+    let turn = Turn { quarters, flipped };
+    let frame =
+      capture_frame(&pixels, 2, 1, PixelFormat::Argb8888, false, turn, (2, 2)).expect("a frame");
+    let rgba = frame.rgba.to_vec();
+    (
+      (frame.width, frame.height),
+      [rgba[..4].to_vec(), rgba[4..].to_vec()],
+    )
+  };
+  assert_eq!(turned(0, false), ((2, 1), [red.to_vec(), blue.to_vec()]));
+  assert_eq!(turned(2, false), ((2, 1), [blue.to_vec(), red.to_vec()]));
+  assert_eq!(turned(0, true), ((2, 1), [blue.to_vec(), red.to_vec()]));
+  assert_eq!(turned(2, true), ((2, 1), [red.to_vec(), blue.to_vec()]));
+  let (size, sideways) = turned(1, false);
+  assert_eq!(size, (1, 2));
+  let (_, other) = turned(3, false);
+  assert_eq!(
+    sideways,
+    [other[1].clone(), other[0].clone()],
+    "opposite turns"
+  );
 }

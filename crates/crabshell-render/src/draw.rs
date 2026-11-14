@@ -131,6 +131,13 @@ impl Renderer {
     self.icons.rasterized()
   }
 
+  /// Drops the scaled frames kept for screencopy views `gone`, at once:
+  /// each is as large as its view, and an idle shell may draw nothing
+  /// for a long while.
+  pub fn forget_captures(&mut self, gone: &[u64]) {
+    self.icons.forget_captures(gone);
+  }
+
   /// The number of screencopy frames kept scaled, for tests.
   #[cfg(test)]
   pub(crate) fn cached_captures(&self) -> usize {

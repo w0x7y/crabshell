@@ -36,3 +36,12 @@ fn each_handle_takes_the_oldest_untaken_window_of_its_names() {
   assert_eq!(lonely, Some(11));
   assert_eq!(first, Some(3));
 }
+
+#[test]
+fn a_handle_whose_window_went_pairs_again() {
+  // The window it paired with, 3, went before the handle did.
+  let mut stale = Some(3);
+  let wlr = [(8, FOOT)];
+  pair(vec![(FOOT, &mut stale)], &wlr);
+  assert_eq!(stale, Some(8), "free to pair with the new window");
+}

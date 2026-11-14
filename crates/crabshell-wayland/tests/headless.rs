@@ -2449,7 +2449,7 @@ fn views_of_windows_show_their_pixels_and_keep_the_last_frame() {
   assert!(all_of(&frame.rgba, GREEN));
 
   // Another program's window, with an app id, pairs too. Its 100 pixel
-  // square of zeros shows black, and isn't scaled up.
+  // blue square shows as it is, not scaled up.
   let _app = AppWindow::new(&sway, "org.example.App", "another program");
   let other = |heard: &Rc<RefCell<Vec<Toplevel>>>| {
     let heard = heard.borrow();
@@ -2464,7 +2464,106 @@ fn views_of_windows_show_their_pixels_and_keep_the_last_frame() {
   source.set(CaptureSource::Toplevel(other(&heard).expect("listed")));
   run_until(&mut event_loop, "the other window's frame", |platform| {
     frame_of(platform, viewer).is_some_and(|frame| {
-      (frame.width, frame.height) == (100, 100) && all_of(&frame.rgba, Color::rgb(0, 0, 0))
+      (frame.width, frame.height) == (100, 100) && all_of(&frame.rgba, Color::rgb(0x2e, 0x6b, 0xc8))
     })
   });
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_view_of_a_turned_output_shows_it_upright() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1280x720", "scale", "1"]);
+  sway.msg(&["create_output"]);
+  sway.msg(&[
+    "output",
+    "HEADLESS-2",
+    "mode",
+    "640x360",
+    "scale",
+    "1",
+    "transform",
+    "90",
+  ]);
+  let cx = Cx::new(Runtime::current().new_owner());
+  let mut event_loop = sway.connect();
+  // Turned, the output is 360 wide and 640 tall: red left, blue right.
+  let half = |color: Color| Row::new().style(Style::new().background(color).width(180.0));
+  let fill = PanelWindow::new(&Output::new("HEADLESS-2"))
+    .anchors(Edge::Top | Edge::Bottom | Edge::Left | Edge::Right)
+    .child(Row::new().child(half(RED)).child(half(BLUE)));
+  event_loop.platform().add_window(Window::new(&cx, fill));
+  wait_for_color(&sway, &mut event_loop, "HEADLESS-2", (0, 0, 180, 640), RED);
+  let viewer = PanelWindow::new(&Output::new("HEADLESS-1"))
+    .anchors(Edge::Top | Edge::Left)
+    .width(180)
+    .height(320)
+    .child(
+      Row::new().child(
+        ScreencopyView::new(CaptureSource::Output(String::from("HEADLESS-2")))
+          .style(Style::new().width(180.0).height(320.0)),
+      ),
+    );
+  let viewer = event_loop.platform().add_window(Window::new(&cx, viewer));
+  run_until(&mut event_loop, "the view's frame", |platform| {
+    frame_of(platform, viewer).is_some()
+  });
+  let frame = frame_of(event_loop.platform(), viewer).expect("a frame");
+  assert!(
+    frame.height > frame.width,
+    "upright, {}x{}",
+    frame.width,
+    frame.height
+  );
+  let at = |x: u32, y: u32| {
+    let from = ((y * frame.width + x) * 4) as usize;
+    frame.rgba[from..from + 4].to_vec()
+  };
+  let (middle, last) = (frame.height / 2, frame.width - 1);
+  assert_eq!(at(0, middle)[..3], [RED.r, RED.g, RED.b], "red at the left");
+  assert_eq!(
+    at(last, middle)[..3],
+    [BLUE.r, BLUE.g, BLUE.b],
+    "blue at the right"
+  );
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_one_shot_view_that_grows_captures_again_at_its_new_size() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1280x720", "scale", "1"]);
+  sway.msg(&["create_output"]);
+  sway.msg(&["output", "HEADLESS-2", "mode", "640x360", "scale", "1"]);
+  let cx = Cx::new(Runtime::current().new_owner());
+  let mut event_loop = sway.connect();
+  let fill = PanelWindow::new(&Output::new("HEADLESS-2"))
+    .anchors(Edge::Top | Edge::Bottom | Edge::Left | Edge::Right)
+    .style(Style::new().background(RED));
+  event_loop.platform().add_window(Window::new(&cx, fill));
+  wait_for_color(&sway, &mut event_loop, "HEADLESS-2", (0, 0, 640, 360), RED);
+  let wide = cx.signal(32.0_f32);
+  let viewer = PanelWindow::new(&Output::new("HEADLESS-1"))
+    .anchors(Edge::Top | Edge::Left)
+    .width(VIEW.0)
+    .height(VIEW.1)
+    .child(Row::new().child(
+      ScreencopyView::new(CaptureSource::Output(String::from("HEADLESS-2"))).style(move || {
+        Style::new()
+          .width(wide.get())
+          .height(wide.get() * 9.0 / 16.0)
+      }),
+    ));
+  let viewer = event_loop.platform().add_window(Window::new(&cx, viewer));
+  run_until(&mut event_loop, "the small frame", |platform| {
+    frame_of(platform, viewer).is_some()
+  });
+  let small = frame_of(event_loop.platform(), viewer).expect("a frame");
+  assert_eq!((small.width, small.height), (32, 18));
+  wide.set(320.0);
+  run_until(
+    &mut event_loop,
+    "a frame cut for the larger box",
+    |platform| frame_of(platform, viewer).is_some_and(|frame| frame.width == 320),
+  );
 }

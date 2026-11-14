@@ -11,9 +11,10 @@
 
 use std::time::Instant;
 
-use crabshell_render::PixelFormat;
+use crabshell_render::{PixelFormat, Turn};
 use crabshell_ui::{CaptureRequest, CaptureSource};
-use smithay_client_toolkit::reexports::client::protocol::{wl_output::WlOutput, wl_shm};
+use smithay_client_toolkit::reexports::client::protocol::wl_output::{Transform, WlOutput};
+use smithay_client_toolkit::reexports::client::protocol::wl_shm;
 use smithay_client_toolkit::reexports::client::{
   Connection, Dispatch, QueueHandle, WEnum, delegate_noop,
 };
@@ -73,6 +74,11 @@ struct View {
   /// `None` while waiting for the target, and once a capture ended: a
   /// one-shot view's frame came, or the source stopped.
   session: Option<Session>,
+  /// The box the last frame was cut for, in buffer pixels, and whether
+  /// that frame was the source's whole size, which a larger box can't
+  /// improve on.
+  cover: (u32, u32),
+  whole: bool,
 }
 
 /// A source the compositor knows.
@@ -91,6 +97,13 @@ struct Session {
   buffer: Option<CaptureBuffer>,
   /// The frame being captured, and when it was asked for.
   frame: Option<(ExtImageCopyCaptureFrameV1, Instant)>,
+  /// How the compositor turned the frame being captured.
+  turn: Turn,
+  /// A live view's next frame waits for its window to draw this one, so
+  /// frames come no faster than the window shows them.
+  wanted: bool,
+  /// Whether a failure was tried again since the last frame.
+  retried: bool,
 }
 
 impl Drop for Session {
@@ -146,6 +159,9 @@ impl Captures {
       formats: Vec::new(),
       buffer: None,
       frame: None,
+      turn: Turn::default(),
+      wanted: false,
+      retried: false,
     })
   }
 }
@@ -156,6 +172,8 @@ impl Session {
     let Some(buffer) = &self.buffer else {
       return;
     };
+    self.wanted = false;
+    self.turn = Turn::default();
     let frame = self.proxy.create_frame(qh, ());
     frame.attach_buffer(buffer.buffer.wl_buffer());
     // The sizes are checked against `MAX_SIDE`, so they fit an i32.
@@ -169,7 +187,11 @@ impl Session {
   /// if the constraints can't be met.
   fn constrained(&mut self, shm: &Shm, qh: &QueueHandle<Platform>) -> bool {
     let formats = std::mem::take(&mut self.formats);
-    let format = READABLE.into_iter().find(|format| formats.contains(format));
+    // One `wl_shm` takes too, or making the buffer would end the
+    // connection.
+    let format = READABLE
+      .into_iter()
+      .find(|format| formats.contains(format) && shm.formats().contains(format));
     let (Some((width, height)), Some(format)) = (self.size, format) else {
       tracing::warn!(
         ?formats,
@@ -263,11 +285,20 @@ impl Platform {
       .iter()
       .map(|(_, request)| self.target(&request.source))
       .collect();
+    let scale = self.largest_scale();
     let captures = &mut self.captures;
+    let mut gone = Vec::new();
     captures.views.retain(|view| {
       let id = view.request.id;
-      wanted.iter().any(|(_, request)| request.id == id)
+      let kept = wanted.iter().any(|(_, request)| request.id == id);
+      if !kept {
+        gone.push(id);
+      }
+      kept
     });
+    if !gone.is_empty() {
+      self.renderer.forget_captures(&gone);
+    }
     for ((window, request), target) in wanted.into_iter().zip(targets) {
       let index = captures
         .views
@@ -281,9 +312,17 @@ impl Platform {
           view.request.paint_cursors,
         ) == (&request.source, request.live, request.paint_cursors)
       {
-        // Only the box may have changed, which the next frame reads.
+        // Only the box may have changed, which the next frame reads,
+        // unless it outgrew the frame shown: a one-shot view, or a live
+        // one of a still source, gets no next frame, so it asks again.
         view.request.size = request.size;
-        continue;
+        let cover = cover(request.size, scale);
+        // Not before a first frame, whose box is none yet.
+        let delivered = view.cover != (0, 0);
+        let grew = cover.0 > view.cover.0 || cover.1 > view.cover.1;
+        if !(delivered && grew && !view.whole && view.target.is_some()) {
+          continue;
+        }
       }
       let session = target
         .as_ref()
@@ -293,6 +332,8 @@ impl Platform {
         request,
         target,
         session,
+        cover: (0, 0),
+        whole: false,
       };
       match index {
         Some(index) => captures.views[index] = view,
@@ -325,33 +366,42 @@ impl Platform {
     }
   }
 
+  /// The largest scale of any output, at which views are cut.
+  fn largest_scale(&self) -> f32 {
+    let scales = self.known.iter().map(|(_, info)| info.scale);
+    scales.max().unwrap_or(1).max(1) as f32
+  }
+
+  /// Asks for the next frame of each live view in `drawn`, a window that
+  /// just drew the last one.
+  pub(crate) fn paced_captures(&mut self, drawn: &[WindowId]) {
+    for view in &mut self.captures.views {
+      if let Some(session) = view.session.as_mut()
+        && session.wanted
+        && drawn.contains(&view.window)
+      {
+        session.capture(&self.qh);
+      }
+    }
+  }
+
   /// Hands the frame in `view`'s buffer to its window, scaled down to
-  /// what the view needs at the largest output scale.
-  fn deliver(&mut self, index: usize) {
-    let scale = self
-      .known
-      .iter()
-      .map(|(_, info)| info.scale)
-      .max()
-      .unwrap_or(1)
-      .max(1) as f32;
+  /// what the view needs at the largest output scale. Returns whether
+  /// the window repaints for it.
+  fn deliver(&mut self, index: usize) -> bool {
+    let scale = self.largest_scale();
     let view = &mut self.captures.views[index];
-    let Some(buffer) = view
-      .session
-      .as_mut()
-      .and_then(|session| session.buffer.as_mut())
-    else {
-      return;
+    let Some(session) = view.session.as_mut() else {
+      return false;
+    };
+    let turn = session.turn;
+    let Some(buffer) = session.buffer.as_mut() else {
+      return false;
     };
     let Some(entry) = self.windows.get(view.window) else {
-      return;
+      return false;
     };
-    let size = view.request.size;
-    // `as` saturates, and a view is at most 16384 logical pixels a side.
-    let cover = (
-      (size.width * scale).ceil() as u32,
-      (size.height * scale).ceil() as u32,
-    );
+    let cover = cover(view.request.size, scale);
     let (width, height) = (buffer.width, buffer.height);
     let order = match buffer.format {
       wl_shm::Format::Argb8888 | wl_shm::Format::Xrgb8888 => PixelFormat::Argb8888,
@@ -362,13 +412,42 @@ impl Platform {
       wl_shm::Format::Xrgb8888 | wl_shm::Format::Xbgr8888
     );
     let Some(pixels) = buffer.buffer.canvas(&mut buffer.pool) else {
-      return;
+      return false;
     };
-    match crabshell_render::capture_frame(pixels, width, height, order, opaque, cover) {
-      Some(frame) => entry.window.show_capture(view.request.id, frame),
-      None => tracing::warn!(width, height, "a captured frame doesn't fit its buffer"),
-    }
+    let frame = crabshell_render::capture_frame(pixels, width, height, order, opaque, turn, cover);
+    let Some(frame) = frame else {
+      tracing::warn!(width, height, "a captured frame doesn't fit its buffer");
+      return false;
+    };
+    view.cover = cover;
+    let (kept, whole) = ((frame.width, frame.height), (width, height));
+    view.whole = kept == whole || kept == (whole.1, whole.0);
+    entry.window.show_capture(view.request.id, frame)
   }
+}
+
+/// A view's box in buffer pixels at `scale`.
+fn cover(size: crabshell_ui::Size, scale: f32) -> (u32, u32) {
+  // `as` saturates, and a view is at most 16384 logical pixels a side.
+  (
+    (size.width * scale).ceil() as u32,
+    (size.height * scale).ceil() as u32,
+  )
+}
+
+/// A `wl_output.transform` as render takes it.
+fn turn(transform: Transform) -> Turn {
+  let (quarters, flipped) = match transform {
+    Transform::_90 => (1, false),
+    Transform::_180 => (2, false),
+    Transform::_270 => (3, false),
+    Transform::Flipped => (0, true),
+    Transform::Flipped90 => (1, true),
+    Transform::Flipped180 => (2, true),
+    Transform::Flipped270 => (3, true),
+    _ => (0, false),
+  };
+  Turn { quarters, flipped }
 }
 
 delegate_noop!(Platform: ExtImageCopyCaptureManagerV1);
@@ -437,14 +516,22 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, ()> for Platform {
       return;
     };
     match event {
+      Event::Transform {
+        transform: WEnum::Value(transform),
+      } => session.turn = turn(transform),
       Event::Ready => {
         if let Some((frame, asked)) = session.frame.take() {
           frame.destroy();
           tracing::trace!(elapsed = ?asked.elapsed(), "a captured frame came");
         }
-        platform.deliver(index);
+        session.retried = false;
+        let shown = platform.deliver(index);
         let view = &mut platform.captures.views[index];
         match &mut view.session {
+          // The next frame once the window drew this one; one the same
+          // as before draws nothing, so it asks at once, which the
+          // compositor answers only when the source changes.
+          Some(session) if view.request.live && shown => session.wanted = true,
           Some(session) if view.request.live => session.capture(qh),
           _ => view.session = None,
         }
@@ -453,17 +540,31 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, ()> for Platform {
         if let Some((frame, _)) = session.frame.take() {
           frame.destroy();
         }
+        let retried = std::mem::replace(&mut session.retried, true);
         view.session = None;
-        match reason {
+        let again = match reason {
           // The session's buffers changed: a new session asks again.
-          WEnum::Value(FailureReason::BufferConstraints) => {
-            let restart = view.target.clone();
-            let cursors = view.request.paint_cursors;
-            let session = restart.and_then(|target| captures.start(&target, cursors, qh));
-            captures.views[index].session = session;
+          WEnum::Value(FailureReason::BufferConstraints) => true,
+          WEnum::Value(FailureReason::Stopped) => false,
+          // The protocol lets a client try again; once, so a source that
+          // always fails doesn't keep the shell busy.
+          reason if !retried => {
+            tracing::info!(?reason, "a capture failed; trying again once");
+            true
           }
-          WEnum::Value(FailureReason::Stopped) => {}
-          reason => tracing::warn!(?reason, "a capture failed, so its view shows no more"),
+          reason => {
+            tracing::warn!(?reason, "a capture failed again, so its view shows no more");
+            false
+          }
+        };
+        if again {
+          let restart = view.target.clone();
+          let cursors = view.request.paint_cursors;
+          let session = restart.and_then(|target| captures.start(&target, cursors, qh));
+          captures.views[index].session = session.map(|mut session| {
+            session.retried = retried || reason != WEnum::Value(FailureReason::BufferConstraints);
+            session
+          });
         }
       }
       _ => {}

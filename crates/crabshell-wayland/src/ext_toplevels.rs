@@ -59,6 +59,12 @@ pub(crate) fn pair<'a>(
   mut ext: Vec<((&'a str, &'a str), &mut Option<u64>)>,
   wlr: &[(u64, (&'a str, &'a str))],
 ) {
+  // A partner gone from the wlr list frees its handle to pair again.
+  for (_, paired) in &mut ext {
+    if paired.is_some_and(|id| !wlr.iter().any(|(theirs, _)| *theirs == id)) {
+      **paired = None;
+    }
+  }
   let mut taken: Vec<u64> = ext.iter().filter_map(|(_, paired)| **paired).collect();
   for (names, paired) in ext.iter_mut().filter(|(_, paired)| paired.is_none()) {
     let partner = wlr

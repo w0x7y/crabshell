@@ -87,7 +87,7 @@ mod theme;
 #[cfg(test)]
 mod tests;
 
-pub use capture::{capture_frame, frame_size};
+pub use capture::{Turn, capture_frame, frame_size};
 pub use colors::quantize_colors;
 pub use damage::{BufferAge, DamageHistory, PixelRect};
 pub use draw::{Canvas, CanvasError, PixelFormat, Renderer};

@@ -320,6 +320,11 @@ impl Icons {
     entry.pixmap.as_ref()
   }
 
+  /// Drops what views `gone` kept.
+  pub(crate) fn forget_captures(&mut self, gone: &[u64]) {
+    self.captures.retain(|view, _| !gone.contains(view));
+  }
+
   /// Ends a draw: past [`CAPACITY`], icons no draw used within the last
   /// [`RECENT`] are dropped. Captured frames go after as many draws
   /// whatever their number, since each is as large as its view.
