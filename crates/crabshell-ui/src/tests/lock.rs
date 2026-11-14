@@ -166,3 +166,39 @@ fn surfaces_and_the_lock_free_what_they_made_and_a_gone_lock_builds_nothing() {
   drop(lock);
   assert_eq!(h.runtime.node_count(), after_signal);
 }
+
+#[test]
+fn a_panicking_locked_or_style_binding_never_unlocks_and_is_logged_with_its_path() {
+  let mut h = Harness::new();
+  let boom = h.cx.signal(false);
+  let lock = Lock::new(
+    &h.cx,
+    SessionLock::new()
+      .locked(move || {
+        if boom.get() {
+          panic!("locked boom");
+        }
+        true
+      })
+      .style(move || {
+        if boom.get() {
+          panic!("style boom");
+        }
+        BLACK
+      })
+      .surface(|_, _| Text::new("x")),
+  );
+  h.runtime.flush();
+  assert_eq!(lock.wanted(), Some(true));
+  let window = lock.surface(&Output::new("DP-1")).expect("the lock lives");
+  window.set_size(Size::new(100.0, 100.0));
+  h.frame(&window);
+  boom.set(true);
+  let logs = capture_logs(|| {
+    h.runtime.flush();
+    h.frame(&window);
+  });
+  assert_eq!(lock.wanted(), Some(true), "a panic never unlocks");
+  assert!(logs.contains("SessionLock.locked panicked"), "{logs}");
+  assert!(logs.contains("SessionLock[DP-1].style panicked"), "{logs}");
+}

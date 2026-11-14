@@ -601,16 +601,21 @@ pub trait ShellExt {
   /// it asks again the next time `locked` turns true. Without
   /// `ext-session-lock-v1` it never locks, and that is logged once.
   ///
-  /// The lock lives as long as this context. If the context goes, or the
-  /// shell exits, while the session is locked, it stays locked, as the
-  /// protocol wants. Keep `locked` in [`persist`](Self::persist) so the
-  /// shell after a reload locks again.
+  /// The signal turns false once the compositor has the unlock, so a
+  /// config may exit then. The lock lives as long as this context. If the
+  /// context goes, or the shell exits or crashes, while the session is
+  /// locked, it stays locked, as the protocol wants. So keep `locked` in
+  /// a file under `$XDG_RUNTIME_DIR` with
+  /// [`json_file`](crabshell_services::ServicesExt::json_file): the shell
+  /// after a reload or a crash then locks again, and a reboot starts
+  /// unlocked. [`persist`](Self::persist) covers a reload only.
   ///
   /// ```no_run
   /// use crabshell::prelude::*;
   ///
   /// crabshell::run(|cx| {
-  ///     let locked = cx.persist("locked", false);
+  ///     let dir = std::env::var_os("XDG_RUNTIME_DIR").unwrap_or_default();
+  ///     let locked = cx.json_file(std::path::Path::new(&dir).join("lock.json"), false);
   ///     // `crabshell ipc lock on`, as from an idle daemon.
   ///     cx.ipc("lock", "on", move |_| {
   ///         locked.set(true);

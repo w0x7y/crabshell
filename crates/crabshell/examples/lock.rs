@@ -7,6 +7,8 @@
 //! crabshell ipc lock on
 //! ```
 
+use std::path::PathBuf;
+
 use crabshell::prelude::*;
 
 /// The PAM service that checks the password, a file in `/etc/pam.d`.
@@ -30,8 +32,12 @@ fn main() {
 /// The lock screen, locked by `crabshell ipc lock on` and checked with
 /// the PAM `service`.
 pub fn setup(cx: &Cx, service: &str) {
-  // Kept across a reload, so the shell after it locks again.
-  let locked = cx.persist("locked", false);
+  // In the runtime directory, so the shell after a reload or a crash locks
+  // again, and a reboot starts unlocked.
+  let locked = match std::env::var_os("XDG_RUNTIME_DIR") {
+    Some(dir) => cx.json_file(PathBuf::from(dir).join("crabshell/lock.json"), false),
+    None => cx.signal(false),
+  };
   cx.ipc("lock", "on", move |_| {
     locked.set(true);
     Ok(String::new())

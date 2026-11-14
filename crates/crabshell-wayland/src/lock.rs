@@ -3,6 +3,7 @@
 //! unlocking or giving up as the protocol requires.
 
 use crabshell_ui::{Lock, Output, Size, SurfaceConfig};
+use smithay_client_toolkit::reexports::client::protocol::wl_callback::{self, WlCallback};
 use smithay_client_toolkit::reexports::client::protocol::wl_output::WlOutput;
 use smithay_client_toolkit::reexports::client::protocol::wl_surface::WlSurface;
 use smithay_client_toolkit::reexports::client::{Connection, Dispatch, QueueHandle, delegate_noop};
@@ -108,9 +109,9 @@ impl Platform {
 
   /// Drops a lock and its surfaces. If it holds the session, or the
   /// compositor hasn't answered yet, the session stays locked, showing the
-  /// compositor's color, until the shell exits: nothing unlocks it but
-  /// the lock's own `locked`, and destroying a lock the compositor locked
-  /// is a protocol error.
+  /// compositor's color, even after the shell exits: nothing unlocks it
+  /// but the lock's own `locked`, and destroying a lock the compositor
+  /// locked is a protocol error.
   pub fn remove_session_lock(&mut self, lock: LockId) {
     let Some(index) = self.locks.held.iter().position(|held| held.id == lock.0) else {
       return;
@@ -121,9 +122,7 @@ impl Platform {
       self.locks.held.remove(index);
     } else {
       held.lock = None;
-      tracing::warn!(
-        "a session lock went while it held the session, so the session stays locked until the shell exits"
-      );
+      tracing::warn!("a session lock went while it held the session, so the session stays locked");
     }
     for id in surfaces {
       self.windows.remove(id);
@@ -240,16 +239,24 @@ impl Platform {
 
   /// Ends lock `index`'s session as the protocol says, `unlock_and_destroy`
   /// once locked and `destroy` before, drops its surfaces and says it is
-  /// unlocked. A lock whose context went is forgotten.
+  /// unlocked: after an unlock, once the compositor has it. A lock whose
+  /// context went is forgotten.
   fn end_session(&mut self, index: usize, refused: bool) {
     let held = &mut self.locks.held[index];
     match std::mem::replace(&mut held.state, State::Unlocked { refused }) {
-      State::Locked(session) => session.unlock_and_destroy(),
-      State::Asked(session) => session.destroy(),
+      State::Locked(session) => {
+        session.unlock_and_destroy();
+        // A config may exit as soon as it hears, which must not leave the
+        // unlock unsent; the protocol asks for this sync.
+        self.connection.display().sync(&self.qh, Unlocked(held.id));
+      }
+      State::Asked(session) => {
+        session.destroy();
+        if let Some(lock) = &held.lock {
+          lock.set_locked(false);
+        }
+      }
       State::Unlocked { .. } => {}
-    }
-    if let Some(lock) = &held.lock {
-      lock.set_locked(false);
     }
     let surfaces = std::mem::take(&mut held.surfaces);
     if held.lock.is_none() {
@@ -334,6 +341,32 @@ impl Dispatch<ExtSessionLockSurfaceV1, WindowId> for Platform {
         height,
         "ignoring a lock surface's configure with a size that can't be drawn"
       ),
+    }
+  }
+}
+
+/// The id of a lock whose unlock the compositor has once this sync is
+/// done.
+pub(crate) struct Unlocked(u64);
+
+impl Dispatch<WlCallback, Unlocked> for Platform {
+  fn event(
+    platform: &mut Platform,
+    _: &WlCallback,
+    event: wl_callback::Event,
+    unlocked: &Unlocked,
+    _: &Connection,
+    _: &QueueHandle<Platform>,
+  ) {
+    if let wl_callback::Event::Done { .. } = event
+      && let Some(held) = platform
+        .locks
+        .held
+        .iter()
+        .find(|held| held.id == unlocked.0)
+      && let Some(lock) = &held.lock
+    {
+      lock.set_locked(false);
     }
   }
 }

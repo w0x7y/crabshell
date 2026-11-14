@@ -1191,6 +1191,29 @@ fn run_as_child() {
     }),
     // `other` refuses everyone without asking, so no account is reached.
     Ok("lock example") => crabshell::run(|cx| lock::setup(cx, "other")),
+    // Locks and unlocks over IPC, and exits once the signal says unlocked.
+    Ok("lock and exit") => crabshell::run(|cx| {
+      let want = cx.signal(false);
+      cx.ipc("lock", "on", move |_| {
+        want.set(true);
+        Ok(String::new())
+      });
+      cx.ipc("lock", "off", move |_| {
+        want.set(false);
+        Ok(String::new())
+      });
+      let shown = cx.session_lock(lock_screen(move || want.get()));
+      let was = std::cell::Cell::new(false);
+      let shell = cx.clone();
+      cx.effect(move || {
+        if shown.get() {
+          was.set(true);
+          eprintln!("the session is locked: true");
+        } else if was.get() {
+          shell.exit(0);
+        }
+      });
+    }),
     Ok("lock") => crabshell::run(|cx| {
       let locked = cx.persist("locked", false);
       cx.ipc("lock", "on", move |_| {
@@ -2716,6 +2739,10 @@ fn a_shell_reloaded_while_locked_locks_again_from_its_persisted_value() {
     first.exit_status().and_then(|status| status.code()),
     Some(0)
   );
+  // The session stays locked between the two shells.
+  wait_for_shot(&sway, "HEADLESS-1", "Sway's red", |shot| {
+    mostly(shot, [0xff, 0x00, 0x00])
+  });
 
   let second = ExampleBar::spawn(&sway, this_as_shell(test), &env);
   let _supervisor = accept_ready(&listener);
@@ -2774,4 +2801,60 @@ fn the_lock_screen_locks_over_ipc_refuses_a_wrong_password_and_sleeps() {
     refused.rgba,
     "still locked"
   );
+}
+
+/// Whether more than half of `shot` is `rgb`.
+fn mostly(shot: &Image, rgb: [u8; 3]) -> bool {
+  let pixels = shot.rgba.as_chunks::<4>().0;
+  pixels.iter().filter(|pixel| pixel[..3] == rgb).count() > pixels.len() / 2
+}
+
+/// A shell that exits once its lock's signal says unlocked leaves the
+/// session unlocked: the signal waits for the compositor to have the
+/// unlock.
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_shell_that_exits_once_unlocked_leaves_the_session_unlocked() {
+  run_as_child();
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1280x720", "scale", "1"]);
+  let test = "a_shell_that_exits_once_unlocked_leaves_the_session_unlocked";
+  let mut shell = ExampleBar::spawn(&sway, this_as_shell(test), &[(CHILD, "lock and exit")]);
+  assert_eq!(ipc_call(&sway, "lock", "on"), "{\"ok\":\"\"}\n");
+  shell.wait_for("the session is locked: true");
+  assert_eq!(ipc_call(&sway, "lock", "off"), "{\"ok\":\"\"}\n");
+  assert_eq!(
+    shell.exit_status().and_then(|status| status.code()),
+    Some(0)
+  );
+  // Locked, Sway shows the lock's magenta, and its red once the locker is
+  // gone; unlocked, neither.
+  wait_for_shot(&sway, "HEADLESS-1", "the unlocked desktop", |shot| {
+    !mostly(shot, [0xff, 0x00, 0x00]) && !mostly(shot, [0xff, 0x00, 0xff])
+  });
+}
+
+/// The lock example keeps `locked` under `$XDG_RUNTIME_DIR`, so a shell
+/// restarted after a crash while locked locks again and can unlock.
+#[test]
+#[ignore = "needs headless Sway"]
+fn the_lock_example_locks_again_after_a_crash() {
+  run_as_child();
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let test = "the_lock_example_locks_again_after_a_crash";
+  let mut first = ExampleBar::spawn(&sway, this_as_shell(test), &[(CHILD, "lock example")]);
+  assert_eq!(ipc_call(&sway, "lock", "on"), "{\"ok\":\"\"}\n");
+  first.wait_for(FIRST_FRAME);
+  let locked = steady_shot(&sway, "HEADLESS-1");
+  first.child.kill().expect("killed, as a crash");
+  let _ = first.child.wait();
+  wait_for_shot(&sway, "HEADLESS-1", "Sway's red", |shot| {
+    mostly(shot, [0xff, 0x00, 0x00])
+  });
+  let second = ExampleBar::spawn(&sway, this_as_shell(test), &[(CHILD, "lock example")]);
+  second.wait_for(FIRST_FRAME);
+  wait_for_shot(&sway, "HEADLESS-1", "the lock screen again", |shot| {
+    shot.rgba == locked.rgba
+  });
 }
