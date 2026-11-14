@@ -4,7 +4,8 @@ version.workspace = true
 description = "Crabshell's Wayland platform: the event loop, layer-shell and floating windows, popups, input, outputs and the session lock"
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+# It ships Hyprland's protocol XML, and code generated from it, under BSD-3.
+license = "(MIT OR Apache-2.0) AND BSD-3-Clause"
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true

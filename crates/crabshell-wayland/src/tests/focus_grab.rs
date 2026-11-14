@@ -174,3 +174,16 @@ fn windows_sharing_a_true_signal_and_their_popups_make_one_grab() {
     [(shared, vec![10, 15]), (alone, vec![14])]
   );
 }
+
+#[test]
+fn a_window_whose_grab_signal_is_gone_wants_no_grab() {
+  let runtime = Runtime::current();
+  let cx = Cx::new(runtime.new_owner());
+  let inner = cx.child();
+  let grab = inner.signal(true);
+  let mut windows: Windows<u32, ()> = Windows::new();
+  windows.add(window(&cx, Some(grab)));
+  windows.entries[0].surface = Some(10);
+  inner.owner().dispose();
+  assert_eq!(wanted(&windows, |surface: &u32| Some(*surface)), []);
+}

@@ -149,3 +149,34 @@ fn names_the_protocol_cant_carry_are_refused() {
   assert!(refusal("crab\0shell", "launcher", "").is_some());
   assert!(refusal("crabshell", "launcher", &"a".repeat(4000)).is_some());
 }
+
+#[test]
+fn the_same_name_under_another_app_id_is_another_registration() {
+  let mut fake = Fake::new();
+  let (heard, _, ours) = fake.watch("toggle");
+  let live = Rc::clone(&fake.live);
+  let mut theirs = None;
+  fake
+    .shortcuts
+    .watch("other", "toggle", Box::new(|_| {}), |id| {
+      theirs = Some(id);
+      *live.borrow_mut() += 1;
+      Registered(live)
+    });
+  assert_eq!(*fake.live.borrow(), 2);
+  let theirs = theirs.expect("registered on its own");
+  assert_ne!(theirs, ours);
+  fake.shortcuts.pressed(theirs);
+  assert!(heard.borrow().is_empty(), "the other app's shortcut");
+}
+
+#[test]
+fn a_late_watch_that_panics_on_a_held_shortcut_is_logged() {
+  let mut fake = Fake::new();
+  let (_, _, id) = fake.watch("launcher");
+  fake.shortcuts.pressed(id);
+  let logs = crate::tests::capture_logs(|| {
+    fake.watch_with("launcher", Box::new(|_| panic!("a broken watch")));
+  });
+  assert!(logs.contains("a broken watch"), "{logs}");
+}

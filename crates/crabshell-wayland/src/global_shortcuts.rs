@@ -137,8 +137,12 @@ impl<P> Shortcuts<P> {
       self.list.len() - 1
     });
     let shortcut = &mut self.list[index];
-    if shortcut.held {
-      on_change(true);
+    if shortcut.held
+      && let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| on_change(true)))
+    {
+      let (app_id, name) = (&shortcut.app_id, &shortcut.name);
+      let message = crate::events::panic_message(payload.as_ref());
+      tracing::error!("a watch of the global shortcut {app_id}:{name} panicked: {message}");
     }
     shortcut.watches.push((watch, on_change));
     ShortcutWatch(watch)

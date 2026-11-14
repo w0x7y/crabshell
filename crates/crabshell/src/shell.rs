@@ -1159,8 +1159,6 @@ impl ShellExt for Cx {
   }
 }
 
-/// Runs its closure when dropped, as when the owner keeping it is
-/// disposed.
 /// A signal under `cx`, `false` until the watch `start` makes on the
 /// platform writes it, and the watch, ended with `stop` soon after `cx`'s
 /// owner goes. `what` names the start and the end in logs.
@@ -1197,6 +1195,8 @@ fn watch_flag<W: 'static>(
   flag.read_only()
 }
 
+/// Runs its closure when dropped, as when the owner keeping it is
+/// disposed.
 pub(crate) struct OnDispose(pub(crate) Option<Box<dyn FnOnce()>>);
 
 impl Drop for OnDispose {
