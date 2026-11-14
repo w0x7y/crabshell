@@ -1618,6 +1618,49 @@ fn cx_quantize_colors_follows_its_path_then_sleeps_and_ends_with_its_context() {
   assert_eq!(runtime.node_count(), before, "everything it made is freed");
 }
 
+#[test]
+#[ignore = "needs headless Sway"]
+fn cx_toplevels_lists_the_shells_floating_window_and_closes_it() {
+  let sway = Sway::start();
+  type Kept = Option<(Toplevels, Signal<bool>)>;
+  let kept: std::rc::Rc<std::cell::Cell<Kept>> = Default::default();
+  let hold = std::rc::Rc::clone(&kept);
+  let mut shell = Shell::new(sway.connect(), move |cx| {
+    let open = cx.signal(true);
+    cx.floating(
+      FloatingWindow::new()
+        .title("crabshell-floating")
+        .width(300)
+        .height(200)
+        .visible(move || open.get())
+        .on_close(move |_| open.set(false))
+        .child(Text::new("floating")),
+    );
+    hold.set(Some((cx.toplevels(), open)));
+  })
+  .expect("the root closure runs");
+  let (toplevels, open) = kept.take().expect("the root ran");
+  assert!(
+    shell.cx().toplevels().list() == toplevels.list(),
+    "every caller shares one list"
+  );
+  let ours = || {
+    let list = toplevels.list().get_untracked();
+    list
+      .into_iter()
+      .find(|toplevel| toplevel.title == "crabshell-floating")
+  };
+  run_until(&mut shell, "the floating window listed", |_| {
+    ours().is_some_and(|toplevel| toplevel.outputs == ["HEADLESS-1"])
+  });
+
+  toplevels.close(ours().expect("listed").id);
+  run_until(&mut shell, "the window to close", |_| !open.get_untracked());
+  run_until(&mut shell, "an empty list", |_| {
+    toplevels.list().get_untracked().is_empty()
+  });
+}
+
 /// 500 apps: the example's names, numbered.
 fn many_apps() -> Vec<String> {
   (0..500)

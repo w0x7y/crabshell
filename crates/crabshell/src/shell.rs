@@ -8,10 +8,10 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use crabshell_reactive::{ReadSignal, Runtime, Signal};
+use crabshell_reactive::{Owner, ReadSignal, Runtime, Signal};
 use crabshell_services::Sway;
 use crabshell_ui::{Color, Cx, FloatingWindow, IntoProp, Output, Window};
-use crabshell_wayland::{Event, EventLoop, LoopSignal, Platform, WindowId};
+use crabshell_wayland::{Event, EventLoop, LoopSignal, Platform, Toplevel, WindowId};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tracing::level_filters::LevelFilter;
@@ -185,6 +185,8 @@ impl Shell {
       },
       signal: event_loop.signal(),
       ipc: Ipc::new(&event_loop.handle(), ipc),
+      root: cx.owner(),
+      toplevels: Cell::new(None),
     });
     event_loop
       .platform()
@@ -377,6 +379,10 @@ struct Service {
   handle: Handle<Platform>,
   /// What `cx.ipc` registers, and the socket it is called through.
   ipc: Rc<Ipc<Platform>>,
+  /// The root context's owner, which outlasts every other.
+  root: Owner,
+  /// `cx.toplevels()`, once a config asked.
+  toplevels: Cell<Option<Toplevels>>,
 }
 
 impl Service {
@@ -385,6 +391,76 @@ impl Service {
   fn with_platform(&self, what: &'static str, f: impl FnOnce(&mut Platform) + 'static) {
     schedule(&self.idle, &self.signal, what, f);
   }
+}
+
+/// Every program's windows, from [`cx.toplevels()`](ShellExt::toplevels),
+/// the shell's own floating windows included. It is `Copy`, so closures
+/// capture it as they do a signal.
+#[derive(Clone, Copy)]
+pub struct Toplevels {
+  list: ReadSignal<Vec<Toplevel>>,
+  /// `None` on a context the shell didn't set up.
+  requests: Option<ReadSignal<Requests>>,
+}
+
+impl Toplevels {
+  /// Every window, in the order the compositor announced them. Empty
+  /// until the compositor answers, and without the protocol.
+  pub fn list(&self) -> ReadSignal<Vec<Toplevel>> {
+    self.list
+  }
+
+  /// Asks the compositor to focus window `id`. Here and below, an id
+  /// that isn't listed is ignored.
+  pub fn activate(&self, id: u64) {
+    self.send("toplevels.activate", move |platform| {
+      platform.activate_toplevel(id);
+    });
+  }
+
+  /// Asks window `id` to close. Its program may ask the user first.
+  pub fn close(&self, id: u64) {
+    self.send("toplevels.close", move |platform| {
+      platform.close_toplevel(id)
+    });
+  }
+
+  /// Asks the compositor to maximize window `id`, or to stop. Sway
+  /// ignores it.
+  pub fn set_maximized(&self, id: u64, maximized: bool) {
+    self.send("toplevels.set_maximized", move |platform| {
+      platform.set_toplevel_maximized(id, maximized);
+    });
+  }
+
+  /// Asks the compositor to minimize window `id`, or to stop. Sway
+  /// ignores it.
+  pub fn set_minimized(&self, id: u64, minimized: bool) {
+    self.send("toplevels.set_minimized", move |platform| {
+      platform.set_toplevel_minimized(id, minimized);
+    });
+  }
+
+  /// Asks the compositor to make window `id` fullscreen, on an output of
+  /// its choosing, or to stop.
+  pub fn set_fullscreen(&self, id: u64, fullscreen: bool) {
+    self.send("toplevels.set_fullscreen", move |platform| {
+      platform.set_toplevel_fullscreen(id, fullscreen);
+    });
+  }
+
+  fn send(&self, what: &'static str, f: impl FnOnce(&mut Platform) + 'static) {
+    // A handle kept after its shell went does nothing.
+    if let Some(requests) = self.requests {
+      requests.try_with(|requests| schedule(&requests.idle, &requests.signal, what, f));
+    }
+  }
+}
+
+/// How a [`Toplevels`] reaches the platform: the shell's loop.
+struct Requests {
+  idle: Idle,
+  signal: LoopSignal,
 }
 
 /// Inserts an idle callback into the loop, if it is still there.
@@ -483,6 +559,13 @@ pub trait ShellExt {
   /// [`Image`]: crabshell_ui::Image
   #[track_caller]
   fn quantize_colors(&self, path: impl IntoProp<PathBuf>, depth: u8) -> ReadSignal<Vec<Color>>;
+  /// Every program's windows, with their titles, app ids, outputs and
+  /// states, and requests to focus, close, maximize, minimize and
+  /// fullscreen them. Every caller shares one list, started on the first
+  /// call, which lives as long as the shell and wakes it only when the
+  /// compositor says a window changed. Without
+  /// `wlr-foreign-toplevel-management` it stays empty, and that is logged.
+  fn toplevels(&self) -> Toplevels;
 
   /// Looks icon names up in `theme`, such as `"Adwaita"`, instead of
   /// `hicolor`. Every window is repainted.
@@ -642,6 +725,39 @@ impl ShellExt for Cx {
       path.into_prop(),
       colors::quantizer(depth),
     )
+  }
+
+  fn toplevels(&self) -> Toplevels {
+    let Some(service) = self.service::<Service>() else {
+      tracing::error!("cx.toplevels needs the shell crabshell::run starts; the list stays empty");
+      return Toplevels {
+        list: self.signal(Vec::new()).read_only(),
+        requests: None,
+      };
+    };
+    if let Some(toplevels) = service.toplevels.get() {
+      return toplevels;
+    }
+    // Under the root owner, so every caller can share them.
+    let list = service.root.signal(Vec::new());
+    let requests = service.root.signal(Requests {
+      idle: Rc::clone(&service.idle),
+      signal: service.signal.clone(),
+    });
+    let toplevels = Toplevels {
+      list: list.read_only(),
+      requests: Some(requests.read_only()),
+    };
+    service.toplevels.set(Some(toplevels));
+    service.with_platform("cx.toplevels", move |platform| {
+      platform.watch_toplevels(move |now| {
+        // An unchanged list isn't set, so nothing that reads it reruns.
+        if list.try_with(|old| old.as_slice() != now) == Some(true) {
+          list.try_set(now.to_vec());
+        }
+      });
+    });
+    toplevels
   }
 
   fn persist<T>(&self, key: &str, default: T) -> Signal<T>
