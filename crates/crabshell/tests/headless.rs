@@ -1182,6 +1182,16 @@ fn run_as_child() {
       cx.ipc("shell", "ping", |_| Ok(String::from("pong")));
       cx.per_output(counter::bar);
     }),
+    Ok("lock") => crabshell::run(|cx| {
+      let locked = cx.persist("locked", false);
+      cx.ipc("lock", "on", move |_| {
+        locked.set(true);
+        Ok(String::new())
+      });
+      let shown = cx.session_lock(lock_screen(move || locked.get()));
+      cx.effect(move || eprintln!("the session is locked: {}", shown.get()));
+      cx.per_output(counter::bar);
+    }),
     Ok("ipc") => crabshell::run(|cx| {
       let count = cx.signal(0_i64);
       cx.effect(move || eprintln!("the count is {}", count.get()));
@@ -2535,4 +2545,171 @@ fn the_greeter_logs_in_after_a_refused_password_and_exits() {
   let mut greeter = greeter;
   let status = greeter.exit_status().expect("the greeter exits");
   assert_eq!(status.code(), Some(0), "{status}");
+}
+
+/// The test lock screens' background.
+const MAGENTA: Color = Color::rgb(0xff, 0x00, 0xff);
+
+/// A magenta lock screen showing each output's name, locked while `on`.
+fn lock_screen(on: impl Fn() -> bool + 'static) -> SessionLock {
+  SessionLock::new()
+    .locked(on)
+    .style(Style::new().background(MAGENTA))
+    .surface(|_, output| Text::new(output.name()))
+}
+
+/// The lock surfaces the platform holds, by output.
+fn lock_surfaces(platform: &Platform) -> Vec<String> {
+  platform
+    .windows()
+    .filter(|(_, window)| window.view().root().path().starts_with("SessionLock["))
+    .map(|(_, window)| window.output().name())
+    .collect()
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn cx_session_lock_follows_the_compositor_and_ends_with_its_context() {
+  let sway = Sway::start();
+  let runtime = Runtime::current();
+  type Kept = Option<(Cx, Signal<bool>, ReadSignal<bool>, usize)>;
+  let kept: std::rc::Rc<std::cell::RefCell<Kept>> = Default::default();
+  let hold = std::rc::Rc::clone(&kept);
+  let mut shell = Shell::new(sway.connect(), move |cx| {
+    let before = Runtime::current().node_count();
+    let child = cx.child();
+    let on = child.signal(false);
+    let locked = child.session_lock(lock_screen(move || on.get()));
+    *hold.borrow_mut() = Some((child, on, locked, before));
+  })
+  .expect("the root closure runs");
+  let (on, locked) = kept
+    .borrow()
+    .as_ref()
+    .map(|(_, on, locked, _)| (*on, *locked))
+    .expect("the root ran");
+  settle(&mut shell);
+  assert!(!locked.get_untracked());
+  assert!(lock_surfaces(shell.platform()).is_empty());
+
+  on.set(true);
+  run_until(&mut shell, "the compositor to lock", |_| {
+    locked.get_untracked()
+  });
+  assert_eq!(lock_surfaces(shell.platform()), ["HEADLESS-1"]);
+  on.set(false);
+  run_until(&mut shell, "the unlock", |platform| {
+    !locked.get_untracked() && lock_surfaces(platform).is_empty()
+  });
+
+  let (child, _, _, before) = kept.borrow_mut().take().expect("the root ran");
+  child.owner().dispose();
+  run_until(&mut shell, "the lock to go", |platform| {
+    platform.session_locks() == 0
+  });
+  runtime.flush();
+  assert_eq!(runtime.node_count(), before, "everything it made is freed");
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_surface_builder_that_panics_is_logged_and_its_output_is_still_covered() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1280x720", "scale", "1"]);
+  sway.msg(&["create_output"]);
+  let logs = Logs::default();
+  let _guard = logs.install();
+  type Kept = Option<(Signal<bool>, ReadSignal<bool>)>;
+  let kept: std::rc::Rc<std::cell::Cell<Kept>> = Default::default();
+  let hold = std::rc::Rc::clone(&kept);
+  let mut shell = Shell::new(sway.connect(), move |cx| {
+    let on = cx.signal(true);
+    cx.per_output(counter::bar);
+    let locked = cx.session_lock(
+      SessionLock::new()
+        .locked(move || on.get())
+        .style(Style::new().background(MAGENTA))
+        .surface(|_, output| {
+          if output.name() == "HEADLESS-1" {
+            panic!("no lock screen here");
+          }
+          Text::new(output.name())
+        }),
+    );
+    hold.set(Some((on, locked)));
+  })
+  .expect("the root closure runs");
+  let (on, locked) = kept.get().expect("the root ran");
+  run_until(&mut shell, "the compositor to lock", |_| {
+    locked.get_untracked()
+  });
+  let text = logs.text();
+  assert!(
+    text.contains(
+      "SessionLock[HEADLESS-1] panicked while it was built, so it shows only the lock's style: no lock screen here"
+    ),
+    "{text}"
+  );
+  assert_eq!(
+    lock_surfaces(shell.platform()),
+    ["HEADLESS-1", "HEADLESS-2"]
+  );
+  // The style still covers HEADLESS-1.
+  let deadline = Instant::now() + TIMEOUT;
+  while !sway
+    .screenshot("HEADLESS-1")
+    .rgba
+    .as_chunks::<4>()
+    .0
+    .iter()
+    .all(|pixel| pixel[..3] == [0xff, 0x00, 0xff])
+  {
+    assert!(
+      Instant::now() < deadline,
+      "HEADLESS-1 never showed the style"
+    );
+    shell
+      .dispatch(Some(Duration::from_millis(50)))
+      .expect("the connection works");
+  }
+
+  // The shell goes on: it unlocks, and its bars are there.
+  on.set(false);
+  run_until(&mut shell, "the unlock", |platform| {
+    !locked.get_untracked() && lock_surfaces(platform).is_empty()
+  });
+  let platform = shell.platform();
+  assert!(shown_on(platform, "HEADLESS-1").is_some() && shown_on(platform, "HEADLESS-2").is_some());
+}
+
+/// The shell's half of a reload while locked: the session stays locked as
+/// the first shell exits, and the next, starting from the persisted
+/// `locked`, locks it again.
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_shell_reloaded_while_locked_locks_again_from_its_persisted_value() {
+  use std::io::Write;
+
+  run_as_child();
+  let sway = Sway::start();
+  let socket = sway.runtime_dir().join("control.sock");
+  let listener = std::os::unix::net::UnixListener::bind(&socket).expect("the control socket");
+  let control = socket.to_str().expect("a UTF-8 path");
+  let test = "a_shell_reloaded_while_locked_locks_again_from_its_persisted_value";
+  let env = [(CHILD, "lock"), ("CRABSHELL_CONTROL", control)];
+
+  let mut first = ExampleBar::spawn(&sway, this_as_shell(test), &env);
+  let mut supervisor = accept_ready(&listener);
+  assert_eq!(ipc_call(&sway, "lock", "on"), "{\"ok\":\"\"}\n");
+  first.wait_for("the session is locked: true");
+  supervisor.write_all(b"save\n").expect("told to save");
+  assert_eq!(
+    first.exit_status().and_then(|status| status.code()),
+    Some(0)
+  );
+
+  let second = ExampleBar::spawn(&sway, this_as_shell(test), &env);
+  let _supervisor = accept_ready(&listener);
+  let line = second.wait_for("the session is locked: true");
+  eprintln!("the next shell: {line}");
 }

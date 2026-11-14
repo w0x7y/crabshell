@@ -12,7 +12,7 @@ use calloop::generic::Generic;
 use calloop::{Interest, Mode};
 use crabshell_reactive::{Owner, ReadSignal, Runtime, Signal};
 use crabshell_services::Sway;
-use crabshell_ui::{Color, Cx, FloatingWindow, IntoProp, Output, Window};
+use crabshell_ui::{Color, Cx, FloatingWindow, IntoProp, Lock, Output, SessionLock, Window};
 use crabshell_wayland::{Event, EventLoop, LoopSignal, Platform, Toplevel, WindowId};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -591,6 +591,43 @@ pub trait ShellExt {
   /// and that is logged.
   fn idle_monitor(&self, timeout: Duration) -> ReadSignal<bool>;
 
+  /// Locks the session while `lock`'s `locked` is true, as a lock screen
+  /// does, and gives `true` while the compositor says it is locked. Every
+  /// output, and each one added while locked, gets a surface covering it,
+  /// built by `lock`'s `surface` under a path such as
+  /// `SessionLock[DP-1]`; the compositor gives them the keyboard. Turning
+  /// `locked` false unlocks. If the compositor refuses, as when another
+  /// program holds the lock, that is logged, the signal stays `false`, and
+  /// it asks again the next time `locked` turns true. Without
+  /// `ext-session-lock-v1` it never locks, and that is logged once.
+  ///
+  /// The lock lives as long as this context. If the context goes, or the
+  /// shell exits, while the session is locked, it stays locked, as the
+  /// protocol wants. Keep `locked` in [`persist`](Self::persist) so the
+  /// shell after a reload locks again.
+  ///
+  /// ```no_run
+  /// use crabshell::prelude::*;
+  ///
+  /// crabshell::run(|cx| {
+  ///     let locked = cx.persist("locked", false);
+  ///     // `crabshell ipc lock on`, as from an idle daemon.
+  ///     cx.ipc("lock", "on", move |_| {
+  ///         locked.set(true);
+  ///         Ok(String::new())
+  ///     });
+  ///     cx.session_lock(
+  ///         SessionLock::new()
+  ///             .locked(move || locked.get())
+  ///             .surface(move |_, output| {
+  ///                 Button::new(Text::new(format!("unlock {}", output.name())))
+  ///                     .on_click(move |_| locked.set(false))
+  ///             }),
+  ///     );
+  /// });
+  /// ```
+  fn session_lock(&self, lock: SessionLock) -> ReadSignal<bool>;
+
   /// The main colors of the image file at `path`, most common first, as
   /// for a theme taken from a wallpaper: up to 2^`depth` of them, with
   /// `depth` clamped to 0..=8. The file is read as [`Image`] reads it,
@@ -766,6 +803,40 @@ impl ShellExt for Cx {
       }));
     });
     idle.read_only()
+  }
+
+  fn session_lock(&self, lock: SessionLock) -> ReadSignal<bool> {
+    let Some(service) = self.service::<Service>() else {
+      tracing::error!("cx.session_lock needs the shell crabshell::run starts; it never locks");
+      return self.signal(false).read_only();
+    };
+    let lock = Lock::new(self, lock);
+    let locked = lock.locked();
+    let id = Rc::new(Cell::new(None));
+    // Removed soon after this context's owner goes, which also frees it.
+    let (idle, signal, held) = (
+      Rc::clone(&service.idle),
+      service.signal.clone(),
+      Rc::clone(&id),
+    );
+    let gone = OnDispose(Some(Box::new(move || {
+      schedule(
+        &idle,
+        &signal,
+        "cx.session_lock's cleanup",
+        move |platform| {
+          if let Some(id) = held.take() {
+            platform.remove_session_lock(id);
+          }
+        },
+      );
+    })));
+    // The lock above was made, so the owner is there.
+    self.owner().signal(gone);
+    service.with_platform("cx.session_lock", move |platform| {
+      id.set(Some(platform.add_session_lock(lock)));
+    });
+    locked
   }
 
   #[track_caller]

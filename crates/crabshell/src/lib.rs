@@ -96,7 +96,7 @@ pub mod prelude {
     Edge, Fit, FloatingWindow, Font, Gradient, GradientShape, Icon, IconPixels, IconSource, Image,
     Justify, Key, KeyEvent, KeyboardFocus, Layer, ListView, Margins, Menu, MenuEntry, MenuToggle,
     Modifiers, Output, Padding, PanelWindow, PopupWindow, Region, Row, ScreencopyView, ScrollView,
-    Shadow, Size, Spacer, Stack, Style, Text, TextInput, Transition, Widget,
+    SessionLock, Shadow, Size, Spacer, Stack, Style, Text, TextInput, Transition, Widget,
   };
   pub use crabshell_wayland::Toplevel;
 }
