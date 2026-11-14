@@ -784,27 +784,28 @@ fn urgent_marks_a_window_and_its_workspace_until_it_is_focused_or_closed() {
   assert_eq!(urgent().0, [false, false], "closed");
 }
 
-/// What `j/version` says, as Hyprland 0.57, 0.56 and 0.41 write it.
-const VERSION_0_57: &str = r#"{"branch":"","commit":"abc","version":"0.57.2","dirty":false,"tag":"v0.57.2","commits":"7000"}"#;
-const VERSION_0_56: &str = r#"{"branch":"","commit":"abc","version":"0.56.2","dirty":false,"tag":"v0.56.2","commits":"6900"}"#;
-const VERSION_0_41: &str =
-  r#"{"branch":"","commit":"abc","dirty":false,"tag":"v0.41.2","commits":"4900"}"#;
+/// What `j/status` says: a Lua config and a hyprlang one, as Hyprland
+/// 0.55 to 0.57 write it, and what earlier ones answer.
+const STATUS_LUA: &str = "\n{\n    \"configProvider\": \"lua\",\n    \"backend\": \"drm\"\n}\n";
+const STATUS_HYPRLANG: &str =
+  "\n{\n    \"configProvider\": \"hyprlang\",\n    \"backend\": \"drm\"\n}\n";
+const STATUS_OLD: &str = "unknown request";
 
 #[test]
-fn focus_workspace_asks_the_version_once_and_speaks_its_syntax() {
-  for (version, two, web) in [
+fn focus_workspace_asks_the_config_once_and_speaks_its_syntax() {
+  for (status, two, web) in [
     (
-      VERSION_0_57,
+      STATUS_LUA,
       r#"dispatch hl.dsp.focus({ workspace = "2" })"#,
       r#"dispatch hl.dsp.focus({ workspace = "name:web" })"#,
     ),
     (
-      VERSION_0_56,
+      STATUS_HYPRLANG,
       "dispatch workspace 2",
       "dispatch workspace name:web",
     ),
     (
-      VERSION_0_41,
+      STATUS_OLD,
       "dispatch workspace 2",
       "dispatch workspace name:web",
     ),
@@ -815,16 +816,16 @@ fn focus_workspace_asks_the_version_once_and_speaks_its_syntax() {
     hyprland.focus_workspace("name:web");
     let logs = capture_logs(|| {
       assert_eq!(
-        fake.answer(&[("j/version", version)]),
-        ["j/version"],
+        fake.answer(&[("j/status", status)]),
+        ["j/status"],
         "asked once, and the switches wait for it"
       );
       run(&mut shell);
     });
-    assert!(!logs.contains("says nothing"), "{version}: {logs}");
-    assert_eq!(fake.answer(&[]), [two, web], "after {version}");
+    assert!(!logs.contains("names no config"), "{status}: {logs}");
+    assert_eq!(fake.answer(&[]), [two, web], "after {status}");
     hyprland.focus_workspace("2");
-    assert_eq!(fake.answer(&[]), [two], "the version is kept");
+    assert_eq!(fake.answer(&[]), [two], "the config is kept");
   }
 }
 
@@ -833,7 +834,7 @@ fn a_workspace_name_is_a_lua_string_that_runs_nothing() {
   let fake = FakeHyprland::new();
   let (mut shell, hyprland, _events) = connect(&fake);
   hyprland.focus_workspace("x\" }) hl.dsp.exec_cmd(\"rm -rf ~\") --\\\n\u{7f}é");
-  fake.answer(&[("j/version", VERSION_0_57)]);
+  fake.answer(&[("j/status", STATUS_LUA)]);
   run(&mut shell);
   assert_eq!(
     fake.answer(&[]),
@@ -843,17 +844,38 @@ fn a_workspace_name_is_a_lua_string_that_runs_nothing() {
   );
 }
 
+/// The old syntax sends a name as it is, so one with a space or a line
+/// break could say more than a workspace.
 #[test]
-fn a_version_that_says_nothing_is_logged_and_read_as_before_0_57() {
+fn the_old_syntax_refuses_a_name_with_spaces_or_control_characters() {
   let fake = FakeHyprland::new();
   let (mut shell, hyprland, _events) = connect(&fake);
-  hyprland.focus_workspace("2");
+  hyprland.focus_workspace("name:my web");
+  fake.answer(&[("j/status", STATUS_HYPRLANG)]);
   let logs = capture_logs(|| {
-    fake.answer(&[("j/version", "ok")]);
     run(&mut shell);
+    for target in ["x\ty", "x\ny", "x\u{7f}", "x\u{a0}y"] {
+      hyprland.focus_workspace(target);
+    }
+    hyprland.focus_workspace("name:web");
   });
-  assert!(logs.contains("Hyprland's version"), "{logs}");
-  assert_eq!(fake.answer(&[]), ["dispatch workspace 2"]);
+  assert_eq!(logs.matches("can't switch to it").count(), 5, "{logs}");
+  assert_eq!(fake.answer(&[]), ["dispatch workspace name:web"]);
+}
+
+#[test]
+fn a_status_that_says_nothing_is_logged_and_read_as_the_old_syntax() {
+  for status in ["ok", r#"{"configProvider":"error","backend":"drm"}"#] {
+    let fake = FakeHyprland::new();
+    let (mut shell, hyprland, _events) = connect(&fake);
+    hyprland.focus_workspace("2");
+    let logs = capture_logs(|| {
+      fake.answer(&[("j/status", status)]);
+      run(&mut shell);
+    });
+    assert!(logs.contains("Hyprland's status"), "{status}: {logs}");
+    assert_eq!(fake.answer(&[]), ["dispatch workspace 2"], "{status}");
+  }
 
   let shell = Harness::new(offline());
   let logs = capture_logs(|| shell.cx.hyprland().focus_workspace("2"));

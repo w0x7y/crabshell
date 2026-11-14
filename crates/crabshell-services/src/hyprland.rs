@@ -158,11 +158,13 @@ pub struct Hyprland {
 
 impl Hyprland {
   /// Switches to the workspace `target`, as Hyprland names it: a number
-  /// such as `2`, or `name:web`. Hyprland 0.57 and later read dispatches
-  /// as Lua, and earlier ones as `workspace 2`, so the first call asks
-  /// Hyprland's version, and switches wait for its answer. On 0.57 and
-  /// later `target` goes as a quoted Lua string, so no name runs as code.
-  /// Hyprland's refusal is logged.
+  /// such as `2`, or `name:web`. Hyprland reads a dispatch as Lua when its
+  /// config is Lua, as `hyprland.lua` can be from 0.55 on and always is
+  /// from 0.57 on, and as `workspace 2` otherwise. So the first call asks
+  /// Hyprland's status, and switches wait for its answer. Under Lua
+  /// `target` goes as a quoted Lua string, so no name runs as code; in the
+  /// old syntax it goes as it is, so a target with whitespace or a control
+  /// character is logged and not sent. Hyprland's refusal is logged.
   pub fn focus_workspace(&self, target: &str) {
     match &self.service {
       Some(service) => service.focus_workspace(target),
@@ -174,12 +176,14 @@ impl Hyprland {
   /// connection of its own, and never waits for it. Hyprland's refusal is
   /// logged, and so is a command over 8 KiB, which isn't sent.
   ///
-  /// Up to 0.56 `command` is a dispatcher and its arguments, such as
-  /// `workspace 2`. From 0.57 on it is a Lua expression that Hyprland runs
-  /// inside the compositor, such as `hl.dsp.focus({ workspace = "2" })`,
-  /// so never put outside text, such as a window's title or class or a
-  /// workspace's name, into it: what it says would run. Switch workspaces
-  /// with [`focus_workspace`](Self::focus_workspace), which quotes them.
+  /// When Hyprland's config is Lua, as `hyprland.lua` can be from 0.55 on
+  /// and always is from 0.57 on, `command` is a Lua expression that
+  /// Hyprland runs inside the compositor, such as
+  /// `hl.dsp.focus({ workspace = "2" })`. Otherwise it is a dispatcher and
+  /// its arguments, such as `workspace 2`. Either way, never put outside
+  /// text, such as a window's title or class or a workspace's name, into
+  /// it: under Lua what it says would run. Switch workspaces with
+  /// [`focus_workspace`](Self::focus_workspace), which quotes them.
   pub fn dispatch(&self, command: &str) {
     match &self.service {
       Some(service) => service.dispatch(command),
@@ -342,12 +346,12 @@ struct State {
   /// What `on_event` was given, in the order it was.
   handlers: Vec<Handler>,
   next_handler: u64,
-  /// Whether Hyprland reads a dispatch as Lua, from 0.57 on, once
-  /// `j/version` said.
+  /// Whether Hyprland reads a dispatch as Lua, as it does when its config
+  /// is, once `j/status` said.
   lua: Option<bool>,
-  /// Whether `j/version` was asked and not answered yet.
-  version_asked: bool,
-  /// What `focus_workspace` was given before the version was known.
+  /// Whether `j/status` was asked and not answered yet.
+  status_asked: bool,
+  /// What `focus_workspace` was given before the syntax was known.
   focusing: Vec<String>,
   /// Requests waiting for fewer than [`MAX_IN_FLIGHT`] to be out.
   queued: VecDeque<(Asked, String)>,
@@ -359,7 +363,7 @@ struct State {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Asked {
   List(Query),
-  Version,
+  Status,
   Dispatch,
 }
 
@@ -433,7 +437,7 @@ impl Service {
         handlers: Vec::new(),
         next_handler: 0,
         lua: None,
-        version_asked: false,
+        status_asked: false,
         focusing: Vec::new(),
         queued: VecDeque::new(),
         reconnected: false,
@@ -533,19 +537,38 @@ impl Service {
     let state = guard.as_mut().expect("invariant: started by cx.hyprland()");
     if let Some(lua) = state.lua {
       drop(guard);
-      return self.dispatch(&focus(lua, target));
+      return self.switch(lua, target);
     }
     if state.focusing.len() >= MAX_DISPATCHES {
       return tracing::warn!(
         target,
-        "64 switches wait for Hyprland's version, so this one isn't sent"
+        "64 switches wait for Hyprland's status, so this one isn't sent"
       );
     }
     state.focusing.push(target.to_owned());
-    if !state.version_asked {
-      state.version_asked = true;
-      self.request(state, "j/version", Asked::Version);
+    if !state.status_asked {
+      state.status_asked = true;
+      self.request(state, "j/status", Asked::Status);
     }
+  }
+
+  /// Dispatches the switch to `target` in the syntax Hyprland reads.
+  fn switch(self: &Rc<Self>, lua: bool, target: &str) {
+    if lua {
+      return self.dispatch(&format!(
+        "hl.dsp.focus({{ workspace = {} }})",
+        lua_string(target)
+      ));
+    }
+    // The old syntax sends it as it is.
+    if target.chars().any(|c| c.is_whitespace() || c.is_control()) {
+      return tracing::warn!(
+        target,
+        "a workspace with whitespace or a control character in its name goes unquoted to \
+         Hyprland's old syntax, so the shell can't switch to it"
+      );
+    }
+    self.dispatch(&format!("workspace {target}"));
   }
 
   /// Sends `command` on a connection of its own, or once fewer than
@@ -557,9 +580,9 @@ impl Service {
     if !self.send(state, command, asked) {
       match asked {
         Asked::List(query) => state.reading[query as usize] = Reading::Idle,
-        Asked::Version => {
+        Asked::Status => {
           // The switches waiting for it go, as a dispatch would.
-          state.version_asked = false;
+          state.status_asked = false;
           state.focusing.clear();
         }
         Asked::Dispatch => {}
@@ -788,8 +811,8 @@ impl Service {
         }
         return;
       }
-      Asked::Version => {
-        state.version_asked = false;
+      Asked::Status => {
+        state.status_asked = false;
         let lua = failed
           .is_none()
           .then(|| reads_lua(&request.reply))
@@ -799,7 +822,7 @@ impl Service {
           tracing::warn!(
             reply,
             failed,
-            "Hyprland's version says nothing; dispatching as before 0.57"
+            "Hyprland's status names no config; dispatching in the old syntax"
           );
         }
         let lua = lua.unwrap_or(false);
@@ -807,7 +830,7 @@ impl Service {
         let focusing = std::mem::take(&mut state.focusing);
         drop(guard);
         for target in focusing {
-          self.dispatch(&focus(lua, &target));
+          self.switch(lua, &target);
         }
         return;
       }
@@ -878,7 +901,7 @@ impl Service {
     let requests = std::mem::take(&mut state.requests);
     state.reading = [Reading::Idle; 4];
     state.queued.clear();
-    state.version_asked = false;
+    state.status_asked = false;
     state.focusing.clear();
     let Some(event_loop) = self.shared.event_loop() else {
       return;
@@ -1131,15 +1154,6 @@ fn cut(mut text: String) -> String {
   text
 }
 
-/// The dispatch that switches to `target`, in the syntax Hyprland reads.
-fn focus(lua: bool, target: &str) -> String {
-  if lua {
-    format!("hl.dsp.focus({{ workspace = {} }})", lua_string(target))
-  } else {
-    format!("workspace {target}")
-  }
-}
-
 /// `text` as a Lua string literal: quoted, with backslashes, quotes and
 /// control characters escaped, so nothing in it runs.
 fn lua_string(text: &str) -> String {
@@ -1161,26 +1175,25 @@ fn lua_string(text: &str) -> String {
   quoted
 }
 
-/// What `j/version` says.
+/// What `j/status` says, from Hyprland 0.55 on.
 #[derive(Deserialize)]
-struct Version {
-  /// Such as `0.57.2`, from 0.56 on.
-  version: Option<String>,
-  /// Such as `v0.41.2`.
-  tag: Option<String>,
+struct Status {
+  /// `lua` or `hyprlang`.
+  #[serde(rename = "configProvider")]
+  config_provider: String,
 }
 
-/// Whether the Hyprland that sent `reply` to `j/version` reads dispatches
-/// as Lua, as 0.57 and later do. `None` when the reply says no version.
+/// Whether the Hyprland that sent `reply` to `j/status` reads dispatches
+/// as Lua, as it does when its config is. Hyprland before 0.55 knows no
+/// status and reads the old syntax. `None` when the reply says neither.
 fn reads_lua(reply: &[u8]) -> Option<bool> {
-  let Version { version, tag } = serde_json::from_slice(reply).ok()?;
-  let text = version.filter(|version| !version.is_empty()).or(tag)?;
-  let mut parts = text.trim_start_matches('v').split('.').map(|part| {
-    let digits = part
-      .find(|c: char| !c.is_ascii_digit())
-      .unwrap_or(part.len());
-    part[..digits].parse::<u32>().ok()
-  });
-  let (major, minor) = (parts.next()??, parts.next()??);
-  Some((major, minor) >= (0, 57))
+  if reply.trim_ascii() == b"unknown request" {
+    return Some(false);
+  }
+  let Status { config_provider } = serde_json::from_slice(reply).ok()?;
+  match config_provider.as_str() {
+    "lua" => Some(true),
+    "hyprlang" => Some(false),
+    _ => None,
+  }
 }

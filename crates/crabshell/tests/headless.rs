@@ -3035,7 +3035,7 @@ impl FakeHyprland {
           "j/monitors" => lists[1].clone(),
           "j/clients" => lists[2].clone(),
           "j/activewindow" => lists[3].clone(),
-          "j/version" => String::from(r#"{"version":"0.56.2","tag":"v0.56.2"}"#),
+          "j/status" => String::from(r#"{"configProvider":"hyprlang","backend":"drm"}"#),
           _ => {
             commands.lock().expect("the commands").push(command);
             String::from("ok")
