@@ -53,7 +53,7 @@ pub fn bar(cx: &Cx, output: &Output) -> PanelWindow {
                 let target = ws
                   .id
                   .map_or(format!("name:{}", ws.name), |id| id.to_string());
-                hyprland.dispatch(&format!("workspace {target}"));
+                hyprland.focus_workspace(&target);
               })
           },
         ))
