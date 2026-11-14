@@ -8,6 +8,7 @@ use std::num::NonZeroU64;
 use std::path::Path;
 
 use crabshell_ui::Fit;
+use resvg::usvg;
 use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
 use zune_jpeg::JpegDecoder;
 use zune_jpeg::zune_core::bytestream::ZCursor;
@@ -29,17 +30,35 @@ const MAX_SIDE: u32 = 8192;
 const MAX_PIXELS: u64 = 24_000_000;
 
 /// The file at `path` as a `width` by `height` pixmap, scaled as `fit`
-/// says. The format comes from the extension.
+/// says.
 pub(crate) fn rasterize(path: &Path, width: u32, height: u32, fit: Fit) -> Result<Pixmap, String> {
   if width == 0 || height == 0 {
     return Err(String::from("an image with no pixels"));
   }
+  match decode(path)? {
+    Picture::Svg(tree) => svg(&tree, width, height, fit),
+    Picture::Pixels(image) => scale(&image, width, height, fit),
+  }
+}
+
+/// A decoded image file: pixels, or an SVG to draw at any size.
+pub(crate) enum Picture {
+  Pixels(Pixmap),
+  Svg(Box<usvg::Tree>),
+}
+
+/// Reads and decodes the file at `path` under the caps. The format comes
+/// from the extension.
+pub(crate) fn decode(path: &Path) -> Result<Picture, String> {
   let extension = path
     .extension()
     .and_then(|extension| extension.to_str())
     .map(str::to_ascii_lowercase);
   let image = match extension.as_deref() {
-    Some("svg") => return svg(&read_capped(path, MAX_SVG_BYTES)?, width, height, fit),
+    Some("svg") => {
+      let tree = svg_tree(&read_capped(path, MAX_SVG_BYTES)?)?;
+      return Ok(Picture::Svg(Box::new(tree)));
+    }
     Some("png") => decode_png(&read_capped(path, MAX_BYTES)?, MAX_SIDE, MAX_PIXELS)?,
     Some("jpg" | "jpeg") => jpeg(&read_capped(path, MAX_BYTES)?)?,
     Some("gif") => gif(&read_capped(path, MAX_BYTES)?)?,
@@ -50,11 +69,11 @@ pub(crate) fn rasterize(path: &Path, width: u32, height: u32, fit: Fit) -> Resul
       ));
     }
   };
-  scale(&image, width, height, fit)
+  Ok(Picture::Pixels(image))
 }
 
 /// Refuses a `width` by `height` image past the caps.
-fn check(width: u32, height: u32) -> Result<(), String> {
+pub(crate) fn check(width: u32, height: u32) -> Result<(), String> {
   if width == 0 || height == 0 {
     return Err(String::from("an image with no pixels"));
   }
@@ -147,12 +166,11 @@ fn webp(data: &[u8]) -> Result<Pixmap, String> {
   premultiplied(rgba, width, height)
 }
 
-fn svg(data: &[u8], width: u32, height: u32, fit: Fit) -> Result<Pixmap, String> {
-  let tree = svg_tree(data)?;
+pub(crate) fn svg(tree: &usvg::Tree, width: u32, height: u32, fit: Fit) -> Result<Pixmap, String> {
   let size = tree.size();
   let mut pixmap = Pixmap::new(width, height).ok_or("an image with no pixels")?;
   let transform = placement((size.width(), size.height()), (width, height), fit);
-  resvg::render(&tree, transform, &mut pixmap.as_mut());
+  resvg::render(tree, transform, &mut pixmap.as_mut());
   Ok(pixmap)
 }
 

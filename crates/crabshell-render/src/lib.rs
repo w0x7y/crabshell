@@ -67,10 +67,13 @@
 //!   the window's damage covers text that overflows its widget.
 //! - Icons are rasterized at their size in pixels and cached by source and
 //!   that size.
+//! - [`quantize_colors`] decodes an image file as `Image` does and finds
+//!   its main colors by median cut, as for a theme taken from a wallpaper.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod colors;
 mod damage;
 mod draw;
 mod icons;
@@ -80,6 +83,7 @@ mod theme;
 #[cfg(test)]
 mod tests;
 
+pub use colors::quantize_colors;
 pub use damage::{BufferAge, DamageHistory, PixelRect};
 pub use draw::{Canvas, CanvasError, PixelFormat, Renderer};
 pub use icons::DEFAULT_THEME as DEFAULT_ICON_THEME;
