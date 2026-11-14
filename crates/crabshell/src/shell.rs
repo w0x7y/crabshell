@@ -8,6 +8,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use calloop::generic::Generic;
+use calloop::{Interest, Mode};
 use crabshell_reactive::{Owner, ReadSignal, Runtime, Signal};
 use crabshell_services::Sway;
 use crabshell_ui::{Color, Cx, FloatingWindow, IntoProp, Output, Window};
@@ -83,6 +85,7 @@ pub fn run(root: impl FnOnce(&Cx)) -> ! {
   if let Some(stream) = control::connect() {
     shell.follow_supervisor(stream, file);
   }
+  shell.follow_signals();
   shell.run()
 }
 
@@ -277,6 +280,51 @@ impl Shell {
       tracing::info!("the supervisor asked for a reload; exiting");
       std::process::exit(0);
     });
+  }
+
+  /// On SIGTERM or SIGINT, stops the programs the config started and
+  /// removes the IPC socket, as an exit for a reload does, then ends by
+  /// that signal, as the shell did before. The handler only writes to a
+  /// pipe the loop reads; no signal is blocked, since the programs the
+  /// shell starts would inherit that.
+  fn follow_signals(&mut self) {
+    use signal_hook::consts::{SIGINT, SIGTERM};
+    for signal in [SIGTERM, SIGINT] {
+      let pipe = std::os::unix::net::UnixStream::pair().and_then(|(read, write)| {
+        read.set_nonblocking(true)?;
+        signal_hook::low_level::pipe::register(signal, write)?;
+        Ok(read)
+      });
+      let read = match pipe {
+        Ok(read) => read,
+        Err(error) => {
+          tracing::warn!(%error, signal, "can't follow a signal, so it ends the shell at once");
+          continue;
+        }
+      };
+      let cx = self.cx.clone();
+      let source = Generic::new(read, Interest::READ, Mode::Level);
+      let added = self
+        .event_loop
+        .handle()
+        .insert_source(source, move |_, _, _| {
+          tracing::info!(
+            signal,
+            "told to end by a signal; stopping the config's programs"
+          );
+          if let Some(service) = cx.service::<Service>() {
+            service.ipc.remove_socket();
+          }
+          crabshell_services::stop_programs(&cx);
+          if let Err(error) = signal_hook::low_level::emulate_default_handler(signal) {
+            tracing::error!(%error, "couldn't end by the signal");
+          }
+          std::process::exit(128 + signal);
+        });
+      if let Err(error) = added {
+        tracing::warn!(%error, signal, "can't follow a signal, so it ends the shell at once");
+      }
+    }
   }
 
   /// Says `ready` to the supervisor once every panel shown has drawn a

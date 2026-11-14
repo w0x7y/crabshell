@@ -1169,6 +1169,12 @@ fn run_as_child() {
     Ok("panics") => crabshell::run(|_| panic!("a broken config")),
     Ok("counter") => crabshell::run(|cx| cx.per_output(counter::bar)),
     Ok("v0.1") => run_v0_1_bar_logging_its_volume(),
+    Ok("programs") => crabshell::run(|cx| {
+      let program = cx.process(|| ["sh", "-c", "echo $$; exec sleep 30"]);
+      let _program = program.on_line(|pid| eprintln!("the program is {pid}"));
+      cx.ipc("shell", "ping", |_| Ok(String::from("pong")));
+      cx.per_output(counter::bar);
+    }),
     Ok("ipc") => crabshell::run(|cx| {
       let count = cx.signal(0_i64);
       cx.effect(move || eprintln!("the count is {}", count.get()));
@@ -2345,4 +2351,48 @@ fn a_screencopy_view_shows_the_floating_window_the_shell_opened() {
     green(platform)
   });
   assert_eq!(shell.platform().capture_sessions(), 1);
+}
+
+/// A shell told to end by SIGTERM or SIGINT, as `crabshell run` on Ctrl-C
+/// or a session ending tells it, stops the programs it started and
+/// removes its IPC socket, then ends by that signal, as it did before.
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_signal_ends_the_shell_with_its_programs_and_socket() {
+  use std::os::unix::process::ExitStatusExt;
+
+  run_as_child();
+  for signal in ["TERM", "INT"] {
+    let sway = Sway::start();
+    let mut shell = ExampleBar::spawn(
+      &sway,
+      this_as_shell("a_signal_ends_the_shell_with_its_programs_and_socket"),
+      &[(CHILD, "programs")],
+    );
+    let line = shell.wait_for("the program is ");
+    let pid: u32 = line
+      .rsplit(' ')
+      .next()
+      .and_then(|pid| pid.trim().parse().ok())
+      .expect("a pid");
+    let socket = sway
+      .runtime_dir()
+      .join("crabshell")
+      .join(format!("ipc-{}.sock", sway.display()));
+    assert!(socket.exists(), "the IPC socket is there");
+    let sent = Command::new("kill")
+      .args([format!("-{signal}"), shell.child.id().to_string()])
+      .status()
+      .expect("kill runs");
+    assert!(sent.success());
+    let status = shell.exit_status().expect("the shell exits");
+    let number = if signal == "TERM" { 15 } else { 2 };
+    assert_eq!(status.signal(), Some(number), "{status}");
+    assert!(!socket.exists(), "the shell removed its socket");
+    let deadline = Instant::now() + TIMEOUT;
+    while Path::new(&format!("/proc/{pid}")).exists() {
+      assert!(Instant::now() < deadline, "its program {pid} still runs");
+      std::thread::sleep(Duration::from_millis(50));
+    }
+  }
 }

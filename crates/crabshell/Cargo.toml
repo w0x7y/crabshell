@@ -24,6 +24,7 @@ jiff.workspace = true
 # `cx.persist` values, saved as JSON across a reload.
 serde.workspace = true
 serde_json.workspace = true
+signal-hook.workspace = true
 tracing.workspace = true
 # Writes the shell's logs to stderr.
 tracing-subscriber.workspace = true
