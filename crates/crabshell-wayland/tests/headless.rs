@@ -2251,6 +2251,65 @@ fn sway_lists_each_outputs_windowsets_and_follows_its_outputs() {
 
 #[test]
 #[ignore = "needs headless Sway"]
+fn windowset_requests_reach_sway() {
+  let (logs, _logging) = capture_logs();
+  let sway = Sway::start();
+  let mut shell = Shell::new(&sway);
+  shell.wait_for_bar("HEADLESS-1");
+  let heard = watch_windowsets(&mut shell);
+  // A window keeps workspace 1 once another shows.
+  let _app = AppWindow::new(&sway, "org.example.App", "another program");
+  sway.msg(&["workspace", "two"]);
+  run_until(&mut shell.event_loop, "workspace two", |_| {
+    named(&heard, "two").is_some_and(|set| set.active)
+      && named(&heard, "1").is_some_and(|set| !set.active)
+  });
+  let one = named(&heard, "1").expect("listed").id;
+  let first = projection_on(&heard, "HEADLESS-1").expect("listed").id;
+
+  shell.event_loop.platform().activate_windowset(one);
+  // Sway deletes the empty workspace it left.
+  run_until(&mut shell.event_loop, "workspace 1 shown", |_| {
+    named(&heard, "1").is_some_and(|set| set.active) && named(&heard, "two").is_none()
+  });
+  shell
+    .event_loop
+    .platform()
+    .create_windowset(first, String::from("made"));
+  run_until(&mut shell.event_loop, "a new workspace", |_| {
+    named(&heard, "made").is_some_and(|set| set.active && set.projection == Some(first))
+  });
+  sway.msg(&["create_output"]);
+  run_until(&mut shell.event_loop, "HEADLESS-2's projection", |_| {
+    projection_on(&heard, "HEADLESS-2").is_some()
+  });
+  let second = projection_on(&heard, "HEADLESS-2").expect("listed").id;
+  shell.event_loop.platform().assign_windowset(one, second);
+  run_until(&mut shell.event_loop, "workspace 1 on HEADLESS-2", |_| {
+    named(&heard, "1").is_some_and(|set| set.projection == Some(second))
+  });
+
+  // Unknown ids, and a windowset's id where a projection's goes, are
+  // ignored; names the protocol can't carry are refused and logged.
+  let lists = heard.borrow().2;
+  let platform = shell.event_loop.platform();
+  platform.activate_windowset(u64::MAX);
+  platform.create_windowset(one, String::from("nowhere"));
+  platform.assign_windowset(one, one);
+  platform.create_windowset(first, String::from("nul\0inside"));
+  platform.create_windowset(first, "long".repeat(1001));
+  settle(&mut shell.event_loop);
+  assert_eq!(
+    heard.borrow().2,
+    lists,
+    "an ignored request changed something"
+  );
+  let refused = "a windowset's name must be at most 4000 bytes and hold no NUL";
+  assert_eq!(logs.text().matches(refused).count(), 2, "{}", logs.text());
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
 fn nothing_hears_of_windowsets_until_a_watch_asks() {
   let sway = Sway::start();
   let mut shell = Shell::new(&sway);

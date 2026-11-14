@@ -629,7 +629,7 @@ impl Platform {
   /// The work after the sources are dispatched: report the toplevels and
   /// windowsets, flush, take new popups and close the ones that asked, set
   /// up new surfaces, apply changed settings, lay out, draw, start and end
-  /// captures, flush the connection.
+  /// captures, commit windowset requests, flush the connection.
   pub(crate) fn after_dispatch(&mut self) {
     self.stats.iterations += 1;
     self.report_toplevels();
@@ -716,6 +716,7 @@ impl Platform {
     self.paced_captures(&drawn);
     self.sync_text_inputs();
     self.tick_animations();
+    self.commit_windowsets();
     if let Err(error) = self.connection.flush() {
       tracing::warn!(%error, "couldn't flush the Wayland connection");
     }

@@ -1,6 +1,7 @@
 //! Workspaces through `ext-workspace-v1`, named as Quickshell's
 //! WindowManager names them: windowsets (workspaces) in projections
-//! (workspace groups) shown on outputs.
+//! (workspace groups) shown on outputs, and requests to activate,
+//! deactivate, remove, move and create them.
 
 use std::panic::{self, AssertUnwindSafe};
 
@@ -29,6 +30,10 @@ const MAX_PROJECTIONS: usize = 256;
 
 /// The most coordinates a windowset may have.
 const MAX_DIMENSIONS: usize = 16;
+
+/// The longest name sent with `create_windowset`, in bytes: a message
+/// past 4096 bytes ends the connection.
+const MAX_NAME_OUT: usize = 4000;
 
 /// A workspace, as `ext-workspace-v1` lists it.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -78,6 +83,8 @@ pub struct WindowsetProjection {
 pub(crate) struct Windowsets {
   /// Whether a watch asked, so the manager is bound once at most.
   asked: bool,
+  /// What requests are committed with, until `finished`.
+  manager: Option<ExtWorkspaceManagerV1>,
   /// In the order the compositor announced them, with what has come
   /// since the last `done`.
   sets: Vec<Set>,
@@ -87,6 +94,8 @@ pub(crate) struct Windowsets {
   next: u64,
   /// Whether the lists changed since the watch last heard them.
   changed: bool,
+  /// Whether requests were sent since the last `commit`.
+  uncommitted: bool,
   /// Whether input past a cap was logged.
   warned: bool,
   on_change: Option<Watch>,
@@ -127,6 +136,16 @@ struct GroupState {
 }
 
 impl Windowsets {
+  fn set(&self, id: u64) -> Option<&ExtWorkspaceHandleV1> {
+    let set = self.sets.iter().find(|set| set.state.id == id)?;
+    Some(&set.proxy)
+  }
+
+  fn group(&self, id: u64) -> Option<&ExtWorkspaceGroupHandleV1> {
+    let group = self.groups.iter().find(|group| group.state.id == id)?;
+    Some(&group.proxy)
+  }
+
   /// Notes that `output` came, went or got its name: the names listed
   /// change if a projection is on it.
   pub(crate) fn output_changed(&mut self, output: &WlOutput) {
@@ -160,15 +179,74 @@ impl Platform {
     if std::mem::replace(&mut self.windowsets.asked, true) {
       return;
     }
-    // The handles it announces carry everything from here on.
-    let bound = self
-      .registry
-      .bind_one::<ExtWorkspaceManagerV1, _, _>(&self.qh, 1..=1, ());
-    if let Err(error) = bound {
-      tracing::warn!(
+    match self.registry.bind_one(&self.qh, 1..=1, ()) {
+      Ok(manager) => self.windowsets.manager = Some(manager),
+      Err(error) => tracing::warn!(
         %error,
         "the compositor lacks ext-workspace, so no workspaces are listed"
+      ),
+    }
+  }
+
+  /// Asks the compositor to show windowset `id`. Here and below, an
+  /// unknown id is ignored, and the requests made in one loop iteration
+  /// are committed together, so the compositor takes them at once.
+  pub fn activate_windowset(&mut self, id: u64) {
+    if let Some(set) = self.windowsets.set(id) {
+      set.activate();
+      self.windowsets.uncommitted = true;
+    }
+  }
+
+  /// Asks the compositor to stop showing windowset `id`.
+  pub fn deactivate_windowset(&mut self, id: u64) {
+    if let Some(set) = self.windowsets.set(id) {
+      set.deactivate();
+      self.windowsets.uncommitted = true;
+    }
+  }
+
+  /// Asks the compositor to remove windowset `id`.
+  pub fn remove_windowset(&mut self, id: u64) {
+    if let Some(set) = self.windowsets.set(id) {
+      set.remove();
+      self.windowsets.uncommitted = true;
+    }
+  }
+
+  /// Asks the compositor to move windowset `id` to projection
+  /// `projection`.
+  pub fn assign_windowset(&mut self, id: u64, projection: u64) {
+    let found = (self.windowsets.set(id), self.windowsets.group(projection));
+    if let (Some(set), Some(group)) = found {
+      set.assign(group);
+      self.windowsets.uncommitted = true;
+    }
+  }
+
+  /// Asks the compositor for a new windowset in projection `projection`,
+  /// named `name` if it agrees. A name past 4000 bytes or with a NUL byte
+  /// is refused and logged, since sending it would end the connection or
+  /// panic in the bindings.
+  pub fn create_windowset(&mut self, projection: u64, name: String) {
+    if name.len() > MAX_NAME_OUT || name.contains('\0') {
+      return tracing::warn!(
+        bytes = name.len(),
+        "a windowset's name must be at most {MAX_NAME_OUT} bytes and hold no NUL; none is created"
       );
+    }
+    if let Some(group) = self.windowsets.group(projection) {
+      group.create_workspace(name);
+      self.windowsets.uncommitted = true;
+    }
+  }
+
+  /// Sends the requests made since the last call with one `commit`.
+  pub(crate) fn commit_windowsets(&mut self) {
+    if std::mem::take(&mut self.windowsets.uncommitted)
+      && let Some(manager) = &self.windowsets.manager
+    {
+      manager.commit();
     }
   }
 
@@ -273,7 +351,7 @@ impl Dispatch<ExtWorkspaceManagerV1, ()> for Platform {
       }
       Event::Finished => {
         tracing::info!("the compositor stopped listing workspaces");
-        // Dropping the handles destroys them.
+        // Dropping the handles destroys them; the manager is gone already.
         *ours = Windowsets {
           asked: true,
           changed: ours.changed || ours.listed != Default::default(),
