@@ -32,7 +32,7 @@ use crate::text::TextNode;
 use crate::text_input::InputNode;
 use crate::widgets::{Align, Element, ElementChild, ElementKind, Fit, IconSource, Justify};
 use crate::window::{
-  Anchors, DEFAULT_NAMESPACE, KeyboardFocus, Layer, Margins, Output, PanelWindow, Window,
+  Anchors, DEFAULT_NAMESPACE, Hints, KeyboardFocus, Layer, Margins, Output, PanelWindow, Window,
 };
 
 pub(crate) type NodeId = taffy::NodeId;
@@ -196,6 +196,12 @@ pub(crate) struct Surface {
   pub(crate) blur: Option<Region>,
   /// Whether a panel or floating window keeps the screen from idling.
   pub(crate) inhibit_idle: bool,
+  /// Whether it takes the compositor's shortcuts while it has the keys.
+  pub(crate) inhibit_shortcuts: bool,
+  /// Written by the platform: whether the compositor honors that.
+  pub(crate) shortcuts_inhibited: Option<Signal<bool>>,
+  /// Shared by the windows in one focus grab.
+  pub(crate) focus_grab: Option<Signal<bool>>,
   /// Something changed since the platform last read the settings.
   pub(crate) changed: bool,
 }
@@ -214,6 +220,9 @@ impl Default for Surface {
       mask: None,
       blur: None,
       inhibit_idle: false,
+      inhibit_shortcuts: false,
+      shortcuts_inhibited: None,
+      focus_grab: None,
       changed: false,
     }
   }
@@ -392,8 +401,7 @@ impl Tree {
       keyboard_focus,
       namespace,
       mask,
-      blur,
-      inhibit_idle,
+      hints,
       on_key,
       style,
       child: _,
@@ -426,24 +434,36 @@ impl Tree {
     self.bind_opt(root, mask, "mask", |tree, _, value| {
       tree.surface.set(|s| &mut s.mask, value);
     });
-    self.bind_compositor_hints(blur, inhibit_idle);
+    self.bind_compositor_hints(hints);
     self.mount_root(style, child);
     self.surface.changed = true;
   }
 
   /// Binds what a panel or floating window asks of the compositor: its
-  /// blur region and whether it inhibits idle.
-  pub(crate) fn bind_compositor_hints(
-    &mut self,
-    blur: Option<Prop<Option<Region>>>,
-    inhibit_idle: Option<Prop<bool>>,
-  ) {
+  /// blur region, whether it inhibits idle and shortcuts, and the signals
+  /// the platform writes.
+  pub(crate) fn bind_compositor_hints(&mut self, hints: Hints) {
+    let Hints {
+      blur,
+      inhibit_idle,
+      inhibit_shortcuts,
+      shortcuts_inhibited,
+      focus_grab,
+    } = hints;
     self.bind_opt(self.root, blur, "blur", |tree, _, value| {
       tree.surface.set(|s| &mut s.blur, value);
     });
     self.bind_opt(self.root, inhibit_idle, "inhibit_idle", |tree, _, value| {
       tree.surface.set(|s| &mut s.inhibit_idle, value);
     });
+    self.bind_opt(
+      self.root,
+      inhibit_shortcuts,
+      "inhibit_shortcuts",
+      |tree, _, value| tree.surface.set(|s| &mut s.inhibit_shortcuts, value),
+    );
+    self.surface.shortcuts_inhibited = shortcuts_inhibited;
+    self.surface.focus_grab = focus_grab;
   }
 
   /// Applies the root's style and adds its child, as a panel's or a

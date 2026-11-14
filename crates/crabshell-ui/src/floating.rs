@@ -13,7 +13,7 @@ use crate::region::Region;
 use crate::style::Style;
 use crate::tree::{Tree, borrow};
 use crate::widgets::Widget;
-use crate::window::{Anchors, Output, Window};
+use crate::window::{Anchors, Hints, Output, Window};
 
 pub(crate) type CloseHandler = Rc<Handler<dyn Fn(&Cx)>>;
 
@@ -40,8 +40,7 @@ pub struct FloatingWindow {
   pub(crate) maximized: Option<Prop<bool>>,
   pub(crate) fullscreen: Option<Prop<bool>>,
   pub(crate) visible: Option<Prop<bool>>,
-  pub(crate) blur: Option<Prop<Option<Region>>>,
-  pub(crate) inhibit_idle: Option<Prop<bool>>,
+  pub(crate) hints: Hints,
   pub(crate) on_close: Option<CloseHandler>,
   pub(crate) style: Option<Prop<Style>>,
   pub(crate) child: Option<Box<dyn Widget>>,
@@ -68,8 +67,7 @@ impl FloatingWindow {
       maximized: None,
       fullscreen: None,
       visible: None,
-      blur: None,
-      inhibit_idle: None,
+      hints: Hints::default(),
       on_close: None,
       style: None,
       child: None,
@@ -131,7 +129,7 @@ impl FloatingWindow {
   /// Asks the compositor to blur what is behind this part of the window,
   /// as [`PanelWindow::blur`](crate::PanelWindow::blur) does.
   pub fn blur(mut self, region: impl IntoProp<Option<Region>>) -> FloatingWindow {
-    self.blur = Some(region.into_prop());
+    self.hints.blur = Some(region.into_prop());
     self
   }
 
@@ -139,7 +137,32 @@ impl FloatingWindow {
   /// as [`PanelWindow::inhibit_idle`](crate::PanelWindow::inhibit_idle)
   /// does.
   pub fn inhibit_idle(mut self, inhibit: impl IntoProp<bool>) -> FloatingWindow {
-    self.inhibit_idle = Some(inhibit.into_prop());
+    self.hints.inhibit_idle = Some(inhibit.into_prop());
+    self
+  }
+
+  /// Takes the compositor's shortcuts while `true` and the window has the
+  /// keyboard, as
+  /// [`PanelWindow::inhibit_shortcuts`](crate::PanelWindow::inhibit_shortcuts)
+  /// does.
+  pub fn inhibit_shortcuts(mut self, inhibit: impl IntoProp<bool>) -> FloatingWindow {
+    self.hints.inhibit_shortcuts = Some(inhibit.into_prop());
+    self
+  }
+
+  /// Has the compositor write whether it honors `inhibit_shortcuts`, as
+  /// [`PanelWindow::shortcuts_inhibited`](crate::PanelWindow::shortcuts_inhibited)
+  /// does.
+  pub fn shortcuts_inhibited(mut self, signal: Signal<bool>) -> FloatingWindow {
+    self.hints.shortcuts_inhibited = Some(signal);
+    self
+  }
+
+  /// Holds the focus while `signal` is `true`, with the other windows
+  /// given it, as [`PanelWindow::focus_grab`](crate::PanelWindow::focus_grab)
+  /// does.
+  pub fn focus_grab(mut self, signal: Signal<bool>) -> FloatingWindow {
+    self.hints.focus_grab = Some(signal);
     self
   }
 
@@ -367,8 +390,7 @@ impl Tree {
       maximized,
       fullscreen,
       visible,
-      blur,
-      inhibit_idle,
+      hints,
       on_close: _,
       style,
       child: _,
@@ -401,7 +423,7 @@ impl Tree {
       }
       tree.set_floating(|f| &mut f.visible, value);
     });
-    self.bind_compositor_hints(blur, inhibit_idle);
+    self.bind_compositor_hints(hints);
     self.mount_root(style, child);
     self.surface.changed = true;
   }

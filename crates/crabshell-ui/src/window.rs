@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::ops::BitOr;
 use std::rc::Rc;
 
-use crabshell_reactive::{Owner, untrack};
+use crabshell_reactive::{Owner, Signal, untrack};
 
 use crate::cx::{Anchor, Cx};
 use crate::geometry::{Rect, Size};
@@ -211,8 +211,7 @@ pub struct PanelWindow {
   pub(crate) keyboard_focus: Option<Prop<KeyboardFocus>>,
   pub(crate) namespace: Option<Prop<String>>,
   pub(crate) mask: Option<Prop<Option<Region>>>,
-  pub(crate) blur: Option<Prop<Option<Region>>>,
-  pub(crate) inhibit_idle: Option<Prop<bool>>,
+  pub(crate) hints: Hints,
   pub(crate) on_key: Option<KeyHandler>,
   pub(crate) style: Option<Prop<Style>>,
   pub(crate) child: Option<Box<dyn Widget>>,
@@ -232,8 +231,7 @@ impl PanelWindow {
       keyboard_focus: None,
       namespace: None,
       mask: None,
-      blur: None,
-      inhibit_idle: None,
+      hints: Hints::default(),
       on_key: None,
       style: None,
       child: None,
@@ -322,7 +320,7 @@ impl PanelWindow {
   ///     .blur(Some(Region::rect(0, 0, u32::MAX, 30)));
   /// ```
   pub fn blur(mut self, region: impl IntoProp<Option<Region>>) -> PanelWindow {
-    self.blur = Some(region.into_prop());
+    self.hints.blur = Some(region.into_prop());
     self
   }
 
@@ -330,7 +328,39 @@ impl PanelWindow {
   /// and the window is shown, as a video player does. It needs
   /// `idle-inhibit-unstable-v1`; without it, that is logged once.
   pub fn inhibit_idle(mut self, inhibit: impl IntoProp<bool>) -> PanelWindow {
-    self.inhibit_idle = Some(inhibit.into_prop());
+    self.hints.inhibit_idle = Some(inhibit.into_prop());
+    self
+  }
+
+  /// While `true` and the window has the keyboard, the compositor's own
+  /// shortcuts, such as Sway's `bindsym`s, go to the window as keys
+  /// instead, as a remote desktop or a game wants. The compositor may
+  /// keep some, such as one that takes them back. It needs
+  /// `keyboard-shortcuts-inhibit-unstable-v1`; without it, that is logged
+  /// once.
+  pub fn inhibit_shortcuts(mut self, inhibit: impl IntoProp<bool>) -> PanelWindow {
+    self.hints.inhibit_shortcuts = Some(inhibit.into_prop());
+    self
+  }
+
+  /// The compositor writes `true` to `signal` while it honors
+  /// [`inhibit_shortcuts`](Self::inhibit_shortcuts), and `false` once it
+  /// stops, as when the user takes its shortcuts back, or the window
+  /// stops asking or goes. Give each window a signal of its own.
+  pub fn shortcuts_inhibited(mut self, signal: Signal<bool>) -> PanelWindow {
+    self.hints.shortcuts_inhibited = Some(signal);
+    self
+  }
+
+  /// While `signal` is `true`, this window and the shown windows given
+  /// the same signal, with the popups they open, hold the keyboard and
+  /// pointer focus: a click anywhere else ends the grab, and the
+  /// compositor writes `false` to `signal`, as it does when every one of
+  /// them hides. Writing `false` ends the grab, and `true` asks again. It
+  /// needs Hyprland's `hyprland-focus-grab-v1`; without it, that is
+  /// logged once and `signal` is left as it is.
+  pub fn focus_grab(mut self, signal: Signal<bool>) -> PanelWindow {
+    self.hints.focus_grab = Some(signal);
     self
   }
 
@@ -355,6 +385,17 @@ impl PanelWindow {
     self.child = Some(Box::new(child));
     self
   }
+}
+
+/// What a panel or floating window asks of the compositor besides its
+/// surface's settings.
+#[derive(Default)]
+pub(crate) struct Hints {
+  pub(crate) blur: Option<Prop<Option<Region>>>,
+  pub(crate) inhibit_idle: Option<Prop<bool>>,
+  pub(crate) inhibit_shortcuts: Option<Prop<bool>>,
+  pub(crate) shortcuts_inhibited: Option<Signal<bool>>,
+  pub(crate) focus_grab: Option<Signal<bool>>,
 }
 
 /// What the platform needs to set up the window's layer surface.
@@ -486,6 +527,25 @@ impl Window {
   /// idling, as its `inhibit_idle` property says.
   pub fn inhibits_idle(&self) -> bool {
     self.tree.borrow().surface.inhibit_idle
+  }
+
+  /// Whether a panel or floating window asks for the compositor's
+  /// shortcuts while it has the keyboard, as its `inhibit_shortcuts`
+  /// property says.
+  pub fn inhibits_shortcuts(&self) -> bool {
+    self.tree.borrow().surface.inhibit_shortcuts
+  }
+
+  /// The signal a panel or floating window was given with
+  /// `shortcuts_inhibited`, which the platform writes.
+  pub fn shortcuts_inhibited(&self) -> Option<Signal<bool>> {
+    self.tree.borrow().surface.shortcuts_inhibited
+  }
+
+  /// The signal a panel or floating window was given with `focus_grab`:
+  /// windows given the same one share a grab.
+  pub fn focus_grab(&self) -> Option<Signal<bool>> {
+    self.tree.borrow().surface.focus_grab
   }
 
   /// Whether the settings in [`surface`](Self::surface) changed since the

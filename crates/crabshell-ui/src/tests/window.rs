@@ -413,3 +413,60 @@ fn a_panicking_inhibit_idle_is_logged_with_its_path() {
     "{logs}"
   );
 }
+
+#[test]
+fn inhibiting_shortcuts_reaches_the_window_and_a_change_is_reported() {
+  let mut h = Harness::new();
+  let typing = h.cx.signal(true);
+  let window = h.window(
+    h.panel().inhibit_shortcuts(move || typing.get()),
+    200.0,
+    30.0,
+  );
+  assert!(window.inhibits_shortcuts());
+  assert!(window.take_surface_changed());
+
+  typing.set(false);
+  h.frame(&window);
+  assert!(window.take_surface_changed());
+  assert!(!window.inhibits_shortcuts());
+  assert!(
+    !h.window(h.panel(), 200.0, 30.0).inhibits_shortcuts(),
+    "off by default"
+  );
+}
+
+#[test]
+fn a_panicking_inhibit_shortcuts_is_logged_with_its_path() {
+  let mut h = Harness::new();
+  let logs = super::capture_logs(|| {
+    let panel = h
+      .panel()
+      .inhibit_shortcuts(|| -> bool { panic!("no keys") });
+    let window = h.window(panel, 200.0, 30.0);
+    assert!(!window.inhibits_shortcuts());
+  });
+  assert!(
+    logs.contains("PanelWindow[DP-1].inhibit_shortcuts panicked and is disabled"),
+    "{logs}"
+  );
+}
+
+#[test]
+fn the_signals_the_compositor_writes_reach_the_window() {
+  let mut h = Harness::new();
+  let inhibited = h.cx.signal(false);
+  let grabbed = h.cx.signal(true);
+  let window = h.window(
+    h.panel().shortcuts_inhibited(inhibited).focus_grab(grabbed),
+    200.0,
+    30.0,
+  );
+  assert_eq!(window.shortcuts_inhibited(), Some(inhibited));
+  assert_eq!(window.focus_grab(), Some(grabbed));
+  let plain = h.window(h.panel(), 200.0, 30.0);
+  assert_eq!(
+    (plain.shortcuts_inhibited(), plain.focus_grab()),
+    (None, None)
+  );
+}

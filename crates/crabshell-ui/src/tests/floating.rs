@@ -178,3 +178,20 @@ fn a_floating_window_can_inhibit_idle_too() {
   let window = build(&mut h, FloatingWindow::new().inhibit_idle(true));
   assert!(window.inhibits_idle());
 }
+
+#[test]
+fn a_floating_window_can_inhibit_shortcuts_and_grab_focus_too() {
+  let mut h = Harness::new();
+  let inhibited = h.cx.signal(false);
+  let grabbed = h.cx.signal(false);
+  let window = build(
+    &mut h,
+    FloatingWindow::new()
+      .inhibit_shortcuts(true)
+      .shortcuts_inhibited(inhibited)
+      .focus_grab(grabbed),
+  );
+  assert!(window.inhibits_shortcuts());
+  assert_eq!(window.shortcuts_inhibited(), Some(inhibited));
+  assert_eq!(window.focus_grab(), Some(grabbed));
+}
