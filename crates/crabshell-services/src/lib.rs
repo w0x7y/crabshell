@@ -20,6 +20,7 @@ mod clock;
 mod dbus;
 mod desktop_entries;
 mod file;
+mod greetd;
 mod lines;
 mod mpris;
 mod network;
@@ -56,6 +57,7 @@ pub use bluetooth::{Bluetooth, BluetoothAdapter, BluetoothDevice};
 pub use clock::Precision;
 pub use desktop_entries::{DesktopAction, DesktopEntries, DesktopEntry};
 pub use file::FileView;
+pub use greetd::{GreetMessage, GreetState, Greetd};
 pub use mpris::{LoopStatus, Mpris, PlaybackStatus, Player};
 pub use network::{Network, NetworkDevice, NetworkKind, NetworkState, WifiNetwork};
 pub use notifications::{Notification, Notifications, Timeout, Urgency};
@@ -92,6 +94,7 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(process::Processes::new(Rc::clone(&shared)));
   cx.provide(desktop_entries::Service::new(Rc::clone(&shared)));
   cx.provide(file::Files(Rc::clone(&shared)));
+  cx.provide(greetd::Service::new(Rc::clone(&shared)));
 }
 
 /// Stops every program a config started with `cx.process`. The shell
@@ -221,6 +224,12 @@ pub trait ServicesExt {
   /// slow disk delays the frame.
   fn file_view(&self, path: impl Into<PathBuf>) -> FileView;
 
+  /// greetd, for a greeter: makes a session for a user, answers its
+  /// questions and starts it, over the socket `GREETD_SOCK` names. One
+  /// connection per shell, made at the first request; it wakes the shell
+  /// only when greetd answers.
+  fn greetd(&self) -> Greetd;
+
   /// A value kept in the JSON file at `path`, as Quickshell's
   /// `JsonAdapter`: `default` until the file is read, the file's value
   /// once it is, and the file rewritten whenever the config sets another.
@@ -298,6 +307,10 @@ impl ServicesExt for Cx {
 
   fn file_view(&self, path: impl Into<PathBuf>) -> FileView {
     file::file_view(self, path.into())
+  }
+
+  fn greetd(&self) -> Greetd {
+    greetd::greetd(self)
   }
 
   fn json_file<T>(&self, path: impl Into<PathBuf>, default: T) -> Signal<T>
@@ -537,6 +550,8 @@ struct Config {
   /// How long a popup shows when its app leaves that to the server: 5 s,
   /// and less in tests.
   popup_timeout: Duration,
+  /// greetd's socket, from `GREETD_SOCK`. `None` when that is unset.
+  greetd: Option<PathBuf>,
   /// Where the desktop entries are. Tests give directories of their own.
   desktop_entries: desktop_entries::Sources,
 }
@@ -565,6 +580,9 @@ impl Config {
         retry_for: audio::RETRY_FOR,
       }),
       popup_timeout: notifications::POPUP_TIMEOUT,
+      greetd: std::env::var_os("GREETD_SOCK")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from),
       desktop_entries: desktop_entries::Sources::system(),
     }
   }
