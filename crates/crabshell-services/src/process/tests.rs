@@ -187,15 +187,6 @@ fn a_detached_program_is_reaped_when_it_ends() {
     .parse()
     .unwrap();
   run_until(&mut shell, "the program reaped", || gone(pid));
-  assert!(
-    shell
-      .cx
-      .service::<super::Processes>()
-      .unwrap()
-      .reaping
-      .borrow()
-      .is_empty()
-  );
 }
 
 #[test]

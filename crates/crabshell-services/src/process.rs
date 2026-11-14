@@ -21,8 +21,8 @@ use crabshell_reactive::{ReadSignal, Signal, untrack};
 use crabshell_ui::Cx;
 use rustix::process::{Pid, PidfdFlags, Signal as Kill, kill_process_group, pidfd_open};
 
-use crate::Shared;
 use crate::lines::{Lines, panic_message};
+use crate::{Shared, spawn};
 
 /// The most of each output kept in [`Process::stdout`] and
 /// [`Process::stderr`]. Lines still reach `on_line` past it.
@@ -32,11 +32,9 @@ pub(crate) const MAX_OUTPUT: usize = 1024 * 1024;
 /// so a program that reads nothing can't grow the shell without end.
 pub(crate) const MAX_INPUT: usize = 4 * 1024 * 1024;
 
-/// What `cx.process` and `cx.exec_detached` need from the shell: the loop,
-/// and the programs stopped or detached that are still to be reaped.
+/// What `cx.process` and `cx.exec_detached` need from the shell: the loop.
 pub(crate) struct Processes {
   shared: Rc<Shared>,
-  reaping: Rc<RefCell<Vec<Reaping>>>,
   /// Every `cx.process`, so the shell can stop them all before it exits.
   live: RefCell<Vec<Weak<Inner>>>,
 }
@@ -45,7 +43,6 @@ impl Processes {
   pub(crate) fn new(shared: Rc<Shared>) -> Processes {
     Processes {
       shared,
-      reaping: Rc::default(),
       live: RefCell::default(),
     }
   }
@@ -98,16 +95,6 @@ impl<S: AsRef<OsStr>, const N: usize> IntoCommand for [S; N] {
   }
 }
 
-/// The programs still to be reaped, shared by every process.
-type ReapingList = Rc<RefCell<Vec<Reaping>>>;
-
-/// A program nobody reads anymore, waited for so it leaves no zombie.
-struct Reaping {
-  child: Child,
-  /// Its pidfd in the loop, which says when it ended.
-  source: Option<RegistrationToken>,
-}
-
 /// A program the shell runs, from `cx.process(command)`. A clone is cheap
 /// and shares it.
 ///
@@ -123,7 +110,7 @@ pub struct Process {
 
 struct Inner {
   /// `None` when the shell provided no services.
-  processes: Option<(Rc<Shared>, ReapingList)>,
+  processes: Option<Rc<Shared>>,
   /// These live under the starting context's owner.
   running: Signal<bool>,
   status: Signal<Option<ExitStatus>>,
@@ -196,7 +183,7 @@ pub(crate) fn process<C: IntoCommand>(cx: &Cx, command: impl Fn() -> C + 'static
   let service = cx.service::<Processes>();
   let processes = service
     .as_ref()
-    .map(|processes| (Rc::clone(&processes.shared), Rc::clone(&processes.reaping)));
+    .map(|processes| Rc::clone(&processes.shared));
   if processes.is_none() {
     static LOGGED: Once = Once::new();
     LOGGED.call_once(|| {
@@ -253,57 +240,8 @@ pub(crate) fn exec_detached(cx: &Cx, command: impl IntoCommand) {
   let Some(mut command) = command.into_command() else {
     return tracing::warn!("cx.exec_detached() got an empty command; nothing runs");
   };
-  let program = command.get_program().to_string_lossy().into_owned();
-  let spawned = command
-    .stdin(Stdio::null())
-    .stdout(Stdio::null())
-    .stderr(Stdio::null())
-    .process_group(0)
-    .spawn();
-  match spawned {
-    Ok(child) => reap(&processes.shared, &processes.reaping, child),
-    Err(error) => tracing::warn!(program, %error, "couldn't start the program"),
-  }
-}
-
-/// Waits for `child` to end, without blocking, so it leaves no zombie.
-fn reap(shared: &Rc<Shared>, reaping: &Rc<RefCell<Vec<Reaping>>>, child: Child) {
-  let pidfd = pidfd_open(Pid::from_child(&child), PidfdFlags::NONBLOCK)
-    .inspect_err(|error| tracing::warn!(%error, "couldn't follow a program to its end"));
-  let source = pidfd.ok().and_then(|fd| {
-    let (list, owner) = (Rc::downgrade(reaping), Rc::clone(shared));
-    let ended = Box::new(move || {
-      if let Some(list) = list.upgrade() {
-        reap_ended(&owner, &list);
-      }
-    });
-    shared.event_loop()?.insert_fd(fd, Interest::READ, ended)
-  });
-  reaping.borrow_mut().push(Reaping { child, source });
-  // It may have ended before its pidfd was made.
-  reap_ended(shared, reaping);
-}
-
-/// Reaps every waiting program that has ended, and stops watching it.
-fn reap_ended(shared: &Rc<Shared>, reaping: &Rc<RefCell<Vec<Reaping>>>) {
-  let ended: Vec<Reaping> = {
-    let mut list = reaping.borrow_mut();
-    let mut ended = Vec::new();
-    let mut at = 0;
-    while at < list.len() {
-      if matches!(list[at].child.try_wait(), Ok(Some(_)) | Err(_)) {
-        ended.push(list.swap_remove(at));
-      } else {
-        at += 1;
-      }
-    }
-    ended
-  };
-  if let Some(event_loop) = shared.event_loop() {
-    for source in ended.into_iter().filter_map(|entry| entry.source) {
-      event_loop.remove(source);
-    }
-  }
+  // Logged there.
+  let _ = spawn::spawn(&processes.shared, &mut command);
 }
 
 /// Stops the program when the starting context's owner drops it.
@@ -415,7 +353,7 @@ fn terminate(child: &Child) {
 
 impl Inner {
   fn shared(&self) -> Option<&Rc<Shared>> {
-    self.processes.as_ref().map(|(shared, _)| shared)
+    self.processes.as_ref()
   }
 
   fn event_loop(&self) -> Option<Box<dyn crate::EventLoop>> {
@@ -758,8 +696,8 @@ impl Inner {
     };
     terminate(&run.child);
     self.remove_sources(&mut run);
-    if let Some((shared, reaping)) = &self.processes {
-      reap(shared, reaping, run.child);
+    if let Some(shared) = &self.processes {
+      spawn::reap(shared, run.child, run.program);
     }
   }
 

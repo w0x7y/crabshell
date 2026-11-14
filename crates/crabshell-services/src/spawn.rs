@@ -4,7 +4,7 @@
 use std::cell::Cell;
 use std::io;
 use std::os::unix::process::CommandExt;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::rc::Rc;
 
 use calloop::Interest;
@@ -20,7 +20,7 @@ use crate::Shared;
 /// name.
 pub(crate) fn spawn(shared: &Rc<Shared>, command: &mut Command) -> io::Result<u32> {
   let program = command.get_program().to_string_lossy().into_owned();
-  let mut child = command
+  let child = command
     .stdin(Stdio::null())
     .stdout(Stdio::null())
     .stderr(Stdio::null())
@@ -28,13 +28,20 @@ pub(crate) fn spawn(shared: &Rc<Shared>, command: &mut Command) -> io::Result<u3
     .spawn()
     .inspect_err(|error| tracing::warn!(%error, program, "couldn't start a program"))?;
   let pid = child.id();
+  reap(shared, child, program);
+  Ok(pid)
+}
+
+/// Waits for `child` to end without blocking, through a pidfd in the loop
+/// that goes once it is reaped, so it leaves no zombie and nothing polls.
+pub(crate) fn reap(shared: &Rc<Shared>, mut child: Child, program: String) {
   // It can't name another process: the child isn't reaped until it turns
   // readable.
   let pidfd = match rustix::process::pidfd_open(Pid::from_child(&child), PidfdFlags::empty()) {
     Ok(pidfd) => pidfd,
     Err(error) => {
       tracing::warn!(%error, program, "can't watch a program, so it stays a zombie once it exits");
-      return Ok(pid);
+      return;
     }
   };
   let token = Rc::new(Cell::new(None));
@@ -54,7 +61,6 @@ pub(crate) fn spawn(shared: &Rc<Shared>, command: &mut Command) -> io::Result<u3
   if let Some(event_loop) = shared.event_loop() {
     token.set(event_loop.insert_fd(pidfd, Interest::READ, reap));
   }
-  Ok(pid)
 }
 
 #[cfg(test)]
