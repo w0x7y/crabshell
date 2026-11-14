@@ -8,8 +8,9 @@
 mod tests;
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::io::{ErrorKind, Read, Write};
+use std::net::Shutdown;
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::panic::{self, AssertUnwindSafe, Location};
@@ -33,9 +34,13 @@ pub(crate) const MAX_REPLY: usize = 8 * 1024 * 1024;
 /// The longest request sent; a dispatch past it is refused.
 pub(crate) const MAX_REQUEST: usize = 8 * 1024;
 
-/// The most dispatches waiting for Hyprland's reply; one past it is
-/// refused, so a config dispatching in a loop can't run out of files.
+/// The most dispatches waiting to be sent or answered; one past it is
+/// refused, so a config dispatching in a loop can't grow the queue.
 const MAX_DISPATCHES: usize = 64;
+
+/// The most requests out at once. Hyprland's listen backlog holds 10, and
+/// a connect to a full one would block the loop.
+const MAX_IN_FLIGHT: usize = 8;
 
 /// The longest text kept, cut at a character.
 pub(crate) const MAX_TEXT: usize = 4 * 1024;
@@ -334,6 +339,8 @@ struct State {
   version_asked: bool,
   /// What `focus_workspace` was given before the version was known.
   focusing: Vec<String>,
+  /// Requests waiting for fewer than [`MAX_IN_FLIGHT`] to be out.
+  queued: VecDeque<(Asked, String)>,
 }
 
 /// What a request asks Hyprland.
@@ -416,6 +423,7 @@ impl Service {
         lua: None,
         version_asked: false,
         focusing: Vec::new(),
+        queued: VecDeque::new(),
       });
       match &self.shared.config.hyprland {
         None => tracing::info!(
@@ -476,9 +484,7 @@ impl Service {
       return;
     }
     *reading = Reading::Busy;
-    if !self.request(state, query.command(), Asked::List(query)) {
-      state.reading[query as usize] = Reading::Idle;
-    }
+    self.request(state, query.command(), Asked::List(query));
   }
 
   fn dispatch(self: &Rc<Self>, command: &str) {
@@ -488,11 +494,9 @@ impl Service {
     }
     let mut state = self.state.borrow_mut();
     let state = state.as_mut().expect("invariant: started by cx.hyprland()");
-    let waiting = state
-      .requests
-      .iter()
-      .filter(|request| request.asked == Asked::Dispatch);
-    if waiting.count() >= MAX_DISPATCHES {
+    let sent = state.requests.iter().map(|request| request.asked);
+    let waiting = sent.chain(state.queued.iter().map(|(asked, _)| *asked));
+    if waiting.filter(|asked| *asked == Asked::Dispatch).count() >= MAX_DISPATCHES {
       return tracing::warn!(
         command,
         "64 dispatches wait for Hyprland, so this one isn't sent"
@@ -522,17 +526,44 @@ impl Service {
     }
     state.focusing.push(target.to_owned());
     if !state.version_asked {
-      state.version_asked = self.request(state, "j/version", Asked::Version);
-      if !state.version_asked {
-        // Hyprland can't be reached, which `request` logged.
-        state.focusing.clear();
+      state.version_asked = true;
+      self.request(state, "j/version", Asked::Version);
+    }
+  }
+
+  /// Sends `command` on a connection of its own, or once fewer than
+  /// [`MAX_IN_FLIGHT`] are, so connecting never waits for Hyprland.
+  fn request(self: &Rc<Self>, state: &mut State, command: &str, asked: Asked) {
+    if state.requests.len() >= MAX_IN_FLIGHT {
+      return state.queued.push_back((asked, command.to_owned()));
+    }
+    if !self.send(state, command, asked) {
+      match asked {
+        Asked::List(query) => state.reading[query as usize] = Reading::Idle,
+        Asked::Version => {
+          // The switches waiting for it go, as a dispatch would.
+          state.version_asked = false;
+          state.focusing.clear();
+        }
+        Asked::Dispatch => {}
       }
     }
   }
 
-  /// Sends `command` on a connection of its own. `false`, logged once, if
-  /// Hyprland can't be reached.
-  fn request(self: &Rc<Self>, state: &mut State, command: &str, asked: Asked) -> bool {
+  /// Sends what waits, while fewer than [`MAX_IN_FLIGHT`] requests are
+  /// out.
+  fn send_queued(self: &Rc<Self>, state: &mut State) {
+    while state.requests.len() < MAX_IN_FLIGHT {
+      let Some((asked, command)) = state.queued.pop_front() else {
+        return;
+      };
+      self.request(state, &command, asked);
+    }
+  }
+
+  /// Connects and sends `command`. `false`, logged once, if Hyprland
+  /// can't be reached.
+  fn send(self: &Rc<Self>, state: &mut State, command: &str, asked: Asked) -> bool {
     let (Some(dir), Some(event_loop)) = (&self.shared.config.hyprland, self.shared.event_loop())
     else {
       return false;
@@ -545,6 +576,8 @@ impl Service {
       if stream.write(command)? < command.len() {
         return Err(std::io::Error::other("the request didn't fit the socket"));
       }
+      // Hyprland 0.56 and older read until a short read or the end.
+      stream.shutdown(Shutdown::Write)?;
       let fd = stream.as_fd().try_clone_to_owned()?;
       Ok((stream, fd))
     });
@@ -720,10 +753,11 @@ impl Service {
       }
       Err(error) => Some(error.to_string()),
     };
-    let request = state.requests.swap_remove(at);
+    let request = state.requests.remove(at);
     if let Some(event_loop) = self.shared.event_loop() {
       event_loop.remove(request.reader);
     }
+    self.send_queued(state);
     let query = match request.asked {
       Asked::List(query) => query,
       Asked::Dispatch => {
@@ -796,6 +830,9 @@ impl Service {
     let events = state.events.take();
     let requests = std::mem::take(&mut state.requests);
     state.reading = [Reading::Idle; 4];
+    state.queued.clear();
+    state.version_asked = false;
+    state.focusing.clear();
     let Some(event_loop) = self.shared.event_loop() else {
       return;
     };

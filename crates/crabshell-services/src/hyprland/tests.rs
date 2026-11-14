@@ -794,3 +794,64 @@ fn a_version_that_says_nothing_is_logged_and_read_as_before_0_57() {
   let logs = capture_logs(|| shell.cx.hyprland().focus_workspace("2"));
   assert!(logs.contains("no Hyprland to dispatch to"), "{logs}");
 }
+
+#[test]
+fn at_most_eight_requests_wait_for_hyprland_and_the_rest_queue() {
+  let fake = FakeHyprland::new();
+  let (mut shell, hyprland, _events) = connect(&fake);
+  for n in 0..20 {
+    hyprland.dispatch(&format!("workspace {n}"));
+  }
+  let mut sent = Vec::new();
+  for batch in [8, 8, 4] {
+    let commands = fake.answer(&[]);
+    assert_eq!(commands.len(), batch, "{commands:?}");
+    sent.extend(commands);
+    run(&mut shell);
+  }
+  let expected: Vec<_> = (0..20).map(|n| format!("dispatch workspace {n}")).collect();
+  assert_eq!(sent, expected, "in the order they were asked");
+  assert!(fake.requests().is_empty());
+}
+
+#[test]
+fn past_64_waiting_dispatches_one_is_refused() {
+  let fake = FakeHyprland::new();
+  let (mut shell, hyprland, _events) = connect(&fake);
+  let logs = capture_logs(|| {
+    for n in 0..70 {
+      hyprland.dispatch(&format!("workspace {n}"));
+    }
+  });
+  assert_eq!(logs.matches("64 dispatches wait").count(), 6, "{logs}");
+  let mut sent = 0;
+  loop {
+    let answered = fake.answer(&[]).len();
+    if answered == 0 {
+      break;
+    }
+    sent += answered;
+    run(&mut shell);
+  }
+  assert_eq!(sent, 64);
+}
+
+/// Hyprland 0.56 and older read a request 1023 bytes at a time until a
+/// shorter read or its end, so a request of exactly 1023 bytes would
+/// hang it unless the shell ends its writing.
+#[test]
+fn a_request_ends_its_writing() {
+  let fake = FakeHyprland::new();
+  let (_shell, hyprland, _events) = connect(&fake);
+  let command = "x".repeat(1023 - "dispatch ".len());
+  hyprland.dispatch(&command);
+  let (mut stream, _) = fake.requests.accept().expect("a request");
+  stream.set_nonblocking(false).expect("a blocking stream");
+  let timeout = Some(Duration::from_millis(500));
+  stream.set_read_timeout(timeout).expect("a read timeout");
+  let mut request = Vec::new();
+  stream
+    .read_to_end(&mut request)
+    .expect("the request, then its end");
+  assert_eq!(request, format!("dispatch {command}").as_bytes());
+}
