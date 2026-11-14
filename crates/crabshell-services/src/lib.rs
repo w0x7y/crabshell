@@ -18,6 +18,7 @@ mod audio;
 mod bluetooth;
 mod clock;
 mod dbus;
+mod mpris;
 mod notifications;
 mod power;
 mod sway;
@@ -45,6 +46,7 @@ use crabshell_ui::Cx;
 pub use audio::{Audio, AudioNode, AudioStream, Sink};
 pub use bluetooth::{Bluetooth, BluetoothAdapter, BluetoothDevice};
 pub use clock::Precision;
+pub use mpris::{LoopStatus, Mpris, PlaybackStatus, Player};
 pub use notifications::{Notification, Notifications, Timeout, Urgency};
 pub use power::{BatteryState, DeviceKind, PowerDevice, PowerProfile, PowerProfiles, UPower};
 pub use sway::{Sway, Workspace};
@@ -71,6 +73,7 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(power::ProfilesService::new(Rc::clone(&shared)));
   cx.provide(bluetooth::BluetoothService::new(Rc::clone(&shared)));
   cx.provide(notifications::Service::new(Rc::clone(&shared)));
+  cx.provide(mpris::Service::new(Rc::clone(&shared)));
 }
 
 /// The services a context hands out.
@@ -147,6 +150,17 @@ pub trait ServicesExt {
   /// empty and the service never wakes the shell. It wakes the shell only
   /// when an app calls and when a popup expires.
   fn notifications(&self) -> Notifications;
+
+  /// The media players on the session bus, over MPRIS, such as a music
+  /// player or a browser playing a video. Every caller shares one
+  /// connection, which starts on the loop's next turn and never waits
+  /// for the bus.
+  ///
+  /// With no session bus the list stays empty and the service never
+  /// wakes the shell. It wakes the shell only when a player says
+  /// something changed. MPRIS doesn't say when the position moves, so a
+  /// bar works it out with [`Player::position_at`].
+  fn mpris(&self) -> Mpris;
 }
 
 impl ServicesExt for Cx {
@@ -180,6 +194,10 @@ impl ServicesExt for Cx {
 
   fn notifications(&self) -> Notifications {
     notifications::notifications(self)
+  }
+
+  fn mpris(&self) -> Mpris {
+    mpris::mpris(self)
   }
 }
 
@@ -394,8 +412,8 @@ struct Config {
   /// The system bus, where logind, timedated, UPower,
   /// power-profiles-daemon and BlueZ are. `None` for none.
   system_bus: Option<zbus::Address>,
-  /// The session bus, where tray items and notifying apps are. `None` for
-  /// none.
+  /// The session bus, where tray items, notifying apps and media
+  /// players are. `None` for none.
   session_bus: Option<zbus::Address>,
   /// Sway's IPC socket, from `SWAYSOCK`. `None` when that is unset.
   sway: Option<sway::Socket>,
