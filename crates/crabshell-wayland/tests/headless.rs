@@ -734,6 +734,41 @@ fn a_blur_the_compositor_cant_give_is_logged_once_and_the_bar_still_draws() {
   );
 }
 
+#[test]
+#[ignore = "needs headless Sway"]
+fn global_shortcuts_without_hyprland_are_logged_once_and_the_bar_still_draws() {
+  // Sway lacks hyprland-global-shortcuts-v1.
+  let (logs, _logging) = capture_logs();
+  let sway = Sway::start();
+  let mut shell = Shell::new(&sway);
+  let id = shell.wait_for_bar("HEADLESS-1");
+  let platform = shell.event_loop.platform();
+  for name in ["launcher", "lock"] {
+    let watch = platform.watch_shortcut("crabshell", name, "a test shortcut", |_| {
+      panic!("pressed without Hyprland")
+    });
+    assert_eq!(watch, None);
+  }
+  assert_eq!(platform.shortcut_watches(), 0);
+  let before = platform.window_info(id).expect("the bar is held").commits;
+  shell.knobs.label.set(String::from("still drawing"));
+  run_until(
+    &mut shell.event_loop,
+    "a frame with the new label",
+    |platform| {
+      platform
+        .window_info(id)
+        .is_some_and(|info| info.commits > before)
+    },
+  );
+  let text = logs.text();
+  assert_eq!(
+    text.matches("lacks hyprland-global-shortcuts-v1").count(),
+    1,
+    "{text}"
+  );
+}
+
 /// A bar that takes the keyboard, on HEADLESS-1 at scale 1, and a
 /// virtual keyboard. The keyboard comes first, as on a real seat: Sway
 /// gives a layer surface the keyboard as it maps.

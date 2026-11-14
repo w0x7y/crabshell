@@ -295,6 +295,7 @@ dependencies = [
  "tracing-subscriber",
  "wayland-protocols",
  "wayland-protocols-wlr",
+ "wayland-scanner",
 ]
 
 [[package]]

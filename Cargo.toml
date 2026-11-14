@@ -60,6 +60,10 @@ tracing-subscriber = { version = "=0.3.23", default-features = false, features =
 wayland-protocols = { version = "=0.32.13", default-features = false, features = ["client", "staging", "unstable"] }
 # The version sctk 0.21.1 uses. For wlr-foreign-toplevel-management.
 wayland-protocols-wlr = { version = "=0.3.12", default-features = false, features = ["client"] }
+# Generates the bindings for the Hyprland protocols in
+# crates/crabshell-wayland/protocols, as wayland-protocols does. The
+# version wayland-client uses.
+wayland-scanner = "=0.31.11"
 zbus = { version = "=6.2.1", default-features = false, features = ["default-rt", "proxy"] }
 
 # The workspace's own crates.
