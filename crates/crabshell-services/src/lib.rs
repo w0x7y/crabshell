@@ -23,6 +23,7 @@ mod mpris;
 mod network;
 mod notifications;
 mod power;
+mod process;
 mod socket;
 mod sway;
 #[cfg(test)]
@@ -53,6 +54,7 @@ pub use mpris::{LoopStatus, Mpris, PlaybackStatus, Player};
 pub use network::{Network, NetworkDevice, NetworkKind, NetworkState, WifiNetwork};
 pub use notifications::{Notification, Notifications, Timeout, Urgency};
 pub use power::{BatteryState, DeviceKind, PowerDevice, PowerProfile, PowerProfiles, UPower};
+pub use process::{IntoCommand, Process};
 pub use socket::Socket;
 pub use sway::{Sway, Workspace};
 pub use tray::{MenuEntry, MenuToggle, Tray, TrayHost, TrayItem, TrayMenu, TrayStatus};
@@ -81,6 +83,7 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(mpris::Service::new(Rc::clone(&shared)));
   cx.provide(network::NetworkService::new(Rc::clone(&shared)));
   cx.provide(socket::Sockets(Rc::clone(&shared)));
+  cx.provide(process::Processes::new(Rc::clone(&shared)));
 }
 
 /// The services a context hands out.
@@ -180,6 +183,21 @@ pub trait ServicesExt {
   /// this context goes. It wakes the shell only when the other end sends
   /// something or takes what was written.
   fn socket(&self, path: impl Into<PathBuf>) -> Socket;
+
+  /// Runs the program `command` builds, as Quickshell's `Process`, and
+  /// keeps what it prints and how it ended. `command` returns a
+  /// [`Command`](std::process::Command) or a list such as
+  /// `["uptime", "-p"]`. It starts on the loop's next turn, and again
+  /// whenever a signal `command` read changes or [`Process::restart`] is
+  /// called, stopping the run before. It is stopped when this context
+  /// goes. It wakes the shell only when the program prints, takes input
+  /// or ends.
+  fn process<C: IntoCommand>(&self, command: impl Fn() -> C + 'static) -> Process;
+
+  /// Starts `command` and lets it run on its own, as a launcher does:
+  /// its input and outputs are empty, it has a process group of its own,
+  /// and it is reaped when it ends. A failure to start is logged.
+  fn exec_detached(&self, command: impl IntoCommand);
 }
 
 impl ServicesExt for Cx {
@@ -225,6 +243,14 @@ impl ServicesExt for Cx {
 
   fn socket(&self, path: impl Into<PathBuf>) -> Socket {
     socket::socket(self, path.into())
+  }
+
+  fn process<C: IntoCommand>(&self, command: impl Fn() -> C + 'static) -> Process {
+    process::process(self, command)
+  }
+
+  fn exec_detached(&self, command: impl IntoCommand) {
+    process::exec_detached(self, command);
   }
 }
 

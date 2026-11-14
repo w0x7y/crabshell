@@ -16,6 +16,8 @@ crabshell-reactive.workspace = true
 crabshell-ui.workspace = true
 jiff.workspace = true
 libpulse-binding.workspace = true
+# pidfd_open and kill, to follow and stop the programs a config runs.
+rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

@@ -1,0 +1,826 @@
+//! Programs a config runs, as Quickshell's `Process`: what they print,
+//! whole or line by line, and how they ended.
+
+#[cfg(test)]
+mod tests;
+
+use std::cell::RefCell;
+use std::ffi::OsStr;
+use std::io::{ErrorKind, Read, Write};
+use std::os::fd::{AsFd, OwnedFd};
+use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
+use std::panic::{self, AssertUnwindSafe, Location};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::rc::Rc;
+use std::sync::Once;
+use std::time::Instant;
+
+use calloop::timer::TimeoutAction;
+use calloop::{Interest, RegistrationToken};
+use crabshell_reactive::{ReadSignal, Signal, untrack};
+use crabshell_ui::Cx;
+use rustix::process::{Pid, PidfdFlags, Signal as Kill, kill_process_group, pidfd_open};
+
+use crate::Shared;
+use crate::lines::{Lines, panic_message};
+
+/// The most of each output kept in [`Process::stdout`] and
+/// [`Process::stderr`]. Lines still reach `on_line` past it.
+pub(crate) const MAX_OUTPUT: usize = 1024 * 1024;
+
+/// The most bytes left to write to a program's input before it is closed,
+/// so a program that reads nothing can't grow the shell without end.
+pub(crate) const MAX_INPUT: usize = 4 * 1024 * 1024;
+
+/// What `cx.process` and `cx.exec_detached` need from the shell: the loop,
+/// and the programs stopped or detached that are still to be reaped.
+pub(crate) struct Processes {
+  shared: Rc<Shared>,
+  reaping: Rc<RefCell<Vec<Reaping>>>,
+}
+
+impl Processes {
+  pub(crate) fn new(shared: Rc<Shared>) -> Processes {
+    Processes {
+      shared,
+      reaping: Rc::default(),
+    }
+  }
+}
+
+/// What `cx.process` and `cx.exec_detached` run: a [`Command`], or the
+/// program and its arguments as a list, such as `["sleep", "30"]`, as
+/// Quickshell's `command` is.
+pub trait IntoCommand {
+  /// The command, or `None` for an empty list.
+  fn into_command(self) -> Option<Command>;
+}
+
+impl IntoCommand for Command {
+  fn into_command(self) -> Option<Command> {
+    Some(self)
+  }
+}
+
+impl<S: AsRef<OsStr>> IntoCommand for Vec<S> {
+  fn into_command(self) -> Option<Command> {
+    let mut words = self.into_iter();
+    let mut command = Command::new(words.next()?);
+    command.args(words);
+    Some(command)
+  }
+}
+
+impl<S: AsRef<OsStr>, const N: usize> IntoCommand for [S; N] {
+  fn into_command(self) -> Option<Command> {
+    Vec::from(self).into_command()
+  }
+}
+
+/// The programs still to be reaped, shared by every process.
+type ReapingList = Rc<RefCell<Vec<Reaping>>>;
+
+/// A program nobody reads anymore, waited for so it leaves no zombie.
+struct Reaping {
+  child: Child,
+  /// Its pidfd in the loop, which says when it ended.
+  source: Option<RegistrationToken>,
+}
+
+/// A program the shell runs, from `cx.process(command)`. A clone is cheap
+/// and shares it.
+///
+/// It starts on the loop's next turn, so `on_line` and `with_stdin` set
+/// right after `cx.process` apply to it. It runs in a process group of its
+/// own, and that group gets `SIGTERM` when the context that started it
+/// goes or the command starts again. Nothing polls: the shell wakes when
+/// the program prints, takes input or ends.
+#[derive(Clone)]
+pub struct Process {
+  inner: Rc<Inner>,
+}
+
+struct Inner {
+  /// `None` when the shell provided no services.
+  processes: Option<(Rc<Shared>, ReapingList)>,
+  /// These live under the starting context's owner.
+  running: Signal<bool>,
+  status: Signal<Option<ExitStatus>>,
+  stdout: Signal<String>,
+  stderr: Signal<String>,
+  /// Read by the effect that builds the command, so bumping it starts
+  /// the command again.
+  restarts: Signal<u64>,
+  state: RefCell<State>,
+}
+
+#[derive(Default)]
+struct State {
+  /// The command to start at the loop's next turn, and the timer that
+  /// will.
+  pending: Option<Command>,
+  starter: Option<RegistrationToken>,
+  run: Option<Run>,
+  keep_stdin: bool,
+  /// Written before the program started, for its input.
+  input: Vec<u8>,
+  on_line: Option<OnLine>,
+  /// Where `on_line` was set, for the log if it panics.
+  at: Option<&'static Location<'static>>,
+}
+
+/// What a config does with each line.
+type OnLine = Rc<dyn Fn(&str)>;
+
+/// The program running now.
+struct Run {
+  child: Child,
+  program: String,
+  exit: Option<RegistrationToken>,
+  out: Output,
+  err: Output,
+  stdin: Option<UnixStream>,
+  outbox: Vec<u8>,
+  writer: Option<RegistrationToken>,
+  lines: Lines,
+}
+
+/// One of a program's outputs, read as it comes.
+#[derive(Default)]
+struct Output {
+  stream: Option<(UnixStream, RegistrationToken)>,
+  /// The start of a character a read cut off.
+  partial: Vec<u8>,
+  /// How much is in the signal, and whether the cap was logged.
+  kept: usize,
+  capped: bool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Which {
+  Out,
+  Err,
+}
+
+/// `cx.process(command)`.
+pub(crate) fn process<C: IntoCommand>(cx: &Cx, command: impl Fn() -> C + 'static) -> Process {
+  let processes = cx
+    .service::<Processes>()
+    .map(|processes| (Rc::clone(&processes.shared), Rc::clone(&processes.reaping)));
+  if processes.is_none() {
+    static LOGGED: Once = Once::new();
+    LOGGED.call_once(|| {
+      tracing::warn!("cx.process() needs the services the shell provides; nothing runs");
+    });
+  }
+  let inner = Rc::new(Inner {
+    processes,
+    // Running from the start: the effect below starts it at the next
+    // flush.
+    running: cx.signal(true),
+    status: cx.signal(None),
+    stdout: cx.signal(String::new()),
+    stderr: cx.signal(String::new()),
+    restarts: cx.signal(0),
+    state: RefCell::default(),
+  });
+  // Dropped with the starting context's owner, which stops the program.
+  cx.owner().signal(StopOnDrop(Rc::clone(&inner)));
+  let weak = Rc::downgrade(&inner);
+  let restarts = inner.restarts;
+  // The command is the config's: built in an effect, which catches and
+  // logs a panic, and builds it again when a signal it read changes.
+  let running = inner.running;
+  cx.effect(move || {
+    restarts.get();
+    // Not running unless the command builds; it may panic.
+    untrack(|| set(running, false));
+    let next = command().into_command();
+    if let Some(inner) = weak.upgrade() {
+      untrack(|| inner.start(next));
+    }
+  });
+  Process { inner }
+}
+
+/// `cx.exec_detached(command)`.
+pub(crate) fn exec_detached(cx: &Cx, command: impl IntoCommand) {
+  let Some(processes) = cx.service::<Processes>() else {
+    tracing::warn!("cx.exec_detached() needs the services the shell provides; nothing runs");
+    return;
+  };
+  let Some(mut command) = command.into_command() else {
+    return tracing::warn!("cx.exec_detached() got an empty command; nothing runs");
+  };
+  let program = command.get_program().to_string_lossy().into_owned();
+  let spawned = command
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .process_group(0)
+    .spawn();
+  match spawned {
+    Ok(child) => reap(&processes.shared, &processes.reaping, child),
+    Err(error) => tracing::warn!(program, %error, "couldn't start the program"),
+  }
+}
+
+/// Waits for `child` to end, without blocking, so it leaves no zombie.
+fn reap(shared: &Rc<Shared>, reaping: &Rc<RefCell<Vec<Reaping>>>, child: Child) {
+  let pidfd = pidfd_open(Pid::from_child(&child), PidfdFlags::NONBLOCK)
+    .inspect_err(|error| tracing::warn!(%error, "couldn't follow a program to its end"));
+  let source = pidfd.ok().and_then(|fd| {
+    let (list, owner) = (Rc::downgrade(reaping), Rc::clone(shared));
+    let ended = Box::new(move || {
+      if let Some(list) = list.upgrade() {
+        reap_ended(&owner, &list);
+      }
+    });
+    shared.event_loop()?.insert_fd(fd, Interest::READ, ended)
+  });
+  reaping.borrow_mut().push(Reaping { child, source });
+  // It may have ended before its pidfd was made.
+  reap_ended(shared, reaping);
+}
+
+/// Reaps every waiting program that has ended, and stops watching it.
+fn reap_ended(shared: &Rc<Shared>, reaping: &Rc<RefCell<Vec<Reaping>>>) {
+  let ended: Vec<Reaping> = {
+    let mut list = reaping.borrow_mut();
+    let mut ended = Vec::new();
+    let mut at = 0;
+    while at < list.len() {
+      if matches!(list[at].child.try_wait(), Ok(Some(_)) | Err(_)) {
+        ended.push(list.swap_remove(at));
+      } else {
+        at += 1;
+      }
+    }
+    ended
+  };
+  if let Some(event_loop) = shared.event_loop() {
+    for source in ended.into_iter().filter_map(|entry| entry.source) {
+      event_loop.remove(source);
+    }
+  }
+}
+
+/// Stops the program when the starting context's owner drops it.
+struct StopOnDrop(Rc<Inner>);
+
+impl Drop for StopOnDrop {
+  fn drop(&mut self) {
+    self.0.stop();
+  }
+}
+
+impl Process {
+  /// `true` from `cx.process` or a restart until the program ends or
+  /// can't start.
+  pub fn running(&self) -> ReadSignal<bool> {
+    self.inner.running.read_only()
+  }
+
+  /// How the last run ended: `None` while it runs, or if it couldn't
+  /// start.
+  pub fn exit_status(&self) -> ReadSignal<Option<ExitStatus>> {
+    self.inner.status.read_only()
+  }
+
+  /// Everything it printed on its standard output this run, up to 1 MiB,
+  /// decoded as UTF-8 with bad bytes replaced. Complete once
+  /// [`exit_status`](Self::exit_status) is set.
+  pub fn stdout(&self) -> ReadSignal<String> {
+    self.inner.stdout.read_only()
+  }
+
+  /// Like [`stdout`](Self::stdout), for its standard error.
+  pub fn stderr(&self) -> ReadSignal<String> {
+    self.inner.stderr.read_only()
+  }
+
+  /// Calls `on_line` with each line of its standard output, without its
+  /// `\n`, decoded as UTF-8 with bad bytes replaced, as it comes. What is
+  /// left when it ends counts as a last line. A line over 1 MiB is
+  /// dropped and logged.
+  ///
+  /// It runs on the main thread. If it panics, that is logged with the
+  /// program and where `on_line` was called, and it isn't called again.
+  #[track_caller]
+  pub fn on_line(self, on_line: impl Fn(&str) + 'static) -> Process {
+    let mut state = self.inner.state.borrow_mut();
+    state.on_line = Some(Rc::new(on_line));
+    state.at = Some(Location::caller());
+    drop(state);
+    self
+  }
+
+  /// Gives the program an input that [`write`](Self::write) feeds, open
+  /// until [`close_stdin`](Self::close_stdin). Without it the program's
+  /// input is empty. It applies from the next start, so call it right
+  /// after `cx.process`.
+  pub fn with_stdin(self) -> Process {
+    self.inner.state.borrow_mut().keep_stdin = true;
+    self
+  }
+
+  /// Sends `data` to the program's input, as it takes it; written before
+  /// the program started, it waits for the start. Without
+  /// [`with_stdin`](Self::with_stdin), or once the input is closed, `data`
+  /// is dropped and that is logged. If more than 4 MiB wait because the
+  /// program reads nothing, its input is closed.
+  pub fn write(&self, data: impl AsRef<[u8]>) {
+    self.inner.write(data.as_ref());
+  }
+
+  /// Closes the program's input, so it reads the end of it.
+  pub fn close_stdin(&self) {
+    self.inner.close_stdin();
+  }
+
+  /// Sends `SIGTERM` to the program's process group. Its exit status
+  /// comes when it ends.
+  pub fn kill(&self) {
+    if let Some(run) = &self.inner.state.borrow().run {
+      terminate(&run.child);
+    }
+  }
+
+  /// Stops the program if it runs and starts the command again, as when
+  /// a signal the command read changed.
+  pub fn restart(&self) {
+    self.inner.restarts.try_update(|count| *count += 1);
+  }
+}
+
+/// Sends `SIGTERM` to `child`'s process group.
+fn terminate(child: &Child) {
+  // The group is the child's own, from `process_group(0)`.
+  if let Err(error) = kill_process_group(Pid::from_child(child), Kill::TERM) {
+    tracing::debug!(%error, "couldn't stop a program; it may have ended");
+  }
+}
+
+impl Inner {
+  fn shared(&self) -> Option<&Rc<Shared>> {
+    self.processes.as_ref().map(|(shared, _)| shared)
+  }
+
+  fn event_loop(&self) -> Option<Box<dyn crate::EventLoop>> {
+    self.shared()?.event_loop()
+  }
+
+  /// Stops the program running now, if one is, and starts `command` at
+  /// the loop's next turn. An empty command is logged and runs nothing.
+  fn start(self: &Rc<Self>, command: Option<Command>) {
+    self.stop_run();
+    let Some(command) = command else {
+      tracing::warn!("cx.process() got an empty command; nothing runs");
+      set(self.running, false);
+      return;
+    };
+    let Some(event_loop) = self.event_loop() else {
+      return;
+    };
+    let mut state = self.state.borrow_mut();
+    state.pending = Some(command);
+    if state.starter.is_none() {
+      let inner = Rc::clone(self);
+      state.starter = event_loop.insert_timer(
+        Instant::now(),
+        Box::new(move || {
+          inner.spawn_pending();
+          TimeoutAction::Drop
+        }),
+      );
+    }
+    drop(state);
+    set(self.running, true);
+    set(self.status, None);
+    set(self.stdout, String::new());
+    set(self.stderr, String::new());
+  }
+
+  fn spawn_pending(self: &Rc<Self>) {
+    let Some(event_loop) = self.event_loop() else {
+      return;
+    };
+    let (command, keep_stdin, input) = {
+      let mut state = self.state.borrow_mut();
+      state.starter = None;
+      let input = std::mem::take(&mut state.input);
+      (state.pending.take(), state.keep_stdin, input)
+    };
+    let Some(mut command) = command else {
+      return;
+    };
+    let program = command.get_program().to_string_lossy().into_owned();
+    let spawned = spawn_piped(&mut command, keep_stdin);
+    // The command holds the program's ends of the sockets. They must
+    // close here, or its outputs would never end.
+    drop(command);
+    let (child, out, err, stdin) = match spawned {
+      Ok(spawned) => spawned,
+      Err(error) => {
+        tracing::warn!(program, %error, "couldn't start the program");
+        set(self.running, false);
+        return;
+      }
+    };
+    let mut run = Run {
+      child,
+      program,
+      exit: None,
+      out: Output::default(),
+      err: Output::default(),
+      stdin,
+      outbox: input,
+      writer: None,
+      lines: Lines::default(),
+    };
+    for (which, stream) in [(Which::Out, out), (Which::Err, err)] {
+      let Ok(fd) = stream.as_fd().try_clone_to_owned() else {
+        continue;
+      };
+      let inner = Rc::clone(self);
+      let read = Box::new(move || inner.on_output(which));
+      if let Some(token) = event_loop.insert_fd(fd, Interest::READ, read) {
+        run.output(which).stream = Some((stream, token));
+      }
+    }
+    match pidfd_open(Pid::from_child(&run.child), PidfdFlags::NONBLOCK) {
+      Ok(fd) => {
+        let inner = Rc::clone(self);
+        let ended = Box::new(move || inner.on_exit());
+        run.exit = event_loop.insert_fd(fd, Interest::READ, ended);
+      }
+      Err(error) => tracing::warn!(%error, "couldn't follow a program to its end"),
+    }
+    self.state.borrow_mut().run = Some(run);
+    // Whatever was written before it started.
+    self.flush();
+  }
+
+  /// Reads what the program printed on one output.
+  fn on_output(&self, which: Which) {
+    let mut chunk = [0; 64 * 1024];
+    let mut state = self.state.borrow_mut();
+    let Some(run) = state.run.as_mut() else {
+      return;
+    };
+    let Some((stream, _)) = run.output(which).stream.as_mut() else {
+      return;
+    };
+    let read = match stream.read(&mut chunk) {
+      Ok(read) => read,
+      Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
+        return;
+      }
+      Err(_) => 0,
+    };
+    let (text, lines) = run.take(which, &chunk[..read]);
+    let program = run.program.clone();
+    if read == 0 {
+      // It closed this output; its exit is still to come.
+      let token = run.output(which).stream.take().map(|(_, token)| token);
+      if let (Some(token), Some(event_loop)) = (token, self.event_loop()) {
+        event_loop.remove(token);
+      }
+    }
+    drop(state);
+    self.show(which, text);
+    self.deliver(lines, &program);
+  }
+
+  /// The program ended: reads what is left of its outputs, then shows how
+  /// it ended.
+  fn on_exit(&self) {
+    let mut state = self.state.borrow_mut();
+    let Some(run) = state.run.as_mut() else {
+      return;
+    };
+    let status = match run.child.try_wait() {
+      Ok(Some(status)) => status,
+      Ok(None) => return,
+      Err(error) => {
+        tracing::warn!(%error, program = run.program, "lost track of the program");
+        return;
+      }
+    };
+    let mut run = state.run.take().expect("invariant: matched just above");
+    drop(state);
+    // What it printed before it ended is in the sockets now. A program it
+    // started may hold them open, so read only what is there.
+    let mut chunk = [0; 64 * 1024];
+    for which in [Which::Out, Which::Err] {
+      while let Some((stream, _)) = run.output(which).stream.as_mut() {
+        let Ok(read @ 1..) = stream.read(&mut chunk) else {
+          break;
+        };
+        let (text, lines) = run.take(which, &chunk[..read]);
+        self.show(which, text);
+        self.deliver(lines, &run.program);
+      }
+      let (text, lines) = run.take(which, &[]);
+      self.show(which, text);
+      self.deliver(lines, &run.program);
+    }
+    let last = run.lines.finish();
+    self.deliver(last.into_iter().collect(), &run.program);
+    self.remove_sources(&mut run);
+    set(self.status, Some(status));
+    set(self.running, false);
+  }
+
+  /// Adds `text` to the output's signal.
+  fn show(&self, which: Which, text: String) {
+    if text.is_empty() {
+      return;
+    }
+    let signal = match which {
+      Which::Out => self.stdout,
+      Which::Err => self.stderr,
+    };
+    signal.try_update(|all| all.push_str(&text));
+  }
+
+  /// Calls `on_line` with each line, with nothing borrowed.
+  fn deliver(&self, lines: Vec<String>, program: &str) {
+    if lines.is_empty() {
+      return;
+    }
+    let (on_line, at) = {
+      let state = self.state.borrow();
+      (state.on_line.clone(), state.at)
+    };
+    let Some(on_line) = on_line else {
+      return;
+    };
+    for line in lines {
+      // Not once the context went, or `on_line` was replaced.
+      let current = self.state.borrow().on_line.clone();
+      if !current.is_some_and(|now| Rc::ptr_eq(&now, &on_line)) {
+        return;
+      }
+      if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| on_line(&line))) {
+        let at = at.map_or_else(String::new, |at| format!(" (called at {at})"));
+        let message = panic_message(payload.as_ref());
+        tracing::error!("process {program} on_line{at} panicked: {message}");
+        let mut state = self.state.borrow_mut();
+        // Unless it set a new one meanwhile.
+        if state
+          .on_line
+          .as_ref()
+          .is_some_and(|now| Rc::ptr_eq(now, &on_line))
+        {
+          state.on_line = None;
+        }
+        return;
+      }
+    }
+  }
+
+  fn write(self: &Rc<Self>, data: &[u8]) {
+    let ended = untrack(|| self.status.try_with(Option::is_some)) != Some(false);
+    let mut state = self.state.borrow_mut();
+    // Not started yet, so kept for the start.
+    let waiting = state.keep_stdin && state.run.is_none() && !ended;
+    match state.run.as_mut() {
+      Some(run) if run.stdin.is_some() => run.outbox.extend_from_slice(data),
+      _ if waiting => {
+        if state.input.len() + data.len() > MAX_INPUT {
+          return tracing::warn!("over 4 MiB written before the program started; dropped");
+        }
+        return state.input.extend_from_slice(data);
+      }
+      _ => return tracing::warn!("the program takes no input now, so a write was dropped"),
+    }
+    drop(state);
+    self.flush();
+  }
+
+  /// Writes what the program's input takes, and waits for room for the
+  /// rest.
+  fn flush(self: &Rc<Self>) {
+    let Some(event_loop) = self.event_loop() else {
+      return;
+    };
+    let mut state = self.state.borrow_mut();
+    let Some(run) = state.run.as_mut() else {
+      return;
+    };
+    let Some(stdin) = run.stdin.as_mut() else {
+      return;
+    };
+    let mut broken = false;
+    while !run.outbox.is_empty() {
+      match stdin.write(&run.outbox) {
+        Ok(written) => {
+          run.outbox.drain(..written);
+        }
+        Err(error) if error.kind() == ErrorKind::Interrupted => {}
+        Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+        Err(_) => {
+          broken = true;
+          break;
+        }
+      }
+    }
+    if run.outbox.len() > MAX_INPUT {
+      let program = &run.program;
+      tracing::warn!(
+        program,
+        "the program reads nothing it is sent; closing its input"
+      );
+      broken = true;
+    }
+    if broken {
+      drop(state);
+      return self.close_stdin();
+    }
+    if run.outbox.is_empty() {
+      if let Some(writer) = run.writer.take() {
+        event_loop.remove(writer);
+      }
+    } else if run.writer.is_none()
+      && let Ok(fd) = stdin.as_fd().try_clone_to_owned()
+    {
+      let inner = Rc::clone(self);
+      run.writer = event_loop.insert_fd(fd, Interest::WRITE, Box::new(move || inner.flush()));
+    }
+  }
+
+  fn close_stdin(&self) {
+    let writer = {
+      let mut state = self.state.borrow_mut();
+      state.keep_stdin = false;
+      state.input.clear();
+      let Some(run) = state.run.as_mut() else {
+        return;
+      };
+      run.stdin = None;
+      run.outbox.clear();
+      run.writer.take()
+    };
+    if let (Some(writer), Some(event_loop)) = (writer, self.event_loop()) {
+      event_loop.remove(writer);
+    }
+  }
+
+  /// Stops the program running now, if one is: `SIGTERM` to its group,
+  /// its outputs closed, and it is left to be reaped.
+  fn stop_run(&self) {
+    let run = self.state.borrow_mut().run.take();
+    let Some(mut run) = run else {
+      return;
+    };
+    terminate(&run.child);
+    self.remove_sources(&mut run);
+    if let Some((shared, reaping)) = &self.processes {
+      reap(shared, reaping, run.child);
+    }
+  }
+
+  /// Stops everything, for good, as the starting context went.
+  fn stop(&self) {
+    let (starter, on_line) = {
+      let mut state = self.state.borrow_mut();
+      state.pending = None;
+      (state.starter.take(), state.on_line.take())
+    };
+    // Dropped outside the borrow: it may hold this process, and its drop
+    // may use it.
+    drop(on_line);
+    if let (Some(starter), Some(event_loop)) = (starter, self.event_loop()) {
+      event_loop.remove(starter);
+    }
+    self.stop_run();
+  }
+
+  fn remove_sources(&self, run: &mut Run) {
+    let tokens = [
+      run.exit.take(),
+      run.writer.take(),
+      run.out.stream.take().map(|(_, token)| token),
+      run.err.stream.take().map(|(_, token)| token),
+    ];
+    run.stdin = None;
+    if let Some(event_loop) = self.event_loop() {
+      for token in tokens.into_iter().flatten() {
+        event_loop.remove(token);
+      }
+    }
+  }
+}
+
+/// The program's outputs, and its input if wanted, through socket pairs,
+/// whose ends here are non-blocking.
+#[allow(
+  clippy::type_complexity,
+  reason = "the four parts of one spawn, used once"
+)]
+fn spawn_piped(
+  command: &mut Command,
+  keep_stdin: bool,
+) -> std::io::Result<(Child, UnixStream, UnixStream, Option<UnixStream>)> {
+  let (out, child_out) = UnixStream::pair()?;
+  let (err, child_err) = UnixStream::pair()?;
+  out.set_nonblocking(true)?;
+  err.set_nonblocking(true)?;
+  let (stdin, child_in) = if keep_stdin {
+    let (ours, theirs) = UnixStream::pair()?;
+    ours.set_nonblocking(true)?;
+    (Some(ours), Stdio::from(OwnedFd::from(theirs)))
+  } else {
+    (None, Stdio::null())
+  };
+  let child = command
+    .stdout(Stdio::from(OwnedFd::from(child_out)))
+    .stderr(Stdio::from(OwnedFd::from(child_err)))
+    .stdin(child_in)
+    .process_group(0)
+    .spawn()?;
+  Ok((child, out, err, stdin))
+}
+
+impl Run {
+  fn output(&mut self, which: Which) -> &mut Output {
+    match which {
+      Which::Out => &mut self.out,
+      Which::Err => &mut self.err,
+    }
+  }
+
+  /// `bytes` read from one output: the text to add to its signal, and for
+  /// standard output the whole lines it completes. Empty `bytes` means
+  /// the output ended, which lets a cut-off character go.
+  fn take(&mut self, which: Which, bytes: &[u8]) -> (String, Vec<String>) {
+    let lines = if which == Which::Out && !bytes.is_empty() {
+      self.lines.push(bytes, &self.program)
+    } else {
+      Vec::new()
+    };
+    let program = self.program.clone();
+    let output = self.output(which);
+    output.partial.extend_from_slice(bytes);
+    let mut text = if bytes.is_empty() {
+      String::from_utf8_lossy(&std::mem::take(&mut output.partial)).into_owned()
+    } else {
+      decode(&mut output.partial)
+    };
+    let room = MAX_OUTPUT.saturating_sub(output.kept);
+    if text.len() > room {
+      if !std::mem::replace(&mut output.capped, true) {
+        tracing::warn!(program, "a program printed over 1 MiB; the rest isn't kept");
+      }
+      let mut end = room;
+      while !text.is_char_boundary(end) {
+        end -= 1;
+      }
+      text.truncate(end);
+    }
+    output.kept += text.len();
+    (text, lines)
+  }
+}
+
+/// The text `bytes` holds, with bad bytes replaced, leaving in `bytes`
+/// the start of a character cut off at its end.
+fn decode(bytes: &mut Vec<u8>) -> String {
+  let mut text = String::new();
+  let mut rest: &[u8] = bytes;
+  loop {
+    match std::str::from_utf8(rest) {
+      Ok(valid) => {
+        text.push_str(valid);
+        rest = &[];
+        break;
+      }
+      Err(error) => {
+        let (valid, after) = rest.split_at(error.valid_up_to());
+        text.push_str(&String::from_utf8_lossy(valid));
+        match error.error_len() {
+          Some(bad) => {
+            text.push('\u{fffd}');
+            rest = &after[bad..];
+          }
+          None => {
+            rest = after;
+            break;
+          }
+        }
+      }
+    }
+  }
+  *bytes = rest.to_vec();
+  text
+}
+
+/// Sets `signal` unless it holds `value` or is gone. The read is
+/// untracked, so an effect that starts a process doesn't run again for it.
+fn set<T: PartialEq + 'static>(signal: Signal<T>, value: T) {
+  if untrack(|| signal.try_with(|old| *old != value)) == Some(true) {
+    signal.try_set(value);
+  }
+}
