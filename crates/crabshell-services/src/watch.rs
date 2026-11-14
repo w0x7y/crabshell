@@ -42,6 +42,14 @@ type Listener = Rc<dyn Fn(&Change)>;
 #[derive(Default)]
 pub(crate) struct Watcher(RefCell<Option<Instance>>);
 
+impl Watcher {
+  /// Whether the inotify instance is open.
+  #[cfg(test)]
+  pub(crate) fn is_open(&self) -> bool {
+    self.0.borrow().is_some()
+  }
+}
+
 struct Instance {
   inotify: Inotify,
   /// Its descriptor's source in the loop.

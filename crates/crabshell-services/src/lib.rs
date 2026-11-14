@@ -1,5 +1,5 @@
 //! The services a Crabshell bar reads: the clock, Sway's workspaces, audio,
-//! the tray, power and notifications.
+//! the tray, power, notifications and the installed applications.
 //!
 //! The shell calls [`provide`] once, with its root context and event loop.
 //! After that, any context hands out services through [`ServicesExt`],
@@ -18,8 +18,6 @@ mod audio;
 mod bluetooth;
 mod clock;
 mod dbus;
-// Used by the service, in the next commit.
-#[allow(dead_code)]
 mod desktop_entries;
 mod file;
 mod lines;
@@ -29,14 +27,11 @@ mod notifications;
 mod power;
 mod process;
 mod socket;
-// Used by the desktop entries, in the next commit.
-#[allow(dead_code)]
 mod spawn;
 mod sway;
 #[cfg(test)]
 mod testing;
 mod tray;
-#[allow(dead_code)]
 mod watch;
 
 use std::cell::{Cell, OnceCell, RefCell};
@@ -59,6 +54,7 @@ use crabshell_ui::Cx;
 pub use audio::{Audio, AudioNode, AudioStream, Sink};
 pub use bluetooth::{Bluetooth, BluetoothAdapter, BluetoothDevice};
 pub use clock::Precision;
+pub use desktop_entries::{DesktopAction, DesktopEntries, DesktopEntry};
 pub use file::FileView;
 pub use mpris::{LoopStatus, Mpris, PlaybackStatus, Player};
 pub use network::{Network, NetworkDevice, NetworkKind, NetworkState, WifiNetwork};
@@ -94,6 +90,7 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(network::NetworkService::new(Rc::clone(&shared)));
   cx.provide(socket::Sockets(Rc::clone(&shared)));
   cx.provide(process::Processes::new(Rc::clone(&shared)));
+  cx.provide(desktop_entries::Service::new(Rc::clone(&shared)));
 }
 
 /// Stops every program a config started with `cx.process`. The shell
@@ -231,6 +228,16 @@ pub trait ServicesExt {
   fn json_file<T>(&self, path: impl Into<PathBuf>, default: T) -> Signal<T>
   where
     T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + 'static;
+
+  /// The installed applications, from the desktop entries in the XDG
+  /// data directories: what a launcher lists and starts, and where a
+  /// window's app id finds its icon. Every caller shares one list, read
+  /// on the loop's next turn after the first call.
+  ///
+  /// The directories are watched, and the list is read again once the
+  /// files have been still for 100 ms after a change. It wakes the shell
+  /// at no other time.
+  fn desktop_entries(&self) -> DesktopEntries;
 }
 
 impl ServicesExt for Cx {
@@ -296,6 +303,10 @@ impl ServicesExt for Cx {
     T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + 'static,
   {
     file::json_file(self, path.into(), default)
+  }
+
+  fn desktop_entries(&self) -> DesktopEntries {
+    desktop_entries::desktop_entries(self)
   }
 }
 
@@ -524,6 +535,8 @@ struct Config {
   /// How long a popup shows when its app leaves that to the server: 5 s,
   /// and less in tests.
   popup_timeout: Duration,
+  /// Where the desktop entries are. Tests give directories of their own.
+  desktop_entries: desktop_entries::Sources,
 }
 
 impl Config {
@@ -550,6 +563,7 @@ impl Config {
         retry_for: audio::RETRY_FOR,
       }),
       popup_timeout: notifications::POPUP_TIMEOUT,
+      desktop_entries: desktop_entries::Sources::system(),
     }
   }
 }

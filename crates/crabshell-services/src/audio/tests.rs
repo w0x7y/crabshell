@@ -232,6 +232,7 @@ impl Harness {
       sway: None,
       audio: Some(server),
       popup_timeout: crate::notifications::POPUP_TIMEOUT,
+      desktop_entries: Default::default(),
     };
     crate::provide_with(&cx, &event_loop.handle(), config);
     Harness { event_loop, cx }

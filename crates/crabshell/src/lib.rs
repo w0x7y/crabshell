@@ -83,11 +83,12 @@ pub mod prelude {
   pub use crate::{IntoPanels, ShellExt, Toplevels};
   pub use crabshell_reactive::{Effect, Memo, ReadSignal, Signal};
   pub use crabshell_services::{
-    AudioNode, AudioStream, BatteryState, Bluetooth, BluetoothAdapter, BluetoothDevice, DeviceKind,
-    FileView, IntoCommand, LoopStatus, Mpris, Network, NetworkDevice, NetworkKind, NetworkState,
-    Notification, Notifications, PlaybackStatus, Player, PowerDevice, PowerProfile, PowerProfiles,
-    Precision, Process, ServicesExt, Sink, Socket, Timeout, Tray, TrayHost, TrayItem, TrayMenu,
-    TrayStatus, UPower, Urgency, WifiNetwork, Workspace,
+    AudioNode, AudioStream, BatteryState, Bluetooth, BluetoothAdapter, BluetoothDevice,
+    DesktopAction, DesktopEntries, DesktopEntry, DeviceKind, FileView, IntoCommand, LoopStatus,
+    Mpris, Network, NetworkDevice, NetworkKind, NetworkState, Notification, Notifications,
+    PlaybackStatus, Player, PowerDevice, PowerProfile, PowerProfiles, Precision, Process,
+    ServicesExt, Sink, Socket, Timeout, Tray, TrayHost, TrayItem, TrayMenu, TrayStatus, UPower,
+    Urgency, WifiNetwork, Workspace,
   };
   pub use crabshell_ui::{
     Adjust, Align, Anchors, Animate, Border, Button, Color, Column, Cx, Easing, Edge, Fit,
