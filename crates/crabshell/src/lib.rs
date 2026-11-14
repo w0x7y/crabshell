@@ -81,7 +81,7 @@ pub use shell::{EXIT_NO_COMPOSITOR, EXIT_ROOT_PANICKED, Error, Shell, ShellExt, 
 /// What a bar uses, in one `use crabshell::prelude::*`.
 pub mod prelude {
   pub use crate::{IntoPanels, ShellExt, Toplevels};
-  pub use crabshell_reactive::{Effect, Memo, ReadSignal, Signal};
+  pub use crabshell_reactive::{Effect, Memo, ReadSignal, Signal, untrack};
   pub use crabshell_services::{
     AudioNode, AudioStream, BatteryState, Bluetooth, BluetoothAdapter, BluetoothDevice,
     DesktopAction, DesktopEntries, DesktopEntry, DeviceKind, FileView, IntoCommand, LoopStatus,

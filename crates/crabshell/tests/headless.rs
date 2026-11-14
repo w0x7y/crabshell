@@ -77,7 +77,7 @@ use crabshell_reactive::Runtime;
 use crabshell_ui::{Content, NodeView, Rect};
 use crabshell_wayland::{EventLoop, Platform, WindowId};
 use pipewire::PrivateServer;
-use sway::{Image, Sway, VirtualKeyboard, VirtualPointer, keys};
+use sway::{AppWindow, Image, Sway, VirtualKeyboard, VirtualPointer, keys};
 
 /// How long any wait may take before the test fails.
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -2062,4 +2062,196 @@ fn the_desktop_bar_shows_a_toast_and_sleeps_with_every_service_started() {
   steady_shot(&sway, "HEADLESS-1");
   let wakeups = bar.wakeups_for(Duration::from_secs(10));
   assert!(wakeups.is_empty(), "woke while idle: {wakeups:?}");
+}
+
+/// What the overview example reads, in a temporary directory: three
+/// applications that write their name to `launched` when started, one
+/// hidden, icons for each, a wallpaper of two colors, and private XDG
+/// directories so the user's own never show.
+struct Overview {
+  dir: PathBuf,
+}
+
+impl Overview {
+  fn new() -> Overview {
+    let dir = std::env::temp_dir().join(format!("crabshell-overview-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let apps = dir.join("data/applications");
+    std::fs::create_dir_all(&apps).expect("the applications directory");
+    std::fs::create_dir_all(dir.join("none")).expect("an empty data directory");
+    let launch = dir.join("launch.sh");
+    std::fs::write(
+      &launch,
+      format!(
+        "#!/bin/sh\necho \"$1\" > {}\n",
+        dir.join("launched").display()
+      ),
+    )
+    .expect("the launch script");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&launch, std::fs::Permissions::from_mode(0o755))
+      .expect("an executable script");
+    for (id, name, comment, color) in [
+      ("files", "Files", "Browse your files", [0x89, 0xb4, 0xfa]),
+      ("notes", "Notes", "Write things down", [0xa6, 0xe3, 0xa1]),
+      ("terminal", "Terminal", "", [0xf3, 0x8b, 0xa8]),
+    ] {
+      let icon = small_png(&dir.join(format!("{id}.png")), &[color; 4]);
+      std::fs::write(
+        apps.join(format!("{id}.desktop")),
+        format!(
+          "[Desktop Entry]\nType=Application\nName={name}\nComment={comment}\nIcon={}\nExec={} {id}\n",
+          icon.display(),
+          launch.display()
+        ),
+      )
+      .expect("a desktop entry");
+    }
+    std::fs::write(
+      apps.join("hidden.desktop"),
+      "[Desktop Entry]\nType=Application\nName=Hidden\nNoDisplay=true\nExec=true\n",
+    )
+    .expect("a hidden entry");
+    small_png(
+      &dir.join("wallpaper.png"),
+      &[[0x1e, 0x66, 0xf5], [0xfe, 0x64, 0x0b]],
+    );
+    Overview { dir }
+  }
+
+  fn env(&self) -> Vec<(&'static str, String)> {
+    let at = |name: &str| self.dir.join(name).display().to_string();
+    vec![
+      ("XDG_DATA_HOME", at("data")),
+      ("XDG_DATA_DIRS", at("none")),
+      ("XDG_STATE_HOME", at("state")),
+      ("WALLPAPER", at("wallpaper.png")),
+    ]
+  }
+
+  fn start(&self, sway: &Sway) -> ExampleBar {
+    let env = self.env();
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    ExampleBar::start(sway, "overview", true, &env)
+  }
+
+  fn launched(&self) -> Option<String> {
+    std::fs::read_to_string(self.dir.join("launched")).ok()
+  }
+}
+
+impl Drop for Overview {
+  fn drop(&mut self) {
+    let _ = std::fs::remove_dir_all(&self.dir);
+  }
+}
+
+/// A PNG 4 pixels wide with a row for each of `colors`, at `path`.
+fn small_png(path: &Path, colors: &[[u8; 3]]) -> PathBuf {
+  let file = std::fs::File::create(path).expect("create the PNG");
+  let height = u32::try_from(colors.len()).expect("a few rows");
+  let mut encoder = png::Encoder::new(file, 4, height);
+  encoder.set_color(png::ColorType::Rgb);
+  let mut writer = encoder.write_header().expect("the header");
+  let pixels: Vec<u8> = colors.iter().flat_map(|color| color.repeat(4)).collect();
+  writer.write_image_data(&pixels).expect("the pixels");
+  path.to_owned()
+}
+
+/// Calls the shell's IPC handler `target`.`function` on `sway`, as
+/// `crabshell ipc` does, and returns the reply line.
+fn ipc_call(sway: &Sway, target: &str, function: &str) -> String {
+  use std::io::Write;
+  let socket = sway
+    .runtime_dir()
+    .join("crabshell")
+    .join(format!("ipc-{}.sock", sway.display()));
+  let deadline = Instant::now() + TIMEOUT;
+  let mut stream = loop {
+    match std::os::unix::net::UnixStream::connect(&socket) {
+      Ok(stream) => break stream,
+      Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+      Err(error) => panic!("no IPC socket at {}: {error}", socket.display()),
+    }
+  };
+  stream
+    .set_read_timeout(Some(TIMEOUT))
+    .expect("a read timeout");
+  writeln!(
+    stream,
+    r#"{{"target":"{target}","function":"{function}","args":[]}}"#
+  )
+  .expect("the request");
+  let mut reply = String::new();
+  BufReader::new(stream)
+    .read_line(&mut reply)
+    .expect("the reply");
+  reply
+}
+
+/// Phase 10's exit check: the overview example opens and closes from the
+/// command line, lists the applications from desktop entries, recent
+/// ones first, and another program's window, shows the wallpaper's colors
+/// and `uname -s`, launches an application on a click, and sleeps while
+/// it is open.
+#[test]
+#[ignore = "needs headless Sway"]
+fn the_overview_opens_from_the_command_line_launches_an_app_and_sleeps() {
+  let overview = Overview::new();
+  // The overview's top 40 + 420 logical pixels.
+  for (scale, factor, suffix) in [("1", 1.0, "1x"), ("1.5", 1.5, "1.5x"), ("2", 2.0, "2x")] {
+    let sway = Sway::start();
+    sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", scale]);
+    sway.msg(&["default_border", "none"]);
+    let _window = AppWindow::new(&sway, "org.example.notes", "notes");
+    let shell = overview.start(&sway);
+    assert_eq!(ipc_call(&sway, "overview", "open"), "{\"ok\":\"\"}\n");
+    shell.wait_for(FIRST_FRAME);
+    let shot = steady_shot(&sway, "HEADLESS-1");
+    check_golden(
+      &format!("overview@{suffix}"),
+      &shot,
+      (460.0 * factor) as u32,
+    );
+  }
+
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  sway.msg(&["default_border", "none"]);
+  let _window = AppWindow::new(&sway, "org.example.notes", "notes");
+  // A headless seat has no pointer until a program gives it one.
+  let mut pointer = VirtualPointer::new(&sway);
+  let shell = overview.start(&sway);
+  let closed = steady_shot(&sway, "HEADLESS-1");
+  ipc_call(&sway, "overview", "toggle");
+  shell.wait_for(FIRST_FRAME);
+  let open = steady_shot(&sway, "HEADLESS-1");
+  assert_ne!(open.rgba, closed.rgba, "toggle opened it");
+
+  // Asleep while open, with every Phase 10 service it uses started.
+  let wakeups = shell.wakeups_for(Duration::from_secs(10));
+  assert!(wakeups.is_empty(), "woke while idle: {wakeups:?}");
+
+  // The third application, Terminal: 18 + 12 + 18 + 10 + 16 + 2 down the
+  // card, then two rows of 28 and their gaps.
+  pointer.move_to(1920 / 2 - 300, 40 + 76 + 2 * 30 + 14, (1920, 1080));
+  pointer.click();
+  let deadline = Instant::now() + TIMEOUT;
+  while overview.launched().is_none() {
+    assert!(Instant::now() < deadline, "nothing was launched");
+    std::thread::sleep(Duration::from_millis(50));
+  }
+  assert_eq!(overview.launched().as_deref(), Some("terminal\n"));
+  wait_for_shot(&sway, "HEADLESS-1", "the overview to close", |shot| {
+    shot.rgba == closed.rgba
+  });
+  let recent = std::fs::read_to_string(overview.dir.join("state/crabshell/overview.json"))
+    .expect("the recent applications");
+  assert!(recent.contains("terminal"), "{recent}");
+
+  // Opened again, it lists Terminal first.
+  ipc_call(&sway, "overview", "toggle");
+  let reopened = steady_shot(&sway, "HEADLESS-1");
+  assert_ne!(reopened.rgba, open.rgba, "the order changed");
+  drop(shell);
 }
