@@ -18,7 +18,7 @@ use std::sync::Once;
 use calloop::{Interest, RegistrationToken};
 use crabshell_reactive::{ReadSignal, Signal, untrack};
 use crabshell_ui::Cx;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::Shared;
@@ -29,6 +29,9 @@ pub(crate) const MAX_MESSAGE: usize = 64 * 1024;
 
 /// The longest text kept from greetd, cut at a character.
 const MAX_TEXT: usize = 4 * 1024;
+
+/// The most informative messages kept; older ones go.
+pub(crate) const MAX_MESSAGES: usize = 64;
 
 /// Where a session being made stands.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -105,23 +108,24 @@ impl Greetd {
     }
   }
 
-  /// Answers greetd's question. The answer is never logged, and its bytes
-  /// are zeroed once written.
+  /// Answers greetd's question. Unless the state is
+  /// [`Asking`](GreetState::Asking), the answer is dropped and that is
+  /// logged. The answer is never logged, and its bytes are zeroed once
+  /// written.
   pub fn respond(&self, answer: &str) {
     if let Some(service) = &self.service {
-      service.respond(Some(answer));
+      service.respond(answer);
     }
   }
 
   /// Starts the authenticated session with `command`, such as
   /// `["sway"]`, and `env` lines such as `XDG_SESSION_TYPE=wayland`
-  /// added to what PAM sets. It starts once the greeter exits.
+  /// added to what PAM sets. It starts once the greeter exits. Unless the
+  /// state is [`Authenticated`](GreetState::Authenticated), nothing is
+  /// sent and that is logged.
   pub fn start_session(&self, command: Vec<String>, env: Vec<String>) {
     if let Some(service) = &self.service {
-      service.send(
-        Kind::Start,
-        json!({"type": "start_session", "cmd": command, "env": env}),
-      );
+      service.start(command, env);
     }
   }
 
@@ -171,6 +175,9 @@ struct Inner {
   queue: VecDeque<(Kind, Vec<u8>)>,
   /// The request greetd is answering.
   asked: Option<Kind>,
+  /// Whether greetd holds a session made here, which a new one must
+  /// cancel first.
+  session: bool,
 }
 
 struct Connection {
@@ -178,7 +185,9 @@ struct Connection {
   reader: RegistrationToken,
   writer: Option<RegistrationToken>,
   inbox: Vec<u8>,
+  /// The request being written, zeroed once all of it went.
   outbox: Vec<u8>,
+  sent: usize,
 }
 
 /// What a request was, to read its answer.
@@ -229,12 +238,7 @@ impl Service {
   }
 
   fn create_session(self: &Rc<Self>, user: &str) {
-    let in_flight = {
-      let inner = self.inner.borrow();
-      inner.asked.is_some() || !inner.queue.is_empty()
-    };
-    let busy = in_flight || !matches!(self.state(), GreetState::Idle | GreetState::Failed { .. });
-    if busy {
+    if self.inner.borrow().session {
       // greetd makes one session at a time.
       self.send(
         Kind::Cancel { asked: false },
@@ -249,17 +253,27 @@ impl Service {
     );
   }
 
-  fn respond(self: &Rc<Self>, answer: Option<&str>) {
-    let request = json!({"type": "post_auth_message_response", "response": answer});
-    let mut body = request.to_string().into_bytes();
-    let bytes = frame(&body);
-    // This copy of the answer goes now, the framed one once sent.
-    zero(&mut body);
-    self.queue(Kind::Respond, bytes);
+  fn respond(self: &Rc<Self>, answer: &str) {
+    if !matches!(self.state(), GreetState::Asking { .. }) {
+      tracing::warn!("greetd asked nothing, so the answer is dropped");
+      return;
+    }
+    self.queue(Kind::Respond, answer_frame(Some(answer)), false);
+  }
+
+  fn start(self: &Rc<Self>, command: Vec<String>, env: Vec<String>) {
+    if self.state() != GreetState::Authenticated {
+      tracing::warn!("a session starts only once authenticated; nothing is sent");
+      return;
+    }
+    self.send(
+      Kind::Start,
+      json!({"type": "start_session", "cmd": command, "env": env}),
+    );
   }
 
   fn send(self: &Rc<Self>, kind: Kind, body: serde_json::Value) {
-    self.queue(kind, frame(body.to_string().as_bytes()));
+    self.queue(kind, frame(body.to_string().as_bytes()), false);
   }
 
   fn state(&self) -> GreetState {
@@ -267,25 +281,41 @@ impl Service {
     untrack(|| state.try_with(Clone::clone)).unwrap_or_default()
   }
 
-  fn queue(self: &Rc<Self>, kind: Kind, bytes: Vec<u8>) {
+  /// Queues a request, at the `front` for one that follows up greetd's
+  /// last answer.
+  fn queue(self: &Rc<Self>, kind: Kind, bytes: Vec<u8>, front: bool) {
     let (state, _) = self.signals();
     if kind != (Kind::Cancel { asked: false }) {
       set(state, GreetState::Busy);
     }
-    self.inner.borrow_mut().queue.push_back((kind, bytes));
+    let mut inner = self.inner.borrow_mut();
+    match kind {
+      Kind::Create => inner.session = true,
+      Kind::Cancel { .. } => inner.session = false,
+      Kind::Respond | Kind::Start => {}
+    }
+    if front {
+      inner.queue.push_front((kind, bytes));
+    } else {
+      inner.queue.push_back((kind, bytes));
+    }
+    drop(inner);
     self.next();
   }
 
   /// Sends the next request, once greetd answered the last.
   fn next(self: &Rc<Self>) {
-    if self.inner.borrow().asked.is_some() {
-      return;
+    {
+      let inner = self.inner.borrow();
+      if inner.asked.is_some() || inner.queue.is_empty() {
+        return;
+      }
     }
     if self.inner.borrow().connection.is_none() && !self.connect() {
       return;
     }
     let mut inner = self.inner.borrow_mut();
-    let Some((kind, bytes)) = inner.queue.pop_front() else {
+    let Some((kind, mut bytes)) = inner.queue.pop_front() else {
       return;
     };
     inner.asked = Some(kind);
@@ -293,9 +323,13 @@ impl Service {
       .connection
       .as_mut()
       .expect("invariant: connected above");
-    connection.outbox.extend_from_slice(&bytes);
-    let mut bytes = bytes;
-    zero(&mut bytes);
+    if connection.outbox.is_empty() {
+      connection.outbox = bytes;
+      connection.sent = 0;
+    } else {
+      connection.outbox.extend_from_slice(&bytes);
+      zero(&mut bytes);
+    }
     drop(inner);
     self.flush();
   }
@@ -337,6 +371,7 @@ impl Service {
       writer: None,
       inbox: Vec::new(),
       outbox: Vec::new(),
+      sent: 0,
     });
     true
   }
@@ -352,12 +387,12 @@ impl Service {
       return;
     };
     let mut broken = None;
-    while !connection.outbox.is_empty() {
-      match connection.stream.write(&connection.outbox) {
-        Ok(written) => {
-          zero(&mut connection.outbox[..written]);
-          connection.outbox.drain(..written);
-        }
+    while connection.sent < connection.outbox.len() {
+      match connection
+        .stream
+        .write(&connection.outbox[connection.sent..])
+      {
+        Ok(written) => connection.sent += written,
         Err(error) if error.kind() == ErrorKind::Interrupted => {}
         Err(error) if error.kind() == ErrorKind::WouldBlock => break,
         Err(error) => {
@@ -365,6 +400,11 @@ impl Service {
           break;
         }
       }
+    }
+    if connection.sent == connection.outbox.len() {
+      zero(&mut connection.outbox);
+      connection.outbox.clear();
+      connection.sent = 0;
     }
     if broken.is_none() {
       if connection.outbox.is_empty() {
@@ -443,19 +483,28 @@ impl Service {
   /// Acts on greetd's answer to the request it was answering.
   fn answered(self: &Rc<Self>, reply: Reply) {
     let (state, messages) = self.signals();
-    let asked = self.inner.borrow_mut().asked.take();
+    let (asked, superseded) = {
+      let mut inner = self.inner.borrow_mut();
+      let cancel = |(kind, _): &(Kind, Vec<u8>)| matches!(kind, Kind::Cancel { .. });
+      (inner.asked.take(), inner.queue.iter().any(cancel))
+    };
     let Some(kind) = asked else {
       tracing::warn!("greetd answered nothing asked");
       return;
     };
+    if superseded && !matches!(kind, Kind::Cancel { .. }) {
+      // A queued cancel ends this attempt, so its answers show nothing.
+      return self.next();
+    }
     match (kind, reply) {
-      (Kind::Create | Kind::Respond, Reply::Success) => set(state, GreetState::Authenticated),
-      (Kind::Start, Reply::Success) => set(state, GreetState::Started),
-      (Kind::Cancel { asked }, Reply::Success) => {
+      // A cancel's error means greetd had no session left to end.
+      (Kind::Cancel { asked }, _) => {
         if asked {
           set(state, GreetState::Idle);
         }
       }
+      (Kind::Create | Kind::Respond, Reply::Success) => set(state, GreetState::Authenticated),
+      (Kind::Start, Reply::Success) => set(state, GreetState::Started),
       (
         kind,
         Reply::Error {
@@ -464,21 +513,18 @@ impl Service {
         },
       ) => {
         let auth = error_type == "auth_error";
-        if !matches!(kind, Kind::Cancel { asked: false }) {
-          set(
-            state,
-            GreetState::Failed {
-              message: cut(description),
-              auth,
-            },
-          );
-        }
+        set(
+          state,
+          GreetState::Failed {
+            message: cut(description),
+            auth,
+          },
+        );
         // A failed attempt is ended, so another can begin.
         if matches!(kind, Kind::Create | Kind::Respond) {
-          self.send(
-            Kind::Cancel { asked: false },
-            json!({"type": "cancel_session"}),
-          );
+          let cancel = json!({"type": "cancel_session"});
+          let bytes = frame(cancel.to_string().as_bytes());
+          self.queue(Kind::Cancel { asked: false }, bytes, true);
         }
       }
       (
@@ -500,9 +546,14 @@ impl Service {
             text: cut(auth_message),
             error: kind == "error",
           };
-          messages.try_update(|all| all.push(message));
-          // Informative: acknowledged with no answer.
-          self.respond(None);
+          messages.try_update(|all| {
+            if all.len() == MAX_MESSAGES {
+              all.remove(0);
+            }
+            all.push(message);
+          });
+          // Informative: acknowledged with no answer, before anything else.
+          self.queue(Kind::Respond, answer_frame(None), true);
         }
       },
     }
@@ -514,8 +565,12 @@ impl Service {
     let (state, _) = self.signals();
     set(state, GreetState::Failed { message, auth });
     let mut inner = self.inner.borrow_mut();
+    for (_, bytes) in &mut inner.queue {
+      zero(bytes);
+    }
     inner.queue.clear();
     inner.asked = None;
+    inner.session = false;
   }
 
   /// Drops the connection, which ends the session being made.
@@ -540,6 +595,28 @@ fn frame(body: &[u8]) -> Vec<u8> {
   framed.extend_from_slice(&length.to_ne_bytes());
   framed.extend_from_slice(body);
   framed
+}
+
+/// An answer framed for greetd, written straight into one buffer sized so
+/// it never grows: no copy of the answer is left unzeroed.
+fn answer_frame(answer: Option<&str>) -> Vec<u8> {
+  #[derive(Serialize)]
+  struct Answer<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    response: Option<&'a str>,
+  }
+  // JSON writes a byte as at most six.
+  let mut bytes = Vec::with_capacity(64 + 6 * answer.map_or(0, str::len));
+  bytes.extend_from_slice(&[0; 4]);
+  let answer = Answer {
+    kind: "post_auth_message_response",
+    response: answer,
+  };
+  serde_json::to_writer(&mut bytes, &answer).expect("invariant: a string serializes");
+  let length = u32::try_from(bytes.len() - 4).unwrap_or(u32::MAX);
+  bytes[..4].copy_from_slice(&length.to_ne_bytes());
+  bytes
 }
 
 /// Overwrites `bytes` with zeros, as for an answer once sent.

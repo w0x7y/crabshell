@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use super::{GreetMessage, GreetState, Greetd, MAX_MESSAGE};
+use super::{GreetMessage, GreetState, Greetd, MAX_MESSAGE, MAX_MESSAGES};
 use crate::testing::{Harness, capture_logs, offline};
 use crate::{Config, ServicesExt};
 
@@ -223,21 +223,25 @@ fn a_new_session_while_one_is_made_cancels_it_first() {
 
 #[test]
 fn cancel_ends_the_session_being_made() {
-  let greetd_ = FakeGreetd::new();
-  let mut shell = Harness::new(greetd_.config());
-  let greetd = shell.cx.greetd();
-  greetd.create_session("me");
-  let mut peer = greetd_.accept();
-  peer.request();
-  peer.reply(
-    json!({"type": "auth_message", "auth_message_type": "secret", "auth_message": "Password:"}),
-  );
-  run(&mut shell);
-  greetd.cancel();
-  assert_eq!(peer.request(), json!({"type": "cancel_session"}));
-  peer.reply(json!({"type": "success"}));
-  run(&mut shell);
-  assert_eq!(state(&greetd), GreetState::Idle);
+  // An error means greetd had no session left to end.
+  for reply in [
+    json!({"type": "success"}),
+    json!({"type": "error", "error_type": "error", "description": "none"}),
+  ] {
+    let greetd_ = FakeGreetd::new();
+    let mut shell = Harness::new(greetd_.config());
+    let greetd = shell.cx.greetd();
+    greetd.create_session("me");
+    let mut peer = greetd_.accept();
+    peer.request();
+    peer.reply(secret());
+    run(&mut shell);
+    greetd.cancel();
+    assert_eq!(peer.request(), json!({"type": "cancel_session"}));
+    peer.reply(reply.clone());
+    run(&mut shell);
+    assert_eq!(state(&greetd), GreetState::Idle, "after {reply}");
+  }
 }
 
 #[test]
@@ -314,4 +318,204 @@ fn a_quiet_connection_wakes_nothing() {
   run(&mut shell);
   let wakeups = shell.run_until(Instant::now() + Duration::from_millis(500));
   assert_eq!(wakeups, 1, "only the run's own deadline");
+}
+
+fn secret() -> Value {
+  json!({"type": "auth_message", "auth_message_type": "secret", "auth_message": "Password:"})
+}
+
+impl Peer {
+  /// Asserts the greeter sends nothing more for a while.
+  fn quiet(&mut self) {
+    let timeout = self.0.read_timeout().expect("a read timeout");
+    self
+      .0
+      .set_read_timeout(Some(Duration::from_millis(200)))
+      .expect("a read timeout");
+    let mut byte = [0];
+    let read = self.0.read(&mut byte);
+    assert!(read.is_err(), "the greeter sent more: {read:?}");
+    self.0.set_read_timeout(timeout).expect("a read timeout");
+  }
+}
+
+#[test]
+fn an_answer_to_a_superseded_request_is_dropped() {
+  for reply in [
+    json!({"type": "auth_message", "auth_message_type": "info", "auth_message": "Hi"}),
+    json!({"type": "error", "error_type": "error", "description": "bad"}),
+    secret(),
+  ] {
+    // Another user's session asked for while greetd answers the first.
+    let greetd_ = FakeGreetd::new();
+    let mut shell = Harness::new(greetd_.config());
+    let greetd = shell.cx.greetd();
+    greetd.create_session("me");
+    let mut peer = greetd_.accept();
+    peer.request();
+    greetd.create_session("you");
+    peer.reply(reply.clone());
+    run(&mut shell);
+    assert_eq!(state(&greetd), GreetState::Busy, "after {reply}");
+    assert_eq!(greetd.messages().get_untracked(), []);
+    assert_eq!(peer.request(), json!({"type": "cancel_session"}));
+    peer.reply(json!({"type": "success"}));
+    run(&mut shell);
+    assert_eq!(
+      peer.request(),
+      json!({"type": "create_session", "username": "you"})
+    );
+    peer.reply(secret());
+    run(&mut shell);
+    greetd.respond("pw");
+    assert_eq!(
+      peer.request(),
+      json!({"type": "post_auth_message_response", "response": "pw"}),
+      "after {reply}"
+    );
+
+    // A cancel while greetd answers.
+    let greetd_ = FakeGreetd::new();
+    let mut shell = Harness::new(greetd_.config());
+    let greetd = shell.cx.greetd();
+    greetd.create_session("me");
+    let mut peer = greetd_.accept();
+    peer.request();
+    greetd.cancel();
+    peer.reply(reply.clone());
+    run(&mut shell);
+    assert_eq!(peer.request(), json!({"type": "cancel_session"}));
+    peer.reply(json!({"type": "success"}));
+    run(&mut shell);
+    assert_eq!(state(&greetd), GreetState::Idle, "after {reply}");
+    peer.quiet();
+  }
+}
+
+#[test]
+fn an_answer_or_start_out_of_turn_is_dropped() {
+  let greetd_ = FakeGreetd::new();
+  let mut shell = Harness::new(greetd_.config());
+  let greetd = shell.cx.greetd();
+  greetd.create_session("me");
+  let mut peer = greetd_.accept();
+  peer.request();
+  greetd.start_session(vec![String::from("sway")], Vec::new());
+  peer.reply(secret());
+  run(&mut shell);
+  peer.quiet();
+  // Enter pressed twice.
+  greetd.respond("pw");
+  capture_logs(|| greetd.respond("pw"));
+  peer.request();
+  peer.reply(json!({"type": "success"}));
+  run(&mut shell);
+  assert_eq!(state(&greetd), GreetState::Authenticated);
+  peer.quiet();
+}
+
+#[test]
+fn a_failed_start_ends_its_session_before_the_next() {
+  let greetd_ = FakeGreetd::new();
+  let mut shell = Harness::new(greetd_.config());
+  let greetd = shell.cx.greetd();
+  greetd.create_session("me");
+  let mut peer = greetd_.accept();
+  peer.request();
+  peer.reply(json!({"type": "success"}));
+  run(&mut shell);
+  greetd.start_session(vec![String::from("sway")], Vec::new());
+  peer.request();
+  peer.reply(json!({"type": "error", "error_type": "error", "description": "no"}));
+  run(&mut shell);
+  assert!(matches!(
+    state(&greetd),
+    GreetState::Failed { auth: false, .. }
+  ));
+  greetd.create_session("me");
+  assert_eq!(peer.request(), json!({"type": "cancel_session"}));
+}
+
+#[test]
+fn a_lost_connection_is_made_again_only_for_the_next_request() {
+  let greetd_ = FakeGreetd::new();
+  let mut shell = Harness::new(greetd_.config());
+  let greetd = shell.cx.greetd();
+  greetd.create_session("me");
+  let mut peer = greetd_.accept();
+  peer.request();
+  peer.reply(json!({"type": "error", "error_type": "auth_error", "description": "nope"}));
+  // The cancel that follows can't be written.
+  peer
+    .0
+    .shutdown(std::net::Shutdown::Read)
+    .expect("a shutdown");
+  capture_logs(|| run(&mut shell));
+  greetd_.listener.set_nonblocking(true).expect("nonblocking");
+  assert!(greetd_.listener.accept().is_err(), "nothing to send");
+  greetd_.listener.set_nonblocking(false).expect("blocking");
+  greetd.create_session("me");
+  let mut peer = greetd_.accept();
+  assert_eq!(
+    peer.request(),
+    json!({"type": "create_session", "username": "me"})
+  );
+}
+
+#[test]
+fn a_reply_in_pieces_is_read_whole() {
+  let greetd_ = FakeGreetd::new();
+  let mut shell = Harness::new(greetd_.config());
+  let greetd = shell.cx.greetd();
+  greetd.create_session("me");
+  let mut peer = greetd_.accept();
+  peer.request();
+  let body = secret().to_string();
+  let length = u32::try_from(body.len()).expect("small").to_ne_bytes();
+  peer.0.write_all(&length[..2]).expect("written");
+  run(&mut shell);
+  peer.0.write_all(&length[2..]).expect("written");
+  peer.0.write_all(&body.as_bytes()[..10]).expect("written");
+  run(&mut shell);
+  assert_eq!(state(&greetd), GreetState::Busy);
+  peer.0.write_all(&body.as_bytes()[10..]).expect("written");
+  run(&mut shell);
+  assert!(matches!(state(&greetd), GreetState::Asking { .. }));
+}
+
+#[test]
+fn bad_json_fails_the_attempt() {
+  let greetd_ = FakeGreetd::new();
+  let mut shell = Harness::new(greetd_.config());
+  let greetd = shell.cx.greetd();
+  greetd.create_session("me");
+  let mut peer = greetd_.accept();
+  peer.request();
+  peer.0.write_all(&3u32.to_ne_bytes()).expect("written");
+  peer.0.write_all(b"{x}").expect("written");
+  capture_logs(|| run(&mut shell));
+  assert!(matches!(
+    state(&greetd),
+    GreetState::Failed { auth: false, .. }
+  ));
+}
+
+#[test]
+fn only_the_latest_messages_are_kept() {
+  let greetd_ = FakeGreetd::new();
+  let mut shell = Harness::new(greetd_.config());
+  let greetd = shell.cx.greetd();
+  greetd.create_session("me");
+  let mut peer = greetd_.accept();
+  peer.request();
+  for n in 0..MAX_MESSAGES + 5 {
+    peer.reply(
+      json!({"type": "auth_message", "auth_message_type": "info", "auth_message": n.to_string()}),
+    );
+    run(&mut shell);
+    peer.request();
+  }
+  let messages = greetd.messages().get_untracked();
+  assert_eq!(messages.len(), MAX_MESSAGES);
+  assert_eq!(messages[0].text, "5", "the oldest go");
 }
