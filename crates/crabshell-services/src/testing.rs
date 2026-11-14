@@ -114,6 +114,8 @@ pub(crate) fn offline() -> Config {
     popup_timeout: crate::notifications::POPUP_TIMEOUT,
     greetd: None,
     desktop_entries: Default::default(),
+    // Never polkit's own, which would ask PAM.
+    polkit_helper: PathBuf::from("/nonexistent/crabshell-polkit-helper"),
     pam: Arc::new(FakePam::default()),
   }
 }
@@ -270,8 +272,14 @@ fn private_bus_config() -> std::path::PathBuf {
 }
 
 /// Runs `f` and returns everything it logged through `tracing` on this
-/// thread.
+/// thread, from `info` up.
 pub(crate) fn capture_logs(f: impl FnOnce()) -> String {
+  capture_logs_from(tracing::Level::INFO, f)
+}
+
+/// Runs `f` and returns everything it logged through `tracing` on this
+/// thread, from `level` up.
+pub(crate) fn capture_logs_from(level: tracing::Level, f: impl FnOnce()) -> String {
   #[derive(Clone, Default)]
   struct Buffer(Arc<Mutex<Vec<u8>>>);
 
@@ -289,6 +297,7 @@ pub(crate) fn capture_logs(f: impl FnOnce()) -> String {
   let buffer = Buffer::default();
   let writer = buffer.clone();
   let subscriber = tracing_subscriber::fmt()
+    .with_max_level(level)
     .with_writer(move || writer.clone())
     .finish();
   tracing::subscriber::with_default(subscriber, f);

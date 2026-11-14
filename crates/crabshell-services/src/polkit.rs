@@ -4,9 +4,12 @@
 //!
 //! The shell registers with polkit on the system bus the first time a
 //! config asks for the agent. zbus has no object server here, so polkit's
-//! calls are answered by hand on the main thread. Nothing polls: the shell
-//! wakes when polkit calls.
+//! calls are answered by hand on the main thread. Each try runs polkit's
+//! setuid helper, which asks PAM: its prompts go into the request's state
+//! and the config's answers into its input. Nothing polls: the shell
+//! wakes when polkit calls or the helper prints.
 
+mod helper;
 #[cfg(test)]
 mod tests;
 
@@ -17,12 +20,14 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Once;
 
+use calloop::Interest;
 use crabshell_reactive::{ReadSignal, Signal};
 use crabshell_ui::Cx;
 use zbus::export::futures_core::Stream;
 use zbus::message::{Flags, Type as Kind};
 use zbus::{Connection, Message, MessageStream, OwnedVariant, Variant};
 
+use self::helper::{Helper, Line, Secret};
 use crate::Shared;
 use crate::dbus::{CALL_TIMEOUT, set_changed};
 
@@ -33,6 +38,11 @@ const AGENT_INTERFACE: &str = "org.freedesktop.PolicyKit1.AuthenticationAgent";
 /// Where the agent answers polkit: any path of the shell's own.
 const AGENT_PATH: &str = "/org/crabshell/PolkitAgent";
 
+/// Where polkit's helper is on most distributions.
+/// shortcut: one path, so a distribution that keeps it in
+/// `/usr/libexec` gets no dialogs; look in both if one turns up.
+pub(crate) const HELPER: &str = "/usr/lib/polkit-1/polkit-agent-helper-1";
+
 const FAILED: &str = "org.freedesktop.PolicyKit1.Error.Failed";
 const CANCELLED: &str = "org.freedesktop.PolicyKit1.Error.Cancelled";
 const ACCESS_DENIED: &str = "org.freedesktop.DBus.Error.AccessDenied";
@@ -41,10 +51,14 @@ const UNKNOWN_METHOD: &str = "org.freedesktop.DBus.Error.UnknownMethod";
 
 /// The most bytes kept of a string from polkit or its helper.
 const MAX_TEXT: usize = 4 * 1024;
+/// The most wrong answers to one request before polkit is told it failed.
+const MAX_TRIES: u32 = 3;
 /// The most identities kept of a request.
 const MAX_IDENTITIES: usize = 64;
 /// The most requests waiting behind the one answered.
 const MAX_QUEUED: usize = 8;
+/// The most info and error lines a request keeps, the newest.
+const MAX_LINES: usize = 16;
 
 /// A request from polkit: a program asked to do `action_id`, and polkit
 /// wants a user to prove they may.
@@ -59,17 +73,40 @@ pub struct AuthRequest {
   pub message: String,
   /// A themed icon for the action, or empty.
   pub icon_name: String,
-  /// The users who may answer, by name. The first is the one asked.
+  /// The users who may answer, by name. The first is the one asked now;
+  /// [`PolkitAgent::pick_identity`] puts another first.
   pub identities: Vec<String>,
   /// Where the conversation is.
   pub state: AuthState,
+  /// What PAM told the user this try, such as to touch a key, oldest
+  /// first. At most 16 lines of 4 KiB.
+  pub info: Vec<String>,
+  /// What PAM said went wrong this try, oldest first, kept as `info` is.
+  pub errors: Vec<String>,
 }
 
 /// Where a request's conversation is.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AuthState {
-  /// Nothing is asked of the user yet.
+  /// polkit's helper is starting, or has only told the user something.
   Waiting,
+  /// PAM asks `message`, such as `Password: `, for
+  /// [`PolkitAgent::respond`]. `visible` is whether the answer may show
+  /// as it is typed.
+  Asking {
+    /// The question, at most 4 KiB.
+    message: String,
+    /// `false` for a password.
+    visible: bool,
+  },
+  /// The answer is being checked.
+  Busy,
+  /// The answer was wrong. [`PolkitAgent::respond`] tries again; after
+  /// the third failure polkit is told, and the request goes.
+  Failed {
+    /// What PAM said, or a plain "Authentication failed".
+    message: String,
+  },
 }
 
 /// The shell's polkit agent, from `cx.polkit_agent()`. A clone is cheap
@@ -88,11 +125,31 @@ impl PolkitAgent {
     self.request
   }
 
+  /// Answers the request's question, as the user typed it. After a
+  /// failure, it tries again and answers the new try's first question.
+  /// At any other time, or with a line break in it, it is dropped. It is
+  /// never logged, and its bytes are zeroed once sent.
+  pub fn respond(&self, text: impl Into<String>) {
+    let secret = Secret(text.into().into_bytes());
+    if let Some(service) = &self.service {
+      service.respond(secret);
+    }
+  }
+
   /// Gives up on the request, as the user's cancel button does, and tells
   /// polkit so.
   pub fn cancel(&self) {
     if let Some(service) = &self.service {
       service.finish(Some((CANCELLED, "the user cancelled")));
+    }
+  }
+
+  /// Asks `name`, one of the request's identities, instead: it moves to
+  /// the front, and the conversation starts again as that user. An
+  /// unknown name is logged.
+  pub fn pick_identity(&self, name: &str) {
+    if let Some(service) = &self.service {
+      service.pick(name);
     }
   }
 }
@@ -120,7 +177,7 @@ pub(crate) fn polkit_agent(cx: &Cx) -> PolkitAgent {
 pub(crate) struct Service {
   shared: Rc<Shared>,
   state: RefCell<Option<State>>,
-  /// The number the next request gets.
+  /// The number the next helper run and request get.
   next: Cell<u64>,
 }
 
@@ -136,6 +193,16 @@ struct State {
   queue: VecDeque<Begin>,
 }
 
+/// Stops the helper and forgets the requests when the root goes, which
+/// closes the agent's connection, so polkit drops it.
+struct StopOnDrop(Rc<Service>);
+
+impl Drop for StopOnDrop {
+  fn drop(&mut self) {
+    self.0.forget();
+  }
+}
+
 /// A `BeginAuthentication` call, kept until it is answered.
 struct Begin {
   call: Message,
@@ -146,11 +213,20 @@ struct Begin {
 /// The request being answered.
 struct Current {
   begin: Begin,
+  failures: u32,
+  helper: Option<Helper>,
+  /// An answer given after a failure, for the next try's first question.
+  answer: Option<Secret>,
 }
 
 impl Current {
   fn new(begin: Begin) -> Current {
-    Current { begin }
+    Current {
+      begin,
+      failures: 0,
+      helper: None,
+      answer: None,
+    }
   }
 }
 
@@ -182,11 +258,27 @@ impl Service {
       current: None,
       queue: VecDeque::new(),
     });
+    self.shared.root.signal(StopOnDrop(Rc::clone(self)));
     match self.shared.config.system_bus.clone() {
       Some(address) => self.shared.spawn(run(Rc::clone(self), address)),
       None => tracing::info!("no system bus, so no polkit requests arrive"),
     }
     request.read_only()
+  }
+
+  /// Drops the connection and every request unanswered, stopping the
+  /// helper, as when the root or the bus goes and nobody could answer.
+  /// Touches no signal, since the root may be going.
+  fn forget(&self) {
+    let current = self.state.borrow_mut().as_mut().and_then(|state| {
+      state.queue.clear();
+      state.connection = None;
+      state.authority = None;
+      state.current.take()
+    });
+    if let Some(helper) = current.and_then(|current| current.helper) {
+      helper.stop(&self.shared, true);
+    }
   }
 
   /// Whether the request is still there: its owner, the root, isn't
@@ -281,7 +373,7 @@ impl Service {
         tracing::warn!("{MAX_QUEUED} polkit requests wait already; refused another");
         self.reply(&begin.call, Some((FAILED, "too many requests wait")));
       }
-      None => self.publish(),
+      None => self.run_helper(),
     }
   }
 
@@ -309,6 +401,187 @@ impl Service {
     }
   }
 
+  /// The config picks identity `name`.
+  fn pick(self: &Rc<Self>, name: &str) {
+    let picked = self.with_current(|current| {
+      let identities = &mut current.begin.shown.identities;
+      let at = identities.iter().position(|known| known == name)?;
+      identities[..=at].rotate_right(1);
+      current.answer = None;
+      Some(current.helper.take())
+    });
+    let Some(helper) = picked.flatten() else {
+      return tracing::warn!(name, "no such identity to pick for polkit");
+    };
+    if let Some(helper) = helper {
+      helper.stop(&self.shared, true);
+    }
+    self.run_helper();
+  }
+
+  /// Starts a try: polkit's helper, for the first identity.
+  fn run_helper(self: &Rc<Self>) {
+    let Some(event_loop) = self.shared.event_loop() else {
+      return;
+    };
+    let run = self.next();
+    let started = self.with_current(|current| {
+      let shown = &mut current.begin.shown;
+      shown.state = AuthState::Waiting;
+      shown.info.clear();
+      shown.errors.clear();
+      let program = &self.shared.config.polkit_helper;
+      let mut helper = Helper::start(program, &shown.identities[0], run)?;
+      if let Err(error) = helper.send(current.begin.cookie.as_bytes()) {
+        helper.stop(&self.shared, true);
+        return Err(error);
+      }
+      let service = Rc::clone(self);
+      let ready = Box::new(move || service.on_output(run));
+      helper.token = helper
+        .stdout_fd()
+        .and_then(|fd| event_loop.insert_fd(fd, Interest::READ, ready));
+      if helper.token.is_none() {
+        helper.stop(&self.shared, true);
+        return Err(std::io::Error::other("its output couldn't be watched"));
+      }
+      current.helper = Some(helper);
+      Ok(())
+    });
+    match started {
+      Some(Ok(())) => self.publish(),
+      Some(Err(error)) => {
+        let program = self.shared.config.polkit_helper.display();
+        tracing::warn!(%error, %program, "couldn't start polkit's helper");
+        self.finish(Some((FAILED, "polkit's helper couldn't start")));
+      }
+      None => {}
+    }
+  }
+
+  /// What the helper of run `run` printed.
+  fn on_output(self: &Rc<Self>, run: u64) {
+    let running = |service: &Service| {
+      let running =
+        service.with_current(|current| current.helper.as_ref().map(|helper| helper.run));
+      running.flatten() == Some(run)
+    };
+    if !running(self) {
+      return;
+    }
+    let read = self.with_current(|current| current.helper.as_mut()?.read());
+    let Some((lines, ended)) = read.flatten() else {
+      return;
+    };
+    for line in lines {
+      if !running(self) {
+        return;
+      }
+      self.on_line(helper::parse(&line));
+    }
+    if ended && running(self) {
+      tracing::warn!("polkit's helper ended without an answer");
+      self.failed();
+    }
+  }
+
+  fn on_line(self: &Rc<Self>, line: Line) {
+    let keep = |lines: &mut Vec<String>, text| {
+      if lines.len() == MAX_LINES {
+        lines.remove(0);
+      }
+      lines.push(text);
+    };
+    let verdict = line_verdict(&line);
+    let answer = self.with_current(|current| {
+      let shown = &mut current.begin.shown;
+      match line {
+        Line::Prompt { message, visible } => {
+          shown.state = AuthState::Asking { message, visible };
+          return current.answer.take();
+        }
+        Line::Info(text) => keep(&mut shown.info, text),
+        Line::Error(text) => keep(&mut shown.errors, text),
+        Line::Unknown => tracing::debug!("polkit's helper printed a line it doesn't know; skipped"),
+        Line::Success | Line::Failure => {}
+      }
+      None
+    });
+    match verdict {
+      Some(true) => {
+        tracing::info!("authenticated for polkit");
+        self.finish(None);
+      }
+      Some(false) => self.failed(),
+      None => match answer.flatten() {
+        // A try after a failure answers its first question at once.
+        Some(secret) => self.send(secret),
+        None => self.publish(),
+      },
+    }
+  }
+
+  /// A wrong answer, or a helper that ended without saying: shows it, or
+  /// after the third tells polkit.
+  fn failed(self: &Rc<Self>) {
+    let gave_up = self.with_current(|current| {
+      if let Some(helper) = current.helper.take() {
+        helper.stop(&self.shared, true);
+      }
+      current.answer = None;
+      current.failures += 1;
+      let shown = &mut current.begin.shown;
+      let message = shown.errors.last().cloned();
+      let message = message.unwrap_or_else(|| String::from("Authentication failed"));
+      shown.state = AuthState::Failed { message };
+      current.failures >= MAX_TRIES
+    });
+    match gave_up {
+      Some(true) => {
+        tracing::info!("polkit authentication failed {MAX_TRIES} times");
+        self.finish(Some((FAILED, "authentication failed")));
+      }
+      Some(false) => self.publish(),
+      None => {}
+    }
+  }
+
+  /// The config's answer.
+  fn respond(self: &Rc<Self>, secret: Secret) {
+    if secret.0.contains(&b'\n') {
+      return tracing::warn!("a polkit answer with a line break was dropped");
+    }
+    let state = self.with_current(|current| current.begin.shown.state.clone());
+    match state {
+      Some(AuthState::Asking { .. }) => self.send(secret),
+      Some(AuthState::Failed { .. }) => {
+        self.with_current(|current| current.answer = Some(secret));
+        self.run_helper();
+      }
+      _ => tracing::debug!("no polkit question to answer; an answer was dropped"),
+    }
+  }
+
+  /// Sends `secret` to the helper, which then checks it. It goes when
+  /// this returns.
+  fn send(self: &Rc<Self>, secret: Secret) {
+    let sent = self.with_current(|current| {
+      let sent = current.helper.as_mut().map(|helper| helper.send(&secret.0));
+      if let Some(Ok(())) = sent {
+        current.begin.shown.state = AuthState::Busy;
+      }
+      sent
+    });
+    match sent.flatten() {
+      Some(Ok(())) => self.publish(),
+      Some(Err(error)) => {
+        tracing::warn!(%error, "couldn't answer polkit's helper");
+        self.failed();
+      }
+      None => {}
+    }
+  }
+
   /// Ends the request being answered and tells polkit: `None` for
   /// authenticated, else the error's name and why. The next waiting
   /// request starts.
@@ -321,8 +594,15 @@ impl Service {
     let Some(current) = current else {
       return;
     };
+    if let Some(helper) = current.helper {
+      // After a success it is telling polkit, so it is left to end.
+      helper.stop(&self.shared, error.is_some());
+    }
     self.reply(&current.begin.call, error);
-    self.publish();
+    match self.with_current(|_| ()) {
+      Some(()) => self.run_helper(),
+      None => self.publish(),
+    }
   }
 
   /// Answers `call`: with an empty return for `None`, else with the error
@@ -353,6 +633,16 @@ impl Service {
         tracing::debug!(%error, "the polkit agent's answer wasn't sent");
       }
     });
+  }
+}
+
+/// Whether `line` ends the try: `true` for a success, `false` for a
+/// failure.
+fn line_verdict(line: &Line) -> Option<bool> {
+  match line {
+    Line::Success => Some(true),
+    Line::Failure => Some(false),
+    _ => None,
   }
 }
 
@@ -400,6 +690,8 @@ fn begin_args(call: &Message, id: u64) -> Result<Begin, (&'static str, &'static 
       icon_name: cut(icon_name, MAX_TEXT),
       identities: names,
       state: AuthState::Waiting,
+      info: Vec::new(),
+      errors: Vec::new(),
     },
   })
 }
@@ -508,8 +800,6 @@ async fn run(service: Rc<Service>, address: zbus::Address) {
     }
   }
   tracing::warn!("the system bus closed, so no more polkit requests arrive");
-  if let Some(state) = service.state.borrow_mut().as_mut() {
-    state.connection = None;
-    state.authority = None;
-  }
+  service.forget();
+  service.publish();
 }

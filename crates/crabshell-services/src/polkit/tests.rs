@@ -1,21 +1,34 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use crabshell_reactive::Runtime;
 use zbus::{Connection, Message, OwnedVariant, Variant};
 
 use super::{
-  AGENT_INTERFACE, AGENT_PATH, AUTHORITY, AuthState, CANCELLED, FAILED, PolkitAgent, subject,
-  user_name,
+  AGENT_INTERFACE, AGENT_PATH, AUTHORITY, AuthRequest, AuthState, CANCELLED, FAILED, PolkitAgent,
+  subject, user_name,
 };
-use crate::testing::{FakeService, Harness, PrivateBus, capture_logs, offline, reply};
+use crate::testing::{
+  FakeService, Harness, PrivateBus, TempDir, capture_logs, capture_logs_from, offline, reply,
+};
 use crate::{Config, ServicesExt};
 
 const ACCESS_DENIED: &str = "org.freedesktop.DBus.Error.AccessDenied";
 
+/// PAM as the tests have it: one line of info, a password question, and
+/// `hunter2` is right.
+const PASSWORD: &str = "echo 'PAM_TEXT_INFO Use your password'
+echo 'PAM_PROMPT_ECHO_OFF Password: '
+read -r answer
+if [ \"$answer\" = hunter2 ]; then echo SUCCESS; else echo 'PAM_ERROR_MSG Sorry, try again.'; echo FAILURE; fi
+";
+
 /// What a registration sent: the agent's unique name, the subject's kind
-/// and details, and the object path.
+/// and details, the locale and the object path.
 struct Registration {
   agent: String,
   kind: String,
@@ -29,27 +42,44 @@ type Registrations = Rc<RefCell<Vec<Registration>>>;
 /// empty return, else the error's name.
 type Answer = Rc<RefCell<Option<Result<(), String>>>>;
 
-/// A shell on a private system bus with a fake polkit.
+/// A shell on a private system bus with a fake polkit, and a fake helper
+/// that plays `conversation` after reading the cookie.
 struct Polkit {
   shell: Harness,
   bus: PrivateBus,
   authority: FakeService,
   registrations: Registrations,
+  dir: TempDir,
 }
 
 impl Polkit {
-  fn start() -> Polkit {
+  fn start(conversation: &str) -> Polkit {
+    Polkit::with(conversation, |config| config)
+  }
+
+  fn with(conversation: &str, config: impl FnOnce(Config) -> Config) -> Polkit {
     let bus = PrivateBus::start();
-    let mut shell = Harness::new(Config {
+    let dir = TempDir::new();
+    let helper = dir.path().join("helper");
+    // It records its user and cookie a line a run, and its pid.
+    let script = format!(
+      "#!/bin/sh\nread -r cookie\necho \"$1 $cookie\" >> \"$0.runs\"\necho $$ > \"$0.pid\"\n{conversation}"
+    );
+    std::fs::write(&helper, script).expect("the fake helper");
+    let mode = std::fs::Permissions::from_mode(0o755);
+    std::fs::set_permissions(&helper, mode).expect("its mode");
+    let mut shell = Harness::new(config(Config {
       system_bus: Some(bus.address.parse().expect("dbus-daemon's address")),
+      polkit_helper: helper,
       ..offline()
-    });
+    }));
     let (authority, registrations) = authority(&mut shell, &bus, true);
     Polkit {
       shell,
       bus,
       authority,
       registrations,
+      dir,
     }
   }
 
@@ -133,10 +163,28 @@ impl Polkit {
     answer.borrow_mut().take().expect("an answer")
   }
 
-  /// Waits for a request to show.
-  fn wait_request(&mut self, agent: &PolkitAgent) {
+  /// Waits for the request to be in a state like `like`.
+  fn wait_state(&mut self, agent: &PolkitAgent, like: fn(&AuthState) -> bool) {
     let request = agent.request();
-    self.wait("a request", move || request.get_untracked().is_some());
+    let shown = move || {
+      request
+        .get_untracked()
+        .is_some_and(|shown| like(&shown.state))
+    };
+    self.wait("the request's state", shown);
+  }
+
+  /// The user and cookie of each run of the helper.
+  fn runs(&self) -> Vec<String> {
+    let runs = std::fs::read_to_string(self.dir.path().join("helper.runs")).unwrap_or_default();
+    runs.lines().map(str::to_owned).collect()
+  }
+
+  /// Waits for the last helper started to be gone and reaped.
+  fn wait_helper_gone(&mut self) {
+    let pid = std::fs::read_to_string(self.dir.path().join("helper.pid")).expect("a helper ran");
+    let proc = PathBuf::from(format!("/proc/{}", pid.trim()));
+    self.wait("the helper gone", move || !proc.exists());
   }
 }
 
@@ -177,9 +225,21 @@ fn error_name(error: zbus::Error) -> String {
   }
 }
 
+fn state(request: Option<AuthRequest>) -> Option<AuthState> {
+  request.map(|shown| shown.state)
+}
+
+fn asking(state: &AuthState) -> bool {
+  matches!(state, AuthState::Asking { .. })
+}
+
+fn failed(state: &AuthState) -> bool {
+  matches!(state, AuthState::Failed { .. })
+}
+
 #[test]
 fn the_agent_registers_on_the_first_call_only() {
-  let mut polkit = Polkit::start();
+  let mut polkit = Polkit::start(PASSWORD);
   polkit
     .shell
     .run_until(Instant::now() + Duration::from_millis(300));
@@ -252,32 +312,92 @@ fn a_refused_registration_is_logged_and_nothing_arrives() {
 }
 
 #[test]
-fn a_request_shows_and_cancel_from_the_config_answers_cancelled() {
-  let mut polkit = Polkit::start();
+fn a_password_question_then_success_answers_polkit() {
+  let mut polkit = Polkit::start(PASSWORD);
   let (agent, name) = polkit.agent();
   let request = agent.request();
   let answer = polkit.begin(&name, "cookie-1", &[0]);
-  polkit.wait_request(&agent);
+  polkit.wait_state(&agent, asking);
   let shown = request.get_untracked().expect("a request");
   assert_eq!(shown.action_id, "org.example.cookie-1");
   assert_eq!(shown.message, "Authentication is needed to reboot");
   assert_eq!(shown.icon_name, "system-reboot");
   assert_eq!(shown.identities, ["root"]);
-  assert_eq!(shown.state, AuthState::Waiting);
+  let question = AuthState::Asking {
+    message: "Password: ".to_owned(),
+    visible: false,
+  };
+  assert_eq!(shown.state, question);
+  assert_eq!(shown.info, ["Use your password"]);
+  assert_eq!(polkit.runs(), ["root cookie-1"]);
 
-  agent.cancel();
+  agent.respond("hunter2");
+  assert_eq!(state(request.get_untracked()), Some(AuthState::Busy));
+  assert_eq!(polkit.answered(&answer), Ok(()));
   assert_eq!(request.get_untracked(), None);
+  polkit.wait_helper_gone();
+}
+
+#[test]
+fn a_failure_shows_and_the_next_answer_tries_again() {
+  let mut polkit = Polkit::start(PASSWORD);
+  let (agent, name) = polkit.agent();
+  let request = agent.request();
+  let answer = polkit.begin(&name, "cookie-1", &[0]);
+  polkit.wait_state(&agent, asking);
+  agent.respond("wrong");
+  polkit.wait_state(&agent, failed);
+  let shown = request.get_untracked().expect("a request");
+  let failure = AuthState::Failed {
+    message: "Sorry, try again.".to_owned(),
+  };
+  assert_eq!(shown.state, failure);
+  assert_eq!(shown.errors, ["Sorry, try again."]);
+  assert_eq!(*answer.borrow(), None, "polkit still waits");
+
+  agent.respond("hunter2");
+  assert_eq!(polkit.answered(&answer), Ok(()));
+  assert_eq!(polkit.runs(), ["root cookie-1", "root cookie-1"]);
+}
+
+#[test]
+fn three_failures_answer_polkit_failed() {
+  let mut polkit = Polkit::start(PASSWORD);
+  let (agent, name) = polkit.agent();
+  let request = agent.request();
+  let answer = polkit.begin(&name, "cookie-1", &[0]);
+  polkit.wait_state(&agent, asking);
+  for _ in 0..2 {
+    agent.respond("wrong");
+    polkit.wait_state(&agent, failed);
+  }
+  agent.respond("wrong");
+  assert_eq!(polkit.answered(&answer), Err(FAILED.to_owned()));
+  assert_eq!(request.get_untracked(), None);
+  assert_eq!(polkit.runs().len(), 3);
+}
+
+#[test]
+fn cancel_from_the_config_answers_cancelled_and_stops_the_helper() {
+  let mut polkit = Polkit::start(PASSWORD);
+  let (agent, name) = polkit.agent();
+  let answer = polkit.begin(&name, "cookie-1", &[0]);
+  polkit.wait_state(&agent, asking);
+  agent.cancel();
+  assert_eq!(agent.request().get_untracked(), None);
   assert_eq!(polkit.answered(&answer), Err(CANCELLED.to_owned()));
-  // Nothing is left to cancel.
+  polkit.wait_helper_gone();
+  // Nothing is left to answer.
+  agent.respond("hunter2");
   agent.cancel();
 }
 
 #[test]
-fn polkit_cancelling_clears_the_request() {
-  let mut polkit = Polkit::start();
+fn polkit_cancelling_stops_the_helper_and_clears_the_request() {
+  let mut polkit = Polkit::start(PASSWORD);
   let (agent, name) = polkit.agent();
   let answer = polkit.begin(&name, "cookie-1", &[0]);
-  polkit.wait_request(&agent);
+  polkit.wait_state(&agent, asking);
   let from = polkit.authority.connection.clone();
   assert_eq!(polkit.cancel_from(&from, &name, "another"), Ok(()));
   assert!(agent.request().get_untracked().is_some(), "not this one");
@@ -285,32 +405,34 @@ fn polkit_cancelling_clears_the_request() {
   assert_eq!(polkit.cancel_from(&from, &name, "cookie-1"), Ok(()));
   assert_eq!(polkit.answered(&answer), Err(CANCELLED.to_owned()));
   assert_eq!(agent.request().get_untracked(), None);
+  polkit.wait_helper_gone();
 }
 
 #[test]
 fn only_polkit_may_call_the_agent() {
-  let mut polkit = Polkit::start();
+  let mut polkit = Polkit::start(PASSWORD);
   let (agent, name) = polkit.agent();
   let intruder = polkit.shell.block_on(polkit.bus.connect(&[]));
   let logs = capture_logs(|| {
     let answer = polkit.begin_from(&intruder, &name, "cookie-1", &[0]);
     assert_eq!(polkit.answered(&answer), Err(ACCESS_DENIED.to_owned()));
     assert_eq!(agent.request().get_untracked(), None);
+    assert!(polkit.runs().is_empty(), "no helper ran");
 
     let answer = polkit.begin(&name, "cookie-2", &[0]);
-    polkit.wait_request(&agent);
+    polkit.wait_state(&agent, asking);
     let cancel = polkit.cancel_from(&intruder, &name, "cookie-2");
     assert_eq!(cancel, Err(ACCESS_DENIED.to_owned()));
     assert!(agent.request().get_untracked().is_some());
-    agent.cancel();
-    assert_eq!(polkit.answered(&answer), Err(CANCELLED.to_owned()));
+    agent.respond("hunter2");
+    assert_eq!(polkit.answered(&answer), Ok(()));
   });
   assert!(logs.contains("other than polkit"), "{logs}");
 }
 
 #[test]
 fn requests_wait_their_turn_and_past_eight_are_refused() {
-  let mut polkit = Polkit::start();
+  let mut polkit = Polkit::start(PASSWORD);
   let (agent, name) = polkit.agent();
   let service = Rc::clone(agent.service.as_ref().expect("the shell's agent"));
   let mut answers = Vec::new();
@@ -337,6 +459,112 @@ fn requests_wait_their_turn_and_past_eight_are_refused() {
   agent.cancel();
   assert_eq!(polkit.answered(&answers[0]), Err(CANCELLED.to_owned()));
   assert_eq!(action().as_deref(), Some("org.example.cookie-2"));
+  polkit.wait_state(&agent, asking);
+  agent.respond("hunter2");
+  assert_eq!(polkit.answered(&answers[1]), Ok(()));
+  assert_eq!(action().as_deref(), Some("org.example.cookie-3"));
+}
+
+#[test]
+fn picking_an_identity_asks_as_that_user() {
+  let mut polkit = Polkit::start(PASSWORD);
+  let (agent, name) = polkit.agent();
+  let ours = rustix::process::getuid().as_raw();
+  let passwd = std::fs::read_to_string("/etc/passwd").expect("the users");
+  let user = user_name(&passwd, ours).expect("this user's name");
+  let answer = polkit.begin(&name, "cookie-1", &[0, ours]);
+  polkit.wait_state(&agent, asking);
+  let identities = || {
+    agent
+      .request()
+      .get_untracked()
+      .expect("a request")
+      .identities
+  };
+  assert_eq!(identities(), ["root", user.as_str()]);
+
+  let logs = capture_logs(|| agent.pick_identity("nobody-here"));
+  assert!(logs.contains("no such identity"), "{logs}");
+  agent.pick_identity(&user);
+  assert_eq!(identities(), [user.as_str(), "root"]);
+  polkit.wait_state(&agent, asking);
+  agent.respond("hunter2");
+  assert_eq!(polkit.answered(&answer), Ok(()));
+  let second = format!("{user} cookie-1");
+  assert_eq!(polkit.runs(), ["root cookie-1", second.as_str()]);
+}
+
+#[test]
+fn disposing_the_root_stops_the_helper_and_frees_the_agent() {
+  let runtime = Runtime::current();
+  let before = runtime.node_count();
+  let mut polkit = Polkit::start(PASSWORD);
+  let (agent, name) = polkit.agent();
+  let _answer = polkit.begin(&name, "cookie-1", &[0]);
+  polkit.wait_state(&agent, asking);
+  polkit.shell.cx.owner().dispose();
+  assert_eq!(runtime.node_count(), before);
+  polkit.wait_helper_gone();
+  let woke = polkit
+    .shell
+    .run_until(Instant::now() + Duration::from_millis(500));
+  assert_eq!(woke, 1);
+}
+
+#[test]
+fn the_bus_closing_clears_the_request_and_stops_the_helper() {
+  let mut polkit = Polkit::start(PASSWORD);
+  let (agent, name) = polkit.agent();
+  let _answer = polkit.begin(&name, "cookie-1", &[0]);
+  polkit.wait_state(&agent, asking);
+  let Polkit {
+    mut shell,
+    bus,
+    authority,
+    dir,
+    ..
+  } = polkit;
+  drop((authority, bus));
+  let request = agent.request();
+  shell.retry_until(
+    "the request gone",
+    || request.get_untracked().is_none(),
+    |_| {},
+  );
+  let pid = std::fs::read_to_string(dir.path().join("helper.pid")).expect("a helper ran");
+  let proc = PathBuf::from(format!("/proc/{}", pid.trim()));
+  shell.retry_until("the helper gone", || !proc.exists(), |_| {});
+}
+
+#[test]
+fn a_missing_helper_answers_failed_and_a_crashing_one_shows_failed() {
+  let mut polkit = Polkit::with(PASSWORD, |config| Config {
+    polkit_helper: PathBuf::from("/nonexistent/crabshell-polkit-helper"),
+    ..config
+  });
+  let (agent, name) = polkit.agent();
+  let logs = capture_logs(|| {
+    let answer = polkit.begin(&name, "cookie-1", &[0]);
+    assert_eq!(polkit.answered(&answer), Err(FAILED.to_owned()));
+  });
+  assert!(logs.contains("couldn't start polkit's helper"), "{logs}");
+  assert_eq!(agent.request().get_untracked(), None);
+
+  let mut polkit =
+    Polkit::start("echo 'PAM_PROMPT_ECHO_OFF Password: '\nread -r answer\nkill -KILL $$\n");
+  let (agent, name) = polkit.agent();
+  let logs = capture_logs(|| {
+    let answer = polkit.begin(&name, "cookie-1", &[0]);
+    polkit.wait_state(&agent, asking);
+    agent.respond("hunter2");
+    polkit.wait_state(&agent, failed);
+    let failure = AuthState::Failed {
+      message: "Authentication failed".to_owned(),
+    };
+    assert_eq!(state(agent.request().get_untracked()), Some(failure));
+    assert_eq!(*answer.borrow(), None, "it may be tried again");
+  });
+  assert!(logs.contains("ended without an answer"), "{logs}");
 }
 
 #[test]
@@ -353,7 +581,7 @@ fn user_names_come_from_passwd_and_this_user_from_user() {
 
 #[test]
 fn a_request_the_agent_cant_answer_is_refused() {
-  let mut polkit = Polkit::start();
+  let mut polkit = Polkit::start(PASSWORD);
   let (agent, name) = polkit.agent();
   let cookie = polkit.begin(&name, "two\nlines", &[0]);
   assert_eq!(polkit.answered(&cookie), Err(FAILED.to_owned()));
@@ -361,11 +589,35 @@ fn a_request_the_agent_cant_answer_is_refused() {
   let nobody = polkit.begin(&name, "cookie-1", &[4_000_000_000]);
   assert_eq!(polkit.answered(&nobody), Err(FAILED.to_owned()));
   assert_eq!(agent.request().get_untracked(), None);
+  assert!(polkit.runs().is_empty(), "no helper ran");
+}
+
+#[test]
+fn answers_never_reach_the_logs() {
+  let mut polkit = Polkit::start(PASSWORD);
+  let (agent, name) = polkit.agent();
+  let logs = capture_logs_from(tracing::Level::TRACE, || {
+    let answer = polkit.begin(&name, "cookie-1", &[0]);
+    polkit.wait_state(&agent, asking);
+    agent.respond("wrong-secret");
+    polkit.wait_state(&agent, failed);
+    let shown = format!("{:?}", agent.request().get_untracked());
+    assert!(!shown.contains("wrong-secret"), "{shown}");
+    agent.respond("two\nsecret-lines");
+    agent.respond("hunter2");
+    assert_eq!(polkit.answered(&answer), Ok(()));
+    agent.respond("late-secret");
+  });
+  for secret in ["wrong-secret", "secret-lines", "hunter2", "late-secret"] {
+    assert!(!logs.contains(secret), "{secret} in {logs}");
+  }
+  assert!(logs.contains("line break was dropped"), "{logs}");
+  assert!(logs.contains("an answer was dropped"), "{logs}");
 }
 
 #[test]
 fn an_idle_agent_wakes_nothing() {
-  let mut polkit = Polkit::start();
+  let mut polkit = Polkit::start(PASSWORD);
   let (agent, name) = polkit.agent();
   let quiet = |polkit: &mut Polkit, what: &str| {
     let shell = &mut polkit.shell;
@@ -375,7 +627,11 @@ fn an_idle_agent_wakes_nothing() {
   };
   quiet(&mut polkit, "registered, nothing asked");
 
-  let _answer = polkit.begin(&name, "cookie-1", &[0]);
-  polkit.wait_request(&agent);
-  quiet(&mut polkit, "a request waits for the user");
+  let answer = polkit.begin(&name, "cookie-1", &[0]);
+  polkit.wait_state(&agent, asking);
+  quiet(&mut polkit, "a question waits for the user");
+  agent.respond("hunter2");
+  assert_eq!(polkit.answered(&answer), Ok(()));
+  polkit.wait_helper_gone();
+  quiet(&mut polkit, "after a request");
 }

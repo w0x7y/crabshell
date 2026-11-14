@@ -613,6 +613,9 @@ struct Config {
   /// What `cx.pam` authenticates with: libpam, and a script in tests, so
   /// no test counts toward locking a real account.
   pam: Arc<dyn pam::Backend>,
+  /// polkit's setuid helper, which checks answers with PAM. Tests give a
+  /// script of their own.
+  polkit_helper: PathBuf,
 }
 
 impl Config {
@@ -644,6 +647,7 @@ impl Config {
         .map(PathBuf::from),
       desktop_entries: desktop_entries::Sources::system(),
       pam: Arc::new(pam::LibPam),
+      polkit_helper: PathBuf::from(polkit::HELPER),
     }
   }
 }

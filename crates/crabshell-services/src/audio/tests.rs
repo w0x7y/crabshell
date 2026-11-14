@@ -226,15 +226,8 @@ impl Harness {
     let event_loop = EventLoop::try_new().expect("an event loop");
     let cx = Cx::new(Runtime::current().new_owner());
     let config = Config {
-      localtime: None,
-      system_bus: None,
-      session_bus: None,
-      sway: None,
       audio: Some(server),
-      popup_timeout: crate::notifications::POPUP_TIMEOUT,
-      greetd: None,
-      desktop_entries: Default::default(),
-      pam: std::sync::Arc::new(crate::testing::FakePam::default()),
+      ..crate::testing::offline()
     };
     crate::provide_with(&cx, &event_loop.handle(), config);
     Harness { event_loop, cx }
