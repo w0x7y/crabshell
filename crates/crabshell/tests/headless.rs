@@ -2945,3 +2945,163 @@ fn the_lock_example_locks_again_after_a_crash() {
     shot.rgba == locked.rgba
   });
 }
+
+/// A stand-in for Hyprland: its two sockets under the private Sway's
+/// runtime directory, answered on threads of their own from `lists`.
+/// Hyprland itself is never started.
+struct FakeHyprland {
+  /// `j/workspaces`, `j/monitors`, `j/clients` and `j/activewindow`.
+  lists: Arc<Mutex<[String; 4]>>,
+  commands: Arc<Mutex<Vec<String>>>,
+  events: Arc<Mutex<Option<std::os::unix::net::UnixStream>>>,
+}
+
+impl FakeHyprland {
+  const SIGNATURE: &str = "crabshell-test";
+
+  /// HEADLESS-1 shows workspace 1, which has the focus and a window
+  /// titled `notes`, and workspace 2 is on it too.
+  fn start(sway: &Sway) -> FakeHyprland {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
+
+    let dir = sway.runtime_dir().join("hypr").join(Self::SIGNATURE);
+    std::fs::create_dir_all(&dir).expect("Hyprland's directory");
+    let fake = FakeHyprland {
+      lists: Arc::new(Mutex::new([
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+      ])),
+      commands: Arc::default(),
+      events: Arc::default(),
+    };
+    fake.focus(1);
+    let requests = UnixListener::bind(dir.join(".socket.sock")).expect("the request socket");
+    let (lists, commands) = (Arc::clone(&fake.lists), Arc::clone(&fake.commands));
+    std::thread::spawn(move || {
+      for stream in requests.incoming() {
+        let Ok(mut stream) = stream else { return };
+        let mut bytes = vec![0; 64 * 1024];
+        let Ok(read) = stream.read(&mut bytes) else {
+          continue;
+        };
+        let command = String::from_utf8_lossy(&bytes[..read]).into_owned();
+        let lists = lists.lock().expect("the lists");
+        let reply = match command.as_str() {
+          "j/workspaces" => lists[0].clone(),
+          "j/monitors" => lists[1].clone(),
+          "j/clients" => lists[2].clone(),
+          "j/activewindow" => lists[3].clone(),
+          _ => {
+            commands.lock().expect("the commands").push(command);
+            String::from("ok")
+          }
+        };
+        let _ = stream.write_all(reply.as_bytes());
+      }
+    });
+    let events = UnixListener::bind(dir.join(".socket2.sock")).expect("the event socket");
+    let stream = Arc::clone(&fake.events);
+    std::thread::spawn(move || {
+      if let Ok((accepted, _)) = events.accept() {
+        *stream.lock().expect("the event stream") = Some(accepted);
+      }
+    });
+    fake
+  }
+
+  /// Workspace `id`, 1 or 2, gets the focus.
+  fn focus(&self, id: u32) {
+    let workspace = |n: u32| {
+      format!(
+        r#"{{"id":{n},"name":"{n}","monitor":"HEADLESS-1","monitorID":0,"windows":{},"hasfullscreen":false}}"#,
+        u32::from(n == 1)
+      )
+    };
+    *self.lists.lock().expect("the lists") = [
+      format!("[{},{}]", workspace(1), workspace(2)),
+      format!(
+        r#"[{{"id":0,"name":"HEADLESS-1","description":"","width":1920,"height":1080,"x":0,"y":0,"activeWorkspace":{{"id":{id},"name":"{id}"}},"scale":1.00,"focused":true}}]"#
+      ),
+      String::from(
+        r#"[{"address":"0x5a1","workspace":{"id":1,"name":"1"},"floating":false,"monitor":0,"class":"notes","title":"notes","fullscreen":0}]"#,
+      ),
+      if id == 1 {
+        String::from(r#"{"address":"0x5a1","class":"notes","title":"notes"}"#)
+      } else {
+        String::from("{}")
+      },
+    ];
+  }
+
+  /// Sends `line` on the event socket, once the shell connected to it.
+  fn send(&self, line: &str) {
+    use std::io::Write;
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+      if let Some(stream) = self.events.lock().expect("the event stream").as_mut() {
+        stream
+          .write_all(format!("{line}\n").as_bytes())
+          .expect("an event sent");
+        return;
+      }
+      assert!(Instant::now() < deadline, "the shell never followed events");
+      std::thread::sleep(Duration::from_millis(20));
+    }
+  }
+
+  fn commands(&self) -> Vec<String> {
+    self.commands.lock().expect("the commands").clone()
+  }
+}
+
+/// Phase 12's exit check: the Hyprland example, against a fake Hyprland
+/// on headless Sway, matches its goldens at scales 1, 1.5 and 2, switches
+/// workspaces on a click, follows Hyprland's events, and sleeps.
+#[test]
+#[ignore = "needs headless Sway"]
+fn the_hyprland_bar_follows_hyprland_switches_and_sleeps() {
+  let env = [("HYPRLAND_INSTANCE_SIGNATURE", FakeHyprland::SIGNATURE)];
+  for (scale, factor, suffix) in [("1", 1.0, "1x"), ("1.5", 1.5, "1.5x"), ("2", 2.0, "2x")] {
+    let sway = Sway::start();
+    sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", scale]);
+    let _hyprland = FakeHyprland::start(&sway);
+    let bar = ExampleBar::start(&sway, "hyprland", false, &env);
+    bar.wait_for(FIRST_FRAME);
+    let shot = steady_shot(&sway, "HEADLESS-1");
+    check_golden(&format!("hyprland@{suffix}"), &shot, (30.0 * factor) as u32);
+  }
+
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let hyprland = FakeHyprland::start(&sway);
+  // A headless seat has no pointer until a program gives it one.
+  let mut pointer = VirtualPointer::new(&sway);
+  let bar = ExampleBar::start(&sway, "hyprland", false, &env);
+  bar.wait_for(FIRST_FRAME);
+  let before = steady_shot(&sway, "HEADLESS-1");
+
+  // Workspace 2's button: 8 of padding, 28 for workspace 1, a gap of 4.
+  pointer.move_to(8 + 28 + 4 + 14, 15, (1920, 1080));
+  pointer.click();
+  let deadline = Instant::now() + TIMEOUT;
+  while !hyprland
+    .commands()
+    .contains(&String::from("dispatch workspace 2"))
+  {
+    assert!(Instant::now() < deadline, "{:?}", hyprland.commands());
+    std::thread::sleep(Duration::from_millis(20));
+  }
+
+  // Hyprland switches and says so; the bar follows.
+  hyprland.focus(2);
+  hyprland.send("workspacev2>>2,2");
+  wait_for_shot(&sway, "HEADLESS-1", "workspace 2 focused", |shot| {
+    shot.rgba[..1920 * 30 * 4] != before.rgba[..1920 * 30 * 4]
+  });
+
+  let wakeups = bar.wakeups_for(Duration::from_secs(10));
+  assert!(wakeups.is_empty(), "woke while idle: {wakeups:?}");
+}

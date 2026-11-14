@@ -87,8 +87,9 @@ pub mod prelude {
   pub use crabshell_services::{
     AudioNode, AudioStream, AuthRequest, AuthState, BatteryState, Bluetooth, BluetoothAdapter,
     BluetoothDevice, DesktopAction, DesktopEntries, DesktopEntry, DeviceKind, FileView,
-    GreetMessage, GreetState, Greetd, IntoCommand, LoopStatus, Mpris, Network, NetworkDevice,
-    NetworkKind, NetworkState, Notification, Notifications, Pam, PamMessage, PamResult, PamState,
+    GreetMessage, GreetState, Greetd, Hyprland, HyprlandEvent, HyprlandMonitor, HyprlandToplevel,
+    HyprlandWorkspace, IntoCommand, LoopStatus, Mpris, Network, NetworkDevice, NetworkKind,
+    NetworkState, Notification, Notifications, Pam, PamMessage, PamResult, PamState,
     PlaybackStatus, Player, PolkitAgent, PowerDevice, PowerProfile, PowerProfiles, Precision,
     Process, ServicesExt, Sink, Socket, Sway, SwayEvent, SwayEventKind, SwayOutput, Timeout, Tray,
     TrayHost, TrayItem, TrayMenu, TrayStatus, UPower, Urgency, WifiNetwork, Workspace,
