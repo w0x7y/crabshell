@@ -18,6 +18,7 @@ use tracing::level_filters::LevelFilter;
 
 use crate::colors::{self, Handle};
 use crate::control;
+use crate::ipc::Ipc;
 use crate::per_output::{self, Host, IntoPanels, PerOutput};
 use crate::persist::{self, Persisted};
 use crate::switch_log::SwitchLog;
@@ -51,6 +52,10 @@ pub const EXIT_NO_COMPOSITOR: i32 = 2;
 /// [`persist`](ShellExt::persist)ed values to
 /// `$XDG_RUNTIME_DIR/crabshell/state.json` and exits with 0. It starts from
 /// that file, if there is one, and removes it.
+///
+/// [`ipc`](ShellExt::ipc) handlers are served at
+/// `$XDG_RUNTIME_DIR/crabshell/ipc-<display>.sock`, named for
+/// `WAYLAND_DISPLAY`.
 pub fn run(root: impl FnOnce(&Cx)) -> ! {
   let started = Instant::now();
   init_logging();
@@ -63,7 +68,11 @@ pub fn run(root: impl FnOnce(&Cx)) -> ! {
   };
   let file = persist::state_file();
   let saved = file.as_deref().map(persist::load).unwrap_or_default();
-  let mut shell = match Shell::build(event_loop, saved, root) {
+  let ipc = crate::ipc::socket_path(
+    std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
+    std::env::var_os("WAYLAND_DISPLAY").as_deref(),
+  );
+  let mut shell = match Shell::build(event_loop, saved, ipc, root) {
     Ok(shell) => shell,
     Err(error) => {
       tracing::error!(%error, "the shell couldn't start");
@@ -150,13 +159,15 @@ impl Shell {
   ///
   /// If `root` panics. The panic is logged too.
   pub fn new(event_loop: EventLoop, root: impl FnOnce(&Cx)) -> Result<Shell, Error> {
-    Shell::build(event_loop, serde_json::Map::new(), root)
+    Shell::build(event_loop, serde_json::Map::new(), None, root)
   }
 
-  /// [`new`](Self::new), with `cx.persist` values starting from `saved`.
+  /// [`new`](Self::new), with `cx.persist` values starting from `saved`,
+  /// and `cx.ipc` handlers served at `ipc`.
   pub(crate) fn build(
     mut event_loop: EventLoop,
     saved: serde_json::Map<String, serde_json::Value>,
+    ipc: Option<std::path::PathBuf>,
     root: impl FnOnce(&Cx),
   ) -> Result<Shell, Error> {
     let runtime = Runtime::current();
@@ -173,6 +184,7 @@ impl Shell {
         Rc::new(move || weak.upgrade())
       },
       signal: event_loop.signal(),
+      ipc: Ipc::new(&event_loop.handle(), ipc),
     });
     event_loop
       .platform()
@@ -243,11 +255,14 @@ impl Shell {
       Ok(writer) => self.control = Some(writer),
       Err(error) => tracing::warn!(%error, "can't answer the supervisor"),
     }
-    let persisted = self
-      .cx
-      .service::<Service>()
+    let service = self.cx.service::<Service>();
+    let persisted = service
+      .as_ref()
       .map(|service| Rc::clone(&service.persisted));
     control::listen(&self.event_loop.handle(), stream, move || {
+      if let Some(service) = &service {
+        service.ipc.remove_socket();
+      }
       let values = persisted.as_ref().map(|persisted| persisted.save());
       if let (Some(values), Some(file)) = (values, &file)
         && let Err(error) = persist::write(file, &values)
@@ -305,6 +320,9 @@ impl Shell {
   pub fn run(mut self) -> ! {
     loop {
       if let Err(error) = self.dispatch(None) {
+        if let Some(service) = self.cx.service::<Service>() {
+          service.ipc.remove_socket();
+        }
         tracing::error!(%error, "the shell stops");
         std::process::exit(EXIT_NO_COMPOSITOR);
       }
@@ -353,6 +371,8 @@ struct Service {
   /// The loop's handle, for sources added from a context, held weakly as
   /// `idle` holds it.
   handle: Handle<Platform>,
+  /// What `cx.ipc` registers, and the socket it is called through.
+  ipc: Rc<Ipc<Platform>>,
 }
 
 impl Service {
@@ -473,6 +493,26 @@ pub trait ShellExt {
   fn persist<T>(&self, key: &str, default: T) -> Signal<T>
   where
     T: Serialize + DeserializeOwned + 'static;
+
+  /// Lets the command line call `handler` as `crabshell ipc <target>
+  /// <function> [args...]`, for as long as this context lives. It gets the
+  /// arguments, and its `Ok` text is printed or its `Err` text reported
+  /// as an error. `crabshell ipc` alone lists every target and function.
+  ///
+  /// Names are 1 to 64 ASCII letters, digits, `_`, `-` and `.`; others are
+  /// refused and logged. Registering the same pair again replaces the
+  /// older handler. It runs on the loop's thread, so the signals it sets
+  /// show at once, and a slow one holds the whole shell up. A panic in it
+  /// is logged, such as `ipc launcher.toggle (registered at
+  /// src/main.rs:12:8) panicked`, and disables it. The socket is opened when
+  /// the first handler registers.
+  #[track_caller]
+  fn ipc(
+    &self,
+    target: &str,
+    function: &str,
+    handler: impl Fn(&[String]) -> Result<String, String> + 'static,
+  );
 }
 
 impl ShellExt for Cx {
@@ -618,6 +658,24 @@ impl ShellExt for Cx {
       .unwrap_or_else(|default| self.signal(default))
   }
 
+  #[track_caller]
+  fn ipc(
+    &self,
+    target: &str,
+    function: &str,
+    handler: impl Fn(&[String]) -> Result<String, String> + 'static,
+  ) {
+    let at = Location::caller();
+    let Some(service) = self.service::<Service>() else {
+      return tracing::error!(
+        "cx.ipc at {at} needs the shell crabshell::run starts; nothing is registered"
+      );
+    };
+    service
+      .ipc
+      .register(self, target, function, Box::new(handler), at);
+  }
+
   fn set_icon_theme(&self, theme: impl Into<String>) {
     let theme = theme.into();
     let Some(service) = self.service::<Service>() else {
@@ -645,7 +703,7 @@ impl Drop for OnDispose {
   }
 }
 
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
   if let Some(message) = payload.downcast_ref::<&str>() {
     (*message).to_owned()
   } else if let Some(message) = payload.downcast_ref::<String>() {

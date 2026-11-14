@@ -1160,6 +1160,19 @@ fn run_as_child() {
     Ok("panics") => crabshell::run(|_| panic!("a broken config")),
     Ok("counter") => crabshell::run(|cx| cx.per_output(counter::bar)),
     Ok("v0.1") => run_v0_1_bar_logging_its_volume(),
+    Ok("ipc") => crabshell::run(|cx| {
+      let count = cx.signal(0_i64);
+      cx.effect(move || eprintln!("the count is {}", count.get()));
+      cx.ipc("counter", "add", move |args| {
+        let step: i64 = args
+          .first()
+          .and_then(|step| step.parse().ok())
+          .ok_or_else(|| String::from("add takes a number"))?;
+        count.update(|count| *count += step);
+        Ok(count.get_untracked().to_string())
+      });
+      cx.per_output(counter::bar);
+    }),
     _ => {}
   }
 }
@@ -1416,6 +1429,47 @@ fn a_reload_saves_the_count_and_the_next_shell_starts_from_it() {
   let status = second.exit_status().expect("the shell exits");
   assert_eq!(status.code(), Some(0));
   assert_eq!(saved_count(), 1, "it started from the saved count");
+}
+
+/// `cx.ipc` in a shell `run` started: it serves at the socket named for
+/// `WAYLAND_DISPLAY`, the handler's signal reaches its effect on the
+/// loop's flush, and the socket goes when the shell exits for a reload.
+#[test]
+#[ignore = "needs headless Sway"]
+fn an_ipc_handler_answers_and_its_socket_goes_at_a_reload() {
+  use std::io::{Read, Write};
+
+  run_as_child();
+  let sway = Sway::start();
+  let control = sway.runtime_dir().join("control.sock");
+  let listener = std::os::unix::net::UnixListener::bind(&control).expect("the control socket");
+  let mut shell = ExampleBar::spawn(
+    &sway,
+    this_as_shell("an_ipc_handler_answers_and_its_socket_goes_at_a_reload"),
+    &[
+      (CHILD, "ipc"),
+      ("CRABSHELL_CONTROL", control.to_str().expect("UTF-8")),
+    ],
+  );
+  let mut supervisor = accept_ready(&listener);
+  let socket = sway
+    .runtime_dir()
+    .join("crabshell")
+    .join(format!("ipc-{}.sock", sway.display()));
+  let mut client = std::os::unix::net::UnixStream::connect(&socket).expect("the IPC socket");
+  client.set_read_timeout(Some(TIMEOUT)).expect("a timeout");
+  client
+    .write_all(b"{\"args\":[\"2\"],\"function\":\"add\",\"target\":\"counter\"}\n")
+    .expect("asked");
+  let mut reply = String::new();
+  client.read_to_string(&mut reply).expect("the reply");
+  assert_eq!(reply, "{\"ok\":\"2\"}\n");
+  shell.wait_for("the count is 2");
+
+  supervisor.write_all(b"save\n").expect("told to save");
+  let status = shell.exit_status().expect("the shell exits");
+  assert_eq!(status.code(), Some(0));
+  assert!(!socket.exists(), "the shell removed its socket");
 }
 
 #[test]

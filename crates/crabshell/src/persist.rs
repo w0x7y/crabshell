@@ -158,23 +158,10 @@ pub(crate) fn load(path: &Path) -> Map<String, Value> {
 /// a symlink is refused, and one others can read is made private first.
 pub(crate) fn write(path: &Path, values: &Map<String, Value>) -> std::io::Result<()> {
   use std::io::Write;
-  use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+  use std::os::unix::fs::OpenOptionsExt;
 
   if let Some(dir) = path.parent() {
-    std::fs::DirBuilder::new()
-      .recursive(true)
-      .mode(0o700)
-      .create(dir)?;
-    let meta = std::fs::symlink_metadata(dir)?;
-    if !meta.is_dir() {
-      return Err(std::io::Error::other(format!(
-        "{} isn't a directory",
-        dir.display()
-      )));
-    }
-    if meta.permissions().mode() & 0o077 != 0 {
-      std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-    }
+    private_dir(dir)?;
   }
   let partial = path.with_extension("json.partial");
   match std::fs::remove_file(&partial) {
@@ -190,4 +177,26 @@ pub(crate) fn write(path: &Path, values: &Map<String, Value>) -> std::io::Result
   file.write_all(&serde_json::to_vec(values)?)?;
   drop(file);
   std::fs::rename(&partial, path)
+}
+
+/// Creates `dir` for this user only. One that is a symlink is refused,
+/// and one others can read is made private.
+pub(crate) fn private_dir(dir: &Path) -> std::io::Result<()> {
+  use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+  std::fs::DirBuilder::new()
+    .recursive(true)
+    .mode(0o700)
+    .create(dir)?;
+  let meta = std::fs::symlink_metadata(dir)?;
+  if !meta.is_dir() {
+    return Err(std::io::Error::other(format!(
+      "{} isn't a directory",
+      dir.display()
+    )));
+  }
+  if meta.permissions().mode() & 0o077 != 0 {
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+  }
+  Ok(())
 }

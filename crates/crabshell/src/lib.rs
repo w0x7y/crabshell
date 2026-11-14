@@ -63,6 +63,7 @@
 
 mod colors;
 mod control;
+mod ipc;
 mod per_output;
 mod persist;
 mod shell;
