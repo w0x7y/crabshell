@@ -272,3 +272,18 @@ fn a_watched_file_wakes_nothing_while_it_stays_the_same_and_its_watch_goes_with_
     "the last watch took inotify away"
   );
 }
+
+#[test]
+fn a_json_file_in_a_directory_not_made_yet_makes_it_and_then_follows_it() {
+  let dir = Dir::new();
+  let path = dir.join("state/crabshell/settings.json");
+  let mut shell = Harness::new(offline());
+  let settings = shell.cx.json_file(&path, DEFAULT);
+  Runtime::current().flush();
+  settings.update(|settings| settings.volume = 20);
+  Runtime::current().flush();
+  assert!(path.exists(), "made with its directories");
+  std::fs::write(&path, r#"{"volume": 90, "muted": false}"#).unwrap();
+  run(&mut shell, 50);
+  assert_eq!(settings.get_untracked().volume, 90, "followed once made");
+}

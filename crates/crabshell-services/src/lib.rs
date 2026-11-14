@@ -224,7 +224,8 @@ pub trait ServicesExt {
   /// A value kept in the JSON file at `path`, as Quickshell's
   /// `JsonAdapter`: `default` until the file is read, the file's value
   /// once it is, and the file rewritten whenever the config sets another.
-  /// A missing file is made at the first set. A file that isn't `T`'s
+  /// A missing file, and its directory, is made at the first set. A file
+  /// that isn't `T`'s
   /// JSON is logged and left alone, and the value stays.
   fn json_file<T>(&self, path: impl Into<PathBuf>, default: T) -> Signal<T>
   where

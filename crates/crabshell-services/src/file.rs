@@ -29,12 +29,12 @@ pub(crate) struct Files(pub(crate) Rc<Shared>);
 
 /// Calls `reread` when the file at `path` may have changed: written,
 /// replaced, made or removed. `None` if its directory can't be watched,
-/// which is logged.
+/// as while it doesn't exist, which is logged; a write that makes it
+/// watches again.
 // shortcut: watches the directory the path names, not a link's target's,
 // so an edit through another name of a linked file isn't seen; follow
 // the link when a config needs that.
-fn watch_file(cx: &Cx, path: &Path, reread: impl Fn() + 'static) -> Option<Watch> {
-  let shared = Rc::clone(&cx.service::<Files>()?.0);
+fn watch_file(shared: &Rc<Shared>, path: &Path, reread: impl Fn() + 'static) -> Option<Watch> {
   let (dir, name) = (path.parent()?, path.file_name()?.to_owned());
   let dir = if dir.as_os_str().is_empty() {
     Path::new(".")
@@ -47,7 +47,7 @@ fn watch_file(cx: &Cx, path: &Path, reread: impl Fn() + 'static) -> Option<Watch
       reread();
     }
   };
-  watch::watch(&shared, dir, on_change)
+  watch::watch(shared, dir, on_change)
     .inspect_err(|error| {
       let path = path.display();
       tracing::info!(%path, %error, "can't watch the file, so changes to it aren't seen");
@@ -67,6 +67,8 @@ pub struct FileView {
 
 struct ViewInner {
   path: PathBuf,
+  /// `None` when the shell provided no services.
+  shared: Option<Rc<Shared>>,
   watch: RefCell<Option<Watch>>,
   /// Lives under the opening context's owner.
   text: Signal<Option<String>>,
@@ -78,18 +80,13 @@ struct ViewInner {
 pub(crate) fn file_view(cx: &Cx, path: PathBuf) -> FileView {
   let inner = Rc::new(ViewInner {
     text: cx.signal(None),
+    shared: cx.service::<Files>().map(|files| Rc::clone(&files.0)),
     watch: RefCell::new(None),
     path,
     logged: RefCell::new(None),
   });
   inner.reread();
-  let weak = Rc::downgrade(&inner);
-  let watch = watch_file(cx, &inner.path, move || {
-    if let Some(inner) = Weak::upgrade(&weak) {
-      inner.reread();
-    }
-  });
-  inner.watch.replace(watch);
+  inner.watch();
   // So `text()` follows the file even once every `FileView` is dropped.
   cx.owner().signal(Keep(Rc::clone(&inner)));
   FileView { inner }
@@ -109,7 +106,11 @@ impl FileView {
   pub fn write(&self, text: impl AsRef<str>) {
     let text = text.as_ref();
     match write_whole(&self.inner.path, text.as_bytes()) {
-      Ok(()) => set(self.inner.text, Some(text.to_owned())),
+      Ok(()) => {
+        set(self.inner.text, Some(text.to_owned()));
+        // Its directory may be new.
+        self.inner.watch();
+      }
       Err(error) => {
         let path = self.inner.path.display();
         tracing::warn!(%path, %error, "couldn't write the file");
@@ -119,6 +120,20 @@ impl FileView {
 }
 
 impl ViewInner {
+  /// Follows the file's changes, unless it does already or can't.
+  fn watch(self: &Rc<Self>) {
+    let (Some(shared), true) = (&self.shared, self.watch.borrow().is_none()) else {
+      return;
+    };
+    let weak = Rc::downgrade(self);
+    let watch = watch_file(shared, &self.path, move || {
+      if let Some(inner) = Weak::upgrade(&weak) {
+        inner.reread();
+      }
+    });
+    self.watch.replace(watch);
+  }
+
   /// Reads the file again and shows what it holds now.
   fn reread(&self) {
     let text = match read_text(&self.path) {
@@ -150,16 +165,11 @@ where
     // What the file holds, as far as this shell knows.
     on_disk: RefCell::new(None),
     logged: RefCell::new(None),
+    shared: cx.service::<Files>().map(|files| Rc::clone(&files.0)),
     watch: RefCell::new(None),
   });
   file.reread();
-  let weak = Rc::downgrade(&file);
-  let watch = watch_file(cx, &file.path, move || {
-    if let Some(file) = Weak::upgrade(&weak) {
-      file.reread();
-    }
-  });
-  file.watch.replace(watch);
+  file.watch();
   let writer = Rc::clone(&file);
   let first = Cell::new(true);
   // Writes what the config sets, not the value it starts from, so a
@@ -181,6 +191,8 @@ struct JsonInner<T: 'static> {
   on_disk: RefCell<Option<String>>,
   /// The last read problem logged, so it logs once until it reads again.
   logged: RefCell<Option<String>>,
+  /// `None` when the shell provided no services.
+  shared: Option<Rc<Shared>>,
   /// Held by the effect that writes, which lives with the context.
   watch: RefCell<Option<Watch>>,
 }
@@ -189,6 +201,20 @@ impl<T> JsonInner<T>
 where
   T: Serialize + DeserializeOwned + PartialEq + 'static,
 {
+  /// Follows the file's changes, unless it does already or can't.
+  fn watch(self: &Rc<Self>) {
+    let (Some(shared), true) = (&self.shared, self.watch.borrow().is_none()) else {
+      return;
+    };
+    let weak = Rc::downgrade(self);
+    let watch = watch_file(shared, &self.path, move || {
+      if let Some(file) = Weak::upgrade(&weak) {
+        file.reread();
+      }
+    });
+    self.watch.replace(watch);
+  }
+
   /// Reads the file again. A missing file keeps the value; one that
   /// isn't the type's JSON is logged and keeps it too.
   fn reread(&self) {
@@ -221,7 +247,7 @@ where
     }
   }
 
-  fn write(&self, text: serde_json::Result<String>) {
+  fn write(self: &Rc<Self>, text: serde_json::Result<String>) {
     let text = match text {
       Ok(text) => text,
       Err(error) => {
@@ -235,6 +261,8 @@ where
     match write_whole(&self.path, format!("{text}\n").as_bytes()) {
       Ok(()) => {
         self.on_disk.replace(Some(text));
+        // Its directory may be new.
+        self.watch();
       }
       Err(error) => {
         let path = self.path.display();
@@ -271,11 +299,18 @@ fn read_text(path: &Path) -> std::io::Result<String> {
 }
 
 /// Replaces the file at `path` with `bytes` through a new file beside it,
-/// renamed over it. A link is followed, so the file it names is replaced,
-/// and a file's permissions are kept.
+/// renamed over it, making its directory if it is missing. A link is
+/// followed, so the file it names is replaced, and a file's permissions
+/// are kept.
 fn write_whole(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
   use std::os::unix::fs::OpenOptionsExt;
 
+  if let Some(dir) = path.parent()
+    && !dir.as_os_str().is_empty()
+    && !dir.exists()
+  {
+    std::fs::create_dir_all(dir)?;
+  }
   let target = match std::fs::canonicalize(path) {
     Ok(target) => target,
     Err(error) if error.kind() == ErrorKind::NotFound => path.to_owned(),
