@@ -322,3 +322,17 @@ fn a_command_can_be_a_list_and_an_empty_one_runs_nothing() {
   assert!(logs.contains("empty command"), "{logs}");
   assert!(!empty.unwrap().running().get_untracked());
 }
+
+#[test]
+fn closing_the_input_first_sends_everything_written() {
+  // Over the socket's buffer, so some of it waits when the input closes.
+  for size in [64 * 1024, 4 * 1024 * 1024] {
+    let mut shell = Harness::new(offline());
+    let process = shell.cx.process(|| ["wc", "-c"]).with_stdin();
+    process.write(vec![b'x'; size]);
+    process.close_stdin();
+    process.write("dropped");
+    finish(&mut shell, &process);
+    assert_eq!(process.stdout().get_untracked().trim(), size.to_string());
+  }
+}

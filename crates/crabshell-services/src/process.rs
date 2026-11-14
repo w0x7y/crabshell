@@ -125,6 +125,9 @@ struct State {
   keep_stdin: bool,
   /// Written before the program started, for its input.
   input: Vec<u8>,
+  /// The config closed the input: it closes once what was written is
+  /// sent.
+  closing: bool,
   on_line: Option<OnLine>,
   /// Where `on_line` was set, for the log if it panics.
   at: Option<&'static Location<'static>>,
@@ -334,9 +337,11 @@ impl Process {
     self.inner.write(data.as_ref());
   }
 
-  /// Closes the program's input, so it reads the end of it.
+  /// Closes the program's input once what was written is sent, so it
+  /// reads the end of it.
   pub fn close_stdin(&self) {
-    self.inner.close_stdin();
+    self.inner.state.borrow_mut().closing = true;
+    self.inner.flush();
   }
 
   /// Sends `SIGTERM` to the program's process group. Its exit status
@@ -509,6 +514,8 @@ impl Inner {
       }
     };
     let mut run = state.run.take().expect("invariant: matched just above");
+    // The next run's input starts open.
+    state.closing = false;
     drop(state);
     // What it printed before it ended is in the sockets now. A program it
     // started may hold them open, so read only what is there.
@@ -584,6 +591,9 @@ impl Inner {
   fn write(self: &Rc<Self>, data: &[u8]) {
     let ended = untrack(|| self.status.try_with(Option::is_some)) != Some(false);
     let mut state = self.state.borrow_mut();
+    if state.closing {
+      return tracing::warn!("the program's input is closed, so a write was dropped");
+    }
     // Not started yet, so kept for the start.
     let waiting = state.keep_stdin && state.run.is_none() && !ended;
     match state.run.as_mut() {
@@ -607,6 +617,7 @@ impl Inner {
       return;
     };
     let mut state = self.state.borrow_mut();
+    let closing = state.closing;
     let Some(run) = state.run.as_mut() else {
       return;
     };
@@ -637,11 +648,15 @@ impl Inner {
     }
     if broken {
       drop(state);
-      return self.close_stdin();
+      return self.drop_stdin();
     }
     if run.outbox.is_empty() {
       if let Some(writer) = run.writer.take() {
         event_loop.remove(writer);
+      }
+      if closing {
+        // All sent: the program reads the end.
+        run.stdin = None;
       }
     } else if run.writer.is_none()
       && let Ok(fd) = stdin.as_fd().try_clone_to_owned()
@@ -651,10 +666,10 @@ impl Inner {
     }
   }
 
-  fn close_stdin(&self) {
+  /// Closes the program's input now, dropping what wasn't sent.
+  fn drop_stdin(&self) {
     let writer = {
       let mut state = self.state.borrow_mut();
-      state.keep_stdin = false;
       state.input.clear();
       let Some(run) = state.run.as_mut() else {
         return;
@@ -671,7 +686,15 @@ impl Inner {
   /// Stops the program running now, if one is: `SIGTERM` to its group,
   /// its outputs closed, and it is left to be reaped.
   fn stop_run(&self) {
-    let run = self.state.borrow_mut().run.take();
+    let run = {
+      let mut state = self.state.borrow_mut();
+      let run = state.run.take();
+      // The next run's input starts open.
+      if run.is_some() {
+        state.closing = false;
+      }
+      run
+    };
     let Some(mut run) = run else {
       return;
     };
