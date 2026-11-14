@@ -2433,6 +2433,13 @@ fn views_of_windows_show_their_pixels_and_keep_the_last_frame() {
     frame_of(platform, viewer).is_some_and(|frame| all_of(&frame.rgba, GREEN))
   });
   assert_eq!(event_loop.platform().capture_sessions(), 1);
+  // A window that doesn't change sends nothing, live view or not.
+  settle(&mut event_loop);
+  let iterations = event_loop.platform().stats().iterations;
+  event_loop
+    .dispatch(Some(Duration::from_secs(2)))
+    .expect("the connection works");
+  assert_eq!(event_loop.platform().stats().iterations, iterations + 1);
 
   open.set(false);
   run_until(&mut event_loop, "the session to end", |platform| {
