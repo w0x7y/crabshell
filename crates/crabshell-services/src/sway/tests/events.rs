@@ -206,6 +206,20 @@ fn a_reconnect_waits_until_sway_answered_everything_sent() {
 }
 
 #[test]
+fn on_event_on_a_context_that_went_is_logged_and_does_nothing() {
+  let fake = FakeSway::new();
+  let (shell, mut peer) = Harness::connect(&fake);
+  let child = shell.cx.child();
+  let stale = child.sway();
+  child.owner().dispose();
+  let (handler, heard) = recorder();
+  let logs = capture_logs(|| stale.on_event(&[SwayEventKind::Mode], handler));
+  assert!(logs.contains("context that is gone"), "{logs}");
+  peer.read_nothing();
+  assert_eq!(Rc::strong_count(&heard), 1, "the handler wasn't kept");
+}
+
+#[test]
 fn a_handler_that_takes_anothers_context_stops_it() {
   let fake = FakeSway::new();
   let (mut shell, mut peer) = Harness::connect(&fake);

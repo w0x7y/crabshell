@@ -288,13 +288,20 @@ impl Sway {
   /// Events in between may be missed.
   ///
   /// It runs on the main thread. If it panics, that is logged with where
-  /// `on_event` was called, and it isn't called again.
+  /// `on_event` was called, and it isn't called again. Called on a handle
+  /// whose context went, it logs that and does nothing.
   #[track_caller]
   pub fn on_event(&self, kinds: &[SwayEventKind], handler: impl Fn(&SwayEvent) + 'static) {
+    let at = Location::caller();
+    if self.owner.is_disposed() {
+      return tracing::warn!(
+        "Sway on_event (called at {at}) on a context that is gone does nothing"
+      );
+    }
     let Some(service) = &self.service else {
       return;
     };
-    let id = service.listen(kinds, Rc::new(handler), Location::caller());
+    let id = service.listen(kinds, Rc::new(handler), at);
     // Dropped with the asking context's owner, which takes the handler away.
     self.owner.signal(Unlisten(Rc::clone(service), id));
   }
