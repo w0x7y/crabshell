@@ -362,6 +362,9 @@ struct State {
   focusing: Vec<String>,
   /// Requests waiting for fewer than [`MAX_IN_FLIGHT`] to be out.
   queued: VecDeque<(Asked, String)>,
+  /// The urgent windows from before the event socket was connected
+  /// again, which the events Hyprland dropped may have focused or closed.
+  recheck: Option<Recheck>,
   /// Whether the event socket was connected again since its last event.
   reconnected: bool,
 }
@@ -372,6 +375,17 @@ struct Burst {
   started: usize,
   /// How many aren't answered yet.
   out: usize,
+}
+
+/// Urgency to check against the first window list and focused window
+/// read after a reconnect.
+struct Recheck {
+  urgent: HashSet<String>,
+  /// The first request sent after the reconnect: earlier ones' answers
+  /// predate it.
+  from: u64,
+  windows: bool,
+  active: bool,
 }
 
 /// What a request asks Hyprland.
@@ -459,6 +473,7 @@ impl Service {
         focusing: Vec::new(),
         queued: VecDeque::new(),
         reconnected: false,
+        recheck: None,
       });
       match &self.shared.config.hyprland {
         None => tracing::info!(
@@ -878,7 +893,10 @@ impl Service {
           "Hyprland's reply was dropped"
         );
       }
-      None => state.raw.apply(query, &request.reply),
+      None => {
+        state.raw.apply(query, &request.reply);
+        state.recheck(query, request.id);
+      }
     }
     state.answered(query);
     if state.reading[query as usize] == Reading::Stale {
@@ -907,6 +925,12 @@ impl Service {
     };
     tracing::warn!(why, "Hyprland closed its event socket; connecting again");
     state.reconnected = true;
+    state.recheck = Some(Recheck {
+      urgent: state.urgent.clone(),
+      from: state.next_request,
+      windows: false,
+      active: false,
+    });
     if let (Some(events), Some(event_loop)) = (state.events.take(), self.shared.event_loop()) {
       event_loop.remove(events.reader);
     }
@@ -955,6 +979,51 @@ impl Service {
 }
 
 impl State {
+  /// After a reconnect, ends the urgency of a window from before it that
+  /// `query`'s answer, to the request `id`, says was focused or closed.
+  fn recheck(&mut self, query: Query, id: u64) {
+    let State {
+      recheck,
+      urgent,
+      raw,
+      ..
+    } = self;
+    let Some(check) = recheck.as_mut().filter(|check| id >= check.from) else {
+      return;
+    };
+    match query {
+      Query::Clients => {
+        let listed: HashSet<&str> = raw
+          .windows
+          .iter()
+          .map(|window| window.address.as_str())
+          .collect();
+        for address in check
+          .urgent
+          .iter()
+          .filter(|address| !listed.contains(address.as_str()))
+        {
+          urgent.remove(address);
+        }
+        check.windows = true;
+      }
+      Query::ActiveWindow => {
+        if let Some(active) = raw
+          .active
+          .as_ref()
+          .filter(|active| check.urgent.contains(*active))
+        {
+          urgent.remove(active);
+        }
+        check.active = true;
+      }
+      Query::Workspaces | Query::Monitors => return,
+    }
+    if check.windows && check.active {
+      *recheck = None;
+    }
+  }
+
   /// A new burst of reads.
   fn burst(&mut self) -> u64 {
     self.next_burst += 1;

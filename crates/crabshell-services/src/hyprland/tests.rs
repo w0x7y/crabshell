@@ -1165,3 +1165,128 @@ fn a_list_that_keeps_reading_holds_no_other_off_the_screen() {
     );
   }
 }
+
+/// Events Hyprland dropped before closing the socket may have focused or
+/// closed an urgent window.
+#[test]
+fn a_reconnect_clears_the_urgency_the_events_it_missed_ended() {
+  let fake = FakeHyprland::new();
+  let (mut shell, hyprland, mut events) = connect(&fake);
+  events
+    .write_all(b"urgent>>5a1\nurgent>>5b2\nurgent>>5c3\nopenwindow>>5e5,1,x,y\n")
+    .expect("events");
+  run(&mut shell);
+  // Reads sent before the socket closed, answered after.
+  let held = fake.requests();
+  assert_eq!(held.len(), 2);
+  drop(events);
+  run(&mut shell);
+  let mut events = fake.events();
+  // Raised after the reconnect, before the window shows in a list.
+  events.write_all(b"urgent>>5d4\n").expect("events");
+  run(&mut shell);
+  for request in held {
+    request.answer("[]");
+  }
+  run(&mut shell);
+  let replies = [
+    ("j/workspaces", WORKSPACES),
+    ("j/monitors", MONITORS),
+    ("j/clients", CLIENTS),
+    ("j/activewindow", r#"{"address":"0x5b2"}"#),
+  ];
+  while !fake.answer(&replies).is_empty() {
+    run(&mut shell);
+  }
+  let service = hyprland.service.as_ref().expect("provided");
+  let state = service.state.borrow();
+  let state = state.as_ref().expect("started");
+  let mut urgent: Vec<_> = state.urgent.iter().cloned().collect();
+  urgent.sort();
+  assert_eq!(
+    urgent,
+    ["0x5a1", "0x5d4"],
+    "0x5b2 was focused and 0x5c3 closed meanwhile"
+  );
+  assert!(state.recheck.is_none(), "checked once");
+}
+
+#[test]
+fn a_status_that_cant_be_asked_drops_its_switches_and_is_asked_again() {
+  let mut fake = FakeHyprland::new();
+  let (mut shell, hyprland, _events) = connect(&fake);
+  let socket = fake.dir.join(".socket.sock");
+  std::fs::remove_file(&socket).expect("the request socket");
+  let logs = capture_logs(|| hyprland.focus_workspace("2"));
+  assert!(logs.contains("can't send Hyprland a request"), "{logs}");
+  fake.requests = UnixListener::bind(&socket).expect("a socket");
+  fake
+    .requests
+    .set_nonblocking(true)
+    .expect("a non-blocking socket");
+  hyprland.focus_workspace("3");
+  assert_eq!(
+    fake.answer(&[("j/status", STATUS_HYPRLANG)]),
+    ["j/status"],
+    "asked again"
+  );
+  run(&mut shell);
+  assert_eq!(fake.answer(&[]), ["dispatch workspace 3"]);
+}
+
+#[test]
+fn losing_hyprland_drops_what_waited_to_be_sent() {
+  let fake = FakeHyprland::new();
+  let (mut shell, hyprland, events) = connect(&fake);
+  for n in 0..10 {
+    hyprland.dispatch(&format!("workspace {n}"));
+  }
+  // Behind the 8 out: two dispatches and the status a switch waits for.
+  hyprland.focus_workspace("2");
+  let held = fake.requests();
+  assert_eq!(held.len(), 8);
+  std::fs::remove_file(fake.dir.join(".socket2.sock")).expect("the event socket");
+  drop(events);
+  capture_logs(|| {
+    run(&mut shell);
+  });
+  hyprland.dispatch("after");
+  hyprland.focus_workspace("3");
+  assert_eq!(
+    fake.answer(&[("j/status", STATUS_HYPRLANG)]),
+    ["dispatch after", "j/status"]
+  );
+  run(&mut shell);
+  assert_eq!(fake.answer(&[]), ["dispatch workspace 3"]);
+  drop(held);
+}
+
+#[test]
+fn a_shown_special_workspace_hyprland_0_57_names_by_address_is_marked() {
+  let fake = FakeHyprland::new();
+  let mut shell = Harness::new(fake.config());
+  let hyprland = shell.cx.hyprland();
+  let _events = fake.events();
+  fake.answer(&[
+    (
+      "j/workspaces",
+      r#"[{"address":"1","id":1,"type":"normal","name":"1","monitor":"DP-1","monitorID":0,"windows":0,"hasfullscreen":false},
+          {"address":"special:magic","type":"special","name":"special:magic","monitor":"DP-1","monitorID":0,"windows":1,"hasfullscreen":false}]"#,
+    ),
+    (
+      "j/monitors",
+      r#"[{"id":0,"name":"DP-1","description":"D","width":1920,"height":1080,"x":0,"y":0,"activeWorkspace":{"address":"1","id":1,"type":"normal","name":"1"},"specialWorkspace":{"address":"special:magic","type":"special","name":"special:magic"},"scale":1.00,"focused":true}]"#,
+    ),
+    ("j/clients", "[]"),
+    ("j/activewindow", "{}"),
+  ]);
+  run(&mut shell);
+  let list = hyprland.workspaces().get_untracked();
+  let special = list
+    .iter()
+    .find(|workspace| workspace.name == "special:magic");
+  assert_eq!(
+    special.map(|workspace| (workspace.active, workspace.focused)),
+    Some((true, true))
+  );
+}
