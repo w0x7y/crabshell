@@ -112,8 +112,9 @@ Everything runs on one thread. A calloop loop dispatches ready sources, runs `ru
 - `crates/crabshell-reactive`: signals, memos, effects, owners and `flush`.
 - `crates/crabshell-ui`: `Cx`, widgets, styles, layout, text, text editing, keyboard focus, hit testing, invalidation, and the animation clock with `cx.animate` and style fades.
 - `crates/crabshell-render`: drawing, damage history, clipping, gradients, shadows, glyphs, icons, images and the in-house icon theme lookup. Goldens are in `tests/golden`.
-- `crates/crabshell-wayland`: the event loop, layer-shell and floating windows, popups, shm buffers, scale, pointer, keyboard, input methods, the clipboard, outputs, the animation timer and blur behind windows. The headless tests and shared Sway helper are in `tests/`.
-- `crates/crabshell`: `run`, `Shell`, `ShellExt::per_output`, `cx.floating`, `cx.persist`, the prelude and the examples (`counter`, `bar`, `launcher`, `effects`). Its headless tests, goldens and exit-code tests are in `tests/`.
+- `crates/crabshell-wayland`: the event loop, layer-shell and floating windows, popups, shm buffers, scale, pointer, keyboard, input methods, the clipboard, outputs, the animation timer, blur behind windows, and idle watches and inhibitors. The headless tests and shared Sway helper are in `tests/`.
+- `crates/crabshell-services`: the services configs read: Sway's workspaces, the tray, audio, the clock, UPower and power profiles, Bluetooth, NetworkManager, MPRIS media players and the notification server, with the shared D-Bus driver in `dbus.rs` and a fake daemon for tests in `testing.rs`.
+- `crates/crabshell`: `run`, `Shell`, `ShellExt::per_output`, `cx.floating`, `cx.persist`, `cx.idle_monitor`, the prelude and the examples (`counter`, `bar`, `launcher`, `effects`, `desktop`). Its headless tests, goldens and exit-code tests are in `tests/`.
 - `crates/crabshell-cli`: the `crabshell` command (`init`, `check`, and `run` with the supervisor) and the config template in `template/`, which must match the design doc's "Writing a config".
 - `spike/` and `baseline/`: the frozen Phase 0 prototype, the Quickshell bar it was measured against, and `baseline/harness.py`, which measured both.
 

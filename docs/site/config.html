@@ -411,6 +411,60 @@ let offset = cx.animate(move || picked.get() as f32 * 44.0, Transition::new(250)
                 uses it for you
               </td>
             </tr>
+            <tr>
+              <td><code>cx.audio().sinks()</code></td>
+              <td>
+                every output, and <code>sources()</code> and
+                <code>streams()</code> for inputs and apps playing, each with
+                its volume and mute, and setters for them
+              </td>
+            </tr>
+            <tr>
+              <td><code>cx.upower().display_device()</code></td>
+              <td>
+                the battery: percent, charging or not, time left.
+                <code>cx.power_profiles()</code> reads and sets the profile
+              </td>
+            </tr>
+            <tr>
+              <td><code>cx.network()</code></td>
+              <td>
+                devices and wi-fi networks from networkmanager, with
+                <code>connect</code>, <code>scan</code> and wi-fi on or off
+              </td>
+            </tr>
+            <tr>
+              <td><code>cx.bluetooth()</code></td>
+              <td>
+                adapters and devices from bluez, with their battery, and
+                <code>connect</code>, <code>pair</code> and power
+              </td>
+            </tr>
+            <tr>
+              <td><code>cx.mpris().players()</code></td>
+              <td>
+                media players and their tracks, with
+                <code>play_pause</code>, <code>next</code> and
+                <code>seek</code>. <code>position_at(now)</code> says where
+                playback is
+              </td>
+            </tr>
+            <tr>
+              <td><code>cx.notifications()</code></td>
+              <td>
+                the shell becomes the notification server:
+                <code>popups()</code> for toasts, <code>list()</code> for the
+                history, <code>dismiss</code> and <code>invoke</code>
+              </td>
+            </tr>
+            <tr>
+              <td><code>cx.idle_monitor(timeout)</code></td>
+              <td>
+                <code>true</code> once you've been away for
+                <code>timeout</code>. a window's <code>inhibit_idle</code>
+                keeps the screen awake
+              </td>
+            </tr>
           </tbody>
         </table>
       </div>

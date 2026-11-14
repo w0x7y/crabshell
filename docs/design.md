@@ -247,6 +247,14 @@ API rules settled in Phase 8, animation and effects:
 - `PanelWindow::blur` and `FloatingWindow::blur` take an `Option<Region>` for the compositor to blur behind.
 - The prelude adds `Animate`, `Easing`, `Transition`, `Gradient`, `GradientShape` and `Shadow`. The effects example shows them together.
 
+API rules settled in Phase 9, desktop services:
+
+- Each new service comes from `ServicesExt` as the v0.1 ones do: `cx.upower()`, `cx.power_profiles()`, `cx.bluetooth()`, `cx.network()`, `cx.mpris()` and `cx.notifications()`. Each hands out `ReadSignal`s of plain structs, such as `Vec<BluetoothDevice>`, and methods that take plain values, such as a device's path or a player's bus name.
+- `cx.audio()` also gives `sinks()`, `sources()`, `default_source()` and `streams()`, with setters for defaults, volumes, mutes and moving a stream.
+- `cx.idle_monitor(timeout)` comes from `ShellExt` and gives a `ReadSignal<bool>`, `true` while the user has been away for `timeout`. `PanelWindow::inhibit_idle` and `FloatingWindow::inhibit_idle` take a value or a closure.
+- `Player::position_at(now)` works out where playback is, since MPRIS doesn't say as it moves.
+- The prelude adds the services' types: `UPower`, `PowerDevice`, `DeviceKind`, `BatteryState`, `PowerProfiles`, `PowerProfile`, `Bluetooth`, `BluetoothAdapter`, `BluetoothDevice`, `Network`, `NetworkDevice`, `NetworkKind`, `NetworkState`, `WifiNetwork`, `Mpris`, `Player`, `PlaybackStatus`, `LoopStatus`, `Notifications`, `Notification`, `Urgency`, `Timeout`, `AudioNode` and `AudioStream`. The desktop example shows them together.
+
 ## Process model and reload
 
 Two processes run. The `crabshell` CLI, installed once per machine, is the supervisor. The shell is the user's own compiled binary, which links the `crabshell` library.
@@ -648,16 +656,27 @@ Rules settled while building `crabshell-wayland` (Phase 8):
 - Blur binds `ext_background_effect_manager_v1` version 1. A surface gets its effect object the first time it asks, and the region is cut to the surface's size and sent before the commit that applies it, and again when the size changes, as the mask is. Without the protocol, or with the compositor's blur off, a window that asks is logged once per shell and shows unblurred. Blur that turns on later shows from each window's next frame. No compositor here has the protocol (SwayFX 0.6, wlroots 0.20, labwc 0.20), so only the path without it is tested.
 - `Stats::drawing` adds up the time spent drawing frames.
 
+Rules settled while building `crabshell-wayland` (Phase 9):
+
+- Idle binds `ext_idle_notifier_v1` and `zwp_idle_inhibit_manager_v1`, both version 1. A watch is a notification on the first seat, so a watch made before any seat exists never fires, and one whose seat goes stays as it was. A panicking callback is logged and the shell goes on.
+- A window's idle inhibitor is made once its surface is configured, while its `inhibit_idle` is true, and goes with the surface. Headless Sway honors one on a layer surface.
+
 ## Services
 
-v0.1 has four services in `crabshell-services`; the phases after it add Quickshell's others (see "Beyond v0.1"). Each one owns its connection, runs on the main thread, and hands out `ReadSignal`s plus a few methods. Every service is created on first use and shared by all bars, so two outputs never mean two connections.
+v0.1 had four services in `crabshell-services`, and Phase 9 added six; the phases after it add Quickshell's others (see "Beyond v0.1"). Each one owns its connection, runs on the main thread, and hands out `ReadSignal`s plus a few methods. Every service is created on first use and shared by all bars, so two outputs never mean two connections.
 
-| Service    | Signals and methods                                                                                                                                                                                                                                                                               | Source                                                             | Crate                         |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | ----------------------------- |
-| Workspaces | `workspaces()` gives `Vec<Workspace>` with id, name, output, focused, visible, urgent. `focus_workspace(name)`.                                                                                                                                                                                   | Sway IPC at `$SWAYSOCK`                                            | Own framing with `serde_json` |
-| Tray       | `items()` gives `Vec<TrayItem>` with id (bus name and path), app_id, title, status, icon_name, icon_pixmaps, attention_icon_name, icon_theme_path, tooltip, item_is_menu and menu. `activate`, `secondary_activate`, `scroll`, `menu()`, `open_menu`, `open_submenu`, `close_menu`, `menu_event`. | StatusNotifierItem and `com.canonical.dbusmenu` on the session bus | `zbus`                        |
-| Audio      | `default_sink()` gives `Option<Sink>` with name, volume_percent, muted. `change_volume(percent)`, `toggle_mute()`.                                                                                                                                                                                | PulseAudio protocol, served by pipewire-pulse on PipeWire systems  | `libpulse-binding`            |
-| Clock      | `clock(precision)` gives a `jiff::Zoned`                                                                                                                                                                                                                                                          | System time and time zone                                          | `jiff`                        |
+| Service        | Signals and methods                                                                                                                                                                                                                                                                               | Source                                                              | Crate                         |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ----------------------------- |
+| Workspaces     | `workspaces()` gives `Vec<Workspace>` with id, name, output, focused, visible, urgent. `focus_workspace(name)`.                                                                                                                                                                                   | Sway IPC at `$SWAYSOCK`                                             | Own framing with `serde_json` |
+| Tray           | `items()` gives `Vec<TrayItem>` with id (bus name and path), app_id, title, status, icon_name, icon_pixmaps, attention_icon_name, icon_theme_path, tooltip, item_is_menu and menu. `activate`, `secondary_activate`, `scroll`, `menu()`, `open_menu`, `open_submenu`, `close_menu`, `menu_event`. | StatusNotifierItem and `com.canonical.dbusmenu` on the session bus  | `zbus`                        |
+| Audio          | `default_sink()` gives `Option<Sink>` with name, volume_percent, muted. `change_volume(percent)`, `toggle_mute()`.                                                                                                                                                                                | PulseAudio protocol, served by pipewire-pulse on PipeWire systems   | `libpulse-binding`            |
+| Clock          | `clock(precision)` gives a `jiff::Zoned`                                                                                                                                                                                                                                                          | System time and time zone                                           | `jiff`                        |
+| UPower         | `devices()`, `display_device()` give `PowerDevice`s with kind, state, percent, present, times to empty and full, energy rate. `on_battery()`.                                                                                                                                                     | UPower on the system bus                                            | `zbus`                        |
+| Power profiles | `active()`, `available()` give `PowerProfile`s. `set(profile)`.                                                                                                                                                                                                                                   | power-profiles-daemon on the system bus                             | `zbus`                        |
+| Bluetooth      | `adapters()`, `devices()` with name, address, powered, discovering, connected, paired, trusted, battery. `set_powered`, `start_discovery`, `stop_discovery`, `connect`, `disconnect`, `pair`, `set_trusted`, `forget`.                                                                            | BlueZ on the system bus                                             | `zbus`                        |
+| Network        | `wifi_enabled()`, `devices()` with kind, state and connection, `wifi_networks()` with SSID, strength, secured, connected. `set_wifi_enabled`, `scan`, `connect`, `disconnect`.                                                                                                                    | NetworkManager on the system bus                                    | `zbus`                        |
+| Media players  | `players()` gives `Player`s with status, track, artists, art, length, position and what each can do. `play_pause`, `next`, `previous`, `seek`, `set_position`, `set_volume`, `set_shuffle`, `set_loop`, `raise`.                                                                                  | MPRIS on the session bus                                            | `zbus`                        |
+| Notifications  | `list()`, the history, and `popups()`, the ones still showing. `dismiss`, `invoke`, `clear`.                                                                                                                                                                                                      | The shell serves `org.freedesktop.Notifications` on the session bus | `zbus`                        |
 
 ### Workspaces
 
@@ -711,6 +730,20 @@ Rules settled while building `crabshell-services` (Phase 4, steps 1 and 2):
 - Tray: calls to apps and to another watcher time out after 25 s, on a timer of the loop's own that goes as soon as the call ends. zbus's `method_timeout` left its timer behind, which woke zbus's thread once, 25 s after every call. Calls the bus answers itself have no timeout. `Activate` is sent at (0, 0). `Event` sends data 0 and timestamp 0. A `Menu` of `/NO_DBUSMENU` means no menu.
 - Tray: only one menu is open at a time. Its match rule exists only while it is open, and a failed read closes it. A menu keeps at most 1024 entries, and submenus are read as they open.
 
+Rules settled while building `crabshell-services` (Phase 9):
+
+- System daemons are followed by one driver: read whole when the daemon has an owner, kept up to date from its broadcasts, emptied when it leaves and read again when it returns. Only broadcasts from the daemon's current unique name count, since any program can aim a signal at the shell. A signal that arrives during a read marks it stale, and it reads again when done, so a change is never lost or overwritten. A signal that names an object without its properties, as UPower's `DeviceAdded`, reads everything again.
+- A daemon that broadcasts much the shell doesn't read gets narrower match rules, so it never wakes the shell for it: BlueZ and NetworkManager take only ObjectManager signals and `PropertiesChanged` for the interfaces read. A change to a property nothing reads is applied without rebuilding the lists.
+- zbus stops reading a connection while one message stream holds 64 unread messages, so nothing awaits inside a message loop, and a service's start awaits nothing per object.
+- Caps apply when a list is shown, not when an object arrives, so one left out shows once there is room. Bluetooth shows connected and paired devices first. At most 4096 objects are kept, and a flood past that is logged and left out.
+- UPower: the display device and every device from `EnumerateDevices`, at most 64. Times of 0 are unknown; a percent that isn't finite reads as 0.
+- Power profiles: read from `net.hadess.PowerProfiles`, which every version of power-profiles-daemon still owns. A refused `set`, as polkit may refuse, is logged.
+- Bluetooth: read with `GetManagedObjects` at `/`, keeping `Adapter1`, `Device1` and `Battery1`. A device's name is its `Alias`, else its `Name`, else its address. `Pair` and `Connect` may take 90 s, since BlueZ answers a pairing once the user confirmed it; other calls 25 s. The shell registers no pairing agent.
+- Network: read with `GetManagedObjects` at `/org/freedesktop`. Loopback and unmanaged devices are left out. One network per SSID and device, from its strongest access point, strongest first; hidden SSIDs are left out, and SSIDs are cut to 32 bytes and shown as lossy UTF-8 while `connect` sends the access point's own bytes. A password connection sends only the key and lets NetworkManager pick WPA2 or WPA3 from the access point; without one, NetworkManager picks a saved connection, and an open network with none gets a new one. Enhanced Open counts as open. A password is never logged or kept.
+- Media players: every `org.mpris.MediaPlayer2.*` name but playerctld, which mirrors another player, at most 32, in the order they appeared. The position comes from a read when a player appears and when its status, rate or track changes, and from `Seeked`; until such a read answers, a new status or rate takes effect from where playback got to. Nothing polls.
+- Notifications: the shell queues for `org.freedesktop.Notifications` and lets another daemon replace it, serving while it holds the name and keeping the history through a loss. It offers actions, body, icon-static and persistence. Tags in a body are taken out and entities decoded. A popup shows for its timeout, 5 s by default, and a critical one or one that never expires until dismissed; one loop timer exists only while a popup waits to expire. Summaries are cut to 1 KiB, bodies to 4 KiB and other strings to 256 bytes; at most 16 actions, 256 notifications and 8 MiB of pictures are kept.
+- Audio: sinks, sources and streams are read whole on each of their events. A failed read keeps the last list. A sink's monitor isn't listed as a source, but can be the default source. Setting a volume keeps the channels' balance. Peak level meters aren't there yet: they would need a stream reading the sound many times a second.
+
 Rules settled while building the `Tray` widget (Phase 4, step 5):
 
 - `Tray::new()` takes `icon_size` (16 by default) and `menu_style`, the menu popup's style (light text on dark gray by default). Both take a value or a closure.
@@ -729,11 +762,11 @@ One Cargo workspace with seven crates. Each crate owns one area, so an agent can
 | `crabshell-ui`       | `Cx`, widgets, styles, layout, text layout, hit testing, focus, invalidation                | reactive             | `taffy`, `cosmic-text`, `fontconfig`, `unicode-segmentation`                |
 | `crabshell-render`   | Drawing into pixmaps, damage tracking, glyphs, icons, images                                | ui                   | `tiny-skia`, `resvg`, `png`, `swash`, `zune-jpeg`, `gif`, `image-webp`      |
 | `crabshell-wayland`  | Event loop, windows, popups, outputs, pointer, keyboard, text input, clipboard, shm buffers | reactive, ui, render | `smithay-client-toolkit` (with `xkbcommon`), `calloop`, `wayland-protocols` |
-| `crabshell-services` | Workspaces, tray, audio, clock                                                              | reactive, ui         | `zbus`, `serde_json`, `libpulse-binding`, `jiff`, `calloop`, `serde`        |
+| `crabshell-services` | Workspaces, tray, audio, clock, power, Bluetooth, network, media players, notifications     | reactive, ui         | `zbus`, `serde_json`, `libpulse-binding`, `jiff`, `calloop`, `serde`        |
 | `crabshell`          | Public API, `run()`, `prelude`, `cx.persist`                                                | all of the above     | `serde`, `serde_json`, tracing-subscriber                                   |
 | `crabshell-cli`      | The `crabshell` binary with `init`, `run`, `check` and the supervisor                       | none                 | `calloop`, `rustix`, `serde_json`, `inotify`, `zbus`                        |
 
-`Cx` lives in `crabshell-ui` and carries a map of services keyed by type. `crabshell-services` adds `cx.sway()`, `cx.audio()`, `cx.tray()` and `cx.clock()` through an extension trait, so `crabshell-ui` never depends on services.
+`Cx` lives in `crabshell-ui` and carries a map of services keyed by type. `crabshell-services` adds `cx.sway()`, `cx.audio()`, `cx.tray()`, `cx.clock()` and Phase 9's services through an extension trait, so `crabshell-ui` never depends on services.
 
 ### Dependency policy
 
@@ -860,6 +893,21 @@ Measured on 2026-11-14 with `measure_the_counter_bar`, release builds on one 192
 
 The phase added no dependency, and RSS moved within the run-to-run noise. The first-frame times vary between runs by more than the phase changed them. The frame times come from `Stats::drawing` in the exit check, run once as a release build at each scale: the effects bar's slide and fade took 15 frames.
 
+### Phase 9 results
+
+Measured on 2026-11-14 with `measure_the_counter_bar`, release builds on one 1920×1080 headless Sway output at scale 1. "Before" is 13a520b, built in a second checkout. The desktop example runs every Phase 9 service on private system and session buses with no daemons, and a private pipewire-pulse.
+
+| Metric                            | Before Phase 9 | After Phase 9 |
+| --------------------------------- | -------------- | ------------- |
+| Counter example RSS               | 16.4 MiB       | 16.6 MiB      |
+| Counter first frame               | 11.3 ms        | 9.6 ms        |
+| v0.1 bar RSS                      | 19.6 MiB       | 19.8 MiB      |
+| Desktop example RSS               | none           | 20.1 MiB      |
+| Desktop example first frame       | none           | 10.2 ms       |
+| Idle wakeups, counter and desktop | 0              | 0             |
+
+The phase added no dependency. Every service starts only when a config asks for it, so the counter and the v0.1 bar moved by a few hundred KiB, within the run-to-run noise.
+
 ## Phases
 
 Seven phases to v0.1, totaling 16 to 26 weeks of focused work, all guesses, then the phases in "Beyond v0.1". A phase is done only when its exit check passes. Phase 0 is a go/no-go gate for the whole project.
@@ -899,6 +947,8 @@ After v0.1, the phases bring every feature Quickshell has, so any Quickshell set
 Phase 7 passed on 2026-11-14, built in the commits from aa5d8c5 to a0b82d8 after a review per step. Its exit check, in `crates/crabshell/tests/headless.rs`, runs the launcher example on headless Sway: an overlay panel that takes the keyboard, with a text field filtering 500 rows in a `ListView` and an about `FloatingWindow`. It matches its goldens at scales 1, 1.5 and 2, typing filters the list within one frame a key, the wheel scrolls it, the compositor closes the floating window, the window's nodes come back to their count, and the open launcher wakes nothing while idle. Gaps left for later phases: no drag or kinetic scrolling and no scroll bar, no drag-select in text fields, popups that never shrink to fit, and no wrapper widgets of their own, since a `Stack` or `Button` with a padded style covers `WrapperItem`, `WrapperRectangle` and `WrapperMouseArea`, and `Style::clip` covers `ClippingRectangle`.
 
 Phase 8 passed on 2026-11-14, built in the commits from 5c301c4 to 1cb98f5 after a review per step. Its exit check, in `crates/crabshell/tests/headless.rs`, runs the effects example on headless Sway: a bar with a translucent gradient that asks the compositor to blur behind it, tabs whose hover color fades in, an indicator that slides under the picked tab with `cx.animate`, and a card with a soft shadow. It matches its goldens at scales 1, 1.5 and 2. Picking a tab draws 15 frames while the slide and the fade run, then one dispatch sleeps for 2 s. Sway lacks the blur protocol, which is logged once. The CPU renderer draws each of those frames in well under a millisecond, so the GPU backend waits. Gaps left for later phases: blur is untested against a compositor that has `ext-background-effect-v1`, one shadow per style and no inset shadows, no dithering, no springs, and layout values animate only through `cx.animate` driving a style's size, which lays the window out each frame. The same day the maintainer's own Quickshell bar, the rime islands, was rebuilt as a Crabshell config and checked by eye on the laptop's SwayFX session, blur included. What it couldn't rebuild was left out: its panels, now playing, network, Bluetooth, battery and keyboard layout, which later phases bring, and two things no phase lists yet: a shadow cut out under translucent glass, and rotating or scaling a widget.
+
+Phase 9 passed on 2026-11-14, built in the commits from 1954fa0 to afe1fbd after a review per step; agents built MPRIS, notifications, Bluetooth and networking in worktrees of their own, and each was reviewed before its fixes went in. Its exit check, in `crates/crabshell/tests/headless.rs`, runs the desktop example on headless Sway with every Phase 9 service started on private buses and a private pipewire-pulse. It matches its goldens at scales 1, 1.5 and 2, a notification sent with `gdbus` shows as a toast and goes when it expires, and then the shell wakes nothing for 10 s. Each service is tested against a fake daemon on a private bus, and audio also against a private PipeWire. Gaps left for later phases: audio level meters and PipeWire's links, saved network connections and connectivity checks, a Bluetooth pairing agent of the shell's own, notifications lost while a reload swaps the shell, and a hand check against the real daemons of a desktop session.
 
 ## Rules for AI agents
 
