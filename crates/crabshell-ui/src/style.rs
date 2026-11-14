@@ -221,7 +221,7 @@ impl Gradient {
 /// A shadow cast by a widget's box, as CSS's `box-shadow`: the box's
 /// shape moved by `x` and `y`, grown by `spread` and blurred over `blur`
 /// logical pixels, drawn under the box. A translucent background shows
-/// it through.
+/// it through, unless it is [`cut_out`](Shadow::cut_out).
 ///
 /// ```
 /// use crabshell_ui::{Color, Shadow, Style};
@@ -244,6 +244,8 @@ pub struct Shadow {
   pub spread: f32,
   /// Its color.
   pub color: Color,
+  /// Whether it is left out under the box, as under translucent glass.
+  pub cut_out: bool,
 }
 
 impl Shadow {
@@ -256,12 +258,23 @@ impl Shadow {
       blur,
       spread: 0.0,
       color,
+      cut_out: false,
     }
   }
 
   /// The same shadow `spread` larger on each side.
   pub const fn spread(self, spread: f32) -> Shadow {
     Shadow { spread, ..self }
+  }
+
+  /// The same shadow left out under the box's own shape, so a translucent
+  /// background, such as glass the compositor blurs, shows what is
+  /// behind it instead of the shadow. CSS has no such shadow.
+  pub const fn cut_out(self) -> Shadow {
+    Shadow {
+      cut_out: true,
+      ..self
+    }
   }
 
   /// The area this shadow of `rect` covers: its shape, grown by one and a
@@ -292,6 +305,8 @@ impl Shadow {
       blur: self.blur.lerp(&to.blur, t),
       spread: self.spread.lerp(&to.spread, t),
       color: self.color.lerp(&to.color, t),
+      // Not a number: it changes at once.
+      cut_out: to.cut_out,
     }
   }
 

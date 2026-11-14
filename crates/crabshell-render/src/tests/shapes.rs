@@ -380,11 +380,16 @@ mod shadows {
   /// A 40 by 40 white box at 20, 10 casting `shadow`, in a clear 120 by
   /// 70 window at scale 1.
   fn cast(shadow: Shadow, radius: f32) -> Buffer {
+    cast_on(shadow, radius, Color::rgb(255, 255, 255))
+  }
+
+  /// [`cast`] from a box of `background`.
+  fn cast_on(shadow: Shadow, radius: f32, background: Color) -> Buffer {
     let mut scene = Scene::new();
     let row = Row::new().padding(10, 20).align(Align::Start).child(
       Row::new().style(
         Style::new()
-          .background(Color::rgb(255, 255, 255))
+          .background(background)
           .radius(radius)
           .shadow(shadow)
           .width(40.0)
@@ -439,6 +444,36 @@ mod shadows {
     assert!(round.pixel(x, y)[3] + 10 < square.pixel(x, y)[3]);
     // Along the straight edge, the same.
     assert!(round.pixel(61, 30)[3].abs_diff(square.pixel(61, 30)[3]) <= 2);
+  }
+
+  #[test]
+  fn a_cut_out_shadow_is_not_drawn_under_its_box() {
+    let black = Color::rgb(0, 0, 0);
+    let clear = Color::rgba(255, 255, 255, 0);
+    for blur in [0.0, 4.0] {
+      let shadow = Shadow::new(10.0, 10.0, blur, black);
+      let under = cast_on(shadow, 8.0, clear);
+      assert_eq!(under.pixel(50, 40)[3], 255, "blur {blur}: under the box");
+      let cut = cast_on(shadow.cut_out(), 8.0, clear);
+      assert_eq!(cut.pixel(50, 40), [0, 0, 0, 0], "blur {blur}: cut out");
+      assert_eq!(
+        cut.pixel(58, 30),
+        [0, 0, 0, 0],
+        "blur {blur}: near the edge"
+      );
+      assert_eq!(
+        cut.pixel(65, 55),
+        under.pixel(65, 55),
+        "blur {blur}: outside"
+      );
+      // Just inside a rounded corner the box doesn't cover, the shadow
+      // still shows.
+      assert!(
+        cut.pixel(58, 49)[3] > 0,
+        "blur {blur}: {:?}",
+        cut.pixel(58, 49)
+      );
+    }
   }
 
   #[test]

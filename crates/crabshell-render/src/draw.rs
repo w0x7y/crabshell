@@ -612,6 +612,12 @@ impl Painter<'_> {
       radius + spread
     };
     let radius = radius.clamp(0.0, shape.width().min(shape.height()) / 2.0);
+    // A cut-out shadow leaves clear what the box's background covers.
+    let cut = if shadow.cut_out {
+      self.box_mask(pixmap, rect, style)
+    } else {
+      None
+    };
     // CSS draws a blur as a Gaussian of half its length.
     let sigma = shadow.blur.max(0.0) * scale / 2.0;
     if sigma < 0.25 {
@@ -620,7 +626,19 @@ impl Painter<'_> {
         return;
       };
       rounded_rect(&mut path, shape, radius);
-      fill(pixmap, path, shadow.color, FillRule::Winding);
+      let Some(path) = path.finish() else {
+        return;
+      };
+      let mut paint = Paint::default();
+      let color = shadow.color;
+      paint.set_color_rgba8(color.r, color.g, color.b, color.a);
+      paint.anti_alias = true;
+      let outside = cut.map(|mut cut| {
+        cut.invert();
+        cut
+      });
+      let (rule, at) = (FillRule::Winding, Transform::identity());
+      pixmap.fill_path(&path, &paint, rule, at, outside.as_ref());
       return;
     }
     let reach = 3.0 * sigma;
@@ -637,10 +655,33 @@ impl Painter<'_> {
       let xs = columns.clone().map(|column| left + column as f32 + 0.5);
       blurred.row(top + row as f32 + 0.5, xs, &mut mask);
     }
+    if let Some(cut) = cut {
+      let stride = pixmap.width() as usize;
+      let under = rows.clone().flat_map(|row| {
+        columns
+          .clone()
+          .map(move |column| row as usize * stride + column as usize)
+      });
+      for (alpha, at) in mask.iter_mut().zip(under) {
+        *alpha = mul(*alpha, 255 - cut.data()[at]);
+      }
+    }
     let width = columns.len() as u32;
     let height = rows.len() as u32;
     let (x, y) = (columns.start as i32, rows.start as i32);
     blend_mask(pixmap, x, y, width, height, &mask, shadow.color);
+  }
+
+  /// How much of each of this pixmap's pixels the box `rect` with
+  /// `style`'s corners covers, as its background fills it.
+  fn box_mask(&self, pixmap: &PixmapMut<'_>, rect: Rect, style: &Style) -> Option<Mask> {
+    let (area, radius) = self.box_shape(rect, style)?;
+    let mut path = PathBuilder::new();
+    rounded_rect(&mut path, area, radius);
+    let mut mask = Mask::new(pixmap.width(), pixmap.height())?;
+    let (rule, at) = (FillRule::Winding, Transform::identity());
+    mask.fill_path(&path.finish()?, rule, true, at);
+    Some(mask)
   }
 
   /// `gradient` across `area`, a box in this pixmap's pixels. It is laid

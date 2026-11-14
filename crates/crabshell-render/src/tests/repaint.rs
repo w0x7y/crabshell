@@ -569,14 +569,22 @@ fn moving_a_shadow_repaints_like_drawing_everything() {
         .align(Align::Start)
         .child(Row::new().style(move || {
           Style::new()
-            .background(Color::hex("#89b4fa"))
+            .background(Color::hex("#89b4fa80"))
             .radius(6.0)
-            .shadow(Shadow::new(
-              lift.get(),
-              lift.get(),
-              2.0 + lift.get(),
-              Color::rgba(0, 0, 0, 160),
-            ))
+            .shadow({
+              let shadow = Shadow::new(
+                lift.get(),
+                lift.get(),
+                2.0 + lift.get(),
+                Color::rgba(0, 0, 0, 160),
+              );
+              // Cut out once lifted, so a repaint cuts it as a full draw does.
+              if lift.get() > 0.0 {
+                shadow.cut_out()
+              } else {
+                shadow
+              }
+            })
             .padding(10, 30)
         })),
     );
