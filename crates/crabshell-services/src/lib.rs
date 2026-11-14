@@ -88,6 +88,14 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(process::Processes::new(Rc::clone(&shared)));
 }
 
+/// Stops every program a config started with `cx.process`. The shell
+/// calls this before it exits, since `std::process::exit` skips the drops
+/// that would, and each program has a process group of its own.
+#[doc(hidden)]
+pub fn stop_programs(cx: &Cx) {
+  process::stop_all(cx);
+}
+
 /// The services a context hands out.
 pub trait ServicesExt {
   /// The time, truncated to `precision`: it changes on each whole second
@@ -262,6 +270,7 @@ impl ServicesExt for Cx {
     socket::socket(self, path.into())
   }
 
+  #[track_caller]
   fn process<C: IntoCommand>(&self, command: impl Fn() -> C + 'static) -> Process {
     process::process(self, command)
   }

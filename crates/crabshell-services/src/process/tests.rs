@@ -336,3 +336,158 @@ fn closing_the_input_first_sends_everything_written() {
     assert_eq!(process.stdout().get_untracked().trim(), size.to_string());
   }
 }
+
+#[test]
+fn a_program_can_write_to_dev_stderr() {
+  let mut shell = Harness::new(offline());
+  let process = shell
+    .cx
+    .process(|| sh("echo x > /dev/stderr; echo y > /dev/stdout"));
+  finish(&mut shell, &process);
+  assert_eq!(process.stderr().get_untracked(), "x\n");
+  assert_eq!(process.stdout().get_untracked(), "y\n");
+}
+
+#[test]
+fn a_program_reaped_elsewhere_ends_its_run_without_spinning() {
+  use rustix::process::{Pid, Signal, WaitOptions, kill_process, waitpid};
+  let mut shell = Harness::new(offline());
+  let pid = Rc::new(RefCell::new(None));
+  let kept = Rc::clone(&pid);
+  let process = shell
+    .cx
+    .process(|| sh("echo $$; exec sleep 30"))
+    .on_line(move |line| *kept.borrow_mut() = line.parse::<i32>().ok());
+  run_until(&mut shell, "a pid", || pid.borrow().is_some());
+  let pid = Pid::from_raw(pid.borrow().unwrap()).unwrap();
+  kill_process(pid, Signal::KILL).unwrap();
+  waitpid(Some(pid), WaitOptions::empty()).unwrap();
+  let wakeups = shell.run_until(Instant::now() + Duration::from_millis(200));
+  assert!(wakeups < 10, "{wakeups} wakeups");
+  assert!(!process.running().get_untracked());
+}
+
+#[test]
+fn a_command_that_panics_later_stops_the_run_before_and_tries_again_on_a_change() {
+  let mut shell = Harness::new(offline());
+  let mode = shell.cx.signal(0);
+  let pids = Rc::new(RefCell::new(Vec::new()));
+  let kept = Rc::clone(&pids);
+  let process = shell
+    .cx
+    .process(move || {
+      assert!(mode.get() != 1, "mode 1");
+      sh("echo $$; exec sleep 30")
+    })
+    .on_line(move |line| kept.borrow_mut().push(line.parse::<u32>().unwrap()));
+  run_until(&mut shell, "a pid", || pids.borrow().len() == 1);
+  let logs = capture_logs(|| {
+    mode.set(1);
+    Runtime::current().flush();
+  });
+  assert!(
+    logs.contains("cx.process (called at crates/crabshell-services/src/process/tests.rs:"),
+    "{logs}"
+  );
+  assert!(logs.contains("mode 1"), "{logs}");
+  assert!(!process.running().get_untracked());
+  let first = pids.borrow()[0];
+  run_until(&mut shell, "the first run reaped", || gone(first));
+  mode.set(2);
+  run_until(&mut shell, "a run after the change", || {
+    pids.borrow().len() == 2
+  });
+  process.kill();
+  finish(&mut shell, &process);
+}
+
+#[test]
+fn kill_before_the_start_means_it_never_starts() {
+  let mut shell = Harness::new(offline());
+  let process = shell.cx.process(|| ["echo", "started"]);
+  Runtime::current().flush();
+  process.kill();
+  shell.run_until(Instant::now() + Duration::from_millis(100));
+  assert!(!process.running().get_untracked());
+  assert_eq!(process.stdout().get_untracked(), "");
+}
+
+#[test]
+fn nothing_after_a_character_that_didnt_fit_is_kept() {
+  let mut shell = Harness::new(offline());
+  let script = format!(
+    "head -c {} /dev/zero | tr '\\0' x; printf '\\303\\251'; sleep 0.1; printf abc",
+    MAX_OUTPUT - 1
+  );
+  let process = shell.cx.process(move || sh(&script));
+  capture_logs(|| finish(&mut shell, &process));
+  let out = process.stdout().get_untracked();
+  assert_eq!(out.len(), MAX_OUTPUT - 1);
+  assert!(out.ends_with('x'));
+}
+
+#[test]
+fn closing_the_input_after_a_run_ended_leaves_the_next_runs_input_open() {
+  let mut shell = Harness::new(offline());
+  let process = shell.cx.process(|| ["cat"]).with_stdin();
+  process.write("one");
+  process.close_stdin();
+  finish(&mut shell, &process);
+  assert_eq!(process.stdout().get_untracked(), "one");
+  process.close_stdin();
+  process.restart();
+  Runtime::current().flush();
+  process.write("two");
+  process.close_stdin();
+  finish(&mut shell, &process);
+  assert_eq!(process.stdout().get_untracked(), "two");
+}
+
+#[test]
+fn an_ended_program_wakes_nothing() {
+  let mut shell = Harness::new(offline());
+  let process = shell.cx.process(|| ["true"]);
+  finish(&mut shell, &process);
+  let wakeups = shell.run_until(Instant::now() + Duration::from_millis(300));
+  assert_eq!(wakeups, 1, "only the run's own deadline");
+}
+
+#[test]
+fn stop_programs_stops_every_program_before_the_shell_exits() {
+  let mut shell = Harness::new(offline());
+  let pid = Rc::new(RefCell::new(None));
+  let kept = Rc::clone(&pid);
+  let _process = shell
+    .cx
+    .process(|| sh("echo $$; exec sleep 30"))
+    .on_line(move |line| *kept.borrow_mut() = line.parse::<u32>().ok());
+  run_until(&mut shell, "a pid", || pid.borrow().is_some());
+  crate::stop_programs(&shell.cx);
+  let pid = pid.borrow().unwrap();
+  run_until(&mut shell, "the program reaped", || gone(pid));
+}
+
+#[test]
+fn the_end_shows_while_a_program_it_started_keeps_printing() {
+  use rustix::process::{Pid, Signal, kill_process_group};
+  let mut shell = Harness::new(offline());
+  let pid = Rc::new(RefCell::new(None));
+  let kept = Rc::clone(&pid);
+  let process = shell
+    .cx
+    .process(|| sh("echo $$; yes & sleep 0.3; exit 0"))
+    .on_line(move |line| {
+      if kept.borrow().is_none() {
+        *kept.borrow_mut() = line.parse::<i32>().ok();
+      }
+    });
+  let started = Instant::now();
+  capture_logs(|| finish(&mut shell, &process));
+  let group = Pid::from_raw(pid.borrow().unwrap()).unwrap();
+  let _ = kill_process_group(group, Signal::TERM);
+  assert!(
+    started.elapsed() < Duration::from_secs(3),
+    "{:?}",
+    started.elapsed()
+  );
+}

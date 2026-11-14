@@ -6,13 +6,12 @@ mod tests;
 
 use std::cell::RefCell;
 use std::ffi::OsStr;
-use std::io::{ErrorKind, Read, Write};
-use std::os::fd::{AsFd, OwnedFd};
-use std::os::unix::net::UnixStream;
+use std::io::{ErrorKind, PipeReader, PipeWriter, Read, Write};
+use std::os::fd::AsFd;
 use std::os::unix::process::CommandExt;
 use std::panic::{self, AssertUnwindSafe, Location};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::Once;
 use std::time::Instant;
 
@@ -38,6 +37,8 @@ pub(crate) const MAX_INPUT: usize = 4 * 1024 * 1024;
 pub(crate) struct Processes {
   shared: Rc<Shared>,
   reaping: Rc<RefCell<Vec<Reaping>>>,
+  /// Every `cx.process`, so the shell can stop them all before it exits.
+  live: RefCell<Vec<Weak<Inner>>>,
 }
 
 impl Processes {
@@ -45,7 +46,26 @@ impl Processes {
     Processes {
       shared,
       reaping: Rc::default(),
+      live: RefCell::default(),
     }
+  }
+}
+
+/// Stops every program `cx.process` started, as the shell does before it
+/// exits: `exit` skips the drops that would, and each program has a
+/// process group of its own, which nothing else signals.
+pub(crate) fn stop_all(cx: &Cx) {
+  let Some(processes) = cx.service::<Processes>() else {
+    return;
+  };
+  let live: Vec<Rc<Inner>> = processes
+    .live
+    .borrow()
+    .iter()
+    .filter_map(Weak::upgrade)
+    .collect();
+  for inner in live {
+    inner.stop();
   }
 }
 
@@ -128,6 +148,9 @@ struct State {
   /// The config closed the input: it closes once what was written is
   /// sent.
   closing: bool,
+  /// A run ended, failed to start or was killed before it started, and
+  /// nothing is to start: writes and closes have no run to wait for.
+  ran: bool,
   on_line: Option<OnLine>,
   /// Where `on_line` was set, for the log if it panics.
   at: Option<&'static Location<'static>>,
@@ -143,7 +166,7 @@ struct Run {
   exit: Option<RegistrationToken>,
   out: Output,
   err: Output,
-  stdin: Option<UnixStream>,
+  stdin: Option<PipeWriter>,
   outbox: Vec<u8>,
   writer: Option<RegistrationToken>,
   lines: Lines,
@@ -152,7 +175,7 @@ struct Run {
 /// One of a program's outputs, read as it comes.
 #[derive(Default)]
 struct Output {
-  stream: Option<(UnixStream, RegistrationToken)>,
+  stream: Option<(PipeReader, RegistrationToken)>,
   /// The start of a character a read cut off.
   partial: Vec<u8>,
   /// How much is in the signal, and whether the cap was logged.
@@ -167,9 +190,12 @@ enum Which {
 }
 
 /// `cx.process(command)`.
+#[track_caller]
 pub(crate) fn process<C: IntoCommand>(cx: &Cx, command: impl Fn() -> C + 'static) -> Process {
-  let processes = cx
-    .service::<Processes>()
+  let at = Location::caller();
+  let service = cx.service::<Processes>();
+  let processes = service
+    .as_ref()
     .map(|processes| (Rc::clone(&processes.shared), Rc::clone(&processes.reaping)));
   if processes.is_none() {
     static LOGGED: Once = Once::new();
@@ -190,18 +216,29 @@ pub(crate) fn process<C: IntoCommand>(cx: &Cx, command: impl Fn() -> C + 'static
   });
   // Dropped with the starting context's owner, which stops the program.
   cx.owner().signal(StopOnDrop(Rc::clone(&inner)));
+  if let Some(service) = service {
+    let mut live = service.live.borrow_mut();
+    live.retain(|inner| inner.strong_count() > 0);
+    live.push(Rc::downgrade(&inner));
+  }
   let weak = Rc::downgrade(&inner);
   let restarts = inner.restarts;
-  // The command is the config's: built in an effect, which catches and
-  // logs a panic, and builds it again when a signal it read changes.
-  let running = inner.running;
+  // The command is the config's: built in an effect, so it is built again
+  // when a signal it read changes. A panic stops the run before and is
+  // logged; the next change tries again.
   cx.effect(move || {
     restarts.get();
-    // Not running unless the command builds; it may panic.
-    untrack(|| set(running, false));
-    let next = command().into_command();
-    if let Some(inner) = weak.upgrade() {
-      untrack(|| inner.start(next));
+    let built = panic::catch_unwind(AssertUnwindSafe(|| command().into_command()));
+    let Some(inner) = weak.upgrade() else {
+      return;
+    };
+    match built {
+      Ok(next) => untrack(|| inner.start(next)),
+      Err(payload) => {
+        let message = panic_message(payload.as_ref());
+        tracing::error!("cx.process (called at {at}) panicked building its command: {message}");
+        untrack(|| inner.cancel());
+      }
     }
   });
   Process { inner }
@@ -340,16 +377,25 @@ impl Process {
   /// Closes the program's input once what was written is sent, so it
   /// reads the end of it.
   pub fn close_stdin(&self) {
-    self.inner.state.borrow_mut().closing = true;
+    {
+      let mut state = self.inner.state.borrow_mut();
+      // Nothing runs or is to start: the next run's input starts open.
+      if state.run.is_none() && state.ran {
+        return;
+      }
+      state.closing = true;
+    }
     self.inner.flush();
   }
 
   /// Sends `SIGTERM` to the program's process group. Its exit status
   /// comes when it ends.
+  /// Before it started, it doesn't start.
   pub fn kill(&self) {
     if let Some(run) = &self.inner.state.borrow().run {
-      terminate(&run.child);
+      return terminate(&run.child);
     }
+    self.inner.cancel();
   }
 
   /// Stops the program if it runs and starts the command again, as when
@@ -390,6 +436,7 @@ impl Inner {
     };
     let mut state = self.state.borrow_mut();
     state.pending = Some(command);
+    state.ran = false;
     if state.starter.is_none() {
       let inner = Rc::clone(self);
       state.starter = event_loop.insert_timer(
@@ -422,13 +469,17 @@ impl Inner {
     };
     let program = command.get_program().to_string_lossy().into_owned();
     let spawned = spawn_piped(&mut command, keep_stdin);
-    // The command holds the program's ends of the sockets. They must
-    // close here, or its outputs would never end.
+    // The command holds the program's ends of the pipes. They must close
+    // here, or its outputs would never end.
     drop(command);
     let (child, out, err, stdin) = match spawned {
       Ok(spawned) => spawned,
       Err(error) => {
         tracing::warn!(program, %error, "couldn't start the program");
+        let mut state = self.state.borrow_mut();
+        state.ran = true;
+        state.closing = false;
+        drop(state);
         set(self.running, false);
         return;
       }
@@ -506,25 +557,33 @@ impl Inner {
       return;
     };
     let status = match run.child.try_wait() {
-      Ok(Some(status)) => status,
+      Ok(Some(status)) => Some(status),
       Ok(None) => return,
+      // Reaped behind the shell's back: its end is all there is to know.
       Err(error) => {
         tracing::warn!(%error, program = run.program, "lost track of the program");
-        return;
+        None
       }
     };
     let mut run = state.run.take().expect("invariant: matched just above");
     // The next run's input starts open.
     state.closing = false;
+    state.ran = true;
     drop(state);
     // What it printed before it ended is in the sockets now. A program it
     // started may hold them open, so read only what is there.
+    // A program it started that keeps printing would keep this going, so
+    // it stops after what the signal keeps.
     let mut chunk = [0; 64 * 1024];
     for which in [Which::Out, Which::Err] {
-      while let Some((stream, _)) = run.output(which).stream.as_mut() {
+      let mut budget = MAX_OUTPUT;
+      while let Some((stream, _)) = run.output(which).stream.as_mut()
+        && budget > 0
+      {
         let Ok(read @ 1..) = stream.read(&mut chunk) else {
           break;
         };
+        budget = budget.saturating_sub(read);
         let (text, lines) = run.take(which, &chunk[..read]);
         self.show(which, text);
         self.deliver(lines, &run.program);
@@ -536,7 +595,7 @@ impl Inner {
     let last = run.lines.finish();
     self.deliver(last.into_iter().collect(), &run.program);
     self.remove_sources(&mut run);
-    set(self.status, Some(status));
+    set(self.status, status);
     set(self.running, false);
   }
 
@@ -589,13 +648,12 @@ impl Inner {
   }
 
   fn write(self: &Rc<Self>, data: &[u8]) {
-    let ended = untrack(|| self.status.try_with(Option::is_some)) != Some(false);
     let mut state = self.state.borrow_mut();
     if state.closing {
       return tracing::warn!("the program's input is closed, so a write was dropped");
     }
     // Not started yet, so kept for the start.
-    let waiting = state.keep_stdin && state.run.is_none() && !ended;
+    let waiting = state.keep_stdin && state.run.is_none() && !state.ran;
     match state.run.as_mut() {
       Some(run) if run.stdin.is_some() => run.outbox.extend_from_slice(data),
       _ if waiting => {
@@ -721,6 +779,26 @@ impl Inner {
     self.stop_run();
   }
 
+  /// Stops the run and drops a start still to come, as when the command
+  /// panicked or the config killed it before it started.
+  fn cancel(&self) {
+    let starter = {
+      let mut state = self.state.borrow_mut();
+      state.pending = None;
+      state.ran = true;
+      state.closing = false;
+      state.starter.take()
+    };
+    if let (Some(starter), Some(event_loop)) = (starter, self.event_loop()) {
+      event_loop.remove(starter);
+    }
+    self.stop_run();
+    let ran = self.state.borrow().run.is_none();
+    if ran {
+      set(self.running, false);
+    }
+  }
+
   fn remove_sources(&self, run: &mut Run) {
     let tokens = [
       run.exit.take(),
@@ -737,8 +815,9 @@ impl Inner {
   }
 }
 
-/// The program's outputs, and its input if wanted, through socket pairs,
-/// whose ends here are non-blocking.
+/// The program's outputs, and its input if wanted, through pipes, whose
+/// ends here are non-blocking. Pipes, not socket pairs: a program can
+/// open `/dev/stdout` on a pipe.
 #[allow(
   clippy::type_complexity,
   reason = "the four parts of one spawn, used once"
@@ -746,21 +825,21 @@ impl Inner {
 fn spawn_piped(
   command: &mut Command,
   keep_stdin: bool,
-) -> std::io::Result<(Child, UnixStream, UnixStream, Option<UnixStream>)> {
-  let (out, child_out) = UnixStream::pair()?;
-  let (err, child_err) = UnixStream::pair()?;
-  out.set_nonblocking(true)?;
-  err.set_nonblocking(true)?;
+) -> std::io::Result<(Child, PipeReader, PipeReader, Option<PipeWriter>)> {
+  let (out, child_out) = std::io::pipe()?;
+  let (err, child_err) = std::io::pipe()?;
+  rustix::io::ioctl_fionbio(&out, true)?;
+  rustix::io::ioctl_fionbio(&err, true)?;
   let (stdin, child_in) = if keep_stdin {
-    let (ours, theirs) = UnixStream::pair()?;
-    ours.set_nonblocking(true)?;
-    (Some(ours), Stdio::from(OwnedFd::from(theirs)))
+    let (theirs, ours) = std::io::pipe()?;
+    rustix::io::ioctl_fionbio(&ours, true)?;
+    (Some(ours), Stdio::from(theirs))
   } else {
     (None, Stdio::null())
   };
   let child = command
-    .stdout(Stdio::from(OwnedFd::from(child_out)))
-    .stderr(Stdio::from(OwnedFd::from(child_err)))
+    .stdout(child_out)
+    .stderr(child_err)
     .stdin(child_in)
     .process_group(0)
     .spawn()?;
@@ -792,6 +871,10 @@ impl Run {
     } else {
       decode(&mut output.partial)
     };
+    // Once a character didn't fit, nothing after it is kept either.
+    if output.capped {
+      text.clear();
+    }
     let room = MAX_OUTPUT.saturating_sub(output.kept);
     if text.len() > room {
       if !std::mem::replace(&mut output.capped, true) {

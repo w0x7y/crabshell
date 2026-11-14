@@ -259,10 +259,13 @@ impl Shell {
     let persisted = service
       .as_ref()
       .map(|service| Rc::clone(&service.persisted));
+    let cx = self.cx.clone();
     control::listen(&self.event_loop.handle(), stream, move || {
       if let Some(service) = &service {
         service.ipc.remove_socket();
       }
+      // The next shell starts its own; these would run on beside them.
+      crabshell_services::stop_programs(&cx);
       let values = persisted.as_ref().map(|persisted| persisted.save());
       if let (Some(values), Some(file)) = (values, &file)
         && let Err(error) = persist::write(file, &values)
@@ -323,6 +326,7 @@ impl Shell {
         if let Some(service) = self.cx.service::<Service>() {
           service.ipc.remove_socket();
         }
+        crabshell_services::stop_programs(&self.cx);
         tracing::error!(%error, "the shell stops");
         std::process::exit(EXIT_NO_COMPOSITOR);
       }
