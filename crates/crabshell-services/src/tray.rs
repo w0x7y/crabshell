@@ -34,6 +34,7 @@ use zbus::names::BusName;
 use zbus::{Connection, DeserializeDict, DynamicType, Message, MessageStream, ObjectPath, Type};
 
 use crate::Shared;
+use crate::dbus::{BUS, BUS_PATH, CALL_TIMEOUT, PROPERTIES, bus_call, owner_rule};
 use menu::{DBUSMENU, OpenMenu};
 pub use menu::{MenuEntry, MenuToggle, TrayMenu};
 pub use widget::Tray;
@@ -42,9 +43,6 @@ const WATCHER: &str = "org.kde.StatusNotifierWatcher";
 const WATCHER_PATH: &str = "/StatusNotifierWatcher";
 const ITEM: &str = "org.kde.StatusNotifierItem";
 const ITEM_PATH: &str = "/StatusNotifierItem";
-const BUS: &str = "org.freedesktop.DBus";
-const BUS_PATH: &str = "/org/freedesktop/DBus";
-const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 
 /// The largest pixmap side kept, the same as the renderer's cap.
 const MAX_PIXMAP_SIDE: i32 = 512;
@@ -52,10 +50,6 @@ const MAX_PIXMAP_SIDE: i32 = 512;
 /// The most pixmap bytes kept per item: one 512 px pixmap, or a usual
 /// set of sizes from 16 to 256 px.
 const MAX_PIXMAP_BYTES: usize = 512 * 512 * 4;
-
-/// How long a call to an app or another watcher may take, libdbus's
-/// default.
-const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
 
 /// Whether a tray item wants to be seen.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -739,18 +733,6 @@ async fn run(service: Rc<Service>, address: zbus::Address) {
   }
   tracing::warn!("the session bus closed, so the tray is empty");
   service.clear();
-}
-
-/// Calls the bus itself, such as `AddMatch` with a match rule.
-async fn bus_call(connection: &Connection, method: &str, rule: &str) -> zbus::Result<()> {
-  let call = connection.call_method(Some(BUS), BUS_PATH, Some(BUS), method, &rule);
-  call.await.map(drop)
-}
-
-/// The match rule that says when `bus` gets a new owner or none. `bus`
-/// is a checked bus name, so it holds no quote.
-fn owner_rule(bus: &str) -> String {
-  format!("type='signal',sender='{BUS}',interface='{BUS}',member='NameOwnerChanged',arg0='{bus}'")
 }
 
 /// The bus name and object path a registration names. A path alone is

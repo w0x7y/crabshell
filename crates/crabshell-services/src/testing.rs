@@ -216,3 +216,244 @@ pub(crate) fn capture_logs(f: impl FnOnce()) -> String {
   let bytes = buffer.0.lock().expect("log lock").clone();
   String::from_utf8(bytes).expect("UTF-8 logs")
 }
+
+/// What a fake answers a method with: a reply built for the call, or
+/// `None` to ignore it.
+type Handler = Box<dyn Fn(&zbus::Message) -> Option<zbus::Result<zbus::Message>>>;
+
+/// A program on a private bus standing in for a system daemon, such as
+/// UPower or BlueZ: it owns `name`, answers `Properties` calls from a
+/// table of objects, emits `PropertiesChanged` when a test sets one, and
+/// answers other methods with the handlers a test gives it.
+pub(crate) struct FakeService {
+  pub(crate) connection: zbus::Connection,
+  name: &'static str,
+  /// Each object's properties, by path and interface.
+  objects: Rc<RefCell<std::collections::BTreeMap<(String, String), crate::dbus::Props>>>,
+  handlers: Rc<RefCell<std::collections::HashMap<String, Handler>>>,
+  /// `Set` calls and those to handlers, as `member path`.
+  pub(crate) calls: Rc<RefCell<Vec<String>>>,
+}
+
+impl FakeService {
+  /// Joins `bus` and starts answering. It takes `name` at
+  /// [`own`](Self::own), once a test has given it its objects, as a
+  /// daemon exports them before it takes its name.
+  pub(crate) fn start(shell: &mut Harness, bus: &PrivateBus, name: &'static str) -> FakeService {
+    use std::future::poll_fn;
+    use std::pin::Pin;
+
+    use zbus::export::futures_core::Stream;
+    use zbus::message::Type as Kind;
+
+    let connection = shell.block_on(bus.connect(&[]));
+    let fake = FakeService {
+      connection: connection.clone(),
+      name,
+      objects: Rc::default(),
+      handlers: Rc::default(),
+      calls: Rc::default(),
+    };
+    let (objects, handlers, calls) = (
+      Rc::clone(&fake.objects),
+      Rc::clone(&fake.handlers),
+      Rc::clone(&fake.calls),
+    );
+    let mut messages = zbus::MessageStream::from(&connection);
+    shell.spawn(async move {
+      while let Some(Ok(call)) = poll_fn(|cx| Pin::new(&mut messages).poll_next(cx)).await {
+        let header = call.header();
+        if header.message_type() != Kind::MethodCall {
+          continue;
+        }
+        let path = header.path().map_or(String::new(), |path| path.to_string());
+        let member = header
+          .member()
+          .map_or(String::new(), |member| member.to_string());
+        let properties =
+          header.interface().map(|interface| interface.as_str()) == Some(crate::dbus::PROPERTIES);
+        let mut announce = None;
+        // Built before any await, so no borrow is held across one.
+        let reply = if properties {
+          let objects = &mut *objects.borrow_mut();
+          match member.as_str() {
+            "GetAll" => {
+              let interface: String = call.body().deserialize().expect("s");
+              objects
+                .get(&(path.clone(), interface))
+                .map(|props| zbus::Message::method_return(&header).build(props))
+            }
+            "Get" => {
+              let (interface, name): (String, String) = call.body().deserialize().expect("ss");
+              let value = objects
+                .get(&(path.clone(), interface))
+                .and_then(|props| props.get(&name));
+              value.map(|value| zbus::Message::method_return(&header).build(value))
+            }
+            "Set" => {
+              let (interface, name, value): (String, String, zbus::OwnedVariant) =
+                call.body().deserialize().expect("ssv");
+              calls.borrow_mut().push(format!("Set {path} {name}"));
+              let changed = (name.clone(), value.try_clone().expect("a value"));
+              objects
+                .get_mut(&(path.clone(), interface.clone()))
+                .map(|props| {
+                  props.insert(name, value);
+                  // As a daemon does, once the reply is out.
+                  announce = Some((interface, changed));
+                  zbus::Message::method_return(&header).build(&())
+                })
+            }
+            _ => None,
+          }
+        } else {
+          calls.borrow_mut().push(format!("{member} {path}"));
+          handlers
+            .borrow()
+            .get(&member)
+            .and_then(|handler| handler(&call))
+        };
+        let reply = reply.unwrap_or_else(|| no_object(&header));
+        let sent = match reply {
+          Ok(reply) => connection.send(&reply).await,
+          Err(error) => Err(error),
+        };
+        sent.expect("the fake's reply");
+        if let Some((interface, (name, value))) = announce {
+          let changed = crate::dbus::Props::from([(name, value)]);
+          let body = (interface, changed, Vec::<String>::new());
+          let signal = "PropertiesChanged";
+          let sent = connection.emit_signal(
+            None::<&str>,
+            path.as_str(),
+            crate::dbus::PROPERTIES,
+            signal,
+            &body,
+          );
+          sent.await.expect("the fake's signal");
+        }
+      }
+    });
+    fake
+  }
+
+  /// Takes its name, as a daemon that is ready.
+  pub(crate) fn own(&self, shell: &mut Harness) {
+    let (connection, name) = (self.connection.clone(), self.name);
+    shell
+      .block_on(async move { connection.request_name(name).await })
+      .expect("the name taken");
+  }
+
+  /// Gives up its name, as a daemon that stops. Its answering goes on, as
+  /// a dropped fake's does, until the bus goes.
+  pub(crate) fn leave(self, shell: &mut Harness) {
+    let (connection, name) = (self.connection.clone(), self.name);
+    shell
+      .block_on(async move { connection.release_name(name).await })
+      .expect("the name released");
+  }
+
+  /// Gives `path` the properties `props` on `interface`, without saying
+  /// so on the bus, as an object that was there all along.
+  pub(crate) fn add(&self, path: &str, interface: &str, props: &[(&str, zbus::Variant<'_>)]) {
+    let props = props
+      .iter()
+      .map(|(name, value)| ((*name).to_owned(), owned(value)))
+      .collect();
+    self
+      .objects
+      .borrow_mut()
+      .insert((path.to_owned(), interface.to_owned()), props);
+  }
+
+  /// Takes every interface of `path` away.
+  pub(crate) fn remove(&self, path: &str) {
+    self.objects.borrow_mut().retain(|(at, _), _| at != path);
+  }
+
+  /// Sets `props` on `path`'s `interface` and says so with
+  /// `PropertiesChanged`.
+  pub(crate) fn set(
+    &self,
+    shell: &mut Harness,
+    path: &'static str,
+    interface: &'static str,
+    props: &[(&str, zbus::Variant<'_>)],
+  ) {
+    let changed: crate::dbus::Props = props
+      .iter()
+      .map(|(name, value)| ((*name).to_owned(), owned(value)))
+      .collect();
+    if let Some(object) = self
+      .objects
+      .borrow_mut()
+      .get_mut(&(path.to_owned(), interface.to_owned()))
+    {
+      for (name, value) in &changed {
+        object.insert(name.clone(), value.try_clone().expect("a value"));
+      }
+    }
+    let body = (interface, changed, Vec::<String>::new());
+    self.emit(
+      shell,
+      path,
+      crate::dbus::PROPERTIES,
+      "PropertiesChanged",
+      body,
+    );
+  }
+
+  /// Emits `member` of `interface` from `path`, carrying `body`.
+  pub(crate) fn emit<B>(
+    &self,
+    shell: &mut Harness,
+    path: &'static str,
+    interface: &'static str,
+    member: &'static str,
+    body: B,
+  ) where
+    B: serde::Serialize + zbus::DynamicType + 'static,
+  {
+    let connection = self.connection.clone();
+    shell
+      .block_on(async move {
+        connection
+          .emit_signal(None::<&str>, path, interface, member, &body)
+          .await
+      })
+      .expect("a signal on the private bus");
+  }
+
+  /// Answers calls to `member` on any interface with `handler`'s reply.
+  pub(crate) fn on(
+    &self,
+    member: &str,
+    handler: impl Fn(&zbus::Message) -> Option<zbus::Result<zbus::Message>> + 'static,
+  ) {
+    self
+      .handlers
+      .borrow_mut()
+      .insert(member.to_owned(), Box::new(handler));
+  }
+}
+
+/// The reply to `call` carrying `body`.
+pub(crate) fn reply<B>(call: &zbus::Message, body: &B) -> Option<zbus::Result<zbus::Message>>
+where
+  B: serde::Serialize + zbus::DynamicType,
+{
+  Some(zbus::Message::method_return(&call.header()).build(body))
+}
+
+fn owned(value: &zbus::Variant<'_>) -> zbus::OwnedVariant {
+  value.try_to_owned().expect("an owned value")
+}
+
+/// The error a daemon gives for a path, interface or method it doesn't
+/// have.
+fn no_object(header: &zbus::message::Header<'_>) -> zbus::Result<zbus::Message> {
+  use zbus::DBusError;
+
+  zbus::fdo::Error::UnknownObject("no such object".into()).create_reply(header)
+}

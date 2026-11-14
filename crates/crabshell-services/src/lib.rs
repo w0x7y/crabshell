@@ -16,6 +16,8 @@
 
 mod audio;
 mod clock;
+mod dbus;
+mod power;
 mod sway;
 #[cfg(test)]
 mod testing;
@@ -40,6 +42,7 @@ use crabshell_ui::Cx;
 
 pub use audio::{Audio, Sink};
 pub use clock::Precision;
+pub use power::{BatteryState, DeviceKind, PowerDevice, PowerProfile, PowerProfiles, UPower};
 pub use sway::{Sway, Workspace};
 pub use tray::{MenuEntry, MenuToggle, Tray, TrayHost, TrayItem, TrayMenu, TrayStatus};
 
@@ -60,6 +63,8 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(sway::Service::new(Rc::clone(&shared)));
   cx.provide(audio::AudioService::new(Rc::clone(&shared)));
   cx.provide(tray::Service::new(Rc::clone(&shared)));
+  cx.provide(power::UPowerService::new(Rc::clone(&shared)));
+  cx.provide(power::ProfilesService::new(Rc::clone(&shared)));
 }
 
 /// The services a context hands out.
@@ -105,6 +110,20 @@ pub trait ServicesExt {
   /// the service never wakes the shell. It wakes the shell only when
   /// something arrives on the bus for it.
   fn tray(&self) -> TrayHost;
+
+  /// UPower's batteries and power supplies, on the system bus. Every
+  /// caller shares one connection, which starts on the loop's next turn.
+  ///
+  /// While UPower isn't running the lists are empty, and they fill when
+  /// it starts. With no system bus they stay empty and the service never
+  /// wakes the shell. It wakes the shell only when UPower says something
+  /// changed.
+  fn upower(&self) -> UPower;
+
+  /// The power profile, from power-profiles-daemon on the system bus.
+  /// Every caller shares one connection. It behaves as
+  /// [`upower`](Self::upower) does while the daemon isn't there.
+  fn power_profiles(&self) -> PowerProfiles;
 }
 
 impl ServicesExt for Cx {
@@ -122,6 +141,14 @@ impl ServicesExt for Cx {
 
   fn tray(&self) -> TrayHost {
     tray::tray(self)
+  }
+
+  fn upower(&self) -> UPower {
+    power::upower(self)
+  }
+
+  fn power_profiles(&self) -> PowerProfiles {
+    power::power_profiles(self)
   }
 }
 
@@ -333,7 +360,8 @@ struct Config {
   /// The link that names the system time zone, `/etc/localtime`. `None`
   /// when `TZ` is set, since it names the zone then, as it does for libc.
   localtime: Option<PathBuf>,
-  /// The system bus, where logind and timedated are. `None` for none.
+  /// The system bus, where logind, timedated, UPower and
+  /// power-profiles-daemon are. `None` for none.
   system_bus: Option<zbus::Address>,
   /// The session bus, where tray items are. `None` for none.
   session_bus: Option<zbus::Address>,
