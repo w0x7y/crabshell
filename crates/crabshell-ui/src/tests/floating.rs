@@ -171,3 +171,10 @@ fn a_floating_window_takes_a_blur_region_too() {
   assert!(window.take_surface_changed());
   assert_eq!(window.blur(), Some(crate::Region::rect(0, 0, 50, 50)));
 }
+
+#[test]
+fn a_floating_window_can_inhibit_idle_too() {
+  let mut h = Harness::new();
+  let window = build(&mut h, FloatingWindow::new().inhibit_idle(true));
+  assert!(window.inhibits_idle());
+}

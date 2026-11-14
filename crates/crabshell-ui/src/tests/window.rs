@@ -381,3 +381,35 @@ fn a_panicking_blur_is_logged_with_its_path() {
     "{logs}"
   );
 }
+
+#[test]
+fn inhibiting_idle_reaches_the_window_and_a_change_is_reported() {
+  let mut h = Harness::new();
+  let awake = h.cx.signal(true);
+  let window = h.window(h.panel().inhibit_idle(move || awake.get()), 200.0, 30.0);
+  assert!(window.inhibits_idle());
+  assert!(window.take_surface_changed());
+
+  awake.set(false);
+  h.frame(&window);
+  assert!(window.take_surface_changed());
+  assert!(!window.inhibits_idle());
+  assert!(
+    !h.window(h.panel(), 200.0, 30.0).inhibits_idle(),
+    "off by default"
+  );
+}
+
+#[test]
+fn a_panicking_inhibit_idle_is_logged_with_its_path() {
+  let mut h = Harness::new();
+  let logs = super::capture_logs(|| {
+    let panel = h.panel().inhibit_idle(|| -> bool { panic!("no sleep") });
+    let window = h.window(panel, 200.0, 30.0);
+    assert!(!window.inhibits_idle());
+  });
+  assert!(
+    logs.contains("PanelWindow[DP-1].inhibit_idle panicked and is disabled"),
+    "{logs}"
+  );
+}

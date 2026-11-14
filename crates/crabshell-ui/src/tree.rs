@@ -188,6 +188,8 @@ pub(crate) struct Surface {
   pub(crate) mask: Option<Region>,
   /// A panel's or floating window's blur region.
   pub(crate) blur: Option<Region>,
+  /// Whether a panel or floating window keeps the screen from idling.
+  pub(crate) inhibit_idle: bool,
   /// Something changed since the platform last read the settings.
   pub(crate) changed: bool,
 }
@@ -205,6 +207,7 @@ impl Default for Surface {
       namespace: String::from(DEFAULT_NAMESPACE),
       mask: None,
       blur: None,
+      inhibit_idle: false,
       changed: false,
     }
   }
@@ -382,6 +385,7 @@ impl Tree {
       namespace,
       mask,
       blur,
+      inhibit_idle,
       on_key,
       style,
       child: _,
@@ -414,15 +418,22 @@ impl Tree {
     self.bind_opt(root, mask, "mask", |tree, _, value| {
       tree.surface.set(|s| &mut s.mask, value);
     });
-    self.bind_blur(blur);
+    self.bind_blur(blur, inhibit_idle);
     self.mount_root(style, child);
     self.surface.changed = true;
   }
 
-  /// Binds a panel's or floating window's blur region.
-  pub(crate) fn bind_blur(&mut self, blur: Option<Prop<Option<Region>>>) {
+  /// Binds a panel's or floating window's blur region and idle inhibit.
+  pub(crate) fn bind_blur(
+    &mut self,
+    blur: Option<Prop<Option<Region>>>,
+    inhibit_idle: Option<Prop<bool>>,
+  ) {
     self.bind_opt(self.root, blur, "blur", |tree, _, value| {
       tree.surface.set(|s| &mut s.blur, value);
+    });
+    self.bind_opt(self.root, inhibit_idle, "inhibit_idle", |tree, _, value| {
+      tree.surface.set(|s| &mut s.inhibit_idle, value);
     });
   }
 

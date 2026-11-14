@@ -15,7 +15,7 @@ use std::io;
 use std::process::Command;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crabshell_reactive::{Runtime, Signal};
 use crabshell_ui::{
@@ -116,6 +116,8 @@ struct Knobs {
   wide: Signal<bool>,
   /// Whether the bar asks for a blur behind it.
   blurred: Signal<bool>,
+  /// Whether the bar keeps the screen from idling.
+  awake: Signal<bool>,
 }
 
 /// A popup with two entries: the first opens another menu beside it, and
@@ -171,6 +173,7 @@ fn bar(cx: &Cx, output: &str, knobs: Knobs) -> Window {
         .get()
         .then(|| Region::rect(0, 0, 100_000, 100_000))
     })
+    .inhibit_idle(move || knobs.awake.get())
     .on_key(move |_, event| {
       knobs.keys.update(|keys| keys.push(event.clone()));
       false
@@ -297,6 +300,7 @@ impl Shell {
       typed: cx.signal(String::new()),
       wide: cx.signal(false),
       blurred: cx.signal(false),
+      awake: cx.signal(false),
     };
     let mut event_loop = sway.connect();
     let built = Rc::new(RefCell::new(Vec::new()));
@@ -1759,4 +1763,107 @@ fn on_labwc_menus_open_close_and_a_click_outside_dismisses_them() {
   menus.wait_for("labwc to dismiss the menus", <[_]>::is_empty);
   menus.shell.runtime.flush();
   assert_eq!(menus.shell.runtime.node_count(), nodes);
+}
+
+/// What an idle watch said, in order.
+fn watch_idle(shell: &mut Shell, timeout: Duration) -> Rc<RefCell<Vec<bool>>> {
+  let said = Rc::new(RefCell::new(Vec::new()));
+  let log = Rc::clone(&said);
+  shell
+    .event_loop
+    .platform()
+    .watch_idle(timeout, move |idle| log.borrow_mut().push(idle))
+    .expect("Sway has ext-idle-notify-v1 and a seat");
+  said
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn an_idle_watch_fires_after_its_timeout_and_input_ends_it() {
+  let sway = Sway::start();
+  let mut pointer = VirtualPointer::new(&sway);
+  let mut shell = Shell::build(&sway, PLAIN);
+  shell.wait_for_bar("HEADLESS-1");
+  settle(&mut shell.event_loop);
+  let said = watch_idle(&mut shell, Duration::from_millis(400));
+  let started = Instant::now();
+  run_until(&mut shell.event_loop, "idle", |_| {
+    said.borrow().as_slice() == [true]
+  });
+  assert!(
+    started.elapsed() >= Duration::from_millis(350),
+    "{:?}",
+    started.elapsed()
+  );
+
+  // Idle, nothing wakes the shell: one dispatch sleeps the whole time.
+  let iterations = shell.event_loop.platform().stats().iterations;
+  shell
+    .event_loop
+    .dispatch(Some(Duration::from_secs(2)))
+    .expect("the connection works");
+  assert_eq!(
+    shell.event_loop.platform().stats().iterations,
+    iterations + 1
+  );
+
+  pointer.move_to(900, 500, (1920, 1080));
+  run_until(&mut shell.event_loop, "back", |_| {
+    said.borrow().as_slice() == [true, false]
+  });
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_bar_that_inhibits_idle_holds_the_watch_off_until_it_stops() {
+  let sway = Sway::start();
+  let mut shell = Shell::build(&sway, PLAIN);
+  shell.knobs.awake.set(true);
+  shell.wait_for_bar("HEADLESS-1");
+  settle(&mut shell.event_loop);
+  let said = watch_idle(&mut shell, Duration::from_millis(300));
+  let until = Instant::now() + Duration::from_millis(1200);
+  while Instant::now() < until {
+    shell
+      .event_loop
+      .dispatch(Some(Duration::from_millis(100)))
+      .expect("the connection works");
+  }
+  assert!(
+    said.borrow().is_empty(),
+    "idle while inhibited: {:?}",
+    said.borrow()
+  );
+
+  shell.knobs.awake.set(false);
+  run_until(&mut shell.event_loop, "idle once uninhibited", |_| {
+    said.borrow().as_slice() == [true]
+  });
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn an_ended_idle_watch_says_nothing_more() {
+  let sway = Sway::start();
+  let mut shell = Shell::build(&sway, PLAIN);
+  shell.wait_for_bar("HEADLESS-1");
+  settle(&mut shell.event_loop);
+  let said = Rc::new(RefCell::new(Vec::new()));
+  let log = Rc::clone(&said);
+  let platform = shell.event_loop.platform();
+  let watch = platform
+    .watch_idle(Duration::from_millis(300), move |idle| {
+      log.borrow_mut().push(idle)
+    })
+    .expect("a watch");
+  platform.unwatch_idle(watch);
+  platform.unwatch_idle(watch);
+  let until = Instant::now() + Duration::from_millis(900);
+  while Instant::now() < until {
+    shell
+      .event_loop
+      .dispatch(Some(Duration::from_millis(100)))
+      .expect("the connection works");
+  }
+  assert!(said.borrow().is_empty());
 }

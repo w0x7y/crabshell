@@ -34,6 +34,7 @@ use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 use crate::blur::Effects;
 use crate::clipboard::Offered;
 use crate::events::{self, Event, Listener};
+use crate::idle::Idle;
 use crate::keyboard::SeatKeyboard;
 use crate::outputs::OutputInfo;
 use crate::pointer::Cursor;
@@ -323,6 +324,8 @@ pub struct Platform {
   pub(crate) text_inputs_manager: Option<ZwpTextInputManagerV3>,
   /// The compositor's background effects, such as blur.
   pub(crate) effects: Effects,
+  /// The compositor's idle protocols and the watches on them.
+  pub(crate) idle: Idle,
   pub(crate) text_inputs: Vec<SeatTextInput>,
   /// The seat and serial of the last button press or release on one of
   /// the windows, which a popup's grab needs.
@@ -374,6 +377,10 @@ impl Platform {
       }
     };
     let text_inputs_manager = globals.bind(&qh, 1..=1, ()).ok();
+    let idle = Idle::new(
+      globals.bind(&qh, 1..=1, ()).ok(),
+      globals.bind(&qh, 1..=1, ()).ok(),
+    );
     let effects = Effects {
       manager: globals.bind(&qh, 1..=1, ()).ok(),
       blur: false,
@@ -384,6 +391,8 @@ impl Platform {
       fractional = fractional.is_some(),
       text_input = text_inputs_manager.is_some(),
       background_effects = effects.manager.is_some(),
+      idle_notify = idle.notifier.is_some(),
+      idle_inhibit = idle.inhibit.is_some(),
       "bound the compositor's globals"
     );
     let mut platform = Platform {
@@ -408,6 +417,7 @@ impl Platform {
       keyboards: Vec::new(),
       text_inputs_manager,
       effects,
+      idle,
       data_devices_manager,
       data_devices: Vec::new(),
       offered: None,
@@ -622,6 +632,7 @@ impl Platform {
       stats,
       compositor,
       effects,
+      idle,
       ..
     } = self;
     for entry in windows.entries.iter_mut() {
@@ -649,6 +660,7 @@ impl Platform {
       if surface.mask_outdated() {
         surface.send_mask(compositor, entry.window.surface().mask.as_ref());
       }
+      surface.inhibit_idle(idle, entry.window.inhibits_idle(), qh);
       if surface.blur_outdated() {
         surface.send_blur(effects, compositor, entry.window.blur().as_ref(), qh);
       }

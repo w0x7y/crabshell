@@ -69,6 +69,7 @@ mod buffers;
 mod clipboard;
 mod events;
 mod handlers;
+mod idle;
 mod keyboard;
 mod outputs;
 mod pacing;
@@ -86,6 +87,7 @@ mod tests;
 
 pub use calloop::{LoopHandle, LoopSignal};
 pub use events::Event;
+pub use idle::IdleWatch;
 pub use outputs::{Mode, OutputInfo};
 pub use platform::{Error, EventLoop, Platform, Snapshot, Stats, WindowInfo};
 pub use windows::WindowId;

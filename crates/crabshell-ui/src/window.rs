@@ -212,6 +212,7 @@ pub struct PanelWindow {
   pub(crate) namespace: Option<Prop<String>>,
   pub(crate) mask: Option<Prop<Option<Region>>>,
   pub(crate) blur: Option<Prop<Option<Region>>>,
+  pub(crate) inhibit_idle: Option<Prop<bool>>,
   pub(crate) on_key: Option<KeyHandler>,
   pub(crate) style: Option<Prop<Style>>,
   pub(crate) child: Option<Box<dyn Widget>>,
@@ -232,6 +233,7 @@ impl PanelWindow {
       namespace: None,
       mask: None,
       blur: None,
+      inhibit_idle: None,
       on_key: None,
       style: None,
       child: None,
@@ -321,6 +323,14 @@ impl PanelWindow {
   /// ```
   pub fn blur(mut self, region: impl IntoProp<Option<Region>>) -> PanelWindow {
     self.blur = Some(region.into_prop());
+    self
+  }
+
+  /// Keeps the screen from blanking or locking for idleness while `true`
+  /// and the window is shown, as a video player does. It needs
+  /// `idle-inhibit-unstable-v1`; without it, that is logged once.
+  pub fn inhibit_idle(mut self, inhibit: impl IntoProp<bool>) -> PanelWindow {
+    self.inhibit_idle = Some(inhibit.into_prop());
     self
   }
 
@@ -470,6 +480,12 @@ impl Window {
   /// behind, as its `blur` property says.
   pub fn blur(&self) -> Option<Region> {
     self.tree.borrow().surface.blur.clone()
+  }
+
+  /// Whether a panel or floating window asks to keep the screen from
+  /// idling, as its `inhibit_idle` property says.
+  pub fn inhibits_idle(&self) -> bool {
+    self.tree.borrow().surface.inhibit_idle
   }
 
   /// Whether the settings in [`surface`](Self::surface) changed since the

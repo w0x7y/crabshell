@@ -185,6 +185,8 @@ pub(crate) struct Surface {
   pub(crate) blur: Option<crate::blur::Blur>,
   /// The blur region last sent and the size it was cut to.
   pub(crate) blur_sent: Option<(Option<Region>, (u32, u32))>,
+  /// The idle inhibitor, while the window asks for one.
+  pub(crate) inhibitor: Option<crate::idle::Inhibitor>,
 }
 
 impl Surface {
@@ -211,6 +213,7 @@ impl Surface {
       mask_sent: None,
       blur: None,
       blur_sent: None,
+      inhibitor: None,
     }
   }
 

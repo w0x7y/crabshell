@@ -1454,6 +1454,41 @@ fn cx_floating_shows_a_window_while_its_context_lives() {
   );
 }
 
+#[test]
+#[ignore = "needs headless Sway"]
+fn cx_idle_monitor_turns_true_when_idle_and_ends_with_its_context() {
+  use crabshell::prelude::*;
+
+  let sway = Sway::start();
+  let runtime = Runtime::current();
+  type Kept = Option<(Cx, ReadSignal<bool>, usize)>;
+  let kept: std::rc::Rc<std::cell::RefCell<Kept>> = Default::default();
+  let hold = std::rc::Rc::clone(&kept);
+  let mut shell = Shell::new(sway.connect(), move |cx| {
+    let before = Runtime::current().node_count();
+    let child = cx.child();
+    let idle = child.idle_monitor(Duration::from_millis(300));
+    *hold.borrow_mut() = Some((child, idle, before));
+  })
+  .expect("the root closure runs");
+  let idle = kept
+    .borrow()
+    .as_ref()
+    .map(|(_, idle, _)| *idle)
+    .expect("the root ran");
+  assert!(!idle.get_untracked());
+  run_until(&mut shell, "idle", |_| idle.get_untracked());
+  assert_eq!(shell.platform().idle_watches(), 1);
+
+  let (child, _, before) = kept.borrow_mut().take().expect("the root ran");
+  child.owner().dispose();
+  run_until(&mut shell, "the watch to end", |platform| {
+    platform.idle_watches() == 0
+  });
+  runtime.flush();
+  assert_eq!(runtime.node_count(), before, "everything it made is freed");
+}
+
 /// 500 apps: the example's names, numbered.
 fn many_apps() -> Vec<String> {
   (0..500)

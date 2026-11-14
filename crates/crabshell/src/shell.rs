@@ -7,7 +7,7 @@ use std::panic::{self, AssertUnwindSafe, Location};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use crabshell_reactive::{Runtime, Signal};
+use crabshell_reactive::{ReadSignal, Runtime, Signal};
 use crabshell_services::Sway;
 use crabshell_ui::{Cx, FloatingWindow, Output, Window};
 use crabshell_wayland::{Event, EventLoop, LoopSignal, Platform, WindowId};
@@ -425,6 +425,15 @@ pub trait ShellExt {
   /// shows and hides it meanwhile.
   fn floating(&self, window: FloatingWindow);
 
+  /// Whether the user has been idle for `timeout`: `true` once no key,
+  /// pointer or touch input came for that long, and `false` again as soon
+  /// as one does. The compositor says when, so nothing wakes the shell
+  /// meanwhile, and windows that inhibit idle, such as a playing video or
+  /// a bar's `inhibit_idle`, hold it off. The watch ends when this
+  /// context's owner goes. Without `ext-idle-notify-v1` it stays `false`,
+  /// and that is logged.
+  fn idle_monitor(&self, timeout: Duration) -> ReadSignal<bool>;
+
   /// Looks icon names up in `theme`, such as `"Adwaita"`, instead of
   /// `hicolor`. Every window is repainted.
   fn set_icon_theme(&self, theme: impl Into<String>);
@@ -514,6 +523,43 @@ impl ShellExt for Cx {
     service.with_platform("cx.floating", move |platform| {
       id.set(Some(platform.add_window(window)));
     });
+  }
+
+  fn idle_monitor(&self, timeout: Duration) -> ReadSignal<bool> {
+    let idle = self.signal(false);
+    let Some(service) = self.service::<Service>() else {
+      tracing::error!("cx.idle_monitor needs the shell crabshell::run starts; it stays false");
+      return idle.read_only();
+    };
+    let watch = Rc::new(Cell::new(None));
+    // Ended soon after this context's owner goes, which also frees it.
+    let (queue, signal, held) = (
+      Rc::clone(&service.idle),
+      service.signal.clone(),
+      Rc::clone(&watch),
+    );
+    let gone = OnDispose(Some(Box::new(move || {
+      schedule(
+        &queue,
+        &signal,
+        "cx.idle_monitor's cleanup",
+        move |platform| {
+          if let Some(watch) = held.take() {
+            platform.unwatch_idle(watch);
+          }
+        },
+      );
+    })));
+    if panic::catch_unwind(AssertUnwindSafe(|| self.owner().signal(gone))).is_err() {
+      tracing::warn!("cx.idle_monitor was called with a context that is gone; it stays false");
+      return idle.read_only();
+    }
+    service.with_platform("cx.idle_monitor", move |platform| {
+      watch.set(platform.watch_idle(timeout, move |now| {
+        idle.try_set(now);
+      }));
+    });
+    idle.read_only()
   }
 
   fn persist<T>(&self, key: &str, default: T) -> Signal<T>

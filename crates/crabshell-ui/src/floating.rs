@@ -41,6 +41,7 @@ pub struct FloatingWindow {
   pub(crate) fullscreen: Option<Prop<bool>>,
   pub(crate) visible: Option<Prop<bool>>,
   pub(crate) blur: Option<Prop<Option<Region>>>,
+  pub(crate) inhibit_idle: Option<Prop<bool>>,
   pub(crate) on_close: Option<CloseHandler>,
   pub(crate) style: Option<Prop<Style>>,
   pub(crate) child: Option<Box<dyn Widget>>,
@@ -68,6 +69,7 @@ impl FloatingWindow {
       fullscreen: None,
       visible: None,
       blur: None,
+      inhibit_idle: None,
       on_close: None,
       style: None,
       child: None,
@@ -130,6 +132,14 @@ impl FloatingWindow {
   /// as [`PanelWindow::blur`](crate::PanelWindow::blur) does.
   pub fn blur(mut self, region: impl IntoProp<Option<Region>>) -> FloatingWindow {
     self.blur = Some(region.into_prop());
+    self
+  }
+
+  /// Keeps the screen from idling while `true` and the window is shown,
+  /// as [`PanelWindow::inhibit_idle`](crate::PanelWindow::inhibit_idle)
+  /// does.
+  pub fn inhibit_idle(mut self, inhibit: impl IntoProp<bool>) -> FloatingWindow {
+    self.inhibit_idle = Some(inhibit.into_prop());
     self
   }
 
@@ -358,6 +368,7 @@ impl Tree {
       fullscreen,
       visible,
       blur,
+      inhibit_idle,
       on_close: _,
       style,
       child: _,
@@ -390,7 +401,7 @@ impl Tree {
       }
       tree.set_floating(|f| &mut f.visible, value);
     });
-    self.bind_blur(blur);
+    self.bind_blur(blur, inhibit_idle);
     self.mount_root(style, child);
     self.surface.changed = true;
   }
