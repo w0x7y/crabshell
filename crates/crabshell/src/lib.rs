@@ -88,8 +88,8 @@ pub mod prelude {
     GreetMessage, GreetState, Greetd, IntoCommand, LoopStatus, Mpris, Network, NetworkDevice,
     NetworkKind, NetworkState, Notification, Notifications, Pam, PamMessage, PamResult, PamState,
     PlaybackStatus, Player, PolkitAgent, PowerDevice, PowerProfile, PowerProfiles, Precision,
-    Process, ServicesExt, Sink, Socket, Timeout, Tray, TrayHost, TrayItem, TrayMenu, TrayStatus,
-    UPower, Urgency, WifiNetwork, Workspace,
+    Process, ServicesExt, Sink, Socket, SwayEvent, SwayEventKind, SwayOutput, Timeout, Tray,
+    TrayHost, TrayItem, TrayMenu, TrayStatus, UPower, Urgency, WifiNetwork, Workspace,
   };
   pub use crabshell_ui::{
     Adjust, Align, Anchors, Animate, Border, Button, CaptureSource, Color, Column, Cx, Easing,
