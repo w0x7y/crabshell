@@ -7,6 +7,7 @@ use std::rc::Rc;
 use crate::menu::MenuEntry;
 use crate::popup::Adjust;
 use crate::region::Region;
+use crate::screencopy::CaptureSource;
 use crate::style::Style;
 use crate::widgets::{Align, Fit, IconSource, Justify};
 use crate::window::{Anchors, Edge, KeyboardFocus, Layer, Margins};
@@ -94,6 +95,7 @@ value_props!(
   (u32, u32),
   Adjust,
   IconSource,
+  CaptureSource,
   Vec<MenuEntry>,
 );
 

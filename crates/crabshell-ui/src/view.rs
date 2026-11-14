@@ -7,6 +7,7 @@ use cosmic_text::{Buffer, LayoutRun};
 use taffy::TraversePartialTree;
 
 use crate::geometry::{Point, Rect, Size};
+use crate::screencopy::CaptureFrame;
 use crate::style::{Color, Style};
 use crate::text::TextNode;
 use crate::tree::{Node, NodeId, NodeKind, Tree, centered, icon_rect};
@@ -141,6 +142,15 @@ impl<'a> NodeView<'a> {
         }),
         None => Content::None,
       },
+      NodeKind::Capture(capture) => match &capture.frame {
+        Some(frame) => Content::Capture(CaptureView {
+          id: capture.id,
+          frame,
+          rect: self.node.content,
+          fit: capture.fit,
+        }),
+        None => Content::None,
+      },
       _ => Content::None,
     }
   }
@@ -173,6 +183,8 @@ pub enum Content<'a> {
   Icon(IconView<'a>),
   /// An image.
   Image(ImageView<'a>),
+  /// A screencopy view's frame.
+  Capture(CaptureView<'a>),
   /// A text field.
   Input(InputView<'a>),
 }
@@ -245,5 +257,17 @@ pub struct ImageView<'a> {
   /// Where: a box of the image's size, centered in the node.
   pub rect: Rect,
   /// How the picture fills the box.
+  pub fit: Fit,
+}
+
+/// A screencopy view's frame, ready to draw.
+pub struct CaptureView<'a> {
+  /// Names the view, so a cache can keep its frame scaled to its box.
+  pub id: u64,
+  /// The frame last captured.
+  pub frame: &'a CaptureFrame,
+  /// Where: the view's content box.
+  pub rect: Rect,
+  /// How the frame fills the box.
   pub fit: Fit,
 }

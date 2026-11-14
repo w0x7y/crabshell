@@ -417,6 +417,8 @@ impl Painter<'_> {
       Content::Text(text) => self.text(pixmap, &text),
       Content::Icon(icon) => self.icon(pixmap, &icon),
       Content::Image(image) => self.image(pixmap, &image),
+      // The renderer draws frames from the next commit on.
+      Content::Capture(_) => {}
       Content::Input(input) => self.input(pixmap, &input),
       Content::None => {}
     }

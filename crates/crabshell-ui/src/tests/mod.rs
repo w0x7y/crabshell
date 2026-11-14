@@ -16,6 +16,7 @@ mod layout;
 mod menu;
 mod popup;
 mod region;
+mod screencopy;
 mod scroll;
 mod services;
 mod style;

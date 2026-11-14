@@ -26,6 +26,7 @@ use crate::keyboard::Keyboard;
 use crate::keyed::KeyedSlot;
 use crate::prop::{IntoProp, Prop, PropKind};
 use crate::region::Region;
+use crate::screencopy::CaptureNode;
 use crate::style::{Padding, Style};
 use crate::text::TextNode;
 use crate::text_input::InputNode;
@@ -56,6 +57,8 @@ pub(crate) struct Tree {
   pub(crate) popup: Option<PopupState>,
   /// Set for a floating window's own tree.
   pub(crate) floating: Option<FloatingState>,
+  /// The screencopy views, in the order they were built.
+  pub(crate) captures: Vec<NodeId>,
 }
 
 /// What only a popup's tree has.
@@ -122,6 +125,7 @@ pub(crate) enum NodeKind {
   Text(TextNode),
   Icon(IconNode),
   Image(ImageNode),
+  Capture(CaptureNode),
   Scroll(ScrollNode),
   Input(Box<InputNode>),
   // Boxed: its three styles make it the largest by far.
@@ -303,6 +307,7 @@ impl Node {
         | NodeKind::Text(_)
         | NodeKind::Icon(_)
         | NodeKind::Image(_)
+        | NodeKind::Capture(_)
         | NodeKind::Input(_)
     ) || style.background.is_some()
       || style.gradient.is_some()
@@ -360,6 +365,7 @@ impl Tree {
       popups: Vec::new(),
       popup: None,
       floating: None,
+      captures: Vec::new(),
     }
   }
 
@@ -505,6 +511,7 @@ impl Tree {
         height: crate::Image::DEFAULT_SIZE,
         fit: Fit::default(),
       }),
+      ElementKind::Capture(_) => NodeKind::Capture(CaptureNode::new()),
       ElementKind::Icon(_) => NodeKind::Icon(IconNode {
         source: None,
         size: crate::Icon::DEFAULT_SIZE,
@@ -641,6 +648,7 @@ impl Tree {
           })
         });
       }
+      ElementKind::Capture(props) => self.bind_capture(id, props),
       ElementKind::Icon(props) => {
         self.bind(id, props.source, "icon", |tree, id, value| {
           tree.update_icon(id, |icon| match replace(&mut icon.source, Some(value)) {
@@ -749,6 +757,7 @@ impl Tree {
       }
     }
     self.pointer.forget(&removed);
+    self.captures.retain(|node| !removed.contains(node));
     self.keyboard.forget(&removed);
     for node in removed.into_iter().rev() {
       // `remove` only fails for a node that isn't in the tree.

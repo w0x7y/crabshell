@@ -379,7 +379,11 @@ fn taffy_style(node: &Node, parent: Parent, size: crate::Size) -> taffy::Style {
       style.align_items = AlignItems::CENTER;
       style.justify_content = JustifyContent::CENTER;
     }
-    NodeKind::Text(_) | NodeKind::Icon(_) | NodeKind::Image(_) | NodeKind::Input(_) => {}
+    NodeKind::Text(_)
+    | NodeKind::Icon(_)
+    | NodeKind::Image(_)
+    | NodeKind::Capture(_)
+    | NodeKind::Input(_) => {}
   }
   // A size the style sets wins over the content's, but never over the
   // window's own.

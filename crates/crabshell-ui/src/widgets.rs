@@ -15,6 +15,7 @@ use crate::input::{Handler, Handlers};
 use crate::keyboard::KeyEvent;
 use crate::keyed::{self, KeyedMount};
 use crate::prop::{IntoProp, Prop};
+use crate::screencopy::ScreencopyProps;
 use crate::scroll::ScrollProps;
 use crate::style::Style;
 use crate::text_input::InputProps;
@@ -62,6 +63,7 @@ pub(crate) enum ElementKind {
   Text(TextProps),
   Icon(IconProps),
   Image(ImageProps),
+  Capture(ScreencopyProps),
   // Boxed: a button's handlers make it the largest by far.
   Button(Box<ButtonProps>),
   Scroll(ScrollProps),

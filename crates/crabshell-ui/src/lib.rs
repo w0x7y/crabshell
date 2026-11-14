@@ -70,6 +70,7 @@ mod menu;
 mod popup;
 mod prop;
 mod region;
+mod screencopy;
 mod scroll;
 mod style;
 mod text;
@@ -92,11 +93,14 @@ pub use menu::{Menu, MenuEntry, MenuToggle};
 pub use popup::{Adjust, Placement, PopupWindow};
 pub use prop::{IntoProp, Prop};
 pub use region::Region;
+pub use screencopy::{CaptureFrame, CaptureRequest, CaptureSource, ScreencopyView};
 pub use scroll::{ListView, ScrollView};
 pub use style::{Border, Color, Font, Gradient, GradientShape, Padding, Shadow, Style};
 pub use text::TextSystem;
 pub use text_input::{FieldState, Preedit, TextInput};
-pub use view::{Content, IconView, ImageView, InputView, NodeView, TextView, WindowView};
+pub use view::{
+  CaptureView, Content, IconView, ImageView, InputView, NodeView, TextView, WindowView,
+};
 pub use widgets::{
   Align, Button, Column, Element, Fit, Icon, IconPixels, IconSource, Image, Justify, Row, Spacer,
   Stack, Text, Widget,
