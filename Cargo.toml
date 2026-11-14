@@ -31,6 +31,9 @@ fontconfig = "=0.11.0"
 jiff = { version = "=0.2.42", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 # Minimal features: what the audio service calls is in every libpulse since 5.0.
 libpulse-binding = { version = "=2.30.1", default-features = false }
+# PAM's client side, for lock screens. It links the system's libpam and
+# needs no bindgen.
+nonstick = "=0.1.2"
 png = "=0.18.1"
 zune-jpeg = { version = "=0.5.15", default-features = false, features = ["std"] }
 gif = { version = "=0.14.2", default-features = false, features = ["std"] }

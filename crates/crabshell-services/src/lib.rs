@@ -1,5 +1,5 @@
 //! The services a Crabshell bar reads: the clock, Sway's workspaces, audio,
-//! the tray, power, notifications and the installed applications.
+//! the tray, power, notifications, the installed applications and PAM.
 //!
 //! The shell calls [`provide`] once, with its root context and event loop.
 //! After that, any context hands out services through [`ServicesExt`],
@@ -25,6 +25,7 @@ mod lines;
 mod mpris;
 mod network;
 mod notifications;
+mod pam;
 mod power;
 mod process;
 mod socket;
@@ -41,6 +42,7 @@ use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 use std::pin::pin;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::task::{Poll, Waker};
 use std::time::{Duration, Instant};
 
@@ -61,6 +63,7 @@ pub use greetd::{GreetMessage, GreetState, Greetd};
 pub use mpris::{LoopStatus, Mpris, PlaybackStatus, Player};
 pub use network::{Network, NetworkDevice, NetworkKind, NetworkState, WifiNetwork};
 pub use notifications::{Notification, Notifications, Timeout, Urgency};
+pub use pam::{Pam, PamMessage, PamResult, PamState};
 pub use power::{BatteryState, DeviceKind, PowerDevice, PowerProfile, PowerProfiles, UPower};
 pub use process::{IntoCommand, Process};
 pub use socket::Socket;
@@ -95,6 +98,7 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(desktop_entries::Service::new(Rc::clone(&shared)));
   cx.provide(file::Files(Rc::clone(&shared)));
   cx.provide(greetd::Service::new(Rc::clone(&shared)));
+  cx.provide(pam::Service(Rc::clone(&shared)));
 }
 
 /// Stops every program a config started with `cx.process`. The shell
@@ -249,6 +253,15 @@ pub trait ServicesExt {
   /// files have been still for 100 ms after a change. It wakes the shell
   /// at no other time.
   fn desktop_entries(&self) -> DesktopEntries;
+
+  /// Authentication through the PAM service `service`, the name of a
+  /// file in `/etc/pam.d`, as a lock screen asks for the user's
+  /// password. Each call has its own, which goes with this context.
+  ///
+  /// Nothing runs until [`Pam::start`]. Each attempt runs on a thread of
+  /// its own, since libpam blocks, and wakes the shell only when PAM asks
+  /// or says something, or the attempt ends.
+  fn pam(&self, service: &str) -> Pam;
 }
 
 impl ServicesExt for Cx {
@@ -322,6 +335,10 @@ impl ServicesExt for Cx {
 
   fn desktop_entries(&self) -> DesktopEntries {
     desktop_entries::desktop_entries(self)
+  }
+
+  fn pam(&self, service: &str) -> Pam {
+    pam::pam(self, service)
   }
 }
 
@@ -473,6 +490,15 @@ trait EventLoop {
     channel: Channel<audio::Message>,
     on_message: Box<dyn FnMut(audio::Message)>,
   ) -> bool;
+
+  /// Calls `on_event` with each event a PAM attempt's thread sends on
+  /// `channel`, and with `Closed` once the thread is gone. `None`, logged,
+  /// if the loop refused it.
+  fn insert_pam_channel(
+    &self,
+    channel: Channel<pam::Event>,
+    on_event: Box<dyn FnMut(calloop::channel::Event<pam::Event>)>,
+  ) -> Option<RegistrationToken>;
 }
 
 impl<D: 'static> EventLoop for LoopHandle<'static, D> {
@@ -528,6 +554,17 @@ impl<D: 'static> EventLoop for LoopHandle<'static, D> {
       .inspect_err(|error| tracing::error!(%error, "the audio channel couldn't be added"))
       .is_ok()
   }
+
+  fn insert_pam_channel(
+    &self,
+    channel: Channel<pam::Event>,
+    mut on_event: Box<dyn FnMut(calloop::channel::Event<pam::Event>)>,
+  ) -> Option<RegistrationToken> {
+    self
+      .insert_source(channel, move |event, _, _| on_event(event))
+      .inspect_err(|error| tracing::error!(%error, "a PAM attempt's channel couldn't be added"))
+      .ok()
+  }
 }
 
 /// Where the services find the system. Tests point it at their own files
@@ -554,6 +591,9 @@ struct Config {
   greetd: Option<PathBuf>,
   /// Where the desktop entries are. Tests give directories of their own.
   desktop_entries: desktop_entries::Sources,
+  /// What `cx.pam` authenticates with: libpam, and a script in tests, so
+  /// no test counts toward locking a real account.
+  pam: Arc<dyn pam::Backend>,
 }
 
 impl Config {
@@ -584,6 +624,7 @@ impl Config {
         .filter(|path| !path.is_empty())
         .map(PathBuf::from),
       desktop_entries: desktop_entries::Sources::system(),
+      pam: Arc::new(pam::LibPam),
     }
   }
 }

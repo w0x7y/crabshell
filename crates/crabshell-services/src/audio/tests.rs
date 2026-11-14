@@ -234,6 +234,7 @@ impl Harness {
       popup_timeout: crate::notifications::POPUP_TIMEOUT,
       greetd: None,
       desktop_entries: Default::default(),
+      pam: std::sync::Arc::new(crate::testing::FakePam::default()),
     };
     crate::provide_with(&cx, &event_loop.handle(), config);
     Harness { event_loop, cx }

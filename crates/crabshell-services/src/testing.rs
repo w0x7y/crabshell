@@ -15,7 +15,7 @@ use calloop::futures::Scheduler;
 use crabshell_reactive::Runtime;
 use crabshell_ui::Cx;
 
-use crate::Config;
+use crate::{Config, PamMessage, PamResult};
 
 /// What a shell gives the services, with no compositor: a loop and a root
 /// context.
@@ -114,6 +114,53 @@ pub(crate) fn offline() -> Config {
     popup_timeout: crate::notifications::POPUP_TIMEOUT,
     greetd: None,
     desktop_entries: Default::default(),
+    pam: Arc::new(FakePam::default()),
+  }
+}
+
+/// A PAM backend that follows a script instead of reaching libpam, so no
+/// test counts toward locking a real account. With no steps it succeeds
+/// at once.
+#[derive(Default)]
+pub(crate) struct FakePam {
+  pub(crate) script: Vec<Step>,
+  /// What each attempt did, in order, shared with the test.
+  pub(crate) log: Arc<Mutex<Vec<String>>>,
+}
+
+/// One thing a [`FakePam`] does.
+pub(crate) enum Step {
+  /// Asks a question, and fails unless the answer is the third field.
+  Ask(String, bool, &'static str),
+  Info(String),
+  Error(String),
+}
+
+impl FakePam {
+  fn note(&self, what: String) {
+    self.log.lock().expect("the fake's log").push(what);
+  }
+}
+
+impl crate::pam::Backend for FakePam {
+  fn authenticate(&self, service: &str, user: &str, talk: &crate::pam::Talk) -> PamResult {
+    self.note(format!("{service} for {user}"));
+    let result = (|| {
+      for step in &self.script {
+        match step {
+          Step::Ask(question, visible, wanted) => match talk.ask(question.as_ref(), *visible) {
+            None => return PamResult::Error(String::from("refused")),
+            Some(answer) if answer.bytes() != wanted.as_bytes() => return PamResult::Failure,
+            Some(_) => {}
+          },
+          Step::Info(text) => talk.tell(PamMessage::Info, text.as_ref()),
+          Step::Error(text) => talk.tell(PamMessage::Error, text.as_ref()),
+        }
+      }
+      PamResult::Success
+    })();
+    self.note(format!("ended {result:?}"));
+    result
   }
 }
 
