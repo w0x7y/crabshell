@@ -159,6 +159,10 @@ const PHASES = [
         "checked whether a gpu backend is needed: not yet, a frame draws in under 1 ms",
       ],
       ["yes", "exit check: the effects example on headless sway"],
+      [
+        "yes",
+        "checked by eye: the maintainer's quickshell bar rebuilt in crabshell",
+      ],
     ],
   },
   {
