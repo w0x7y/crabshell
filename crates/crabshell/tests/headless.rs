@@ -677,6 +677,15 @@ fn measure_the_counter_bar() {
     median(&times),
     times.len()
   );
+  drop(bar);
+  // Then Phase 9's desktop example, with every service it uses running
+  // on private buses with no daemons.
+  let desktop = Desktop::new("measure-desktop");
+  let started = desktop.start(&sway);
+  report += &format!(
+    "desktop example with every Phase 9 service started, {}\n",
+    measure(&started)
+  );
   eprint!("{report}");
   let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("headless");
   std::fs::create_dir_all(&dir).expect("create the output directory");
@@ -1772,4 +1781,122 @@ fn the_effects_bar_draws_only_while_it_moves_and_matches_its_goldens() {
     "{}",
     logs.text()
   );
+}
+
+/// The private buses and audio server the desktop example runs on, and
+/// the environment that points it at them, never at the desktop's.
+struct Desktop {
+  _server: PrivateServer,
+  _system: PrivateBus,
+  session: PrivateBus,
+  env: Vec<(&'static str, String)>,
+}
+
+impl Desktop {
+  fn new(name: &str) -> Desktop {
+    let server = PrivateServer::start(name);
+    let (system, session) = (PrivateBus::start(), PrivateBus::start());
+    let env = vec![
+      ("PULSE_SERVER", server.address()),
+      ("DBUS_SYSTEM_BUS_ADDRESS", system.address.clone()),
+      ("DBUS_SESSION_BUS_ADDRESS", session.address.clone()),
+    ];
+    Desktop {
+      _server: server,
+      _system: system,
+      session,
+      env,
+    }
+  }
+
+  fn start(&self, sway: &Sway) -> ExampleBar {
+    let env: Vec<(&str, &str)> = self.env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    ExampleBar::start(sway, "desktop", true, &env)
+  }
+
+  /// Sends a notification, as an app would, and returns gdbus's answer.
+  fn notify(&self, summary: &str, timeout_ms: i32) -> String {
+    let output = Command::new("gdbus")
+      .args(["call", "--address", &self.session.address])
+      .args(["--dest", "org.freedesktop.Notifications"])
+      .args(["--object-path", "/org/freedesktop/Notifications"])
+      .args(["--method", "org.freedesktop.Notifications.Notify"])
+      .args([
+        "exit-check",
+        "0",
+        "",
+        summary,
+        "from the exit check",
+        "[]",
+        "{}",
+      ])
+      .arg(timeout_ms.to_string())
+      .env_clear()
+      .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+      .output()
+      .expect("gdbus runs");
+    assert!(output.status.success(), "gdbus: {output:?}");
+    String::from_utf8_lossy(&output.stdout).into_owned()
+  }
+}
+
+/// Waits until two screenshots in a row, 300 ms apart, are the same.
+fn steady_shot(sway: &Sway, output: &str) -> Image {
+  let deadline = Instant::now() + TIMEOUT;
+  let mut last = sway.screenshot(output);
+  loop {
+    std::thread::sleep(Duration::from_millis(300));
+    let shot = sway.screenshot(output);
+    if shot.rgba == last.rgba {
+      return shot;
+    }
+    assert!(Instant::now() < deadline, "{output} never stopped changing");
+    last = shot;
+  }
+}
+
+/// The desktop example's toast color, from examples/desktop.rs.
+const TOAST_BACKGROUND: [u8; 3] = [0x31, 0x32, 0x44];
+
+/// Phase 9's exit check: the desktop example, with every Phase 9 service
+/// started on private buses with no daemons and a private audio server,
+/// matches its goldens at each scale; a notification an app sends shows
+/// as a toast and goes when it expires; and then the shell sleeps.
+#[test]
+#[ignore = "needs headless Sway"]
+fn the_desktop_bar_shows_a_toast_and_sleeps_with_every_service_started() {
+  let desktop = Desktop::new("desktop");
+  for (scale, factor, suffix) in [("1", 1.0, "1x"), ("1.5", 1.5, "1.5x"), ("2", 2.0, "2x")] {
+    let sway = Sway::start();
+    sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", scale]);
+    let bar = desktop.start(&sway);
+    bar.wait_for(FIRST_FRAME);
+    let shot = steady_shot(&sway, "HEADLESS-1");
+    check_golden(&format!("desktop@{suffix}"), &shot, (30.0 * factor) as u32);
+  }
+
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let bar = desktop.start(&sway);
+  bar.wait_for(FIRST_FRAME);
+  steady_shot(&sway, "HEADLESS-1");
+  // Inside the first toast: 8 in from the right edge, 36 down.
+  let inside = (1920 - 8 - 340 + 6, 36 + 6);
+  assert_ne!(
+    rgb(&sway.screenshot("HEADLESS-1"), inside.0, inside.1),
+    TOAST_BACKGROUND
+  );
+  let answer = desktop.notify("Hello", 1500);
+  assert!(answer.contains("uint32 1"), "{answer}");
+  wait_for_shot(&sway, "HEADLESS-1", "the toast", |shot| {
+    rgb(shot, inside.0, inside.1) == TOAST_BACKGROUND
+  });
+  wait_for_shot(&sway, "HEADLESS-1", "the toast to expire", |shot| {
+    rgb(shot, inside.0, inside.1) != TOAST_BACKGROUND
+  });
+
+  // Asleep: no wakeups for 10 s with every service started.
+  steady_shot(&sway, "HEADLESS-1");
+  let wakeups = bar.wakeups_for(Duration::from_secs(10));
+  assert!(wakeups.is_empty(), "woke while idle: {wakeups:?}");
 }
