@@ -8,7 +8,7 @@ use std::hash::Hash;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use crabshell_reactive::Memo;
+use crabshell_reactive::{Memo, Signal};
 
 use crate::cx::Cx;
 use crate::input::{Handler, Handlers};
@@ -141,6 +141,7 @@ pub(crate) struct ButtonProps {
   pub(crate) hover_style: Option<Prop<Style>>,
   pub(crate) pressed_style: Option<Prop<Style>>,
   pub(crate) focus_style: Option<Prop<Style>>,
+  pub(crate) hovered: Option<Signal<bool>>,
   pub(crate) handlers: Handlers,
 }
 
@@ -584,6 +585,7 @@ impl Button {
         hover_style: None,
         pressed_style: None,
         focus_style: None,
+        hovered: None,
         handlers: Handlers::default(),
       },
       style: None,
@@ -594,6 +596,17 @@ impl Button {
   /// button.
   pub fn hover_style(mut self, style: impl IntoProp<Style>) -> Button {
     self.button.hover_style = Some(style.into_prop());
+    self
+  }
+
+  /// Shares whether the pointer is over the button: the button sets
+  /// `hovered` to `true` while the pointer is over it or anything inside
+  /// it, buttons too, and back to `false` when it leaves, the window loses
+  /// it, or the button goes. Unlike `hover_style`, which only the deepest
+  /// button under the pointer shows, an outer button stays hovered while
+  /// the pointer is over one inside it, so it can show controls on hover.
+  pub fn hovered(mut self, hovered: Signal<bool>) -> Button {
+    self.button.hovered = Some(hovered);
     self
   }
 

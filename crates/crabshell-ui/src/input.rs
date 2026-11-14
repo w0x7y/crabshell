@@ -93,6 +93,9 @@ pub(crate) struct Pointer {
   position: Option<Point>,
   /// The button under the pointer.
   hovered: Option<NodeId>,
+  /// The buttons with a `hovered` signal that the pointer is inside: the
+  /// hovered one and those around it.
+  inside: Vec<(NodeId, Signal<bool>)>,
   /// The button a pointer button went down on, until it comes up.
   pressed: Option<(NodeId, PointerButton)>,
   /// Scrolling that hasn't added up to a whole step yet.
@@ -108,6 +111,13 @@ impl Pointer {
     if self.hovered.is_some_and(|id| removed.contains(&id)) {
       self.hovered = None;
     }
+    self.inside.retain(|(id, signal)| {
+      let gone = removed.contains(id);
+      if gone {
+        signal.try_set(false);
+      }
+      !gone
+    });
     if self.pressed.is_some_and(|(id, _)| removed.contains(&id)) {
       self.pressed = None;
     }
@@ -120,8 +130,7 @@ impl Window {
   pub fn pointer_motion(&self, position: Point) -> CursorShape {
     let mut tree = borrow(&self.tree);
     tree.pointer.position = Some(position);
-    let hit = tree.hit(tree.root, position);
-    tree.set_hovered(hit);
+    tree.hover_at(position);
     tree.cursor()
   }
 
@@ -130,7 +139,7 @@ impl Window {
     let mut tree = borrow(&self.tree);
     tree.pointer.position = None;
     tree.set_pressed(None);
-    tree.set_hovered(None);
+    tree.set_hovered(None, &[]);
   }
 
   /// A pointer button went down or up. Releasing it over the button it
@@ -172,9 +181,10 @@ impl Window {
 }
 
 impl Tree {
-  /// The deepest button under `point` in `id`'s subtree. Later children are
-  /// drawn on top, so they are tried first.
-  fn hit(&self, id: NodeId, point: Point) -> Option<NodeId> {
+  /// The deepest button under `point` in `id`'s subtree, with the nodes on
+  /// the way down to it, itself included, pushed onto `path`. Later
+  /// children are drawn on top, so they are tried first.
+  fn hit(&self, id: NodeId, point: Point, path: &mut Vec<NodeId>) -> Option<NodeId> {
     let node = self.node(id)?;
     let rect = node.rect.filter(|rect| rect.contains(point))?;
     let style = node.effective_style();
@@ -191,14 +201,27 @@ impl Tree {
     } else {
       self.taffy.children(id).unwrap_or_default()
     };
+    path.push(id);
     if let Some(hit) = children
       .into_iter()
       .rev()
-      .find_map(|child| self.hit(child, point))
+      .find_map(|child| self.hit(child, point, path))
     {
       return Some(hit);
     }
-    matches!(node.kind, NodeKind::Button(_) | NodeKind::Input(_)).then_some(id)
+    if matches!(node.kind, NodeKind::Button(_) | NodeKind::Input(_)) {
+      return Some(id);
+    }
+    path.pop();
+    None
+  }
+
+  /// Hovers the deepest button under `point`, and marks the buttons around
+  /// it as having the pointer inside.
+  fn hover_at(&mut self, point: Point) {
+    let mut path = Vec::new();
+    let hit = self.hit(self.root, point, &mut path);
+    self.set_hovered(hit, &path);
   }
 
   fn cursor(&self) -> CursorShape {
@@ -223,12 +246,14 @@ impl Tree {
       return;
     }
     if let Some(position) = self.pointer.position {
-      let hit = self.hit(self.root, position);
-      self.set_hovered(hit);
+      self.hover_at(position);
     }
   }
 
-  fn set_hovered(&mut self, hovered: Option<NodeId>) {
+  /// `hovered` is the button under the pointer, and `path` the nodes from
+  /// the root down to it.
+  fn set_hovered(&mut self, hovered: Option<NodeId>, path: &[NodeId]) {
+    self.set_inside(path);
     let old = self.pointer.hovered;
     if old == hovered {
       return;
@@ -242,6 +267,30 @@ impl Tree {
     if let Some(new) = hovered {
       self.set_button_state(new, |button| button.hovered = true);
     }
+  }
+
+  /// Writes `false` to the `hovered` signals of the buttons the pointer
+  /// left and `true` to those it entered, among the nodes on `path`.
+  fn set_inside(&mut self, path: &[NodeId]) {
+    let inside: Vec<(NodeId, Signal<bool>)> = path
+      .iter()
+      .filter_map(|&id| match &self.node(id)?.kind {
+        NodeKind::Button(button) => Some((id, button.hover_signal?)),
+        _ => None,
+      })
+      .collect();
+    let has = |list: &[(NodeId, Signal<bool>)], id: NodeId| list.iter().any(|(at, _)| *at == id);
+    for (id, signal) in &self.pointer.inside {
+      if !has(&inside, *id) {
+        signal.try_set(false);
+      }
+    }
+    for (id, signal) in &inside {
+      if !has(&self.pointer.inside, *id) {
+        signal.try_set(true);
+      }
+    }
+    self.pointer.inside = inside;
   }
 
   fn set_pressed(&mut self, pressed: Option<(NodeId, PointerButton)>) {

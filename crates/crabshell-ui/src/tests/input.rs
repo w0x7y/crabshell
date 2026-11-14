@@ -512,3 +512,91 @@ fn a_clip_hides_its_children_from_the_pointer_under_its_border() {
   click(&window, PointerButton::Left);
   assert_eq!(clicks.get(), 1);
 }
+
+#[test]
+fn hovered_is_true_while_the_pointer_is_over_the_button_or_inside_it() {
+  let mut h = Harness::new();
+  let (outer, inner) = (h.cx.signal(false), h.cx.signal(false));
+  let row = Row::new().align(Align::Start).child(
+    Button::new(
+      Row::new()
+        .child(square())
+        .child(Button::new(square()).hovered(inner)),
+    )
+    .hovered(outer),
+  );
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+  assert_eq!((outer.get(), inner.get()), (false, false));
+
+  window.pointer_motion(center(&window, &[0, 0, 0, 0]));
+  assert_eq!((outer.get(), inner.get()), (true, false));
+  // Over the inner button, the outer one still has the pointer inside.
+  window.pointer_motion(center(&window, &[0, 0, 0, 1]));
+  assert_eq!((outer.get(), inner.get()), (true, true));
+  window.pointer_motion(center(&window, &[0, 0, 0, 0]));
+  assert_eq!((outer.get(), inner.get()), (true, false));
+  window.pointer_motion(Point::new(100.0, 25.0));
+  assert_eq!((outer.get(), inner.get()), (false, false));
+
+  window.pointer_motion(center(&window, &[0, 0, 0, 1]));
+  window.pointer_leave();
+  assert_eq!((outer.get(), inner.get()), (false, false));
+}
+
+#[test]
+fn hovered_changes_only_when_the_pointer_crosses_the_edge() {
+  let mut h = Harness::new();
+  let hovered = h.cx.signal(false);
+  let runs = Counter::default();
+  let counted = runs.clone();
+  h.cx.effect(move || {
+    hovered.get();
+    counted.hit();
+  });
+  let window = two_buttons(
+    &mut h,
+    Button::new(square()).hovered(hovered),
+    Button::new(square()),
+  );
+  let before = runs.get();
+  window.pointer_motion(Point::new(5.0, 5.0));
+  h.frame(&window);
+  window.pointer_motion(Point::new(6.0, 6.0));
+  h.frame(&window);
+  assert_eq!(runs.get(), before + 1);
+}
+
+#[test]
+fn a_button_that_moves_away_from_a_still_pointer_is_no_longer_hovered() {
+  let mut h = Harness::new();
+  let (shift, hovered) = (h.cx.signal(0), h.cx.signal(false));
+  let row = Row::new()
+    .align(Align::Start)
+    .child(Icon::new("x").size(move || shift.get()))
+    .child(Button::new(square()).hovered(hovered));
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+  window.pointer_motion(Point::new(10.0, 10.0));
+  assert!(hovered.get());
+
+  shift.set(50);
+  h.frame(&window);
+  assert!(!hovered.get());
+}
+
+#[test]
+fn a_hovered_button_that_is_removed_is_no_longer_hovered() {
+  let mut h = Harness::new();
+  let (shown, hovered) = (h.cx.signal(true), h.cx.signal(false));
+  let row = Row::new().align(Align::Start).children_keyed(
+    move || if shown.get() { vec![()] } else { Vec::new() },
+    |_| (),
+    move |_cx, _| Button::new(square()).hovered(hovered),
+  );
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+  window.pointer_motion(Point::new(10.0, 10.0));
+  assert!(hovered.get());
+
+  shown.set(false);
+  h.frame(&window);
+  assert!(!hovered.get());
+}

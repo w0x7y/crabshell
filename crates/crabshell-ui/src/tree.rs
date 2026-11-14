@@ -169,6 +169,8 @@ pub(crate) struct ButtonNode {
   /// Kept in the reactive runtime, which drops the user's closures when
   /// the button's owner goes.
   pub(crate) handlers: Signal<Handlers>,
+  /// Written while the pointer is over the button or inside it.
+  pub(crate) hover_signal: Option<Signal<bool>>,
   pub(crate) hovered: bool,
   pub(crate) pressed: bool,
   /// Focused while its window has the keyboard.
@@ -512,6 +514,7 @@ impl Tree {
         pressed_style: Style::new(),
         focus_style: Style::new(),
         handlers: cx.signal(std::mem::take(&mut props.handlers)),
+        hover_signal: props.hovered,
         hovered: false,
         pressed: false,
         focused: false,
