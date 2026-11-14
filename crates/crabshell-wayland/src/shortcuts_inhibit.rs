@@ -1,6 +1,7 @@
 //! Handing the compositor's own shortcuts to a window while it has the
 //! keyboard, through `keyboard-shortcuts-inhibit-unstable-v1`.
 
+use calloop::LoopSignal;
 use crabshell_reactive::Signal;
 use crabshell_ui::Window;
 use smithay_client_toolkit::reexports::client::{Connection, Dispatch, QueueHandle};
@@ -21,13 +22,19 @@ pub(crate) struct ShortcutsInhibit {
   pub(crate) manager: Option<ZwpKeyboardShortcutsInhibitManagerV1>,
   /// Whether a window asked without the protocol, which is logged once.
   warned: bool,
+  /// Wakes the loop, so a `false` written as an inhibitor goes is seen.
+  wakeup: LoopSignal,
 }
 
 impl ShortcutsInhibit {
-  pub(crate) fn new(manager: Option<ZwpKeyboardShortcutsInhibitManagerV1>) -> ShortcutsInhibit {
+  pub(crate) fn new(
+    manager: Option<ZwpKeyboardShortcutsInhibitManagerV1>,
+    wakeup: LoopSignal,
+  ) -> ShortcutsInhibit {
     ShortcutsInhibit {
       manager,
       warned: false,
+      wakeup,
     }
   }
 }
@@ -39,6 +46,7 @@ pub(crate) struct ShortcutsInhibitor {
   signal: Option<Signal<bool>>,
   /// Whether the compositor said `active` last.
   active: bool,
+  wakeup: LoopSignal,
 }
 
 impl Drop for ShortcutsInhibitor {
@@ -46,8 +54,10 @@ impl Drop for ShortcutsInhibitor {
     self.proxy.destroy();
     if self.active
       && let Some(signal) = self.signal
+      && signal.try_set(false)
     {
-      signal.try_set(false);
+      // Dropped after the flush, so nothing else would run the effects.
+      self.wakeup.wakeup();
     }
   }
 }
@@ -87,6 +97,7 @@ impl Surface {
       proxy,
       signal: window.shortcuts_inhibited(),
       active: false,
+      wakeup: inhibit.wakeup.clone(),
     });
   }
 }

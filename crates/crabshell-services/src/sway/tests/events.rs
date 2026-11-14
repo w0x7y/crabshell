@@ -243,3 +243,24 @@ fn a_new_connection_after_a_drop_keeps_the_handlers_kinds() {
   shell.turn();
   assert_eq!(heard.borrow().len(), 1);
 }
+
+/// A new connection for a kind nobody wants, with Sway gone meanwhile, is
+/// logged once, as a lost connection.
+#[test]
+fn a_new_connection_sway_refuses_is_logged_once() {
+  let logs = capture_logs(|| {
+    let mut fake = FakeSway::new();
+    let (mut shell, mut peer) = Harness::connect(&fake);
+    let child = shell.cx.child();
+    let (handler, _heard) = recorder();
+    child.sway().on_event(&[SwayEventKind::Mode], handler);
+    peer.read();
+    peer.send(SUBSCRIBE, r#"{"success":true}"#);
+    child.owner().dispose();
+    fake.close();
+    peer.send(MODE_EVENT, "{}");
+    shell.turn();
+  });
+  assert!(logs.contains("lost the connection to Sway"), "{logs}");
+  assert!(!logs.contains("shows no workspaces"), "{logs}");
+}

@@ -422,7 +422,7 @@ impl Service {
     } else {
       // A failed first connect isn't retried: SWAYSOCK is stale, or
       // another compositor runs, and retries would wake the shell.
-      self.connect();
+      self.connect(true);
     }
     workspaces.read_only()
   }
@@ -517,7 +517,8 @@ impl Service {
     if let Some(state) = self.state.borrow_mut().as_mut() {
       self.drop_connection(state);
     }
-    if !self.connect()
+    // `disconnect` says why if this fails.
+    if !self.connect(false)
       && let Some(state) = self.state.borrow_mut().as_mut()
     {
       self.disconnect(state, &"Sway took no new connection");
@@ -525,8 +526,8 @@ impl Service {
   }
 
   /// Connects and asks for the list and its changes. `false` if Sway
-  /// isn't there, logged unless a drop already was.
-  fn connect(self: &Rc<Self>) -> bool {
+  /// isn't there, logged when `log` unless a drop already was.
+  fn connect(self: &Rc<Self>, log: bool) -> bool {
     let (Some(socket), Some(event_loop)) = (&self.shared.config.sway, self.shared.event_loop())
     else {
       return false;
@@ -543,7 +544,7 @@ impl Service {
     let (stream, fd) = match opened {
       Ok(opened) => opened,
       Err(error) => {
-        if !state.outage_logged {
+        if log && !state.outage_logged {
           let path = socket.path.display();
           tracing::warn!(
               %path,
@@ -595,7 +596,7 @@ impl Service {
     event_loop.insert_timer(
       Instant::now() + retry,
       Box::new(move || {
-        if !service.alive() || service.connect() {
+        if !service.alive() || service.connect(true) {
           TimeoutAction::Drop
         } else {
           TimeoutAction::ToDuration(retry)

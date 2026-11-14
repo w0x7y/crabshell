@@ -402,7 +402,8 @@ impl Platform {
       globals.bind(&qh, 1..=1, ()).ok(),
       globals.bind(&qh, 1..=1, ()).ok(),
     );
-    let shortcuts_inhibit = ShortcutsInhibit::new(globals.bind(&qh, 1..=1, ()).ok());
+    let shortcuts_inhibit =
+      ShortcutsInhibit::new(globals.bind(&qh, 1..=1, ()).ok(), signal.clone());
     let global_shortcuts = GlobalShortcuts::new(globals.bind(&qh, 1..=1, ()).ok());
     let focus_grabs = FocusGrabs::new(globals.bind(&qh, 1..=1, ()).ok());
     let effects = Effects {
