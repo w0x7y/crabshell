@@ -58,6 +58,13 @@ mod launcher;
 #[path = "../examples/effects.rs"]
 mod effects;
 
+#[allow(
+  dead_code,
+  reason = "the example's lock screen is tested; its main isn't run here"
+)]
+#[path = "../examples/lock.rs"]
+mod lock;
+
 #[allow(dead_code, reason = "the services' own tests use the rest")]
 #[path = "../../crabshell-services/tests/pipewire/mod.rs"]
 mod pipewire;
@@ -1182,6 +1189,8 @@ fn run_as_child() {
       cx.ipc("shell", "ping", |_| Ok(String::from("pong")));
       cx.per_output(counter::bar);
     }),
+    // `other` refuses everyone without asking, so no account is reached.
+    Ok("lock example") => crabshell::run(|cx| lock::setup(cx, "other")),
     Ok("lock") => crabshell::run(|cx| {
       let locked = cx.persist("locked", false);
       cx.ipc("lock", "on", move |_| {
@@ -2712,4 +2721,57 @@ fn a_shell_reloaded_while_locked_locks_again_from_its_persisted_value() {
   let _supervisor = accept_ready(&listener);
   let line = second.wait_for("the session is locked: true");
   eprintln!("the next shell: {line}");
+}
+
+/// Phase 11's exit check: the lock example, locked over IPC, matches its
+/// goldens at scales 1, 1.5 and 2, shows typing as dots, says a refused
+/// password was wrong, and sleeps while locked. Its PAM service is
+/// `other`, which refuses everyone without asking, so no real account is
+/// reached.
+#[test]
+#[ignore = "needs headless Sway"]
+fn the_lock_screen_locks_over_ipc_refuses_a_wrong_password_and_sleeps() {
+  const TEST: &str = "the_lock_screen_locks_over_ipc_refuses_a_wrong_password_and_sleeps";
+  run_as_child();
+  for (scale, suffix) in [("1", "1x"), ("1.5", "1.5x"), ("2", "2x")] {
+    let sway = Sway::start();
+    sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", scale]);
+    let shell = ExampleBar::spawn(&sway, this_as_shell(TEST), &[(CHILD, "lock example")]);
+    assert_eq!(ipc_call(&sway, "lock", "on"), "{\"ok\":\"\"}\n");
+    shell.wait_for(FIRST_FRAME);
+    let shot = steady_shot(&sway, "HEADLESS-1");
+    check_golden(&format!("lock@{suffix}"), &shot, shot.height);
+  }
+
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  // The seat needs a keyboard for the lock surface to take.
+  let mut keyboard = VirtualKeyboard::new(&sway);
+  let shell = ExampleBar::spawn(&sway, this_as_shell(TEST), &[(CHILD, "lock example")]);
+  assert_eq!(ipc_call(&sway, "lock", "on"), "{\"ok\":\"\"}\n");
+  shell.wait_for(FIRST_FRAME);
+  let locked = steady_shot(&sway, "HEADLESS-1");
+  for key in [keys::I, keys::C, keys::E] {
+    keyboard.tap(key);
+  }
+  wait_for_shot(&sway, "HEADLESS-1", "the dots", |shot| {
+    shot.rgba != locked.rgba
+  });
+  let dots = steady_shot(&sway, "HEADLESS-1");
+  check_golden("lock-typed@1x", &dots, dots.height);
+  // PAM's answer empties the field and shows the notice in one frame.
+  keyboard.tap(keys::ENTER);
+  wait_for_shot(&sway, "HEADLESS-1", "the refusal", |shot| {
+    shot.rgba != dots.rgba
+  });
+  let refused = steady_shot(&sway, "HEADLESS-1");
+  check_golden("lock-refused@1x", &refused, refused.height);
+
+  let wakeups = shell.wakeups_for(Duration::from_secs(10));
+  assert!(wakeups.is_empty(), "woke while locked: {wakeups:?}");
+  assert_eq!(
+    sway.screenshot("HEADLESS-1").rgba,
+    refused.rgba,
+    "still locked"
+  );
 }
