@@ -166,6 +166,13 @@ pub(crate) trait Daemon: 'static {
   /// Acts on one signal from the daemon's current owner.
   fn signal(self: &Rc<Self>, connection: &Connection, message: &Message);
 
+  /// The match rules that pick the daemon's signals: all of them unless a
+  /// daemon names fewer, so one that broadcasts much it doesn't need,
+  /// such as BlueZ, never wakes the shell for it.
+  fn rules() -> Vec<String> {
+    vec![format!("type='signal',sender='{}'", Self::NAME)]
+  }
+
   /// Whether `message`, a signal from the daemon, is best met by reading
   /// everything again, as when it names a new object without its
   /// properties. Such a signal isn't passed to [`signal`](Self::signal).
@@ -223,7 +230,7 @@ pub(crate) async fn follow<D: Daemon>(shared: Rc<Shared>, daemon: Rc<D>, address
   };
   // Made before anything is asked, so no signal is missed.
   let mut messages = MessageStream::from(&connection);
-  for rule in [format!("type='signal',sender='{name}'"), owner_rule(name)] {
+  for rule in D::rules().into_iter().chain([owner_rule(name)]) {
     if let Err(error) = bus_call(&connection, "AddMatch", &rule).await {
       return tracing::warn!(%error, name, "couldn't follow it on the bus");
     }

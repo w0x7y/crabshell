@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use zbus::{ObjectPath, Variant};
 
-use super::{ADAPTER, Adapter, BATTERY, BLUEZ, BluetoothDevice, DEVICE};
+use super::{ADAPTER, BATTERY, BLUEZ, BluetoothAdapter, BluetoothDevice, DEVICE};
 use crate::dbus::OBJECT_MANAGER;
 use crate::testing::{FakeService, Harness, PrivateBus, capture_logs, offline, reply};
 use crate::{Config, ServicesExt};
@@ -143,7 +143,7 @@ fn adapters_and_devices_show_in_path_order() {
   });
   assert_eq!(
     adapters.get_untracked(),
-    [Adapter {
+    [BluetoothAdapter {
       path: HCI0.into(),
       name: "laptop".into(),
       address: "00:1A:7D:DA:71:13".into(),
@@ -447,22 +447,50 @@ fn at_most_16_adapters_and_256_devices_are_kept() {
     "the first in path order"
   );
 
+  // A device past the cap shows when it sorts earlier, and a connected
+  // one shows first, whatever its path.
   added(&bluez, &mut shell, KEYBOARD, vec![(DEVICE, Vec::new())]);
-  let last = "/org/bluez/hci0/dev_255";
+  wait_for(&mut shell, "the keyboard", || {
+    devices
+      .get_untracked()
+      .iter()
+      .any(|device| device.path == KEYBOARD)
+  });
+  assert_eq!(devices.get_untracked().len(), 256);
+  let far = "/org/bluez/hci0/dev_299";
   bluez.set(
     &mut shell,
-    last,
+    far,
     DEVICE,
     &[("Connected", Variant::from(true))],
   );
-  wait_for(&mut shell, "the last device connected", || {
-    devices.get_untracked()[255].connected
+  wait_for(&mut shell, "the far device, connected", || {
+    devices
+      .get_untracked()
+      .iter()
+      .any(|device| device.path == far)
   });
-  assert_eq!(
-    devices.get_untracked().len(),
-    256,
-    "no room for the keyboard"
-  );
+  assert_eq!(devices.get_untracked().len(), 256);
+}
+
+#[test]
+fn only_what_adapters_and_devices_are_is_asked_of_the_bus() {
+  use crate::dbus::Daemon;
+
+  // Every rule names BlueZ and either the object manager or one of the
+  // three interfaces read, so its media, GATT values and other
+  // programs' notifications never reach the shell.
+  let rules = super::BluetoothService::rules();
+  assert_eq!(rules.len(), 4, "{rules:?}");
+  assert!(rules.iter().all(|rule| rule.contains("sender='org.bluez'")));
+  assert!(rules[0].contains("interface='org.freedesktop.DBus.ObjectManager'"));
+  for (rule, interface) in rules[1..]
+    .iter()
+    .zip([ADAPTER, DEVICE, "org.bluez.Battery1"])
+  {
+    assert!(rule.contains("member='PropertiesChanged'"), "{rule}");
+    assert!(rule.contains(&format!("arg0='{interface}'")), "{rule}");
+  }
 }
 
 #[test]

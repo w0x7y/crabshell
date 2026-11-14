@@ -43,7 +43,7 @@ use crabshell_reactive::{Owner, ReadSignal};
 use crabshell_ui::Cx;
 
 pub use audio::{Audio, AudioNode, AudioStream, Sink};
-pub use bluetooth::{Adapter, Bluetooth, BluetoothDevice};
+pub use bluetooth::{Bluetooth, BluetoothAdapter, BluetoothDevice};
 pub use clock::Precision;
 pub use notifications::{Notification, Notifications, Timeout, Urgency};
 pub use power::{BatteryState, DeviceKind, PowerDevice, PowerProfile, PowerProfiles, UPower};

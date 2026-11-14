@@ -20,14 +20,34 @@ const ADAPTER: &str = "org.bluez.Adapter1";
 const DEVICE: &str = "org.bluez.Device1";
 const BATTERY: &str = "org.bluez.Battery1";
 
-/// The most adapters kept: one per radio.
+/// The most adapters shown: one per radio.
 const MAX_ADAPTERS: usize = 16;
-/// The most devices kept: discovery adds every device in range.
+/// The most devices shown: discovery adds every device in range.
 const MAX_DEVICES: usize = 256;
+/// The most objects kept, so a flood can't take the memory.
+const MAX_OBJECTS: usize = 4096;
+/// How long `Pair` and `Connect` may take: BlueZ answers a pairing only
+/// once the user confirmed it in the agent's prompt.
+const SLOW_CALL: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// The properties this service reads, by interface: a change to any
+/// other, such as a device's signal strength during discovery, shows
+/// nothing new.
+fn read(interface: &str, name: &str) -> bool {
+  match interface {
+    ADAPTER => matches!(name, "Alias" | "Address" | "Powered" | "Discovering"),
+    DEVICE => matches!(
+      name,
+      "Address" | "Alias" | "Name" | "Icon" | "Connected" | "Paired" | "Trusted" | "Adapter"
+    ),
+    BATTERY => name == "Percentage",
+    _ => false,
+  }
+}
 
 /// A Bluetooth radio BlueZ knows.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Adapter {
+pub struct BluetoothAdapter {
   /// BlueZ's object path for it, such as `/org/bluez/hci0`.
   pub path: String,
   /// Its name, BlueZ's `Alias`.
@@ -40,9 +60,9 @@ pub struct Adapter {
   pub discovering: bool,
 }
 
-impl Adapter {
-  fn from_props(path: String, props: &Props) -> Adapter {
-    Adapter {
+impl BluetoothAdapter {
+  fn from_props(path: String, props: &Props) -> BluetoothAdapter {
+    BluetoothAdapter {
       path,
       name: dbus::text(props, "Alias"),
       address: dbus::text(props, "Address"),
@@ -103,13 +123,13 @@ impl BluetoothDevice {
 #[derive(Clone)]
 pub struct Bluetooth {
   service: Option<Rc<BluetoothService>>,
-  adapters: ReadSignal<Vec<Adapter>>,
+  adapters: ReadSignal<Vec<BluetoothAdapter>>,
   devices: ReadSignal<Vec<BluetoothDevice>>,
 }
 
 impl Bluetooth {
   /// Every adapter, in path order. Empty while BlueZ isn't running.
-  pub fn adapters(&self) -> ReadSignal<Vec<Adapter>> {
+  pub fn adapters(&self) -> ReadSignal<Vec<BluetoothAdapter>> {
     self.adapters
   }
 
@@ -195,7 +215,12 @@ impl Bluetooth {
     let (shared, path) = (Rc::clone(&service.shared), path.to_owned());
     service.shared.spawn(async move {
       let call = connection.call_method(Some(BLUEZ), path.as_str(), Some(interface), method, &body);
-      if let Err(error) = shared.timeout(CALL_TIMEOUT, call).await {
+      let limit = if matches!(method, "Pair" | "Connect") {
+        SLOW_CALL
+      } else {
+        CALL_TIMEOUT
+      };
+      if let Err(error) = shared.timeout(limit, call).await {
         tracing::warn!(%error, path, method, "BlueZ refused it");
       }
     });
@@ -225,7 +250,7 @@ pub(crate) struct BluetoothService {
 }
 
 struct BluetoothState {
-  adapters: Signal<Vec<Adapter>>,
+  adapters: Signal<Vec<BluetoothAdapter>>,
   devices: Signal<Vec<BluetoothDevice>>,
   /// BlueZ's adapters and devices, by path.
   objects: BTreeMap<String, Object>,
@@ -256,24 +281,15 @@ impl Object {
   }
 }
 
-/// Gives the object at `path` `interfaces`, unless that would make more
-/// adapters or devices than the caps allow.
+/// Gives the object at `path` `interfaces`. Past [`MAX_OBJECTS`] a new
+/// one is left out; which are shown is decided as they are.
 fn add(objects: &mut BTreeMap<String, Object>, path: String, interfaces: HashMap<String, Props>) {
+  if objects.len() >= MAX_OBJECTS && !objects.contains_key(&path) {
+    return tracing::debug!(path, "too many Bluetooth objects; leaving one out");
+  }
   let mut object = objects.remove(&path).unwrap_or_default();
-  let count = |kind: fn(&Object) -> bool| objects.values().filter(|object| kind(object)).count();
   for (interface, props) in interfaces {
-    let full = match interface.as_str() {
-      ADAPTER => object.adapter.is_none() && count(|o| o.adapter.is_some()) >= MAX_ADAPTERS,
-      DEVICE => object.device.is_none() && count(|o| o.device.is_some()) >= MAX_DEVICES,
-      _ => false,
-    };
-    if full {
-      tracing::warn!(
-        path,
-        interface,
-        "too many Bluetooth objects; leaving one out"
-      );
-    } else if let Some(slot) = object.slot(&interface) {
+    if let Some(slot) = object.slot(&interface) {
       *slot = Some(props);
     }
   }
@@ -332,9 +348,12 @@ impl BluetoothService {
           .map(|(path, object)| (path.clone(), object))
       };
       let adapters = objects()
-        .filter_map(|(path, object)| Some(Adapter::from_props(path, object.adapter.as_ref()?)))
+        .filter_map(|(path, object)| {
+          Some(BluetoothAdapter::from_props(path, object.adapter.as_ref()?))
+        })
+        .take(MAX_ADAPTERS)
         .collect::<Vec<_>>();
-      let devices = objects()
+      let mut devices = objects()
         .filter_map(|(path, object)| {
           let device = object.device.as_ref()?;
           Some(BluetoothDevice::from_props(
@@ -344,6 +363,13 @@ impl BluetoothService {
           ))
         })
         .collect::<Vec<_>>();
+      // Past the cap, connected and paired ones first, so the devices a
+      // person uses never hide behind strangers discovery found.
+      if devices.len() > MAX_DEVICES {
+        devices.sort_by_key(|device| (!device.connected, !device.paired));
+        devices.truncate(MAX_DEVICES);
+        devices.sort_by(|a, b| a.path.cmp(&b.path));
+      }
       (state.adapters, adapters, state.devices, devices)
     });
     if let Some((adapters_signal, adapters, devices_signal, devices)) = shown {
@@ -355,6 +381,22 @@ impl BluetoothService {
 
 impl Daemon for BluetoothService {
   const NAME: &'static str = BLUEZ;
+
+  /// Only what adapters and devices are: BlueZ also broadcasts media,
+  /// GATT values and other programs' notifications, which would each
+  /// wake the shell for nothing.
+  fn rules() -> Vec<String> {
+    let mut rules = vec![format!(
+      "type='signal',sender='{BLUEZ}',interface='{OBJECT_MANAGER}'"
+    )];
+    rules.extend([ADAPTER, DEVICE, BATTERY].map(|interface| {
+      format!(
+        "type='signal',sender='{BLUEZ}',interface='{PROPERTIES}',member='PropertiesChanged',\
+         arg0='{interface}'"
+      )
+    }));
+    rules
+  }
 
   fn alive(&self) -> bool {
     let state = self.state.borrow();
@@ -429,7 +471,14 @@ impl Daemon for BluetoothService {
         let Some(props) = props else {
           return;
         };
+        let shown = changed
+          .keys()
+          .chain(&dropped)
+          .any(|name| read(&interface, name));
         dbus::apply(props, changed, dropped);
+        if !shown {
+          return;
+        }
       }
       return self.publish();
     }
