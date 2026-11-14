@@ -9,6 +9,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::time::Duration;
 
+use crabshell_reactive::Signal;
 use zbus::export::futures_core::Stream;
 use zbus::message::Type as Kind;
 use zbus::{Connection, Message, MessageStream, OwnedVariant};
@@ -18,6 +19,7 @@ use crate::Shared;
 pub(crate) const BUS: &str = "org.freedesktop.DBus";
 pub(crate) const BUS_PATH: &str = "/org/freedesktop/DBus";
 pub(crate) const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
+pub(crate) const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
 
 /// How long a call to another program may take. The timer is the
 /// loop's, and goes with the call.
@@ -132,6 +134,14 @@ where
 /// The property `name` as a string, or `""`.
 pub(crate) fn text(props: &Props, name: &str) -> String {
   get::<&str>(props, name).unwrap_or_default().to_owned()
+}
+
+/// Sets `signal` to `value` unless it already holds it, so nothing that
+/// reads it runs for nothing. A disposed signal is left alone.
+pub(crate) fn set_changed<T: PartialEq + 'static>(signal: Signal<T>, value: T) {
+  if signal.try_with(|old| *old != value) == Some(true) {
+    signal.try_set(value);
+  }
 }
 
 /// A system daemon a service follows, such as UPower: read whole when it

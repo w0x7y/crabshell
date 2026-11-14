@@ -222,9 +222,10 @@ pub(crate) fn capture_logs(f: impl FnOnce()) -> String {
 type Handler = Box<dyn Fn(&zbus::Message) -> Option<zbus::Result<zbus::Message>>>;
 
 /// A program on a private bus standing in for a system daemon, such as
-/// UPower or BlueZ: it owns `name`, answers `Properties` calls from a
-/// table of objects, emits `PropertiesChanged` when a test sets one, and
-/// answers other methods with the handlers a test gives it.
+/// UPower or BlueZ: it owns `name`, answers `Properties` calls and
+/// `ObjectManager.GetManagedObjects` from a table of objects, emits
+/// `PropertiesChanged` when a test sets one, and answers other methods
+/// with the handlers a test gives it.
 pub(crate) struct FakeService {
   pub(crate) connection: zbus::Connection,
   name: &'static str,
@@ -275,11 +276,24 @@ impl FakeService {
         let member = header
           .member()
           .map_or(String::new(), |member| member.to_string());
-        let properties =
-          header.interface().map(|interface| interface.as_str()) == Some(crate::dbus::PROPERTIES);
+        let interface = header.interface().map(|interface| interface.as_str());
         let mut announce = None;
         // Built before any await, so no borrow is held across one.
-        let reply = if properties {
+        let reply = if interface == Some(crate::dbus::OBJECT_MANAGER)
+          && member == "GetManagedObjects"
+        {
+          // The objects below `path`, as an object manager there lists them.
+          let below = format!("{}/", path.trim_end_matches('/'));
+          let objects = objects.borrow();
+          let mut managed = std::collections::HashMap::<_, std::collections::HashMap<_, _>>::new();
+          for ((at, interface), props) in objects.iter() {
+            if at.starts_with(&below) && *at != path {
+              let at = zbus::ObjectPath::try_from(at.as_str()).expect("a path");
+              managed.entry(at).or_default().insert(interface, props);
+            }
+          }
+          Some(zbus::Message::method_return(&header).build(&managed))
+        } else if interface == Some(crate::dbus::PROPERTIES) {
           let objects = &mut *objects.borrow_mut();
           match member.as_str() {
             "GetAll" => {

@@ -81,8 +81,9 @@ pub mod prelude {
   pub use crate::{IntoPanels, ShellExt};
   pub use crabshell_reactive::{Effect, Memo, ReadSignal, Signal};
   pub use crabshell_services::{
-    BatteryState, DeviceKind, PowerDevice, PowerProfile, PowerProfiles, Precision, ServicesExt,
-    Sink, Tray, TrayHost, TrayItem, TrayMenu, TrayStatus, UPower, Workspace,
+    Adapter, BatteryState, Bluetooth, BluetoothDevice, DeviceKind, PowerDevice, PowerProfile,
+    PowerProfiles, Precision, ServicesExt, Sink, Tray, TrayHost, TrayItem, TrayMenu, TrayStatus,
+    UPower, Workspace,
   };
   pub use crabshell_ui::{
     Adjust, Align, Anchors, Animate, Border, Button, Color, Column, Cx, Easing, Edge, Fit,

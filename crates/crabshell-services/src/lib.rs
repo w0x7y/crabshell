@@ -15,6 +15,7 @@
 #![warn(missing_docs)]
 
 mod audio;
+mod bluetooth;
 mod clock;
 mod dbus;
 mod power;
@@ -41,6 +42,7 @@ use crabshell_reactive::{Owner, ReadSignal};
 use crabshell_ui::Cx;
 
 pub use audio::{Audio, Sink};
+pub use bluetooth::{Adapter, Bluetooth, BluetoothDevice};
 pub use clock::Precision;
 pub use power::{BatteryState, DeviceKind, PowerDevice, PowerProfile, PowerProfiles, UPower};
 pub use sway::{Sway, Workspace};
@@ -65,6 +67,7 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(tray::Service::new(Rc::clone(&shared)));
   cx.provide(power::UPowerService::new(Rc::clone(&shared)));
   cx.provide(power::ProfilesService::new(Rc::clone(&shared)));
+  cx.provide(bluetooth::BluetoothService::new(Rc::clone(&shared)));
 }
 
 /// The services a context hands out.
@@ -124,6 +127,12 @@ pub trait ServicesExt {
   /// Every caller shares one connection. It behaves as
   /// [`upower`](Self::upower) does while the daemon isn't there.
   fn power_profiles(&self) -> PowerProfiles;
+
+  /// Bluetooth adapters and devices, from BlueZ on the system bus. Every
+  /// caller shares one connection. It behaves as [`upower`](Self::upower)
+  /// does while BlueZ isn't there, and wakes the shell only when BlueZ
+  /// says something changed.
+  fn bluetooth(&self) -> Bluetooth;
 }
 
 impl ServicesExt for Cx {
@@ -149,6 +158,10 @@ impl ServicesExt for Cx {
 
   fn power_profiles(&self) -> PowerProfiles {
     power::power_profiles(self)
+  }
+
+  fn bluetooth(&self) -> Bluetooth {
+    bluetooth::bluetooth(self)
   }
 }
 
@@ -360,8 +373,8 @@ struct Config {
   /// The link that names the system time zone, `/etc/localtime`. `None`
   /// when `TZ` is set, since it names the zone then, as it does for libc.
   localtime: Option<PathBuf>,
-  /// The system bus, where logind, timedated, UPower and
-  /// power-profiles-daemon are. `None` for none.
+  /// The system bus, where logind, timedated, UPower,
+  /// power-profiles-daemon and BlueZ are. `None` for none.
   system_bus: Option<zbus::Address>,
   /// The session bus, where tray items are. `None` for none.
   session_bus: Option<zbus::Address>,

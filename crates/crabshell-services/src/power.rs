@@ -14,7 +14,7 @@ use crabshell_ui::Cx;
 use zbus::{Array, Connection, Message, OwnedObjectPath, OwnedVariant};
 
 use crate::Shared;
-use crate::dbus::{self, CALL_TIMEOUT, Daemon, Props};
+use crate::dbus::{self, CALL_TIMEOUT, Daemon, Props, set_changed};
 
 const UPOWER: &str = "org.freedesktop.UPower";
 const UPOWER_PATH: &str = "/org/freedesktop/UPower";
@@ -674,13 +674,5 @@ impl Daemon for ProfilesService {
       dbus::apply(&mut state.props, changed, dropped);
     }
     self.publish();
-  }
-}
-
-/// Sets `signal` to `value` unless it already holds it, so nothing that
-/// reads it runs for nothing. A disposed signal is left alone.
-fn set_changed<T: PartialEq + 'static>(signal: Signal<T>, value: T) {
-  if signal.try_with(|old| *old != value) == Some(true) {
-    signal.try_set(value);
   }
 }
