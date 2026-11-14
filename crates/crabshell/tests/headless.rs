@@ -2445,3 +2445,94 @@ fn cx_exit_ends_the_shell_with_its_status_programs_and_socket() {
     std::thread::sleep(Duration::from_millis(50));
   }
 }
+
+/// A stand-in for greetd on the other end of `GREETD_SOCK`.
+struct FakeGreetd(std::os::unix::net::UnixStream);
+
+impl FakeGreetd {
+  /// The greeter's next request, as JSON text.
+  fn request(&mut self) -> String {
+    use std::io::Read;
+    let mut length = [0; 4];
+    self.0.read_exact(&mut length).expect("a request's length");
+    let mut body = vec![0; u32::from_ne_bytes(length) as usize];
+    self.0.read_exact(&mut body).expect("a request");
+    String::from_utf8(body).expect("UTF-8")
+  }
+
+  fn reply(&mut self, json: &str) {
+    use std::io::Write;
+    let length = u32::try_from(json.len()).expect("small").to_ne_bytes();
+    self.0.write_all(&length).expect("a reply's length");
+    self.0.write_all(json.as_bytes()).expect("a reply");
+  }
+}
+
+/// Phase 11's greeter check: the greeter example, typed into, makes a
+/// session for its user, asks again after a refused password, starts the
+/// session once authenticated and exits 0, as greetd needs.
+#[test]
+#[ignore = "needs headless Sway"]
+fn the_greeter_logs_in_after_a_refused_password_and_exits() {
+  const SECRET: &str =
+    r#"{"type":"auth_message","auth_message_type":"secret","auth_message":"Password:"}"#;
+  const ASKS: &str = "greetd: Asking";
+  let sway = Sway::start();
+  let socket = sway.runtime_dir().join("greetd.sock");
+  let listener = std::os::unix::net::UnixListener::bind(&socket).expect("the fake greetd");
+  let mut keyboard = VirtualKeyboard::new(&sway);
+  let greeter = ExampleBar::start(
+    &sway,
+    "greeter",
+    false,
+    &[("GREETD_SOCK", socket.to_str().expect("UTF-8"))],
+  );
+  greeter.wait_for(FIRST_FRAME);
+  for key in [keys::C, keys::A, keys::L, keys::ENTER] {
+    keyboard.tap(key);
+  }
+  let (stream, _) = listener.accept().expect("the greeter connects");
+  stream.set_read_timeout(Some(TIMEOUT)).expect("a timeout");
+  let mut greetd = FakeGreetd(stream);
+  assert_eq!(
+    greetd.request(),
+    r#"{"type":"create_session","username":"cal"}"#
+  );
+  greetd.reply(SECRET);
+  greeter.wait_for(ASKS);
+
+  // A wrong password: the attempt ends and greetd asks again.
+  for key in [keys::I, keys::C, keys::E, keys::ENTER] {
+    keyboard.tap(key);
+  }
+  assert_eq!(
+    greetd.request(),
+    r#"{"type":"post_auth_message_response","response":"ice"}"#
+  );
+  greetd.reply(r#"{"type":"error","error_type":"auth_error","description":"Wrong password"}"#);
+  assert_eq!(greetd.request(), r#"{"type":"cancel_session"}"#);
+  greetd.reply(r#"{"type":"success"}"#);
+  assert_eq!(
+    greetd.request(),
+    r#"{"type":"create_session","username":"cal"}"#
+  );
+  greetd.reply(SECRET);
+  greeter.wait_for(ASKS);
+
+  for key in [keys::F, keys::I, keys::R, keys::E, keys::ENTER] {
+    keyboard.tap(key);
+  }
+  assert_eq!(
+    greetd.request(),
+    r#"{"type":"post_auth_message_response","response":"fire"}"#
+  );
+  greetd.reply(r#"{"type":"success"}"#);
+  assert_eq!(
+    greetd.request(),
+    r#"{"cmd":["sway"],"env":[],"type":"start_session"}"#
+  );
+  greetd.reply(r#"{"type":"success"}"#);
+  let mut greeter = greeter;
+  let status = greeter.exit_status().expect("the greeter exits");
+  assert_eq!(status.code(), Some(0), "{status}");
+}
