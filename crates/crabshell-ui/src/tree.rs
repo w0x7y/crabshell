@@ -186,6 +186,8 @@ pub(crate) struct Surface {
   pub(crate) keyboard_focus: KeyboardFocus,
   pub(crate) namespace: String,
   pub(crate) mask: Option<Region>,
+  /// A panel's or floating window's blur region.
+  pub(crate) blur: Option<Region>,
   /// Something changed since the platform last read the settings.
   pub(crate) changed: bool,
 }
@@ -202,6 +204,7 @@ impl Default for Surface {
       keyboard_focus: KeyboardFocus::None,
       namespace: String::from(DEFAULT_NAMESPACE),
       mask: None,
+      blur: None,
       changed: false,
     }
   }
@@ -378,6 +381,7 @@ impl Tree {
       keyboard_focus,
       namespace,
       mask,
+      blur,
       on_key,
       style,
       child: _,
@@ -410,8 +414,16 @@ impl Tree {
     self.bind_opt(root, mask, "mask", |tree, _, value| {
       tree.surface.set(|s| &mut s.mask, value);
     });
+    self.bind_blur(blur);
     self.mount_root(style, child);
     self.surface.changed = true;
+  }
+
+  /// Binds a panel's or floating window's blur region.
+  pub(crate) fn bind_blur(&mut self, blur: Option<Prop<Option<Region>>>) {
+    self.bind_opt(self.root, blur, "blur", |tree, _, value| {
+      tree.surface.set(|s| &mut s.blur, value);
+    });
   }
 
   /// Applies the root's style and adds its child, as a panel's or a

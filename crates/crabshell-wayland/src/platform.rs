@@ -31,6 +31,7 @@ use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1:
 use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
+use crate::blur::Effects;
 use crate::clipboard::Offered;
 use crate::events::{self, Event, Listener};
 use crate::keyboard::SeatKeyboard;
@@ -318,6 +319,8 @@ pub struct Platform {
   pub(crate) offered: Option<Offered>,
   /// Present when the compositor relays input methods.
   pub(crate) text_inputs_manager: Option<ZwpTextInputManagerV3>,
+  /// The compositor's background effects, such as blur.
+  pub(crate) effects: Effects,
   pub(crate) text_inputs: Vec<SeatTextInput>,
   /// The seat and serial of the last button press or release on one of
   /// the windows, which a popup's grab needs.
@@ -369,10 +372,16 @@ impl Platform {
       }
     };
     let text_inputs_manager = globals.bind(&qh, 1..=1, ()).ok();
+    let effects = Effects {
+      manager: globals.bind(&qh, 1..=1, ()).ok(),
+      blur: false,
+      warned: false,
+    };
     let data_devices_manager = DataDeviceManagerState::bind(globals, &qh).ok();
     tracing::debug!(
       fractional = fractional.is_some(),
       text_input = text_inputs_manager.is_some(),
+      background_effects = effects.manager.is_some(),
       "bound the compositor's globals"
     );
     let mut platform = Platform {
@@ -396,6 +405,7 @@ impl Platform {
       pointers: Vec::new(),
       keyboards: Vec::new(),
       text_inputs_manager,
+      effects,
       data_devices_manager,
       data_devices: Vec::new(),
       offered: None,
@@ -609,6 +619,7 @@ impl Platform {
       qh,
       stats,
       compositor,
+      effects,
       ..
     } = self;
     for entry in windows.entries.iter_mut() {
@@ -621,6 +632,7 @@ impl Platform {
         {
           // Before `reconfigure`, whose commit applies it.
           surface.send_mask(compositor, config.mask.as_ref());
+          surface.send_blur(effects, compositor, entry.window.blur().as_ref(), qh);
           surface.reconfigure(&config);
         }
       }
@@ -634,6 +646,9 @@ impl Platform {
       // commits it.
       if surface.mask_outdated() {
         surface.send_mask(compositor, entry.window.surface().mask.as_ref());
+      }
+      if surface.blur_outdated() {
+        surface.send_blur(effects, compositor, entry.window.blur().as_ref(), qh);
       }
       if entry.window.needs_layout() {
         entry.window.layout(text);

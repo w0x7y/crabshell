@@ -343,3 +343,41 @@ fn a_window_built_in_an_effect_adds_no_dependency_to_it() {
   h.runtime.flush();
   assert_eq!(runs.get(), 1);
 }
+
+#[test]
+fn a_blur_region_reaches_the_window_and_a_change_is_reported() {
+  let mut h = Harness::new();
+  let frosted = h.cx.signal(true);
+  let panel = h.panel().blur(move || {
+    frosted
+      .get()
+      .then(|| Region::rect(0, 0, 200, 30).radius(8.0))
+  });
+  let window = h.window(panel, 200.0, 30.0);
+  assert_eq!(window.blur(), Some(Region::rect(0, 0, 200, 30).radius(8.0)));
+  assert!(window.take_surface_changed());
+
+  frosted.set(false);
+  h.frame(&window);
+  assert!(window.take_surface_changed());
+  assert_eq!(window.blur(), None);
+  assert_eq!(
+    h.window(h.panel(), 200.0, 30.0).blur(),
+    None,
+    "none by default"
+  );
+}
+
+#[test]
+fn a_panicking_blur_is_logged_with_its_path() {
+  let mut h = Harness::new();
+  let logs = super::capture_logs(|| {
+    let panel = h.panel().blur(|| -> Option<Region> { panic!("no frost") });
+    let window = h.window(panel, 200.0, 30.0);
+    assert_eq!(window.blur(), None);
+  });
+  assert!(
+    logs.contains("PanelWindow[DP-1].blur panicked and is disabled"),
+    "{logs}"
+  );
+}

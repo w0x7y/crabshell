@@ -211,6 +211,7 @@ pub struct PanelWindow {
   pub(crate) keyboard_focus: Option<Prop<KeyboardFocus>>,
   pub(crate) namespace: Option<Prop<String>>,
   pub(crate) mask: Option<Prop<Option<Region>>>,
+  pub(crate) blur: Option<Prop<Option<Region>>>,
   pub(crate) on_key: Option<KeyHandler>,
   pub(crate) style: Option<Prop<Style>>,
   pub(crate) child: Option<Box<dyn Widget>>,
@@ -230,6 +231,7 @@ impl PanelWindow {
       keyboard_focus: None,
       namespace: None,
       mask: None,
+      blur: None,
       on_key: None,
       style: None,
       child: None,
@@ -301,6 +303,24 @@ impl PanelWindow {
   /// and [`Region::empty`] lets every click through.
   pub fn mask(mut self, mask: impl IntoProp<Option<Region>>) -> PanelWindow {
     self.mask = Some(mask.into_prop());
+    self
+  }
+
+  /// Asks the compositor to blur what is behind this part of the window,
+  /// so a translucent background looks frosted. `None`, the default,
+  /// blurs nothing. It needs `ext-background-effect-v1`; a compositor
+  /// without it shows the window unblurred, and the shell logs that once.
+  ///
+  /// ```
+  /// use crabshell_ui::{Output, PanelWindow, Region};
+  ///
+  /// // The whole of a 30 pixel bar, however wide the output.
+  /// let bar = PanelWindow::new(&Output::new("DP-1"))
+  ///     .height(30)
+  ///     .blur(Some(Region::rect(0, 0, u32::MAX, 30)));
+  /// ```
+  pub fn blur(mut self, region: impl IntoProp<Option<Region>>) -> PanelWindow {
+    self.blur = Some(region.into_prop());
     self
   }
 
@@ -444,6 +464,12 @@ impl Window {
       namespace: surface.namespace.clone(),
       mask: surface.mask.clone(),
     }
+  }
+
+  /// The region a panel or floating window asks the compositor to blur
+  /// behind, as its `blur` property says.
+  pub fn blur(&self) -> Option<Region> {
+    self.tree.borrow().surface.blur.clone()
   }
 
   /// Whether the settings in [`surface`](Self::surface) changed since the

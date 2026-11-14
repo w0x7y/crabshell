@@ -181,6 +181,10 @@ pub(crate) struct Surface {
   pub(crate) floating: Option<crabshell_ui::FloatingConfig>,
   /// The input mask last sent and the size it was cut to.
   mask_sent: Option<(Option<Region>, (u32, u32))>,
+  /// The blur object, once the window asked for a blur.
+  pub(crate) blur: Option<crate::blur::Blur>,
+  /// The blur region last sent and the size it was cut to.
+  pub(crate) blur_sent: Option<(Option<Region>, (u32, u32))>,
 }
 
 impl Surface {
@@ -205,6 +209,8 @@ impl Surface {
       given: (0, 0),
       floating: None,
       mask_sent: None,
+      blur: None,
+      blur_sent: None,
     }
   }
 

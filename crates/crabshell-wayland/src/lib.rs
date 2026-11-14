@@ -64,6 +64,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod blur;
 mod buffers;
 mod clipboard;
 mod events;

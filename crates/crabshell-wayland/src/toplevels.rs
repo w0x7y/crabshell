@@ -66,6 +66,11 @@ impl Platform {
       if let (Some(config), Some(surface)) = (entry.window.floating_config(), &mut entry.surface)
         && entry.window.take_surface_changed()
       {
+        // Before the commit below, which applies it.
+        if config.shown {
+          let blur = entry.window.blur();
+          surface.send_blur(&mut self.effects, &self.compositor, blur.as_ref(), &self.qh);
+        }
         if !config.shown {
           self.windows.remove_popups_of(id);
           self.windows.entries[index].surface = None;

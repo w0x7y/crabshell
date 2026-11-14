@@ -114,6 +114,8 @@ struct Knobs {
   typed: Signal<String>,
   /// The animated box's target: wide or narrow.
   wide: Signal<bool>,
+  /// Whether the bar asks for a blur behind it.
+  blurred: Signal<bool>,
 }
 
 /// A popup with two entries: the first opens another menu beside it, and
@@ -162,6 +164,12 @@ fn bar(cx: &Cx, output: &str, knobs: Knobs) -> Window {
         .masked
         .get()
         .then(|| Region::rect(200, 0, 100_000, 100_000))
+    })
+    .blur(move || {
+      knobs
+        .blurred
+        .get()
+        .then(|| Region::rect(0, 0, 100_000, 100_000))
     })
     .on_key(move |_, event| {
       knobs.keys.update(|keys| keys.push(event.clone()));
@@ -288,6 +296,7 @@ impl Shell {
       keyboard: cx.signal(setup.keyboard),
       typed: cx.signal(String::new()),
       wide: cx.signal(false),
+      blurred: cx.signal(false),
     };
     let mut event_loop = sway.connect();
     let built = Rc::new(RefCell::new(Vec::new()));
@@ -665,6 +674,47 @@ fn a_mask_lets_clicks_through_until_it_changes() {
   run_until(&mut shell.event_loop, "a click once unmasked", |_| {
     clicks.get_untracked() == 1
   });
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_blur_the_compositor_cant_give_is_logged_once_and_the_bar_still_draws() {
+  // Sway lacks ext-background-effect-v1.
+  let (logs, _logging) = capture_logs();
+  let sway = Sway::start();
+  let mut shell = Shell::build(&sway, PLAIN);
+  let id = shell.wait_for_bar("HEADLESS-1");
+  shell.knobs.blurred.set(true);
+  settle(&mut shell.event_loop);
+  assert!(logs.text().contains("can't blur behind windows"));
+  // Again after a resize and after asking again.
+  sway.msg(&["output", "HEADLESS-1", "mode", "1280x720"]);
+  settle(&mut shell.event_loop);
+  shell.knobs.blurred.set(false);
+  settle(&mut shell.event_loop);
+  shell.knobs.blurred.set(true);
+  let before = shell
+    .event_loop
+    .platform()
+    .window_info(id)
+    .expect("the bar is held")
+    .commits;
+  shell.knobs.label.set(String::from("still drawing"));
+  run_until(
+    &mut shell.event_loop,
+    "a frame with the new label",
+    |platform| {
+      platform
+        .window_info(id)
+        .is_some_and(|info| info.commits > before)
+    },
+  );
+  let text = logs.text();
+  assert_eq!(
+    text.matches("can't blur behind windows").count(),
+    1,
+    "{text}"
+  );
 }
 
 /// A bar that takes the keyboard, on HEADLESS-1 at scale 1, and a

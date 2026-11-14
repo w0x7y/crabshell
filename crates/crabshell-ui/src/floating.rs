@@ -9,6 +9,7 @@ use crabshell_reactive::{Signal, untrack};
 use crate::cx::{Anchor, Cx};
 use crate::input::{Handler, run_isolated};
 use crate::prop::{IntoProp, Prop};
+use crate::region::Region;
 use crate::style::Style;
 use crate::tree::{Tree, borrow};
 use crate::widgets::Widget;
@@ -39,6 +40,7 @@ pub struct FloatingWindow {
   pub(crate) maximized: Option<Prop<bool>>,
   pub(crate) fullscreen: Option<Prop<bool>>,
   pub(crate) visible: Option<Prop<bool>>,
+  pub(crate) blur: Option<Prop<Option<Region>>>,
   pub(crate) on_close: Option<CloseHandler>,
   pub(crate) style: Option<Prop<Style>>,
   pub(crate) child: Option<Box<dyn Widget>>,
@@ -65,6 +67,7 @@ impl FloatingWindow {
       maximized: None,
       fullscreen: None,
       visible: None,
+      blur: None,
       on_close: None,
       style: None,
       child: None,
@@ -120,6 +123,13 @@ impl FloatingWindow {
   /// again, it is a new window to the compositor.
   pub fn visible(mut self, visible: impl IntoProp<bool>) -> FloatingWindow {
     self.visible = Some(visible.into_prop());
+    self
+  }
+
+  /// Asks the compositor to blur what is behind this part of the window,
+  /// as [`PanelWindow::blur`](crate::PanelWindow::blur) does.
+  pub fn blur(mut self, region: impl IntoProp<Option<Region>>) -> FloatingWindow {
+    self.blur = Some(region.into_prop());
     self
   }
 
@@ -347,6 +357,7 @@ impl Tree {
       maximized,
       fullscreen,
       visible,
+      blur,
       on_close: _,
       style,
       child: _,
@@ -379,6 +390,7 @@ impl Tree {
       }
       tree.set_floating(|f| &mut f.visible, value);
     });
+    self.bind_blur(blur);
     self.mount_root(style, child);
     self.surface.changed = true;
   }

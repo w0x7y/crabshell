@@ -155,3 +155,19 @@ fn dropping_a_floating_window_frees_what_it_made() {
   drop(window);
   assert_eq!(h.runtime.node_count(), before);
 }
+
+#[test]
+fn a_floating_window_takes_a_blur_region_too() {
+  let mut h = Harness::new();
+  let frosted = h.cx.signal(false);
+  let window = build(
+    &mut h,
+    FloatingWindow::new().blur(move || frosted.get().then(|| crate::Region::rect(0, 0, 50, 50))),
+  );
+  assert_eq!(window.blur(), None);
+  window.take_surface_changed();
+  frosted.set(true);
+  h.frame(&window);
+  assert!(window.take_surface_changed());
+  assert_eq!(window.blur(), Some(crate::Region::rect(0, 0, 50, 50)));
+}
