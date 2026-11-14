@@ -775,6 +775,7 @@ fn spawn_piped(
   } else {
     (None, Stdio::null())
   };
+  spawn::untune(command);
   let child = command
     .stdout(child_out)
     .stderr(child_err)

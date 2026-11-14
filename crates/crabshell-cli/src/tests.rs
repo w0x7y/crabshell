@@ -393,3 +393,16 @@ fn ipc_keeps_a_reply_the_shell_sent_before_resetting_the_connection() {
   );
   let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_shell_gets_a_fixed_mmap_threshold_added_to_the_users_tunables() {
+  use crate::supervise::{TUNABLE, tunables};
+  assert_eq!(tunables(None), TUNABLE);
+  assert_eq!(tunables(Some("".into())), TUNABLE);
+  assert_eq!(
+    tunables(Some("glibc.malloc.arena_max=2".into())),
+    format!("glibc.malloc.arena_max=2:{TUNABLE}").as_str()
+  );
+  let own = "glibc.malloc.mmap_threshold=65536";
+  assert_eq!(tunables(Some(own.into())), own, "the user's own wins");
+}

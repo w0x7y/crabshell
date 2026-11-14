@@ -20,6 +20,7 @@ use crate::Shared;
 /// name.
 pub(crate) fn spawn(shared: &Rc<Shared>, command: &mut Command) -> io::Result<u32> {
   let program = command.get_program().to_string_lossy().into_owned();
+  untune(command);
   let child = command
     .stdin(Stdio::null())
     .stdout(Stdio::null())
@@ -30,6 +31,25 @@ pub(crate) fn spawn(shared: &Rc<Shared>, command: &mut Command) -> io::Result<u3
   let pid = child.id();
   reap(shared, child, program);
   Ok(pid)
+}
+
+/// What `crabshell run` sets `GLIBC_TUNABLES` to for the shell, when the
+/// user set none: a fixed threshold for glibc's `mmap`, which keeps the
+/// shell from holding on to a decoded wallpaper's memory. Kept in step
+/// with crabshell-cli's `supervise::TUNABLE`.
+const TUNABLE: &str = "glibc.malloc.mmap_threshold=131072";
+
+/// Takes the shell's own glibc tunable out of what `command` inherits, so
+/// the programs it starts run as they would anywhere else.
+pub(crate) fn untune(command: &mut Command) {
+  untune_from(command, std::env::var_os("GLIBC_TUNABLES"));
+}
+
+/// [`untune`], given the shell's `GLIBC_TUNABLES`.
+fn untune_from(command: &mut Command, ours: Option<std::ffi::OsString>) {
+  if ours.is_some_and(|value| value == TUNABLE) {
+    command.env_remove("GLIBC_TUNABLES");
+  }
 }
 
 /// Waits for `child` to end without blocking, through a pidfd in the loop
@@ -124,5 +144,20 @@ mod tests {
     });
     assert!(logs.contains("couldn't start"), "{logs}");
     assert!(logs.contains("/nonexistent/crabshell-program"), "{logs}");
+  }
+
+  #[test]
+  fn the_shells_own_glibc_tunable_isnt_passed_on() {
+    use std::ffi::OsStr;
+    let removed = |ours: Option<&str>| {
+      let mut command = Command::new("true");
+      super::untune_from(&mut command, ours.map(Into::into));
+      command
+        .get_envs()
+        .any(|(name, value)| name == OsStr::new("GLIBC_TUNABLES") && value.is_none())
+    };
+    assert!(removed(Some(super::TUNABLE)));
+    assert!(!removed(Some("glibc.malloc.arena_max=2")), "the user's own");
+    assert!(!removed(None));
   }
 }

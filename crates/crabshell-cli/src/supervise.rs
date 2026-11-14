@@ -259,6 +259,10 @@ impl Supervisor {
     }
     let spawned = Command::new(&program)
       .env(CONTROL, &self.socket)
+      .env(
+        "GLIBC_TUNABLES",
+        tunables(std::env::var_os("GLIBC_TUNABLES")),
+      )
       .stdin(Stdio::null())
       .spawn();
     if let Err(error) = self.signals.as_source_mut().add_signals(&STOP_SIGNALS) {
@@ -647,4 +651,32 @@ fn timed_build(config: &Path, target: &Path) -> Result<Built, String> {
     started.elapsed().as_secs_f64()
   ));
   built
+}
+
+/// glibc's tunable that keeps its threshold for using `mmap` where it is.
+/// By default the threshold rises to the size of each large block freed,
+/// so after a wallpaper is decoded the next one's buffers come from the
+/// heap and stay there: tens of MiB for a 4K image. The shell's own
+/// `spawn` takes it out of what it starts. Kept in step with
+/// crabshell-services' `spawn::TUNABLE`.
+pub(crate) const TUNABLE: &str = "glibc.malloc.mmap_threshold=131072";
+
+/// `GLIBC_TUNABLES` for the shell: `old` with [`TUNABLE`] added, unless it
+/// sets that threshold already.
+pub(crate) fn tunables(old: Option<std::ffi::OsString>) -> std::ffi::OsString {
+  match old {
+    Some(old)
+      if old
+        .to_string_lossy()
+        .contains("glibc.malloc.mmap_threshold") =>
+    {
+      old
+    }
+    Some(mut old) if !old.is_empty() => {
+      old.push(":");
+      old.push(TUNABLE);
+      old
+    }
+    _ => TUNABLE.into(),
+  }
 }
