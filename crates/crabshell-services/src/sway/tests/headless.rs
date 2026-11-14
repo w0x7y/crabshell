@@ -85,7 +85,7 @@ fn outputs_follow_the_private_sway() {
   shell.run_until("a second output", || {
     outputs.with_untracked(|list| list.len() == 2 && list[1].active)
   });
-  assert_eq!(outputs.get_untracked(), [scaled, second]);
+  assert_eq!(outputs.get_untracked(), [scaled.clone(), second]);
 
   // A workspace event, not an output one, moves the focus.
   sway.msg(&["focus", "output", "HEADLESS-2"]);
@@ -100,6 +100,11 @@ fn outputs_follow_the_private_sway() {
   });
   let disabled = outputs.get_untracked().remove(1);
   assert_eq!((disabled.current_workspace, disabled.scale), (None, 1.0));
+
+  sway.msg(&["output", "HEADLESS-2", "unplug"]);
+  shell.run_until("the second gone", || {
+    outputs.get_untracked() == [scaled.clone()]
+  });
 }
 
 #[test]
