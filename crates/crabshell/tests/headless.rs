@@ -1498,6 +1498,72 @@ fn cx_idle_monitor_turns_true_when_idle_and_ends_with_its_context() {
   assert_eq!(runtime.node_count(), before, "everything it made is freed");
 }
 
+/// A 4 by 4 PNG of one color, in the temp dir.
+fn one_color_png(name: &str, [r, g, b]: [u8; 3]) -> PathBuf {
+  let path = std::env::temp_dir().join(format!("crabshell-{}-{name}.png", std::process::id()));
+  let file = std::fs::File::create(&path).expect("create the PNG");
+  let mut encoder = png::Encoder::new(file, 4, 4);
+  encoder.set_color(png::ColorType::Rgb);
+  let mut writer = encoder.write_header().expect("the header");
+  writer
+    .write_image_data(&[r, g, b].repeat(16))
+    .expect("the pixels");
+  path
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn cx_quantize_colors_follows_its_path_then_sleeps_and_ends_with_its_context() {
+  use crabshell::prelude::*;
+
+  let sway = Sway::start();
+  let runtime = Runtime::current();
+  let (red, blue) = (
+    one_color_png("quantize-red", [255, 0, 0]),
+    one_color_png("quantize-blue", [0, 0, 255]),
+  );
+  type Kept = Option<(Cx, Signal<PathBuf>, ReadSignal<Vec<Color>>, usize)>;
+  let kept: std::rc::Rc<std::cell::RefCell<Kept>> = Default::default();
+  let hold = std::rc::Rc::clone(&kept);
+  let first = red.clone();
+  let mut shell = Shell::new(sway.connect(), move |cx| {
+    let before = Runtime::current().node_count();
+    let child = cx.child();
+    let path = child.signal(first);
+    let colors = child.quantize_colors(move || path.get(), 2);
+    *hold.borrow_mut() = Some((child, path, colors, before));
+  })
+  .expect("the root closure runs");
+  let (path, colors) = kept
+    .borrow()
+    .as_ref()
+    .map(|(_, path, colors, _)| (*path, *colors))
+    .expect("the root ran");
+  assert!(colors.get_untracked().is_empty());
+  run_until(&mut shell, "red", |_| {
+    colors.get_untracked() == [Color::rgb(255, 0, 0)]
+  });
+  path.set(blue);
+  run_until(&mut shell, "blue", |_| {
+    colors.get_untracked() == [Color::rgb(0, 0, 255)]
+  });
+  // The job and its source are gone, so the shell sleeps.
+  let waited = Instant::now();
+  shell
+    .dispatch(Some(Duration::from_secs(2)))
+    .expect("the connection works");
+  let waited = waited.elapsed();
+  assert!(
+    waited >= Duration::from_millis(1950),
+    "something woke the loop after {waited:?}"
+  );
+
+  let (child, _, _, before) = kept.borrow_mut().take().expect("the root ran");
+  child.owner().dispose();
+  runtime.flush();
+  assert_eq!(runtime.node_count(), before, "everything it made is freed");
+}
+
 /// 500 apps: the example's names, numbered.
 fn many_apps() -> Vec<String> {
   (0..500)

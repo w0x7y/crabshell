@@ -14,6 +14,8 @@ categories.workspace = true
 # For the supervisor's control socket on the loop.
 calloop.workspace = true
 crabshell-reactive.workspace = true
+# `cx.quantize_colors` decodes images as `Image` does.
+crabshell-render.workspace = true
 crabshell-services.workspace = true
 crabshell-ui.workspace = true
 crabshell-wayland.workspace = true

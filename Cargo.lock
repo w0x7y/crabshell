@@ -178,6 +178,7 @@ version = "0.1.0"
 dependencies = [
  "calloop",
  "crabshell-reactive",
+ "crabshell-render",
  "crabshell-services",
  "crabshell-ui",
  "crabshell-wayland",

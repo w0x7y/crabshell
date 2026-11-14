@@ -4,17 +4,19 @@
 use std::cell::{Cell, RefCell};
 use std::os::unix::net::UnixStream;
 use std::panic::{self, AssertUnwindSafe, Location};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crabshell_reactive::{ReadSignal, Runtime, Signal};
 use crabshell_services::Sway;
-use crabshell_ui::{Cx, FloatingWindow, Output, Window};
+use crabshell_ui::{Color, Cx, FloatingWindow, IntoProp, Output, Window};
 use crabshell_wayland::{Event, EventLoop, LoopSignal, Platform, WindowId};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tracing::level_filters::LevelFilter;
 
+use crate::colors::{self, Handle};
 use crate::control;
 use crate::per_output::{self, Host, IntoPanels, PerOutput};
 use crate::persist::{self, Persisted};
@@ -166,6 +168,10 @@ impl Shell {
       persisted: Rc::new(Persisted::new(cx.owner(), saved)),
       per_output: Rc::clone(&state),
       idle: idle_inserter(&event_loop),
+      handle: {
+        let weak = event_loop.handle().downgrade();
+        Rc::new(move || weak.upgrade())
+      },
       signal: event_loop.signal(),
     });
     event_loop
@@ -344,6 +350,9 @@ struct Service {
   /// Wakes the loop so an idle callback runs soon, even if the request
   /// came from an effect, after this iteration's sources.
   signal: LoopSignal,
+  /// The loop's handle, for sources added from a context, held weakly as
+  /// `idle` holds it.
+  handle: Handle<Platform>,
 }
 
 impl Service {
@@ -433,6 +442,23 @@ pub trait ShellExt {
   /// context's owner goes. Without `ext-idle-notify-v1` it stays `false`,
   /// and that is logged.
   fn idle_monitor(&self, timeout: Duration) -> ReadSignal<bool>;
+
+  /// The main colors of the image file at `path`, most common first, as
+  /// for a theme taken from a wallpaper: up to 2^`depth` of them, with
+  /// `depth` clamped to 0..=8. The file is read as [`Image`] reads it,
+  /// halved until its longer side is at most 128 pixels, and cut by
+  /// median cut; see [`crabshell_render::quantize_colors`].
+  ///
+  /// It starts empty and fills once the colors are found, on a thread of
+  /// its own, so a large image doesn't hold up the shell. A closure path
+  /// is followed: when it changes, the colors are found again and
+  /// replace the old ones, and an older path's never land after a newer
+  /// one's. A file that can't be read is logged with its path and gives
+  /// an empty list. Nothing is set once this context's owner goes.
+  ///
+  /// [`Image`]: crabshell_ui::Image
+  #[track_caller]
+  fn quantize_colors(&self, path: impl IntoProp<PathBuf>, depth: u8) -> ReadSignal<Vec<Color>>;
 
   /// Looks icon names up in `theme`, such as `"Adwaita"`, instead of
   /// `hicolor`. Every window is repainted.
@@ -560,6 +586,20 @@ impl ShellExt for Cx {
     idle.read_only()
   }
 
+  #[track_caller]
+  fn quantize_colors(&self, path: impl IntoProp<PathBuf>, depth: u8) -> ReadSignal<Vec<Color>> {
+    let Some(service) = self.service::<Service>() else {
+      tracing::error!("cx.quantize_colors needs the shell crabshell::run starts; it stays empty");
+      return self.signal(Vec::new()).read_only();
+    };
+    colors::follow(
+      self,
+      Rc::clone(&service.handle),
+      path.into_prop(),
+      colors::quantizer(depth),
+    )
+  }
+
   fn persist<T>(&self, key: &str, default: T) -> Signal<T>
   where
     T: Serialize + DeserializeOwned + 'static,
@@ -595,7 +635,7 @@ impl ShellExt for Cx {
 
 /// Runs its closure when dropped, as when the owner keeping it is
 /// disposed.
-struct OnDispose(Option<Box<dyn FnOnce()>>);
+pub(crate) struct OnDispose(pub(crate) Option<Box<dyn FnOnce()>>);
 
 impl Drop for OnDispose {
   fn drop(&mut self) {

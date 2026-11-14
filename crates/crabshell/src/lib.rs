@@ -61,6 +61,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod colors;
 mod control;
 mod per_output;
 mod persist;
