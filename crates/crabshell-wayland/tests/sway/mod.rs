@@ -2,6 +2,7 @@
 //! `crabshell`'s headless tests include this file too.
 
 use std::fs::File;
+use std::io::Write;
 use std::os::fd::AsFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
@@ -734,9 +735,9 @@ impl InputMethod {
   }
 }
 
-/// Another program's window: an xdg toplevel 100 pixels square with an
-/// app id, which the platform's floating windows don't set. It can open
-/// a child window, a dialog of the first.
+/// Another program's window: an xdg toplevel 100 pixels square of
+/// opaque blue with an app id, which the platform's floating windows
+/// don't set. It can open a child window, a dialog of the first.
 #[allow(dead_code, reason = "crabshell's tests don't use it")]
 pub struct AppWindow {
   queue: EventQueue<Helper>,
@@ -808,9 +809,9 @@ impl AppWindow {
       .truncate(true)
       .open(self.dir.join(format!("{app_id}-{title}.pixels")))
       .expect("create the window's pixels");
-    file
-      .set_len(u64::from(SIDE.unsigned_abs().pow(2) * 4))
-      .expect("size the window's pixels");
+    // Opaque blue, ARGB8888 little-endian: B, G, R, A.
+    let pixels = [0xc8, 0x6b, 0x2e, 0xff].repeat(SIDE.unsigned_abs().pow(2) as usize);
+    (&file).write_all(&pixels).expect("the window's pixels");
     let pool = self.shm.create_pool(file.as_fd(), SIDE * SIDE * 4, &qh, ());
     let buffer = pool.create_buffer(0, SIDE, SIDE, SIDE * 4, wl_shm::Format::Argb8888, &qh, ());
     surface.attach(Some(&buffer), 0, 0);

@@ -1,6 +1,7 @@
 //! An overview of the desktop that the command line opens and closes: the
 //! installed applications to launch, recent ones first, the windows that
-//! are open, the wallpaper's main colors, and what `uname -s` says.
+//! are open with a live picture of each, the wallpaper's main colors, and
+//! what `uname -s` says.
 //!
 //! ```sh
 //! cargo run --release -p crabshell --example overview
@@ -32,6 +33,7 @@ const ITEM: Style = Style::new().padding(4, 8).radius(6.0);
 /// it starts at the left instead of in the middle, as a button puts it.
 const LINE: Style = Style::new().width(314.0);
 const HOVER: Style = Style::new().background(Color::rgba(0x45, 0x47, 0x5a, 0xc0));
+const THUMBNAIL: Style = Style::new().width(64.0).height(36.0).radius(4.0);
 const DIM: Style = Style::new().color(Color::rgb(0x9a, 0xa0, 0xb8));
 const TITLE: Style = Style::new().font(Font::new("sans-serif", 13.0).weight(700));
 
@@ -224,14 +226,28 @@ fn windows(cx: &Cx, open: Signal<bool>) -> Column {
       move || list.get(),
       |toplevel: &Toplevel| toplevel.id,
       move |_, toplevel| {
-        Button::new(Row::new().style(LINE).child(Text::new(move || {
-          let toplevel = toplevel.get();
-          if toplevel.app_id.is_empty() {
-            toplevel.title
-          } else {
-            format!("{} · {}", toplevel.title, toplevel.app_id)
-          }
-        })))
+        let id = toplevel.get_untracked().id;
+        Button::new(
+          Row::new()
+            .gap(8)
+            .align(Align::Center)
+            .style(LINE)
+            // A live picture of the window, which wakes the shell only
+            // when the window changes.
+            .child(
+              ScreencopyView::new(CaptureSource::Toplevel(id))
+                .live(true)
+                .style(THUMBNAIL),
+            )
+            .child(Text::new(move || {
+              let toplevel = toplevel.get();
+              if toplevel.app_id.is_empty() {
+                toplevel.title
+              } else {
+                format!("{} · {}", toplevel.title, toplevel.app_id)
+              }
+            })),
+        )
         .style(ITEM)
         .hover_style(HOVER)
         .on_click(move |_| {
