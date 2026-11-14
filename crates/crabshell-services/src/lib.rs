@@ -1,6 +1,6 @@
-//! The services a Crabshell bar reads: the clock, Sway's workspaces, audio,
-//! the tray, power, notifications, the installed applications, PAM, greetd
-//! and a polkit agent.
+//! The services a Crabshell bar reads: the clock, Sway's and Hyprland's
+//! workspaces, audio, the tray, power, notifications, the installed
+//! applications, PAM, greetd and a polkit agent.
 //!
 //! The shell calls [`provide`] once, with its root context and event loop.
 //! After that, any context hands out services through [`ServicesExt`],
@@ -22,6 +22,7 @@ mod dbus;
 mod desktop_entries;
 mod file;
 mod greetd;
+mod hyprland;
 mod lines;
 mod mpris;
 mod network;
@@ -62,6 +63,7 @@ pub use clock::Precision;
 pub use desktop_entries::{DesktopAction, DesktopEntries, DesktopEntry};
 pub use file::FileView;
 pub use greetd::{GreetMessage, GreetState, Greetd};
+pub use hyprland::{Hyprland, HyprlandMonitor, HyprlandToplevel, HyprlandWorkspace};
 pub use mpris::{LoopStatus, Mpris, PlaybackStatus, Player};
 pub use network::{Network, NetworkDevice, NetworkKind, NetworkState, WifiNetwork};
 pub use notifications::{Notification, Notifications, Timeout, Urgency};
@@ -88,6 +90,7 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   let shared = Rc::new(Shared::new(cx.owner(), handle, config));
   cx.provide(clock::Clocks::new(Rc::clone(&shared)));
   cx.provide(sway::Service::new(Rc::clone(&shared)));
+  cx.provide(hyprland::Service::new(Rc::clone(&shared)));
   cx.provide(audio::AudioService::new(Rc::clone(&shared)));
   cx.provide(tray::Service::new(Rc::clone(&shared)));
   cx.provide(power::UPowerService::new(Rc::clone(&shared)));
@@ -136,6 +139,15 @@ pub trait ServicesExt {
   /// the shell only for a workspace event, an output event once a config
   /// asked for the outputs, and the kinds of event a handler asked for.
   fn sway(&self) -> Sway;
+
+  /// Hyprland's workspaces, monitors and windows, over its request
+  /// socket in `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/`.
+  /// Every caller shares one copy of the lists, read on the first call.
+  ///
+  /// The lists are empty while Hyprland isn't there: when the signature
+  /// is unset or its socket is missing, they stay empty, which is logged
+  /// once, and the service never wakes the shell.
+  fn hyprland(&self) -> Hyprland;
 
   /// The audio server's default sink, with its volume and mute. Every
   /// caller shares one connection, which starts on the loop's next turn
@@ -290,6 +302,10 @@ impl ServicesExt for Cx {
 
   fn sway(&self) -> Sway {
     sway::sway(self)
+  }
+
+  fn hyprland(&self) -> Hyprland {
+    hyprland::hyprland(self)
   }
 
   fn audio(&self) -> Audio {
@@ -605,6 +621,10 @@ struct Config {
   session_bus: Option<zbus::Address>,
   /// Sway's IPC socket, from `SWAYSOCK`. `None` when that is unset.
   sway: Option<sway::Socket>,
+  /// The directory of Hyprland's sockets,
+  /// `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE`. `None` when
+  /// either is unset.
+  hyprland: Option<PathBuf>,
   /// The audio server. `None` for none, so a test never reaches the
   /// user's.
   audio: Option<audio::Server>,
@@ -641,6 +661,10 @@ impl Config {
           path: path.into(),
           retry: sway::RETRY,
         }),
+      hyprland: std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|dir| !dir.is_empty())
+        .zip(std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").filter(|sig| !sig.is_empty()))
+        .map(|(dir, signature)| PathBuf::from(dir).join("hypr").join(signature)),
       audio: Some(audio::Server {
         address: None,
         retry: audio::RETRY,
