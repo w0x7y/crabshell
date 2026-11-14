@@ -278,30 +278,6 @@ impl UPowerService {
       set_changed(display_signal, display);
     }
   }
-
-  /// Reads one device UPower added, and shows it.
-  async fn add(self: Rc<Self>, connection: Connection, path: String, generation: u64) {
-    let read = dbus::get_all(&self.shared, &connection, UPOWER, &path, DEVICE).await;
-    let props = match read {
-      Ok(props) => props,
-      Err(error) => return tracing::info!(%error, path, "couldn't read a new power device"),
-    };
-    {
-      let mut state = self.state.borrow_mut();
-      let Some(state) = state
-        .as_mut()
-        .filter(|state| state.generation == generation)
-      else {
-        return;
-      };
-      if state.objects.len() >= MAX_DEVICES {
-        return tracing::warn!(path, "too many power devices; leaving one out");
-      }
-      state.objects.retain(|(at, _)| *at != path);
-      state.objects.push((path, props));
-    }
-    self.publish();
-  }
 }
 
 impl Daemon for UPowerService {
@@ -400,8 +376,21 @@ impl Daemon for UPowerService {
     self.publish();
   }
 
-  fn signal(self: &Rc<Self>, connection: &Connection, message: &Message) {
-    if let Some((path, interface, changed, dropped)) = dbus::properties_changed(message) {
+  /// A device added or removed: UPower names it without its properties.
+  fn reads_again(&self, message: &Message) -> bool {
+    let header = message.header();
+    header.interface().map(|interface| interface.as_str()) == Some(UPOWER)
+      && matches!(
+        header.member().map(|member| member.as_str()),
+        Some("DeviceAdded" | "DeviceRemoved")
+      )
+  }
+
+  fn signal(self: &Rc<Self>, _: &Connection, message: &Message) {
+    let Some((path, interface, changed, dropped)) = dbus::properties_changed(message) else {
+      return;
+    };
+    {
       if path == UPOWER_PATH && interface == UPOWER {
         let on_battery = self.state.borrow().as_ref().map(|state| state.on_battery);
         if let (Some(signal), Some(value)) = (on_battery, changed.get("OnBattery")) {
@@ -428,34 +417,8 @@ impl Daemon for UPowerService {
         };
         dbus::apply(props, changed, dropped);
       }
-      return self.publish();
     }
-    let header = message.header();
-    if header.interface().map(|interface| interface.as_str()) != Some(UPOWER) {
-      return;
-    }
-    let Ok(path) = message.body().deserialize::<OwnedObjectPath>() else {
-      return;
-    };
-    let path = path.as_str().to_owned();
-    match header.member().map(|member| member.as_str()) {
-      Some("DeviceAdded") => {
-        let generation = self
-          .state
-          .borrow()
-          .as_ref()
-          .map_or(0, |state| state.generation);
-        let add = Rc::clone(self).add(connection.clone(), path, generation);
-        self.shared.spawn(add);
-      }
-      Some("DeviceRemoved") => {
-        if let Some(state) = self.state.borrow_mut().as_mut() {
-          state.objects.retain(|(at, _)| *at != path);
-        }
-        self.publish();
-      }
-      _ => {}
-    }
+    self.publish();
   }
 }
 

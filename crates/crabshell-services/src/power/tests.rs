@@ -51,9 +51,13 @@ fn fake_upower(shell: &mut Harness, bus: &PrivateBus) -> FakeService {
     ],
   );
   upower.add(DISPLAY, DEVICE, &battery(50.0));
-  upower.on("EnumerateDevices", |call| {
-    let paths = [BATTERY, AC].map(|path| ObjectPath::try_from(path).expect("a path"));
-    reply(call, &paths.to_vec())
+  let paths = upower.paths(DEVICE);
+  upower.on("EnumerateDevices", move |call| {
+    let paths = paths().into_iter().filter(|path| path != DISPLAY);
+    let paths: Vec<_> = paths
+      .map(|path| ObjectPath::try_from(path).expect("a path"))
+      .collect();
+    reply(call, &paths)
   });
   upower.on("GetDisplayDevice", |call| {
     reply(call, &ObjectPath::try_from(DISPLAY).expect("a path"))
@@ -341,4 +345,62 @@ fn an_unknown_profile_reads_as_none() {
     available.get_untracked().len() == 3
   });
   assert_eq!(profiles.active().get_untracked(), None);
+}
+
+#[test]
+fn a_change_during_the_first_read_is_not_lost() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let upower_fake = fake_upower(&mut shell, &bus);
+  upower_fake.hold();
+  let upower = shell.cx.upower();
+  let (devices, on_battery) = (upower.devices(), upower.on_battery());
+  wait_for(&mut shell, "the first read", || upower_fake.held() > 0);
+  // Unplugged, and the battery drained, while the read is answered
+  // with how things were.
+  upower_fake.set(
+    &mut shell,
+    UPOWER_PATH,
+    UPOWER,
+    &[("OnBattery", Variant::from(true))],
+  );
+  upower_fake.set(
+    &mut shell,
+    BATTERY,
+    DEVICE,
+    &[("Percentage", Variant::from(40.0))],
+  );
+  for _ in 0..20 {
+    upower_fake.release(&mut shell);
+    upower_fake.hold();
+    shell.run_until(Instant::now() + Duration::from_millis(50));
+  }
+  upower_fake.release(&mut shell);
+  wait_for(&mut shell, "the change", || {
+    on_battery.get_untracked() && devices.get_untracked().first().map(|d| d.percent) == Some(40.0)
+  });
+}
+
+#[test]
+fn a_device_added_and_at_once_removed_leaves_no_ghost() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let upower_fake = fake_upower(&mut shell, &bus);
+  let devices = shell.cx.upower().devices();
+  wait_for(&mut shell, "the devices", || {
+    devices.get_untracked().len() == 2
+  });
+  upower_fake.add(MOUSE, DEVICE, &[("Type", Variant::from(5u32))]);
+  let mouse = ObjectPath::try_from(MOUSE).expect("a path");
+  upower_fake.emit(
+    &mut shell,
+    UPOWER_PATH,
+    UPOWER,
+    "DeviceAdded",
+    mouse.clone(),
+  );
+  upower_fake.remove(MOUSE);
+  upower_fake.emit(&mut shell, UPOWER_PATH, UPOWER, "DeviceRemoved", mouse);
+  shell.run_until(Instant::now() + Duration::from_millis(300));
+  assert_eq!(devices.get_untracked().len(), 2);
 }

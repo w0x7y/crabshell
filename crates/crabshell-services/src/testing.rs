@@ -233,6 +233,9 @@ pub(crate) struct FakeService {
   handlers: Rc<RefCell<std::collections::HashMap<String, Handler>>>,
   /// `Set` calls and those to handlers, as `member path`.
   pub(crate) calls: Rc<RefCell<Vec<String>>>,
+  /// While `Some`, replies are built as calls come but sent only at
+  /// [`release`](Self::release), as from a slow daemon.
+  held: Rc<RefCell<Option<Vec<zbus::Message>>>>,
 }
 
 impl FakeService {
@@ -253,11 +256,13 @@ impl FakeService {
       objects: Rc::default(),
       handlers: Rc::default(),
       calls: Rc::default(),
+      held: Rc::default(),
     };
-    let (objects, handlers, calls) = (
+    let (objects, handlers, calls, held) = (
       Rc::clone(&fake.objects),
       Rc::clone(&fake.handlers),
       Rc::clone(&fake.calls),
+      Rc::clone(&fake.held),
     );
     let mut messages = zbus::MessageStream::from(&connection);
     shell.spawn(async move {
@@ -314,6 +319,10 @@ impl FakeService {
             .and_then(|handler| handler(&call))
         };
         let reply = reply.unwrap_or_else(|| no_object(&header));
+        if let (Some(queue), Ok(reply)) = (held.borrow_mut().as_mut(), &reply) {
+          queue.push(reply.clone());
+          continue;
+        }
         let sent = match reply {
           Ok(reply) => connection.send(&reply).await,
           Err(error) => Err(error),
@@ -335,6 +344,32 @@ impl FakeService {
       }
     });
     fake
+  }
+
+  /// Holds every reply from now on until [`release`](Self::release),
+  /// each with what was true when its call came.
+  pub(crate) fn hold(&self) {
+    self.held.replace(Some(Vec::new()));
+  }
+
+  /// Sends the replies held since [`hold`](Self::hold), and answers at
+  /// once again.
+  pub(crate) fn release(&self, shell: &mut Harness) {
+    let replies = self.held.take().unwrap_or_default();
+    let connection = self.connection.clone();
+    shell
+      .block_on(async move {
+        for reply in replies {
+          connection.send(&reply).await?;
+        }
+        zbus::Result::Ok(())
+      })
+      .expect("the held replies sent");
+  }
+
+  /// How many replies are held.
+  pub(crate) fn held(&self) -> usize {
+    self.held.borrow().as_ref().map_or(0, Vec::len)
   }
 
   /// Takes its name, as a daemon that is ready.
@@ -365,6 +400,17 @@ impl FakeService {
       .objects
       .borrow_mut()
       .insert((path.to_owned(), interface.to_owned()), props);
+  }
+
+  /// What lists the paths that have `interface` when called, sorted, for a
+  /// handler such as UPower's `EnumerateDevices`.
+  pub(crate) fn paths(&self, interface: &str) -> impl Fn() -> Vec<String> + 'static {
+    let (objects, interface) = (Rc::clone(&self.objects), interface.to_owned());
+    move || {
+      let objects = objects.borrow();
+      let paths = objects.keys().filter(|(_, with)| *with == interface);
+      paths.map(|(path, _)| path.clone()).collect()
+    }
   }
 
   /// Takes every interface of `path` away.

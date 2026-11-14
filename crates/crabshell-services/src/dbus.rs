@@ -2,6 +2,7 @@
 //! whose properties are read once and then kept up to date from
 //! `PropertiesChanged`.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::future::poll_fn;
 use std::pin::Pin;
@@ -154,6 +155,51 @@ pub(crate) trait Daemon: 'static {
 
   /// Acts on one signal from the daemon's current owner.
   fn signal(self: &Rc<Self>, connection: &Connection, message: &Message);
+
+  /// Whether `message`, a signal from the daemon, is best met by reading
+  /// everything again, as when it names a new object without its
+  /// properties. Such a signal isn't passed to [`signal`](Self::signal).
+  fn reads_again(&self, _message: &Message) -> bool {
+    false
+  }
+}
+
+/// Where the reading of a daemon stands.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reading {
+  Idle,
+  Busy,
+  /// Busy, and a signal came meanwhile, which the read may have missed,
+  /// so it reads again when done.
+  Stale,
+}
+
+/// Reads `daemon` whole in the background, then again for as long as
+/// signals keep coming during a read, each time for the generation in
+/// effect then. A read asked for while one runs only marks it stale.
+fn read<D: Daemon>(
+  shared: &Rc<Shared>,
+  daemon: &Rc<D>,
+  connection: &Connection,
+  (reading, generation): (&Rc<Cell<Reading>>, &Rc<Cell<u64>>),
+) {
+  if reading.get() != Reading::Idle {
+    return reading.set(Reading::Stale);
+  }
+  reading.set(Reading::Busy);
+  let (daemon, connection) = (Rc::clone(daemon), connection.clone());
+  let (reading, generation) = (Rc::clone(reading), Rc::clone(generation));
+  shared.spawn(async move {
+    loop {
+      Rc::clone(&daemon)
+        .read(connection.clone(), generation.get())
+        .await;
+      if reading.get() != Reading::Stale {
+        return reading.set(Reading::Idle);
+      }
+      reading.set(Reading::Busy);
+    }
+  });
 }
 
 /// Follows `daemon` on the bus at `address`, until the bus closes or the
@@ -172,9 +218,12 @@ pub(crate) async fn follow<D: Daemon>(shared: Rc<Shared>, daemon: Rc<D>, address
       return tracing::warn!(%error, name, "couldn't follow it on the bus");
     }
   }
+  let reading = Rc::new(Cell::new(Reading::Idle));
+  let generation = Rc::new(Cell::new(daemon.clear()));
+  let state = (&reading, &generation);
   let mut current = owner(&connection, name).await;
   match &current {
-    Some(_) => shared.spawn(Rc::clone(&daemon).read(connection.clone(), daemon.clear())),
+    Some(_) => read(&shared, &daemon, &connection, state),
     None => tracing::info!(name, "not running; waiting for it"),
   }
   loop {
@@ -196,11 +245,11 @@ pub(crate) async fn follow<D: Daemon>(shared: Rc<Shared>, daemon: Rc<D>, address
     }
     if let Some((changed, new)) = owner_changed(&message) {
       if changed == name {
-        let generation = daemon.clear();
+        generation.set(daemon.clear());
         current = (!new.is_empty()).then_some(new);
         if current.is_some() {
           tracing::info!(name, "started; reading it");
-          shared.spawn(Rc::clone(&daemon).read(connection.clone(), generation));
+          read(&shared, &daemon, &connection, state);
         } else {
           tracing::info!(name, "left the bus");
         }
@@ -212,7 +261,13 @@ pub(crate) async fn follow<D: Daemon>(shared: Rc<Shared>, daemon: Rc<D>, address
     let from_daemon = current.is_some()
       && header.sender().map(|sender| sender.as_str()) == current.as_deref()
       && header.destination().is_none();
-    if from_daemon {
+    if !from_daemon {
+      continue;
+    }
+    // A read under way may have missed it: read again after.
+    if reading.get() != Reading::Idle || daemon.reads_again(&message) {
+      read(&shared, &daemon, &connection, state);
+    } else {
       daemon.signal(&connection, &message);
     }
   }
