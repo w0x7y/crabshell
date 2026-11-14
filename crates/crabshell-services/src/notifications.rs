@@ -91,7 +91,8 @@ pub struct Notification {
   pub app_icon: String,
   /// One line about it, at most 1 KiB.
   pub summary: String,
-  /// The text under that, at most 16 KiB, as plain text.
+  /// The text under that, at most 4 KiB, as plain text: tags an app sent
+  /// are taken out and entities decoded.
   pub body: String,
   /// The actions the user can pick, as (key, label), at most 16. The
   /// app means `default` for a click on the notification itself.

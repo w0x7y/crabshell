@@ -592,7 +592,7 @@ fn outside_data_is_cut_to_the_caps_and_wrong_types_read_as_defaults() {
   notify(&mut shell, &app, big).expect("an id");
   let kept = notifications.list().get_untracked()[0].clone();
   assert_eq!(kept.summary.len(), 1023, "cut before a split €");
-  assert_eq!(kept.body.len(), 16 * 1024);
+  assert_eq!(kept.body.len(), 4 * 1024);
   assert_eq!(kept.actions.len(), 16);
   assert_eq!(kept.urgency, Urgency::Normal);
   assert!(!kept.resident);
@@ -735,5 +735,22 @@ fn disposing_the_root_frees_the_server_and_its_timer() {
   assert_eq!(
     shell.run_until(Instant::now() + Duration::from_millis(500)),
     1
+  );
+}
+
+#[test]
+fn markup_in_a_body_shows_as_its_text() {
+  let bus = PrivateBus::start();
+  let (mut shell, notifications, app) = serve(&bus, online(&bus));
+  let mut sent = note("markup");
+  sent.body = "<b>Bold</b> &amp; &lt;not a tag&gt; &#169; &#x263A; a<br/>b &unknown; <".to_owned();
+  notify(&mut shell, &app, sent).expect("an id");
+  let list = notifications.list();
+  wait_for(&mut shell, "the notification", || {
+    !list.get_untracked().is_empty()
+  });
+  assert_eq!(
+    list.get_untracked()[0].body,
+    "Bold & <not a tag> \u{a9} \u{263a} ab &unknown; <"
   );
 }

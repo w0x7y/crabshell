@@ -15,11 +15,12 @@ use zbus::{Connection, Message, Signature, Type};
 
 use super::{CLOSED, NOTIFICATIONS_PATH, Notification, Service, Timeout, Urgency};
 
-/// The most bytes kept of a summary and of a body.
+/// The most bytes kept of a summary and of a body. With every other
+/// cap, 256 notifications stay within a few MiB however apps fill them.
 const MAX_SUMMARY: usize = 1024;
-const MAX_BODY: usize = 16 * 1024;
+const MAX_BODY: usize = 4 * 1024;
 /// The most bytes kept of every other string: names, icons and actions.
-const MAX_TEXT: usize = 1024;
+const MAX_TEXT: usize = 256;
 const MAX_ACTIONS: usize = 16;
 /// The largest picture side kept, the same as tray pixmaps'.
 const MAX_IMAGE_SIDE: i32 = 512;
@@ -150,7 +151,11 @@ fn notification(args: NotifyArgs<'_>) -> (u32, Notification) {
     id: 0,
     app_name: cut(app_name, MAX_TEXT),
     summary: cut(summary, MAX_SUMMARY),
-    body: cut(body, MAX_BODY),
+    // Read past the cap only so far, since tags and entities shrink.
+    body: cut(
+      &plain(&body[..body.floor_char_boundary(MAX_BODY * 4)]),
+      MAX_BODY,
+    ),
     actions: actions
       .as_chunks::<2>()
       .0
@@ -177,6 +182,64 @@ fn notification(args: NotifyArgs<'_>) -> (u32, Notification) {
     app_icon,
   };
   (replaces, notification)
+}
+
+/// `body` as the text it shows. The server doesn't offer `body-markup`,
+/// but many apps send it anyway, so tags are taken out and XML's five
+/// entities and numeric ones decoded. An unknown entity and a `<` with no
+/// `>` stay as they are.
+fn plain(body: &str) -> String {
+  let mut shown = String::with_capacity(body.len());
+  let mut rest = body;
+  while let Some(at) = rest.find(['<', '&']) {
+    shown.push_str(&rest[..at]);
+    rest = &rest[at..];
+    if rest.starts_with('<') {
+      match rest.find('>') {
+        Some(end) => rest = &rest[end + 1..],
+        None => {
+          shown.push_str(rest);
+          rest = "";
+        }
+      }
+      continue;
+    }
+    let decoded = rest
+      .find(';')
+      .filter(|end| *end <= 10)
+      .and_then(|end| Some((entity(&rest[1..end])?, end)));
+    match decoded {
+      Some((character, end)) => {
+        shown.push(character);
+        rest = &rest[end + 1..];
+      }
+      None => {
+        shown.push('&');
+        rest = &rest[1..];
+      }
+    }
+  }
+  shown.push_str(rest);
+  shown
+}
+
+/// The character an entity's name between `&` and `;` stands for.
+fn entity(name: &str) -> Option<char> {
+  match name {
+    "amp" => Some('&'),
+    "lt" => Some('<'),
+    "gt" => Some('>'),
+    "quot" => Some('"'),
+    "apos" => Some('\''),
+    _ => {
+      let number = name.strip_prefix('#')?;
+      let code = match number.strip_prefix(['x', 'X']) {
+        Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+        None => number.parse().ok()?,
+      };
+      char::from_u32(code)
+    }
+  }
 }
 
 /// `text`'s first `max` bytes at most, cut at a char boundary.
