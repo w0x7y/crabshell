@@ -220,8 +220,9 @@ impl Gradient {
 
 /// A shadow cast by a widget's box, as CSS's `box-shadow`: the box's
 /// shape moved by `x` and `y`, grown by `spread` and blurred over `blur`
-/// logical pixels, drawn under the box. A translucent background shows
-/// it through, unless it is [`cut_out`](Shadow::cut_out).
+/// logical pixels. Unlike CSS's, it is drawn under the box too, so a
+/// translucent background shows it through, unless it is
+/// [`cut_out`](Shadow::cut_out).
 ///
 /// ```
 /// use crabshell_ui::{Color, Shadow, Style};
@@ -269,7 +270,8 @@ impl Shadow {
 
   /// The same shadow left out under the box's own shape, so a translucent
   /// background, such as glass the compositor blurs, shows what is
-  /// behind it instead of the shadow. CSS has no such shadow.
+  /// behind it instead of the shadow. CSS's `box-shadow` is always drawn
+  /// this way.
   pub const fn cut_out(self) -> Shadow {
     Shadow {
       cut_out: true,

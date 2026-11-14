@@ -111,13 +111,16 @@ impl Pointer {
     if self.hovered.is_some_and(|id| removed.contains(&id)) {
       self.hovered = None;
     }
-    self.inside.retain(|(id, signal)| {
-      let gone = removed.contains(id);
-      if gone {
+    let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.inside)
+      .into_iter()
+      .partition(|(id, _)| removed.contains(id));
+    for (_, signal) in gone {
+      // Unless a button still here shares it.
+      if !kept.iter().any(|(_, other)| *other == signal) {
         signal.try_set(false);
       }
-      !gone
-    });
+    }
+    self.inside = kept;
     if self.pressed.is_some_and(|(id, _)| removed.contains(&id)) {
       self.pressed = None;
     }
@@ -279,15 +282,18 @@ impl Tree {
         _ => None,
       })
       .collect();
-    let has = |list: &[(NodeId, Signal<bool>)], id: NodeId| list.iter().any(|(at, _)| *at == id);
-    for (id, signal) in &self.pointer.inside {
-      if !has(&inside, *id) {
-        signal.try_set(false);
+    // Each signal is written once, and only on a change: `true` while any
+    // button sharing it has the pointer inside.
+    let holds = |list: &[(NodeId, Signal<bool>)], signal| list.iter().any(|(_, s)| *s == signal);
+    let mut seen = Vec::new();
+    for &(_, signal) in self.pointer.inside.iter().chain(&inside) {
+      if seen.contains(&signal) {
+        continue;
       }
-    }
-    for (id, signal) in &inside {
-      if !has(&self.pointer.inside, *id) {
-        signal.try_set(true);
+      seen.push(signal);
+      let now = holds(&inside, signal);
+      if holds(&self.pointer.inside, signal) != now {
+        signal.try_set(now);
       }
     }
     self.pointer.inside = inside;

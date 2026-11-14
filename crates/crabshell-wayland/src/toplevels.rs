@@ -73,6 +73,8 @@ impl Platform {
         }
         if !config.shown {
           self.windows.remove_popups_of(id);
+          // Its pointer events stop with its surface.
+          self.windows.entries[index].window.pointer_leave();
           self.windows.entries[index].surface = None;
         } else if let Role::Toplevel(toplevel) = &surface.role {
           apply(toplevel, &config, surface.floating.as_ref());

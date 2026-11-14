@@ -600,3 +600,48 @@ fn a_hovered_button_that_is_removed_is_no_longer_hovered() {
   h.frame(&window);
   assert!(!hovered.get());
 }
+
+#[test]
+fn a_hovered_buttons_window_that_goes_is_no_longer_hovered() {
+  let mut h = Harness::new();
+  let hovered = h.cx.signal(false);
+  let window = two_buttons(
+    &mut h,
+    Button::new(square()).hovered(hovered),
+    Button::new(square()),
+  );
+  window.pointer_motion(Point::new(5.0, 5.0));
+  assert!(hovered.get());
+  drop(window);
+  assert!(!hovered.get());
+}
+
+#[test]
+fn buttons_sharing_a_hovered_signal_keep_it_true_while_any_has_the_pointer() {
+  let mut h = Harness::new();
+  let hovered = h.cx.signal(false);
+  let runs = Counter::default();
+  let counted = runs.clone();
+  h.cx.effect(move || {
+    hovered.get();
+    counted.hit();
+  });
+  let row = Row::new().align(Align::Start).child(
+    Button::new(
+      Row::new()
+        .child(square())
+        .child(Button::new(square()).hovered(hovered)),
+    )
+    .hovered(hovered),
+  );
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+  let before = runs.get();
+  window.pointer_motion(center(&window, &[0, 0, 0, 1]));
+  h.frame(&window);
+  window.pointer_motion(center(&window, &[0, 0, 0, 0]));
+  h.frame(&window);
+  assert!(hovered.get(), "still inside the outer button");
+  assert_eq!(runs.get(), before + 1, "one write, on entering");
+  window.pointer_motion(Point::new(100.0, 25.0));
+  assert!(!hovered.get());
+}

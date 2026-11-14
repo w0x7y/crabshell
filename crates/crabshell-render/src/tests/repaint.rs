@@ -556,6 +556,13 @@ fn turning_a_gradient_repaints_like_drawing_everything() {
 
 #[test]
 fn moving_a_shadow_repaints_like_drawing_everything() {
+  // Blurred, and sharp, which a cut out draws another way.
+  for blur in [2.0, 0.0] {
+    shadow_repaints(blur);
+  }
+}
+
+fn shadow_repaints(blur: f32) {
   use crabshell_ui::Shadow;
 
   let mut scene = Scene::new();
@@ -575,7 +582,7 @@ fn moving_a_shadow_repaints_like_drawing_everything() {
               let shadow = Shadow::new(
                 lift.get(),
                 lift.get(),
-                2.0 + lift.get(),
+                blur + blur * lift.get(),
                 Color::rgba(0, 0, 0, 160),
               );
               // Cut out once lifted, so a repaint cuts it as a full draw does.
@@ -598,7 +605,7 @@ fn moving_a_shadow_repaints_like_drawing_everything() {
     let damage = window.take_damage();
     repaint(&mut scene, &window, &damage, &mut history, &mut buffer);
     let full = scene.full(&window, scale);
-    assert!(buffer.pixels == full.pixels, "at {scale}");
+    assert!(buffer.pixels == full.pixels, "blur {blur} at {scale}");
   }
 }
 

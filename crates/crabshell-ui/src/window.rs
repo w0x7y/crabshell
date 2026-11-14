@@ -542,6 +542,8 @@ impl Window {
 
 impl Drop for Window {
   fn drop(&mut self) {
+    // A `hovered` signal owned elsewhere mustn't stay `true`.
+    self.pointer_leave();
     self.owner.dispose();
   }
 }
