@@ -282,7 +282,7 @@ fn workspaces_hyprland_0_57_leaves_unnumbered_are_matched_by_address() {
     ),
     (
       "j/monitors",
-      r#"[{"id":0,"name":"DP-1","description":"D","width":1920,"height":1080,"x":0,"y":0,"activeWorkspace":{"address":"web","type":"normal","name":"web"},"scale":1.00,"focused":true}]"#,
+      r#"[{"id":0,"name":"DP-1","description":"D","width":1920,"height":1080,"x":0,"y":0,"activeWorkspace":{"address":"web","type":"normal","name":"web"},"specialWorkspace":{"address":"","type":"","name":""},"scale":1.00,"focused":true}]"#,
     ),
     (
       "j/clients",
@@ -376,8 +376,8 @@ fn an_event_reads_its_lists_again() {
   run(&mut shell);
   let active = r#"{"address":"0x5b2"}"#;
   assert_eq!(
-    fake.answer(&[("j/activewindow", active)]),
-    ["j/activewindow"]
+    fake.answer(&[("j/clients", CLIENTS), ("j/activewindow", active)]),
+    ["j/clients", "j/activewindow"]
   );
   run(&mut shell);
   let focused = hyprland.toplevels().get_untracked();
@@ -425,25 +425,21 @@ fn events_during_a_read_read_once_more_after_it() {
   }
   let monitors = MONITORS.replacen(r#"{"id":1,"name":"1"}"#, r#"{"id":3,"name":"3"}"#, 1);
   for request in held {
-    let reply = if request.command == "j/monitors" {
-      monitors.as_str()
-    } else {
-      WORKSPACES
-    };
-    request.answer(reply);
+    request.answer(WORKSPACES);
   }
   run(&mut shell);
-  assert!(
-    hyprland.workspaces().get_untracked()[2].focused,
-    "the answer that was in flight shows"
+  assert_eq!(
+    hyprland.workspaces().get_untracked(),
+    expected_workspaces(),
+    "the answers in flight wait for the read that catches up"
   );
   assert_eq!(
-    fake.answer(&replies()),
+    fake.answer(&[("j/workspaces", WORKSPACES), ("j/monitors", &monitors)]),
     ["j/workspaces", "j/monitors"],
     "then one more read catches up"
   );
   run(&mut shell);
-  assert_eq!(hyprland.workspaces().get_untracked(), expected_workspaces());
+  assert!(hyprland.workspaces().get_untracked()[2].focused);
   assert!(fake.requests().is_empty());
 }
 
@@ -708,7 +704,10 @@ fn urgent_marks_a_window_and_its_workspace_until_it_is_focused_or_closed() {
   events.write_all(b"activewindowv2>>5b2\n").expect("events");
   run(&mut shell);
   assert_eq!(urgent(), (vec![false; 2], vec![false; 3]), "focused");
-  fake.answer(&[("j/activewindow", r#"{"address":"0x5b2"}"#)]);
+  fake.answer(&[
+    ("j/clients", CLIENTS),
+    ("j/activewindow", r#"{"address":"0x5b2"}"#),
+  ]);
   run(&mut shell);
 
   events.write_all(b"urgent>>5a1\n").expect("events");
@@ -854,4 +853,172 @@ fn a_request_ends_its_writing() {
     .read_to_end(&mut request)
     .expect("the request, then its end");
   assert_eq!(request, format!("dispatch {command}").as_bytes());
+}
+
+#[test]
+fn a_shown_special_workspace_is_active_and_focused_on_the_focused_monitor() {
+  let fake = FakeHyprland::new();
+  let mut shell = Harness::new(fake.config());
+  let hyprland = shell.cx.hyprland();
+  let _events = fake.events();
+  let special = |name: &str, id: i64, monitor: &str| {
+    format!(
+      r#"{{"id":{id},"name":"special:{name}","monitor":"{monitor}","monitorID":0,"windows":1,"hasfullscreen":false}},"#
+    )
+  };
+  let shown = format!(
+    "{}{}",
+    special("magic", -98, "DP-1"),
+    special("notes", -97, "HDMI-A-1")
+  );
+  let workspaces = WORKSPACES.replacen('[', &format!("[{shown}"), 1);
+  let monitors = MONITORS
+    .replacen(
+      r#""specialWorkspace":{"id":0,"name":""}"#,
+      r#""specialWorkspace":{"id":-98,"name":"special:magic"}"#,
+      1,
+    )
+    .replacen(
+      r#""specialWorkspace":{"id":0,"name":""}"#,
+      r#""specialWorkspace":{"id":-97,"name":"special:notes"}"#,
+      1,
+    );
+  fake.answer(&[
+    ("j/workspaces", &workspaces),
+    ("j/monitors", &monitors),
+    ("j/clients", CLIENTS),
+    ("j/activewindow", ACTIVE_WINDOW),
+  ]);
+  run(&mut shell);
+  let list = hyprland.workspaces().get_untracked();
+  let flags = |name: &str| {
+    let workspace = list.iter().find(|workspace| workspace.name == name);
+    workspace.map(|workspace| (workspace.active, workspace.focused))
+  };
+  assert_eq!(
+    flags("special:magic"),
+    Some((true, true)),
+    "on DP-1, focused"
+  );
+  assert_eq!(flags("special:notes"), Some((true, false)));
+  assert_eq!(flags("1"), Some((true, true)), "still under it");
+}
+
+#[test]
+fn the_lists_show_once_no_read_is_under_way() {
+  let fake = FakeHyprland::new();
+  let (mut shell, hyprland, mut events) = connect(&fake);
+  // Workspace 1 empties and goes, and a new 4 on DP-1 has the focus.
+  events
+    .write_all(b"workspacev2>>4,4\ndestroyworkspacev2>>1,1\n")
+    .expect("events");
+  run(&mut shell);
+  let (workspaces, monitors): (Vec<_>, Vec<_>) = fake
+    .requests()
+    .into_iter()
+    .partition(|request| request.command == "j/workspaces");
+  let list = WORKSPACES.replacen(
+    r#"{"id":1,"name":"1","monitor":"DP-1""#,
+    r#"{"id":4,"name":"4","monitor":"DP-1""#,
+    1,
+  );
+  for request in workspaces {
+    request.answer(&list);
+  }
+  run(&mut shell);
+  assert_eq!(
+    hyprland.workspaces().get_untracked(),
+    expected_workspaces(),
+    "nothing shows while the monitors are read"
+  );
+  let switched = MONITORS.replacen(r#"{"id":1,"name":"1"}"#, r#"{"id":4,"name":"4"}"#, 1);
+  for request in monitors {
+    request.answer(&switched);
+  }
+  run(&mut shell);
+  let shown = hyprland.workspaces().get_untracked();
+  let focused = shown.iter().find(|workspace| workspace.focused);
+  assert_eq!(focused.map(|workspace| workspace.id), Some(Some(4)));
+}
+
+#[test]
+fn every_event_reads_the_lists_it_can_change() {
+  const WMC: &[&str] = &["j/workspaces", "j/monitors", "j/clients"];
+  let table: &[(&[&str], &[&str])] = &[
+    (
+      &[
+        "workspace",
+        "workspacev2",
+        "focusedmon",
+        "focusedmonv2",
+        "createworkspace",
+        "createworkspacev2",
+        "destroyworkspace",
+        "destroyworkspacev2",
+        "activespecial",
+        "activespecialv2",
+      ],
+      &WMC[..2],
+    ),
+    (
+      &[
+        "moveworkspace",
+        "moveworkspacev2",
+        "renameworkspace",
+        "changeworkspaceid",
+        "monitoradded",
+        "monitoraddedv2",
+        "monitorremoved",
+        "monitorremovedv2",
+        "configreloaded",
+      ],
+      WMC,
+    ),
+    (
+      &["openwindow", "closewindow", "movewindow", "movewindowv2"],
+      &["j/workspaces", "j/clients"],
+    ),
+    (
+      &[
+        "windowtitle",
+        "windowtitlev2",
+        "changefloatingmode",
+        "fullscreen",
+      ],
+      &["j/clients"],
+    ),
+    (
+      &["activewindow", "activewindowv2"],
+      &["j/clients", "j/activewindow"],
+    ),
+    (&["submap", "urgent", "openlayer", "screencast"], &[]),
+  ];
+  let fake = FakeHyprland::new();
+  let (mut shell, _hyprland, mut events) = connect(&fake);
+  for (names, reads) in table {
+    for name in *names {
+      events
+        .write_all(format!("{name}>>1,2\n").as_bytes())
+        .expect("events");
+      run(&mut shell);
+      assert_eq!(fake.answer(&replies()), *reads, "after {name}");
+      run(&mut shell);
+    }
+  }
+}
+
+#[test]
+fn at_most_4096_windows_are_kept_urgent() {
+  let fake = FakeHyprland::new();
+  let (mut shell, hyprland, mut events) = connect(&fake);
+  let lines: String = (0..=MAX_LIST).map(|n| format!("urgent>>{n:x}\n")).collect();
+  events.write_all(lines.as_bytes()).expect("events");
+  let service = hyprland.service.as_ref().expect("provided");
+  let urgent = || {
+    let state = service.state.borrow();
+    state.as_ref().map_or(0, |state| state.urgent.len())
+  };
+  shell.retry_until("the urgent events read", || urgent() >= MAX_LIST, |_| {});
+  run(&mut shell);
+  assert_eq!(urgent(), MAX_LIST);
 }

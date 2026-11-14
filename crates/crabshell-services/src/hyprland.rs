@@ -283,7 +283,8 @@ impl Query {
       | "monitorremoved" | "configreloaded" => &[Workspaces, Monitors, Clients],
       "openwindow" | "closewindow" | "movewindow" => &[Workspaces, Clients],
       "windowtitle" | "changefloatingmode" | "fullscreen" => &[Clients],
-      "activewindow" => &[ActiveWindow],
+      // A focused window's new class comes only as `activewindow`.
+      "activewindow" => &[Clients, ActiveWindow],
       _ => &[],
     }
   }
@@ -845,8 +846,12 @@ impl Service {
 
 impl State {
   /// Builds the lists from what Hyprland last said, and sets each that
-  /// changed.
+  /// changed. Nothing shows while a read is under way, so a frame never
+  /// mixes the workspaces of one moment with the monitors of another.
   fn show(&self) {
+    if self.reading.iter().any(|reading| *reading != Reading::Idle) {
+      return;
+    }
     let raw = &self.raw;
     let focused = raw.monitors.iter().find(|monitor| monitor.focused);
     let urgent: Vec<_> = raw
@@ -863,11 +868,11 @@ impl State {
         name: workspace.at.name.clone(),
         monitor: workspace.monitor.clone(),
         windows: workspace.windows,
-        focused: focused.is_some_and(|monitor| monitor.active.is(&workspace.at)),
+        focused: focused.is_some_and(|monitor| monitor.shows(&workspace.at)),
         active: raw
           .monitors
           .iter()
-          .any(|monitor| monitor.name == workspace.monitor && monitor.active.is(&workspace.at)),
+          .any(|monitor| monitor.name == workspace.monitor && monitor.shows(&workspace.at)),
         urgent: urgent.iter().any(|at| at.is(&workspace.at)),
       })
       .collect();
@@ -1007,6 +1012,21 @@ struct RawMonitor {
   scale: f64,
   #[serde(rename = "activeWorkspace")]
   active: WorkspaceRef,
+  /// The special workspace shown over `active`, which names none as
+  /// `{"id":0,"name":""}`, or from 0.57 on with an empty address.
+  #[serde(rename = "specialWorkspace", default)]
+  special: Option<WorkspaceRef>,
+}
+
+impl RawMonitor {
+  /// Whether it shows `workspace`, as its active or its special one.
+  fn shows(&self, workspace: &WorkspaceRef) -> bool {
+    self.active.is(workspace)
+      || self
+        .special
+        .as_ref()
+        .is_some_and(|special| special.is(workspace))
+  }
 }
 
 #[derive(Deserialize)]
