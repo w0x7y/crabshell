@@ -101,7 +101,12 @@ fn check_without_a_config_says_how_to_make_one() {
 #[test]
 fn a_bad_command_line_shows_the_usage() {
   let home = Home::new("usage");
-  for line in [&[][..], &["build"][..], &["init", "--force"][..]] {
+  for line in [
+    &[][..],
+    &["build"][..],
+    &["init", "--force"][..],
+    &["ipc", "launcher"][..],
+  ] {
     let done = home.run(line);
     assert_eq!(done.status.code(), Some(2), "{line:?}");
     assert!(text(&done.stderr).contains("usage: crabshell"), "{line:?}");
@@ -119,6 +124,65 @@ fn a_bad_command_line_shows_the_usage() {
   let help = home.run(&["help"]);
   assert!(help.status.success());
   assert!(text(&help.stdout).contains("usage: crabshell"));
+}
+
+/// A shell's IPC socket in `home`'s runtime directory, on a thread: it
+/// answers each connection with `reply` and hands back the line it read.
+fn fake_shell(home: &Home, reply: &'static str) -> std::sync::mpsc::Receiver<String> {
+  use std::io::{BufRead, Write};
+
+  let dir = home.0.join("run").join("crabshell");
+  std::fs::create_dir_all(&dir).expect("the runtime directory");
+  let listener =
+    std::os::unix::net::UnixListener::bind(dir.join("ipc-wayland-0.sock")).expect("listening");
+  let (sender, lines) = std::sync::mpsc::channel();
+  std::thread::spawn(move || {
+    for stream in listener.incoming() {
+      let Ok(mut stream) = stream else { break };
+      let mut line = String::new();
+      let _ = std::io::BufReader::new(&stream).read_line(&mut line);
+      let _ = stream.write_all(reply.as_bytes());
+      if sender.send(line).is_err() {
+        break;
+      }
+    }
+  });
+  lines
+}
+
+#[test]
+fn ipc_calls_the_shell_and_prints_what_it_says() {
+  let home = Home::new("ipc");
+  let lines = fake_shell(&home, "{\"ok\":\"shown\"}\n");
+  let done = home.run(&["ipc", "launcher", "toggle", "a", "b"]);
+  assert_eq!(done.status.code(), Some(0), "{}", text(&done.stderr));
+  assert_eq!(text(&done.stdout), "shown\n");
+  let line = lines
+    .recv_timeout(Duration::from_secs(5))
+    .expect("a request");
+  // What the shell's tests read, in crates/crabshell/src/tests/ipc.rs.
+  assert_eq!(
+    line,
+    "{\"args\":[\"a\",\"b\"],\"function\":\"toggle\",\"target\":\"launcher\"}\n"
+  );
+}
+
+#[test]
+fn ipc_says_why_when_the_shell_refuses_or_isnt_there() {
+  let home = Home::new("ipc-error");
+  let socket = home.0.join("run/crabshell/ipc-wayland-0.sock");
+  let done = home.run(&["ipc"]);
+  assert_eq!(done.status.code(), Some(1));
+  assert_eq!(
+    text(&done.stderr),
+    format!("crabshell: no shell is listening at {}\n", socket.display())
+  );
+
+  let _lines = fake_shell(&home, "{\"error\":\"no IPC handler bar.show\"}\n");
+  let done = home.run(&["ipc", "bar", "show"]);
+  assert_eq!(done.status.code(), Some(1));
+  assert_eq!(text(&done.stderr), "crabshell: no IPC handler bar.show\n");
+  assert!(done.stdout.is_empty());
 }
 
 /// Builds a new config end to end, which compiles every dependency once,

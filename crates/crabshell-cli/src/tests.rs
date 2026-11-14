@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::build::{Built, Report, read};
+use super::ipc::{self, Ask};
 use super::notify::escape;
 use super::policy::{Binary, Exit, Next, Policy};
 use super::watch::relevant;
@@ -264,4 +265,103 @@ fn editors_scratch_files_dont_count_as_edits() {
   for name in [".main.rs.swp", "main.rs~", "4913", "#main.rs#", ".#main.rs"] {
     assert!(!relevant(OsStr::new(name)), "{name}");
   }
+}
+
+/// What the shell's tests read, in crates/crabshell/src/tests/ipc.rs.
+const CALL: &str = "{\"args\":[\"a\",\"b\"],\"function\":\"toggle\",\"target\":\"launcher\"}\n";
+const LIST: &str = "{\"list\":true}\n";
+
+fn call(target: &str, function: &str, args: &[&str]) -> Ask {
+  Ask::Call {
+    target: target.to_owned(),
+    function: function.to_owned(),
+    args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+  }
+}
+
+#[test]
+fn ipc_lists_or_calls_and_needs_a_function_to_call() {
+  assert_eq!(parse(&args("ipc")), Ok(Task::Ipc(Ask::List)));
+  assert_eq!(
+    parse(&args("ipc launcher toggle a b")),
+    Ok(Task::Ipc(call("launcher", "toggle", &["a", "b"])))
+  );
+  assert_eq!(
+    parse(&args("ipc bar hide")),
+    Ok(Task::Ipc(call("bar", "hide", &[])))
+  );
+  assert_eq!(
+    parse(&args("ipc launcher")),
+    Err(String::from("can't make sense of `ipc launcher`"))
+  );
+}
+
+#[test]
+fn ipc_speaks_the_shells_lines() {
+  assert_eq!(ipc::request(&call("launcher", "toggle", &["a", "b"])), CALL);
+  assert_eq!(ipc::request(&Ask::List), LIST);
+  // What the shell's `reply` writes.
+  assert_eq!(
+    ipc::read_reply(b"{\"ok\":\"on\\n\"}\n"),
+    Ok(String::from("on\n"))
+  );
+  assert_eq!(
+    ipc::read_reply(b"{\"error\":\"no\"}\n"),
+    Err(String::from("no"))
+  );
+  assert_eq!(
+    ipc::read_reply(b""),
+    Err(String::from("the shell hung up without answering"))
+  );
+  let junk = ipc::read_reply(b"junk\n").expect_err("not JSON");
+  assert!(
+    junk.starts_with("the shell's reply doesn't parse"),
+    "{junk}"
+  );
+  assert!(ipc::read_reply(b"{\"ok\":1}\n").is_err());
+  // Printed with one newline at the end, and nothing for nothing.
+  assert_eq!(ipc::shown("on"), "on\n");
+  assert_eq!(ipc::shown("a\nb\n"), "a\nb\n");
+  assert_eq!(ipc::shown(""), "");
+}
+
+#[test]
+fn ipc_finds_the_socket_as_the_shell_names_it() {
+  let path = |dir: Option<&str>, display: Option<&str>| {
+    ipc::socket_path(dir.map(AsRef::as_ref), display.map(AsRef::as_ref))
+  };
+  let at = |name: &str| Some(PathBuf::from(format!("/run/user/7/crabshell/{name}")));
+  assert_eq!(
+    path(Some("/run/user/7"), Some("wayland-1")),
+    at("ipc-wayland-1.sock")
+  );
+  assert_eq!(path(Some("/run/user/7"), None), at("ipc-wayland-0.sock"));
+  assert_eq!(
+    path(Some("/run/user/7"), Some("/tmp/sway/wayland-5")),
+    at("ipc-wayland-5.sock")
+  );
+  assert_eq!(path(None, Some("wayland-1")), None);
+  assert_eq!(path(Some("run/7"), Some("wayland-1")), None, "relative");
+}
+
+#[test]
+fn ipc_gives_up_on_a_shell_that_never_answers() {
+  let dir = std::env::temp_dir().join(format!("crabshell-cli-ipc-{}", std::process::id()));
+  let _ = std::fs::remove_dir_all(&dir);
+  std::fs::create_dir_all(&dir).expect("a test directory");
+  let socket = dir.join("ipc.sock");
+  // Bound and never accepting: the connection waits in its backlog.
+  let listener = std::os::unix::net::UnixListener::bind(&socket).expect("listening");
+  let started = Instant::now();
+  let given_up = ipc::ask(&socket, String::from(LIST), Duration::from_millis(200));
+  assert!(started.elapsed() < Duration::from_secs(2));
+  assert_eq!(
+    given_up,
+    Err(format!(
+      "the shell at {} didn't answer within 0.2 s",
+      socket.display()
+    ))
+  );
+  drop(listener);
+  let _ = std::fs::remove_dir_all(&dir);
 }

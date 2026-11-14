@@ -2,11 +2,12 @@
 //! config: a Cargo project in `$XDG_CONFIG_HOME/crabshell` (by default
 //! `~/.config/crabshell`), built into `$XDG_CACHE_HOME/crabshell/target`
 //! (by default `~/.cache/crabshell/target`) so the config directory stays
-//! small.
+//! small. `crabshell ipc` calls the running shell's `cx.ipc` handlers.
 
 #![forbid(unsafe_code)]
 
 mod build;
+mod ipc;
 mod notify;
 mod policy;
 mod supervise;
@@ -24,6 +25,9 @@ commands:
   check              run cargo check on the config and print its errors
   run                build the config and run it, starting it again if it
                      crashes
+  ipc                list the functions the running shell offers
+  ipc TARGET FUNCTION [ARGS...]
+                     call one of them and print what it says
   help               show this
 ";
 
@@ -41,6 +45,7 @@ enum Task {
   Init { path: Option<PathBuf> },
   Check,
   Run,
+  Ipc(ipc::Ask),
   Help,
 }
 
@@ -64,6 +69,7 @@ fn main() -> ExitCode {
     Task::Init { path } => init(path.as_deref()).map(|()| ExitCode::SUCCESS),
     Task::Check => check(),
     Task::Run => run(),
+    Task::Ipc(ask) => ipc::run(&ask),
     Task::Help => {
       print!("{USAGE}");
       Ok(ExitCode::SUCCESS)
@@ -84,11 +90,18 @@ fn parse(args: &[String]) -> Result<Task, String> {
     }),
     ["check"] => Ok(Task::Check),
     ["run"] => Ok(Task::Run),
+    ["ipc"] => Ok(Task::Ipc(ipc::Ask::List)),
+    ["ipc", target, function, ..] => Ok(Task::Ipc(ipc::Ask::Call {
+      target: (*target).to_owned(),
+      function: (*function).to_owned(),
+      args: args[3..].to_vec(),
+    })),
     ["help" | "--help" | "-h"] => Ok(Task::Help),
     [] => Err(String::from("no command given")),
-    ["init" | "check" | "run" | "help" | "--help" | "-h", ..] => {
-      Err(format!("can't make sense of `{}`", args.join(" ")))
-    }
+    [
+      "init" | "check" | "run" | "ipc" | "help" | "--help" | "-h",
+      ..,
+    ] => Err(format!("can't make sense of `{}`", args.join(" "))),
     [command, ..] => Err(format!("unknown command `{command}`")),
   }
 }
