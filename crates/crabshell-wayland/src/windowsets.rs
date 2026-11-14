@@ -96,8 +96,8 @@ pub(crate) struct Windowsets {
   changed: bool,
   /// Whether requests were sent since the last `commit`.
   uncommitted: bool,
-  /// Whether input past a cap was logged.
-  warned: bool,
+  /// Each kind of input past a cap logged so far, so each is logged once.
+  warned: Vec<String>,
   on_change: Option<Watch>,
 }
 
@@ -155,8 +155,10 @@ impl Windowsets {
 
   /// Logs that the compositor sent more than fits, the first time only.
   fn warn_once(&mut self, what: std::fmt::Arguments) {
-    if !std::mem::replace(&mut self.warned, true) {
+    let what = what.to_string();
+    if !self.warned.contains(&what) {
       tracing::warn!("the compositor sent {what}; what doesn't fit is left out");
+      self.warned.push(what);
     }
   }
 }
@@ -442,9 +444,12 @@ impl Dispatch<ExtWorkspaceHandleV1, ()> for Platform {
       Event::Name { name } => set.name = cut(name),
       Event::Coordinates { coordinates: bytes } => match coordinates(&bytes) {
         Some(coordinates) => set.coordinates = coordinates,
-        None => ours.warn_once(format_args!(
-          "a workspace with more than {MAX_DIMENSIONS} coordinates"
-        )),
+        None => {
+          set.coordinates.clear();
+          ours.warn_once(format_args!(
+            "a workspace with more than {MAX_DIMENSIONS} coordinates"
+          ));
+        }
       },
       Event::State { state } => {
         let state = Flag::from_bits_truncate(state.into());

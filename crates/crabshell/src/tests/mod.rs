@@ -8,6 +8,7 @@ mod logging;
 mod per_output;
 mod persist;
 mod switch_log;
+mod window_manager;
 
 use std::panic::Location;
 

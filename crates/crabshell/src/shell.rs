@@ -544,20 +544,28 @@ impl WindowManager {
 
   /// The windowsets in the projections shown on `output`, such as
   /// `"DP-1"`, as Quickshell's `ScreenProjection` gives them: what a bar
-  /// on that output lists. Read in a binding, it reruns when they change.
+  /// on that output lists, without the hidden ones the protocol says not
+  /// to show. Read in a binding, it reruns when they change. Empty once
+  /// the shell is gone.
   pub fn windowsets_on(&self, output: &str) -> Vec<Windowset> {
-    let shown: Vec<u64> = self.projections.with(|all| {
-      let on = all
-        .iter()
-        .filter(|projection| projection.outputs.iter().any(|o| o == output));
-      on.map(|projection| projection.id).collect()
-    });
-    self.windowsets.with(|all| {
-      let on = all
-        .iter()
-        .filter(|set| set.projection.is_some_and(|id| shown.contains(&id)));
-      on.cloned().collect()
-    })
+    let shown: Vec<u64> = self
+      .projections
+      .try_with(|all| {
+        let on = all
+          .iter()
+          .filter(|projection| projection.outputs.iter().any(|o| o == output));
+        on.map(|projection| projection.id).collect()
+      })
+      .unwrap_or_default();
+    self
+      .windowsets
+      .try_with(|all| {
+        let on = all
+          .iter()
+          .filter(|set| !set.hidden && set.projection.is_some_and(|id| shown.contains(&id)));
+        on.cloned().collect()
+      })
+      .unwrap_or_default()
   }
 
   /// Asks the compositor to show windowset `id`. Here and below, an id
