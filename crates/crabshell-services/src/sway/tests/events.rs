@@ -157,6 +157,7 @@ fn a_listener_goes_with_its_context_and_its_kind_with_the_next_event() {
   let (handler, heard) = recorder();
   output.sway().on_event(&[SwayEventKind::Window], handler);
   assert_eq!(peer.read(), (SUBSCRIBE, r#"["window"]"#.to_owned()));
+  peer.send(SUBSCRIBE, r#"{"success":true}"#);
   output.owner().dispose();
   assert_eq!(runtime.node_count(), nodes);
   peer.read_nothing();
@@ -178,4 +179,67 @@ fn a_listener_goes_with_its_context_and_its_kind_with_the_next_event() {
   peer.send(GET_WORKSPACES, &one().0);
   shell.turn();
   peer.read_nothing();
+}
+
+/// Sway drops a client that hangs up with requests unread, so a
+/// reconnect for a kind nobody wants waits until Sway answered all.
+#[test]
+fn a_reconnect_waits_until_sway_answered_everything_sent() {
+  let fake = FakeSway::new();
+  let (mut shell, mut peer) = Harness::connect(&fake);
+  let child = shell.cx.child();
+  let (handler, _heard) = recorder();
+  child.sway().on_event(&[SwayEventKind::Mode], handler);
+  assert_eq!(peer.read(), (SUBSCRIBE, r#"["mode"]"#.to_owned()));
+  peer.send(SUBSCRIBE, r#"{"success":true}"#);
+  child.owner().dispose();
+  shell.cx.sway().dispatch("workspace 2");
+  assert_eq!(peer.read().0, RUN_COMMAND);
+  // A mode event nobody wants now, before Sway answered the command.
+  peer.send(MODE_EVENT, "{}");
+  shell.turn();
+  assert!(fake.try_accept().is_none(), "no reconnect before the reply");
+  peer.send(RUN_COMMAND, r#"[{"success":true}]"#);
+  shell.turn();
+  let mut new = fake.accept();
+  assert_eq!(new.read(), (SUBSCRIBE, r#"["workspace"]"#.to_owned()));
+}
+
+#[test]
+fn a_handler_that_takes_anothers_context_stops_it() {
+  let fake = FakeSway::new();
+  let (mut shell, mut peer) = Harness::connect(&fake);
+  let other = shell.cx.child();
+  let other_owner = other.owner();
+  shell
+    .cx
+    .sway()
+    .on_event(&[SwayEventKind::Mode], move |_| other_owner.dispose());
+  let (handler, heard) = recorder();
+  other.sway().on_event(&[SwayEventKind::Mode], handler);
+  peer.read();
+  peer.send(MODE_EVENT, "{}");
+  shell.turn();
+  assert!(heard.borrow().is_empty(), "called after its context went");
+}
+
+#[test]
+fn a_new_connection_after_a_drop_keeps_the_handlers_kinds() {
+  let fake = FakeSway::new();
+  let (mut shell, mut peer) = Harness::connect(&fake);
+  let (handler, heard) = recorder();
+  shell.cx.sway().on_event(&[SwayEventKind::Mode], handler);
+  assert_eq!(peer.read(), (SUBSCRIBE, r#"["mode"]"#.to_owned()));
+  drop(peer);
+  shell.turn();
+  shell.run_for(RETRY + RETRY / 2);
+  let mut peer = fake.accept();
+  assert_eq!(
+    peer.read(),
+    (SUBSCRIBE, r#"["workspace","mode"]"#.to_owned())
+  );
+  peer.read();
+  peer.send(MODE_EVENT, "{}");
+  shell.turn();
+  assert_eq!(heard.borrow().len(), 1);
 }

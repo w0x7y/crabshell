@@ -73,19 +73,22 @@ pub struct SwayOutput {
   pub scale: f64,
 }
 
-/// An output as Sway sends it.
+/// An output as Sway sends it. A non-desktop one, such as a VR headset,
+/// comes without `active`, `rect` or `scale`.
 #[derive(Deserialize)]
 struct RawOutput {
   name: String,
   #[serde(default)]
   focused: bool,
+  #[serde(default)]
   active: bool,
   current_workspace: Option<String>,
+  #[serde(default)]
   rect: RawRect,
   scale: Option<f64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct RawRect {
   x: i32,
   y: i32,
@@ -378,6 +381,8 @@ struct Connection {
   /// Whether an event came that nothing wants, as after the last handler
   /// of its kind went.
   stale: bool,
+  /// Requests sent that Sway hasn't answered yet.
+  awaiting: usize,
 }
 
 /// Sway's answer to a `SUBSCRIBE` or to one command.
@@ -434,7 +439,7 @@ impl Service {
     let wanted = state.wanted();
     if let Some(connection) = state.connection.as_mut() {
       connection.subscribe(&wanted);
-      ipc::encode(ipc::GET_OUTPUTS, b"", &mut connection.outbox);
+      connection.request(ipc::GET_OUTPUTS, b"");
       self.flush_with(state);
     }
     outputs.read_only()
@@ -566,12 +571,13 @@ impl Service {
       fetches: VecDeque::from([None]),
       subscribed: Vec::new(),
       stale: false,
+      awaiting: 0,
     };
     // Subscribe first, so no change between the two goes unseen.
     connection.subscribe(&state.wanted());
-    ipc::encode(ipc::GET_WORKSPACES, b"", &mut connection.outbox);
+    connection.request(ipc::GET_WORKSPACES, b"");
     if state.outputs.is_some() {
-      ipc::encode(ipc::GET_OUTPUTS, b"", &mut connection.outbox);
+      connection.request(ipc::GET_OUTPUTS, b"");
     }
     state.connection = Some(connection);
     self.flush_with(&mut *state);
@@ -638,11 +644,11 @@ impl Service {
     };
     self.flush_with(state);
     let wanted = state.wanted();
-    // Only for a subscription nothing wants now, and not with bytes
-    // unsent, which a new connection would lose.
+    // Only for a subscription nothing wants now, and not while Sway owes
+    // replies: it drops a client that hangs up with requests unread.
     let stale = state.connection.as_ref().is_some_and(|connection| {
       connection.stale
-        && connection.outbox.is_empty()
+        && connection.awaiting == 0
         && connection
           .subscribed
           .iter()
@@ -701,7 +707,7 @@ impl Service {
     let Some(connection) = state.connection.as_mut() else {
       return false;
     };
-    ipc::encode(kind, payload, &mut connection.outbox);
+    connection.request(kind, payload);
     self.flush_with(state);
     true
   }
@@ -764,9 +770,15 @@ impl Connection {
       .collect();
     if !missing.is_empty() {
       let payload = serde_json::to_vec(&missing).expect("invariant: a list of names serializes");
-      ipc::encode(ipc::SUBSCRIBE, &payload, &mut self.outbox);
+      self.request(ipc::SUBSCRIBE, &payload);
       self.subscribed.extend(missing);
     }
+  }
+
+  /// Queues a request, whose reply Sway then owes.
+  fn request(&mut self, kind: u32, payload: &[u8]) {
+    ipc::encode(kind, payload, &mut self.outbox);
+    self.awaiting += 1;
   }
 }
 
@@ -796,7 +808,12 @@ impl State {
       return Ok(events);
     };
     let now = Instant::now();
+    let mut outputs_changed = false;
     while let Some((kind, payload)) = ipc::decode(&mut connection.inbox)? {
+      // Events have the high bit set; anything else answers a request.
+      if kind & 0x8000_0000 == 0 {
+        connection.awaiting = connection.awaiting.saturating_sub(1);
+      }
       match kind {
         ipc::GET_WORKSPACES => {
           let event = connection.fetches.pop_front().flatten();
@@ -842,14 +859,12 @@ impl State {
           };
           if kind == SwayEventKind::Workspace {
             connection.fetches.push_back(Some(now));
-            ipc::encode(ipc::GET_WORKSPACES, b"", &mut connection.outbox);
+            connection.request(ipc::GET_WORKSPACES, b"");
           }
           // A workspace event can move an output's workspace or focus.
           let outputs = self.outputs.is_some()
             && matches!(kind, SwayEventKind::Workspace | SwayEventKind::Output);
-          if outputs {
-            ipc::encode(ipc::GET_OUTPUTS, b"", &mut connection.outbox);
-          }
+          outputs_changed |= outputs;
           let listened = self
             .listeners
             .iter()
@@ -866,6 +881,11 @@ impl State {
           }
         }
       }
+    }
+    // One fetch for every event read together, since the reply is all of
+    // them.
+    if outputs_changed {
+      connection.request(ipc::GET_OUTPUTS, b"");
     }
     Ok(events)
   }

@@ -155,3 +155,42 @@ fn a_handler_hears_its_kind_and_no_other_kind_wakes_the_shell() {
   let data: serde_json::Value = serde_json::from_str(&modes.borrow()[0]).expect("JSON");
   assert_eq!(data["change"], "default");
 }
+
+/// A command sent just as a kind nobody wants arrives still runs: the
+/// reconnect for that kind waits for Sway's reply.
+#[test]
+#[ignore = "needs sway and swaymsg; run by hand"]
+fn a_command_sent_as_a_kind_goes_unwanted_still_runs() {
+  let (sway, mut shell) = start();
+  let service = shell.cx.sway();
+  let workspaces = service.workspaces();
+  shell.run_until("the first list", || !workspaces.get_untracked().is_empty());
+  let mut lost = Vec::new();
+  for n in 0..20 {
+    let child = shell.cx.child();
+    let ticks = Rc::new(Cell::new(0));
+    let counted = Rc::clone(&ticks);
+    child.sway().on_event(&[SwayEventKind::Tick], move |_| {
+      counted.set(counted.get() + 1)
+    });
+    shell.run_until("the first tick", || ticks.get() > 0);
+    child.owner().dispose();
+    // A tick nobody wants now waits in the socket.
+    sway.msg(&["-t", "send_tick", "x"]);
+    std::thread::sleep(Duration::from_millis(30));
+    let name = format!("{}", 10 + n);
+    service.dispatch(&format!("workspace {name}"));
+    shell.turn();
+    let focused = |name: &str| {
+      workspaces.with_untracked(|list| list.iter().any(|ws| ws.name == name && ws.focused))
+    };
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline && !focused(&name) {
+      shell.run_for(Duration::from_millis(20));
+    }
+    if !focused(&name) {
+      lost.push(name);
+    }
+  }
+  assert!(lost.is_empty(), "lost {} of 20: {lost:?}", lost.len());
+}

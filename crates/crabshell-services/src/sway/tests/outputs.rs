@@ -120,7 +120,7 @@ fn a_bad_output_list_is_logged_and_skipped() {
     shell.turn();
     for bad in [
       "[{not json",
-      r#"[{"name":"DP-1","active":true}]"#,
+      r#"[{"active":true}]"#,
       r#"[{"name":"DP-1","active":true,"rect":{"x":0,"y":0,"width":-1,"height":0}}]"#,
     ] {
       peer.send(GET_OUTPUTS, bad);
@@ -156,4 +156,74 @@ fn dispatch_sends_the_command_as_written_or_nothing() {
   assert!(logs.contains("error=No matching node."), "{logs}");
   assert!(logs.contains("over 4 MiB"), "{logs}");
   assert!(logs.contains("while Sway isn't connected"), "{logs}");
+}
+
+/// A non-desktop output, such as a VR headset, comes with no `active`,
+/// `rect` or `scale`; it shows as inactive, and the rest stay.
+#[test]
+fn a_non_desktop_output_keeps_the_rest() {
+  let fake = FakeSway::new();
+  let (mut shell, mut peer) = Harness::connect(&fake);
+  let list = shell.cx.sway().outputs();
+  peer.read();
+  peer.read();
+  let json = r#"[{"type":"output","name":"HEADLESS-1","rect":{"x":0,"y":0,"width":1280,"height":720},"focused":true,"active":true,"scale":1.0,"current_workspace":"1"},{"make":"Valve","model":"Index","modes":[],"non_desktop":true,"type":"output","name":"DP-3"}]"#;
+  peer.send(GET_OUTPUTS, json);
+  shell.turn();
+  let names: Vec<_> = list
+    .get_untracked()
+    .into_iter()
+    .map(|output| (output.name, output.active))
+    .collect();
+  assert_eq!(
+    names,
+    [("HEADLESS-1".to_owned(), true), ("DP-3".to_owned(), false)]
+  );
+}
+
+#[test]
+fn events_read_together_ask_for_the_outputs_once() {
+  let fake = FakeSway::new();
+  let (mut shell, mut peer) = Harness::connect(&fake);
+  let _list = shell.cx.sway().outputs();
+  peer.read();
+  peer.read();
+  let mut bytes = Vec::new();
+  for _ in 0..5 {
+    ipc::encode(WORKSPACE_EVENT, b"{}", &mut bytes);
+  }
+  peer.0.write_all(&bytes).expect("a write to the service");
+  shell.turn();
+  let mut asked = Vec::new();
+  for _ in 0..6 {
+    asked.push(peer.read().0);
+  }
+  peer.read_nothing();
+  assert_eq!(
+    asked.iter().filter(|kind| **kind == GET_OUTPUTS).count(),
+    1,
+    "{asked:?}"
+  );
+}
+
+#[test]
+fn an_unchanged_output_list_is_not_set_again() {
+  let fake = FakeSway::new();
+  let (mut shell, mut peer) = Harness::connect(&fake);
+  let list = shell.cx.sway().outputs();
+  peer.read();
+  peer.read();
+  let runs = Rc::new(Cell::new(0));
+  let counted = Rc::clone(&runs);
+  shell.cx.effect(move || {
+    list.with(|_| ());
+    counted.set(counted.get() + 1);
+  });
+  let (json, _) = outputs("1", 1.0);
+  peer.send(GET_OUTPUTS, &json);
+  shell.turn();
+  let after_first = runs.get();
+  peer.send(GET_OUTPUTS, &json);
+  shell.turn();
+  assert_eq!(runs.get(), after_first, "the same list again");
 }

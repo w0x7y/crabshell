@@ -90,7 +90,7 @@ pub mod prelude {
     GreetMessage, GreetState, Greetd, IntoCommand, LoopStatus, Mpris, Network, NetworkDevice,
     NetworkKind, NetworkState, Notification, Notifications, Pam, PamMessage, PamResult, PamState,
     PlaybackStatus, Player, PolkitAgent, PowerDevice, PowerProfile, PowerProfiles, Precision,
-    Process, ServicesExt, Sink, Socket, SwayEvent, SwayEventKind, SwayOutput, Timeout, Tray,
+    Process, ServicesExt, Sink, Socket, Sway, SwayEvent, SwayEventKind, SwayOutput, Timeout, Tray,
     TrayHost, TrayItem, TrayMenu, TrayStatus, UPower, Urgency, WifiNetwork, Workspace,
   };
   pub use crabshell_ui::{

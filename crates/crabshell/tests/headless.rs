@@ -1545,8 +1545,6 @@ fn an_ipc_handler_answers_and_its_socket_goes_at_a_reload() {
 #[test]
 #[ignore = "needs headless Sway"]
 fn cx_floating_shows_a_window_while_its_context_lives() {
-  use crabshell::prelude::*;
-
   let sway = Sway::start();
   let runtime = Runtime::current();
   let kept: std::rc::Rc<std::cell::RefCell<Option<(Cx, usize)>>> = Default::default();
@@ -1590,8 +1588,6 @@ fn cx_floating_shows_a_window_while_its_context_lives() {
 #[test]
 #[ignore = "needs headless Sway"]
 fn cx_idle_monitor_turns_true_when_idle_and_ends_with_its_context() {
-  use crabshell::prelude::*;
-
   let sway = Sway::start();
   let runtime = Runtime::current();
   type Kept = Option<(Cx, ReadSignal<bool>, usize)>;
@@ -1638,8 +1634,6 @@ fn one_color_png(name: &str, [r, g, b]: [u8; 3]) -> PathBuf {
 #[test]
 #[ignore = "needs headless Sway"]
 fn cx_quantize_colors_follows_its_path_then_sleeps_and_ends_with_its_context() {
-  use crabshell::prelude::*;
-
   let sway = Sway::start();
   let runtime = Runtime::current();
   let (red, blue) = (
