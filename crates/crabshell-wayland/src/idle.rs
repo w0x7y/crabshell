@@ -157,7 +157,12 @@ impl Dispatch<ExtIdleNotificationV1, u64> for Platform {
       _ => return,
     };
     if let Some(watch) = platform.idle.watches.get_mut(id) {
-      (watch.on_change)(idle);
+      // Whoever called `watch_idle` may panic; the shell goes on.
+      let call = std::panic::AssertUnwindSafe(|| (watch.on_change)(idle));
+      if let Err(payload) = std::panic::catch_unwind(call) {
+        let message = crate::events::panic_message(payload.as_ref());
+        tracing::error!("an idle watch panicked: {message}");
+      }
     }
   }
 }

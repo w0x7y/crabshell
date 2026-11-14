@@ -1867,3 +1867,34 @@ fn an_ended_idle_watch_says_nothing_more() {
   }
   assert!(said.borrow().is_empty());
 }
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn an_idle_watch_that_panics_is_logged_and_the_shell_goes_on() {
+  let (logs, _logging) = capture_logs();
+  let sway = Sway::start();
+  let mut shell = Shell::build(&sway, PLAIN);
+  let id = shell.wait_for_bar("HEADLESS-1");
+  settle(&mut shell.event_loop);
+  shell
+    .event_loop
+    .platform()
+    .watch_idle(Duration::from_millis(200), |_| panic!("idle panic"))
+    .expect("a watch");
+  run_until(&mut shell.event_loop, "the panic logged", |_| {
+    logs.text().contains("an idle watch panicked: idle panic")
+  });
+  // Still drawing.
+  let before = shell
+    .event_loop
+    .platform()
+    .window_info(id)
+    .expect("held")
+    .commits;
+  shell.knobs.label.set(String::from("after"));
+  run_until(&mut shell.event_loop, "a frame", |platform| {
+    platform
+      .window_info(id)
+      .is_some_and(|info| info.commits > before)
+  });
+}

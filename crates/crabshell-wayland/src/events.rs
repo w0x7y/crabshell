@@ -49,7 +49,7 @@ pub(crate) fn notify<T>(
   }
 }
 
-fn panic_message(payload: &(dyn Any + Send)) -> &str {
+pub(crate) fn panic_message(payload: &(dyn Any + Send)) -> &str {
   if let Some(message) = payload.downcast_ref::<&str>() {
     message
   } else if let Some(message) = payload.downcast_ref::<String>() {

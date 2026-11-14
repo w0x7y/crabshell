@@ -401,7 +401,7 @@ impl Tree {
       }
       tree.set_floating(|f| &mut f.visible, value);
     });
-    self.bind_blur(blur, inhibit_idle);
+    self.bind_compositor_hints(blur, inhibit_idle);
     self.mount_root(style, child);
     self.surface.changed = true;
   }

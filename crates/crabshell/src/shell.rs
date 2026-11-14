@@ -550,10 +550,8 @@ impl ShellExt for Cx {
         },
       );
     })));
-    if panic::catch_unwind(AssertUnwindSafe(|| self.owner().signal(gone))).is_err() {
-      tracing::warn!("cx.idle_monitor was called with a context that is gone; it stays false");
-      return idle.read_only();
-    }
+    // The signal above was made, so the owner is there.
+    self.owner().signal(gone);
     service.with_platform("cx.idle_monitor", move |platform| {
       watch.set(platform.watch_idle(timeout, move |now| {
         idle.try_set(now);

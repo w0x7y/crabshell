@@ -418,13 +418,14 @@ impl Tree {
     self.bind_opt(root, mask, "mask", |tree, _, value| {
       tree.surface.set(|s| &mut s.mask, value);
     });
-    self.bind_blur(blur, inhibit_idle);
+    self.bind_compositor_hints(blur, inhibit_idle);
     self.mount_root(style, child);
     self.surface.changed = true;
   }
 
-  /// Binds a panel's or floating window's blur region and idle inhibit.
-  pub(crate) fn bind_blur(
+  /// Binds what a panel or floating window asks of the compositor: its
+  /// blur region and whether it inhibits idle.
+  pub(crate) fn bind_compositor_hints(
     &mut self,
     blur: Option<Prop<Option<Region>>>,
     inhibit_idle: Option<Prop<bool>>,
