@@ -18,6 +18,7 @@ mod audio;
 mod bluetooth;
 mod clock;
 mod dbus;
+mod file;
 mod lines;
 mod mpris;
 mod network;
@@ -44,12 +45,13 @@ use calloop::futures::{Executor, Scheduler};
 use calloop::generic::Generic;
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{Interest, LoopHandle, Mode, PostAction, RegistrationToken};
-use crabshell_reactive::{Owner, ReadSignal};
+use crabshell_reactive::{Owner, ReadSignal, Signal};
 use crabshell_ui::Cx;
 
 pub use audio::{Audio, AudioNode, AudioStream, Sink};
 pub use bluetooth::{Bluetooth, BluetoothAdapter, BluetoothDevice};
 pub use clock::Precision;
+pub use file::FileView;
 pub use mpris::{LoopStatus, Mpris, PlaybackStatus, Player};
 pub use network::{Network, NetworkDevice, NetworkKind, NetworkState, WifiNetwork};
 pub use notifications::{Notification, Notifications, Timeout, Urgency};
@@ -198,6 +200,21 @@ pub trait ServicesExt {
   /// its input and outputs are empty, it has a process group of its own,
   /// and it is reaped when it ends. A failure to start is logged.
   fn exec_detached(&self, command: impl IntoCommand);
+
+  /// The text file at `path`, as Quickshell's `FileView`: read now, and
+  /// again when it changes on disk. Each call reads its own, which goes
+  /// with this context. It is read on the main thread, so a file on a
+  /// slow disk delays the frame.
+  fn file_view(&self, path: impl Into<PathBuf>) -> FileView;
+
+  /// A value kept in the JSON file at `path`, as Quickshell's
+  /// `JsonAdapter`: `default` until the file is read, the file's value
+  /// once it is, and the file rewritten whenever the config sets another.
+  /// A missing file is made at the first set. A file that isn't `T`'s
+  /// JSON is logged and left alone, and the value stays.
+  fn json_file<T>(&self, path: impl Into<PathBuf>, default: T) -> Signal<T>
+  where
+    T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + 'static;
 }
 
 impl ServicesExt for Cx {
@@ -251,6 +268,17 @@ impl ServicesExt for Cx {
 
   fn exec_detached(&self, command: impl IntoCommand) {
     process::exec_detached(self, command);
+  }
+
+  fn file_view(&self, path: impl Into<PathBuf>) -> FileView {
+    file::file_view(self, path.into())
+  }
+
+  fn json_file<T>(&self, path: impl Into<PathBuf>, default: T) -> Signal<T>
+  where
+    T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + 'static,
+  {
+    file::json_file(self, path.into(), default)
   }
 }
 
