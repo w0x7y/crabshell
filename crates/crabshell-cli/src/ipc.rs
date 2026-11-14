@@ -3,7 +3,7 @@
 //! side is in the `crabshell` crate; the tests hold both to one format.
 
 use std::ffi::{OsStr, OsString};
-use std::io::{ErrorKind, Read, Write};
+use std::io::{BufRead, ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -109,10 +109,11 @@ fn exchange(path: &Path, line: &str) -> Result<String, String> {
   // A shell that refused the connection has said why already; it's read
   // below even if this fails.
   let _ = stream.write_all(line.as_bytes());
+  // One line: read to its end, not to the connection's, which a shell
+  // closing with input unread resets after the reply arrived.
   let mut reply = Vec::new();
-  stream
-    .take(MAX_REPLY)
-    .read_to_end(&mut reply)
+  std::io::BufReader::new(stream.take(MAX_REPLY))
+    .read_until(b'\n', &mut reply)
     .map_err(|error| format!("can't read the shell's reply: {error}"))?;
   read_reply(&reply)
 }

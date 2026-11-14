@@ -348,6 +348,7 @@ fn a_connection_without_a_whole_request_is_closed_after_5_s() {
     waited >= ipc::TIMEOUT && waited < ipc::TIMEOUT + Duration::from_secs(1),
     "{waited:?}"
   );
+  assert_eq!(server.ipc.open.get(), 0, "its slot is free again");
 }
 
 #[test]
@@ -494,4 +495,31 @@ fn a_panicking_handler_is_logged_and_disabled_and_the_rest_still_answer() {
   );
   assert_eq!(server.ask(&call("bar", "grow")), ok("grew"));
   assert_eq!(server.ask(&call("bar", "grown")), ok("yes"));
+}
+
+#[test]
+fn a_replaced_handler_whose_drop_panics_is_logged() {
+  struct Touchy;
+  impl Drop for Touchy {
+    fn drop(&mut self) {
+      panic!("touchy drop");
+    }
+  }
+  let mut server = server("touchy");
+  let touchy = Touchy;
+  let line = line!() + 1;
+  server.register("bar", "hide", move |_: &[String]| {
+    let _ = &touchy;
+    Ok(String::new())
+  });
+  let logs = capture_logs(|| server.register("bar", "hide", says("newer")));
+  assert!(
+    logs.contains(&format!(
+      "dropping ipc bar.hide (registered at {}:{line}:",
+      file!()
+    )),
+    "{logs}"
+  );
+  assert!(logs.contains("panicked: touchy drop"), "{logs}");
+  assert_eq!(server.ask(&call("bar", "hide")), ok("newer"));
 }

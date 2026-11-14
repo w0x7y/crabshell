@@ -29,6 +29,10 @@ pub(crate) type Handler = dyn Fn(&[String]) -> Result<String, String>;
 /// How long a connection stays open, to send its request and read the
 /// reply.
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long the listener rests after an error that leaves a connection
+/// waiting, such as running out of file descriptors.
+const BACK_OFF: Duration = Duration::from_secs(1);
 const MAX_NAME: usize = 64;
 const MAX_REQUEST: usize = 64 * 1024;
 const MAX_REPLY: usize = 1024 * 1024;
@@ -119,7 +123,9 @@ pub(crate) struct Ipc<D> {
   handlers: RefCell<BTreeMap<(String, String), Rc<Entry>>>,
   next_id: Cell<u64>,
   socket: Cell<Socket>,
-  open: Cell<usize>,
+  pub(crate) open: Cell<usize>,
+  /// The listener's source, to turn back on after it backed off.
+  listener: Cell<Option<RegistrationToken>>,
 }
 
 #[derive(Clone, Copy)]
@@ -155,6 +161,7 @@ impl<D: 'static> Ipc<D> {
       next_id: Cell::new(0),
       socket: Cell::new(Socket::Unbound),
       open: Cell::new(0),
+      listener: Cell::new(None),
     })
   }
 
@@ -198,8 +205,17 @@ impl<D: 'static> Ipc<D> {
         older.at
       );
     }
-    // Dropped after the map is released: what it holds may use cx.ipc.
-    drop(older);
+    // Dropped after the map is released: what it holds may use cx.ipc,
+    // and its drop is the config's code.
+    if let Some(older) = older {
+      let at = older.at;
+      if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(move || drop(older))) {
+        let message = panic_message(payload.as_ref());
+        tracing::error!(
+          "dropping ipc {target}.{function} (registered at {at}) panicked: {message}"
+        );
+      }
+    }
     if let Socket::Unbound = self.socket.get() {
       self.socket.set(Socket::Off);
       self.listen(at);
@@ -247,23 +263,53 @@ impl<D: 'static> Ipc<D> {
     let handle = (self.handle)().ok_or_else(|| std::io::Error::other("the loop is gone"))?;
     let ipc = Rc::clone(self);
     let source = Generic::new(listener, Interest::READ, Mode::Level);
-    handle
+    let token = handle
       .insert_source(source, move |_, listener, _| {
-        ipc.accept(listener);
-        Ok(PostAction::Continue)
+        if ipc.accept(listener) {
+          return Ok(PostAction::Continue);
+        }
+        // The connection stays queued, so the listener would be ready
+        // again at once: it rests a while instead of spinning.
+        ipc.back_off();
+        Ok(PostAction::Disable)
       })
       .map_err(|error| std::io::Error::other(error.error.to_string()))?;
+    self.listener.set(Some(token));
     Ok(Socket::Bound(meta.dev(), meta.ino()))
   }
 
-  fn accept(self: &Rc<Self>, listener: &UnixListener) {
+  /// Takes every connection waiting. `false` after an error that leaves
+  /// one waiting, such as running out of file descriptors.
+  fn accept(self: &Rc<Self>, listener: &UnixListener) -> bool {
     loop {
       match listener.accept() {
         Ok((stream, _)) => self.open_connection(stream),
-        Err(error) if error.kind() == ErrorKind::WouldBlock => return,
+        Err(error) if error.kind() == ErrorKind::WouldBlock => return true,
         Err(error) if error.kind() == ErrorKind::Interrupted => {}
-        Err(error) => return tracing::warn!(%error, "can't accept an IPC connection"),
+        Err(error) => {
+          tracing::warn!(%error, "can't accept an IPC connection; trying again in 1 s");
+          return false;
+        }
       }
+    }
+  }
+
+  /// Turns the listener back on after [`BACK_OFF`].
+  fn back_off(self: &Rc<Self>) {
+    let Some(handle) = (self.handle)() else {
+      return;
+    };
+    let ipc = Rc::clone(self);
+    let again = handle.insert_source(Timer::from_duration(BACK_OFF), move |_, _, _| {
+      if let (Some(token), Some(handle)) = (ipc.listener.get(), (ipc.handle)())
+        && let Err(error) = handle.enable(&token)
+      {
+        tracing::error!(%error, "can't listen for IPC calls again");
+      }
+      TimeoutAction::Drop
+    });
+    if again.is_err() {
+      tracing::error!("can't listen for IPC calls again");
     }
   }
 
@@ -364,8 +410,9 @@ impl<D: 'static> Ipc<D> {
     };
     // The call may have disposed its owner, leaving this the last
     // reference, so dropping it runs the handler's own drop code.
-    if panic::catch_unwind(AssertUnwindSafe(move || drop(entry))).is_err() {
-      tracing::error!("dropping ipc {name} panicked");
+    if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(move || drop(entry))) {
+      let message = panic_message(payload.as_ref());
+      tracing::error!("dropping ipc {name} (registered at {at}) panicked: {message}");
     }
     let (Ok(text) | Err(text)) = &mut answer;
     if text.len() > MAX_REPLY {

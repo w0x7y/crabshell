@@ -365,3 +365,31 @@ fn ipc_gives_up_on_a_shell_that_never_answers() {
   drop(listener);
   let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn ipc_keeps_a_reply_the_shell_sent_before_resetting_the_connection() {
+  use std::io::Write;
+  let dir = std::env::temp_dir().join(format!("crabshell-cli-reset-{}", std::process::id()));
+  let _ = std::fs::remove_dir_all(&dir);
+  std::fs::create_dir_all(&dir).expect("a test directory");
+  let socket = dir.join("ipc.sock");
+  let listener = std::os::unix::net::UnixListener::bind(&socket).expect("listening");
+  // A shell refusing a 17th connection: it answers without reading the
+  // request, then closes, which resets the connection.
+  let shell = std::thread::spawn(move || {
+    let (mut stream, _) = listener.accept().expect("a client");
+    std::thread::sleep(Duration::from_millis(100));
+    stream
+      .write_all(b"{\"error\":\"the shell has 16 IPC connections open already\"}\n")
+      .expect("the reply");
+  });
+  let answer = ipc::ask(&socket, String::from(LIST), Duration::from_secs(2));
+  shell.join().expect("the fake shell");
+  assert_eq!(
+    answer,
+    Err(String::from(
+      "the shell has 16 IPC connections open already"
+    ))
+  );
+  let _ = std::fs::remove_dir_all(&dir);
+}
