@@ -22,6 +22,7 @@ mod mpris;
 mod network;
 mod notifications;
 mod power;
+mod socket;
 mod sway;
 #[cfg(test)]
 mod testing;
@@ -51,6 +52,7 @@ pub use mpris::{LoopStatus, Mpris, PlaybackStatus, Player};
 pub use network::{Network, NetworkDevice, NetworkKind, NetworkState, WifiNetwork};
 pub use notifications::{Notification, Notifications, Timeout, Urgency};
 pub use power::{BatteryState, DeviceKind, PowerDevice, PowerProfile, PowerProfiles, UPower};
+pub use socket::Socket;
 pub use sway::{Sway, Workspace};
 pub use tray::{MenuEntry, MenuToggle, Tray, TrayHost, TrayItem, TrayMenu, TrayStatus};
 
@@ -77,6 +79,7 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(notifications::Service::new(Rc::clone(&shared)));
   cx.provide(mpris::Service::new(Rc::clone(&shared)));
   cx.provide(network::NetworkService::new(Rc::clone(&shared)));
+  cx.provide(socket::Sockets(Rc::clone(&shared)));
 }
 
 /// The services a context hands out.
@@ -170,6 +173,12 @@ pub trait ServicesExt {
   /// [`upower`](Self::upower) does while NetworkManager isn't there, and
   /// wakes the shell only when NetworkManager says something changed.
   fn network(&self) -> Network;
+
+  /// A connection to the Unix socket at `path`, made at once, as
+  /// Quickshell's `Socket`. Each call opens its own, which closes when
+  /// this context goes. It wakes the shell only when the other end sends
+  /// something or takes what was written.
+  fn socket(&self, path: impl Into<PathBuf>) -> Socket;
 }
 
 impl ServicesExt for Cx {
@@ -211,6 +220,10 @@ impl ServicesExt for Cx {
 
   fn network(&self) -> Network {
     network::network(self)
+  }
+
+  fn socket(&self, path: impl Into<PathBuf>) -> Socket {
+    socket::socket(self, path.into())
   }
 }
 
