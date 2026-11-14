@@ -20,6 +20,9 @@ use crate::Shared;
 /// The longest question or message passed on, in bytes. The rest is cut.
 const MAX_TEXT: usize = 4096;
 
+/// The most messages one attempt keeps; older ones go.
+pub(crate) const MAX_MESSAGES: usize = 64;
+
 /// What `cx.pam` needs from the shell: the loop and the backend.
 pub(crate) struct Service(pub(crate) Rc<Shared>);
 
@@ -200,6 +203,12 @@ impl Drop for EndOnDrop {
 impl Pam {
   /// Starts authenticating `user`, or with `None` the user the shell runs
   /// as, found by its uid. An attempt already running is aborted first.
+  ///
+  /// Ending an attempt while PAM waits for an answer, by aborting it,
+  /// starting another or dropping its context, counts as a failed login
+  /// where `pam_faillock` counts failures, and enough of them lock the
+  /// account. So take the password first, start on Enter, and answer as
+  /// soon as PAM asks.
   pub fn start(&self, user: Option<&str>) {
     self.inner.abort();
     self.inner.start(user.map(str::to_owned));
@@ -207,15 +216,17 @@ impl Pam {
 
   /// Answers the question asked, and the state turns
   /// [`Busy`](PamState::Busy). The answer is never logged, and its bytes
-  /// are zeroed once libpam has a copy. With no question waiting, it is
-  /// dropped, and that is logged.
+  /// are zeroed once handed on, but the copy made for libpam is freed
+  /// unzeroed. With no question waiting, it is dropped, and that is
+  /// logged.
   pub fn respond(&self, text: impl Into<String>) {
     self.inner.respond(Secret(text.into().into_bytes()));
   }
 
   /// Stops the attempt running: its question is refused, its thread ends
   /// and the state turns [`Idle`](PamState::Idle). With none running,
-  /// nothing changes.
+  /// nothing changes. A refused question counts as a failed login, as
+  /// [`start`](Self::start) says.
   pub fn abort(&self) {
     self.inner.abort();
   }
@@ -294,7 +305,12 @@ impl Inner {
         set(self.state, PamState::Asking { message, visible });
       }
       Arrived::Msg(Event::Tell(message)) => {
-        self.messages.try_update(|messages| messages.push(message));
+        self.messages.try_update(|messages| {
+          if messages.len() == MAX_MESSAGES {
+            messages.remove(0);
+          }
+          messages.push(message);
+        });
       }
       Arrived::Msg(Event::Done(result)) => self.finish(result),
       // The thread ended before its result, as when it panicked.
@@ -383,7 +399,14 @@ impl Backend for LibPam {
       Err(error) => return PamResult::Error(error.to_string()),
     };
     match transaction.authenticate(AuthnFlags::empty()) {
-      Ok(()) => PamResult::Success,
+      Ok(()) => {
+        // The account step is where `pam_faillock` forgets past failures.
+        // Its refusal, as for an expired password, is only logged.
+        if let Err(error) = transaction.account_management(AuthnFlags::empty()) {
+          tracing::warn!(%error, "PAM's account check refused after authenticating");
+        }
+        PamResult::Success
+      }
       Err(ErrorCode::AuthenticationError) => PamResult::Failure,
       Err(error) => PamResult::Error(error.to_string()),
     }

@@ -264,7 +264,10 @@ pub trait ServicesExt {
   ///
   /// Nothing runs until [`Pam::start`]. Each attempt runs on a thread of
   /// its own, since libpam blocks, and wakes the shell only when PAM asks
-  /// or says something, or the attempt ends.
+  /// or says something, or the attempt ends. After a success PAM's
+  /// account step runs too, which clears `pam_faillock`'s count of past
+  /// failures; its refusal is only logged. An attempt ended while PAM
+  /// waits for an answer counts as a failure, as [`Pam::start`] says.
   fn pam(&self, service: &str) -> Pam;
 
   /// The shell's polkit authentication agent, as Quickshell's

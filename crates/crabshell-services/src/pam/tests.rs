@@ -7,7 +7,8 @@ use crabshell_reactive::Runtime;
 use nonstick::{ConversationAdapter, ErrorCode};
 
 use super::{
-  Adapter, LibPam, Pam, PamMessage, PamResult, PamState, Secret, Talk, own_user, user_name, wipe,
+  Adapter, LibPam, MAX_MESSAGES, Pam, PamMessage, PamResult, PamState, Secret, Talk, own_user,
+  user_name, wipe,
 };
 use crate::ServicesExt;
 use crate::testing::{FakePam, Harness, Step, capture_logs, offline};
@@ -295,4 +296,66 @@ fn the_real_other_service_fails_at_once_without_a_question() {
     .any(|state| matches!(state, PamState::Asking { .. }));
   assert!(!asked, "{:?}", seen.borrow());
   assert_eq!(pam.messages().get_untracked(), []);
+}
+
+#[test]
+fn only_the_latest_messages_are_kept() {
+  let script = (0..MAX_MESSAGES + 5)
+    .map(|n| Step::Info(n.to_string()))
+    .collect();
+  let (mut shell, _) = shell(script);
+  let pam = shell.cx.pam("lock");
+  pam.start(Some("alice"));
+  wait(&mut shell, "result", || done(&pam));
+  let messages = pam.messages().get_untracked();
+  assert_eq!(messages.len(), MAX_MESSAGES);
+  assert_eq!(
+    messages[0],
+    PamMessage::Info(String::from("5")),
+    "the oldest go"
+  );
+}
+
+#[test]
+fn a_start_after_the_context_went_does_nothing() {
+  let (mut shell, log) = shell(vec![password()]);
+  let child = shell.cx.child();
+  let pam = child.pam("lock");
+  child.owner().dispose();
+  pam.start(Some("alice"));
+  assert_eq!(run(&mut shell, 300), 1, "no attempt wakes the loop");
+  assert!(log.lock().unwrap().is_empty(), "{:?}", log.lock().unwrap());
+}
+
+#[test]
+fn an_abort_leaves_the_loop_asleep() {
+  let (mut shell, log) = shell(vec![password()]);
+  let pam = shell.cx.pam("lock");
+  pam.start(Some("alice"));
+  wait(&mut shell, "question", || state(&pam) != PamState::Busy);
+  pam.abort();
+  // The thread ends once refused, sending nothing anyone hears.
+  let give_up = Instant::now() + Duration::from_secs(5);
+  while !logged(&log, REFUSED) {
+    assert!(Instant::now() < give_up, "the thread never ended");
+    std::thread::sleep(Duration::from_millis(10));
+  }
+  assert_eq!(run(&mut shell, 300), 1, "only the run's own deadline");
+}
+
+/// libpam never sees these, so no real account is reached.
+#[test]
+fn a_service_or_user_with_a_nul_is_refused_before_libpam() {
+  for (service, user) in [("oth\0er", "alice"), ("other", "al\0ice")] {
+    let mut config = offline();
+    config.pam = Arc::new(LibPam);
+    let mut shell = Harness::new(config);
+    let pam = shell.cx.pam(service);
+    pam.start(Some(user));
+    wait(&mut shell, "result", || done(&pam));
+    let PamState::Done(PamResult::Error(error)) = state(&pam) else {
+      panic!("{:?}", state(&pam));
+    };
+    assert!(error.contains("NUL"), "{error}");
+  }
 }
