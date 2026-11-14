@@ -718,3 +718,79 @@ fn urgent_marks_a_window_and_its_workspace_until_it_is_focused_or_closed() {
   run(&mut shell);
   assert_eq!(urgent().0, [false, false], "closed");
 }
+
+/// What `j/version` says, as Hyprland 0.57, 0.56 and 0.41 write it.
+const VERSION_0_57: &str = r#"{"branch":"","commit":"abc","version":"0.57.2","dirty":false,"tag":"v0.57.2","commits":"7000"}"#;
+const VERSION_0_56: &str = r#"{"branch":"","commit":"abc","version":"0.56.2","dirty":false,"tag":"v0.56.2","commits":"6900"}"#;
+const VERSION_0_41: &str =
+  r#"{"branch":"","commit":"abc","dirty":false,"tag":"v0.41.2","commits":"4900"}"#;
+
+#[test]
+fn focus_workspace_asks_the_version_once_and_speaks_its_syntax() {
+  for (version, two, web) in [
+    (
+      VERSION_0_57,
+      r#"dispatch hl.dsp.focus({ workspace = "2" })"#,
+      r#"dispatch hl.dsp.focus({ workspace = "name:web" })"#,
+    ),
+    (
+      VERSION_0_56,
+      "dispatch workspace 2",
+      "dispatch workspace name:web",
+    ),
+    (
+      VERSION_0_41,
+      "dispatch workspace 2",
+      "dispatch workspace name:web",
+    ),
+  ] {
+    let fake = FakeHyprland::new();
+    let (mut shell, hyprland, _events) = connect(&fake);
+    hyprland.focus_workspace("2");
+    hyprland.focus_workspace("name:web");
+    let logs = capture_logs(|| {
+      assert_eq!(
+        fake.answer(&[("j/version", version)]),
+        ["j/version"],
+        "asked once, and the switches wait for it"
+      );
+      run(&mut shell);
+    });
+    assert!(!logs.contains("says nothing"), "{version}: {logs}");
+    assert_eq!(fake.answer(&[]), [two, web], "after {version}");
+    hyprland.focus_workspace("2");
+    assert_eq!(fake.answer(&[]), [two], "the version is kept");
+  }
+}
+
+#[test]
+fn a_workspace_name_is_a_lua_string_that_runs_nothing() {
+  let fake = FakeHyprland::new();
+  let (mut shell, hyprland, _events) = connect(&fake);
+  hyprland.focus_workspace("x\" }) hl.dsp.exec_cmd(\"rm -rf ~\") --\\\n\u{7f}é");
+  fake.answer(&[("j/version", VERSION_0_57)]);
+  run(&mut shell);
+  assert_eq!(
+    fake.answer(&[]),
+    [
+      r#"dispatch hl.dsp.focus({ workspace = "x\" }) hl.dsp.exec_cmd(\"rm -rf ~\") --\\\010\127é" })"#
+    ]
+  );
+}
+
+#[test]
+fn a_version_that_says_nothing_is_logged_and_read_as_before_0_57() {
+  let fake = FakeHyprland::new();
+  let (mut shell, hyprland, _events) = connect(&fake);
+  hyprland.focus_workspace("2");
+  let logs = capture_logs(|| {
+    fake.answer(&[("j/version", "ok")]);
+    run(&mut shell);
+  });
+  assert!(logs.contains("Hyprland's version"), "{logs}");
+  assert_eq!(fake.answer(&[]), ["dispatch workspace 2"]);
+
+  let shell = Harness::new(offline());
+  let logs = capture_logs(|| shell.cx.hyprland().focus_workspace("2"));
+  assert!(logs.contains("no Hyprland to dispatch to"), "{logs}");
+}

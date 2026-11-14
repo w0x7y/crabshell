@@ -107,7 +107,8 @@ pub struct HyprlandToplevel {
   pub monitor: String,
   /// Whether it floats.
   pub floating: bool,
-  /// Whether it is fullscreen; a maximized window isn't.
+  /// Whether it is fullscreen; a maximized window isn't, except on
+  /// Hyprland 0.41 and older, which say only that it covers the screen.
   pub fullscreen: bool,
   /// Whether it has the keyboard focus.
   pub focused: bool,
@@ -151,12 +152,29 @@ pub struct Hyprland {
 }
 
 impl Hyprland {
-  /// Runs a Hyprland dispatcher, as `hyprctl dispatch` does: `command` is
-  /// the dispatcher and its arguments, such as `workspace 2`. It goes on
-  /// a connection of its own and never waits for Hyprland. Hyprland's
-  /// refusal is logged, and so is a command over 8 KiB, which isn't sent.
-  /// Under a Lua config Hyprland reads it as the argument of
-  /// `hl.dispatch`.
+  /// Switches to the workspace `target`, as Hyprland names it: a number
+  /// such as `2`, or `name:web`. Hyprland 0.57 and later read dispatches
+  /// as Lua, and earlier ones as `workspace 2`, so the first call asks
+  /// Hyprland's version, and switches wait for its answer. On 0.57 and
+  /// later `target` goes as a quoted Lua string, so no name runs as code.
+  /// Hyprland's refusal is logged.
+  pub fn focus_workspace(&self, target: &str) {
+    match &self.service {
+      Some(service) => service.focus_workspace(target),
+      None => tracing::warn!(target, "no Hyprland to dispatch to"),
+    }
+  }
+
+  /// Sends Hyprland `dispatch command`, as `hyprctl dispatch` does, on a
+  /// connection of its own, and never waits for it. Hyprland's refusal is
+  /// logged, and so is a command over 8 KiB, which isn't sent.
+  ///
+  /// Up to 0.56 `command` is a dispatcher and its arguments, such as
+  /// `workspace 2`. From 0.57 on it is a Lua expression that Hyprland runs
+  /// inside the compositor, such as `hl.dsp.focus({ workspace = "2" })`,
+  /// so never put outside text, such as a window's title or class or a
+  /// workspace's name, into it: what it says would run. Switch workspaces
+  /// with [`focus_workspace`](Self::focus_workspace), which quotes them.
   pub fn dispatch(&self, command: &str) {
     match &self.service {
       Some(service) => service.dispatch(command),
@@ -309,6 +327,21 @@ struct State {
   /// What `on_event` was given, in the order it was.
   handlers: Vec<Handler>,
   next_handler: u64,
+  /// Whether Hyprland reads a dispatch as Lua, from 0.57 on, once
+  /// `j/version` said.
+  lua: Option<bool>,
+  /// Whether `j/version` was asked and not answered yet.
+  version_asked: bool,
+  /// What `focus_workspace` was given before the version was known.
+  focusing: Vec<String>,
+}
+
+/// What a request asks Hyprland.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Asked {
+  List(Query),
+  Version,
+  Dispatch,
 }
 
 /// A config's raw-event handler.
@@ -349,8 +382,7 @@ struct Events {
 
 struct Request {
   id: u64,
-  /// The list it reads, or `None` for a dispatch.
-  query: Option<Query>,
+  asked: Asked,
   stream: UnixStream,
   reader: RegistrationToken,
   reply: Vec<u8>,
@@ -381,6 +413,9 @@ impl Service {
         urgent: HashSet::new(),
         handlers: Vec::new(),
         next_handler: 0,
+        lua: None,
+        version_asked: false,
+        focusing: Vec::new(),
       });
       match &self.shared.config.hyprland {
         None => tracing::info!(
@@ -441,7 +476,7 @@ impl Service {
       return;
     }
     *reading = Reading::Busy;
-    if !self.request(state, query.command(), Some(query)) {
+    if !self.request(state, query.command(), Asked::List(query)) {
       state.reading[query as usize] = Reading::Idle;
     }
   }
@@ -456,7 +491,7 @@ impl Service {
     let waiting = state
       .requests
       .iter()
-      .filter(|request| request.query.is_none());
+      .filter(|request| request.asked == Asked::Dispatch);
     if waiting.count() >= MAX_DISPATCHES {
       return tracing::warn!(
         command,
@@ -466,13 +501,38 @@ impl Service {
     if self.shared.config.hyprland.is_none() {
       return tracing::warn!(command, "no Hyprland to dispatch to");
     }
-    self.request(state, &request, None);
+    self.request(state, &request, Asked::Dispatch);
   }
 
-  /// Sends `command` on a connection of its own, to read `query`'s list
-  /// or, for `None`, to dispatch. `false`, logged once, if Hyprland can't
-  /// be reached.
-  fn request(self: &Rc<Self>, state: &mut State, command: &str, query: Option<Query>) -> bool {
+  fn focus_workspace(self: &Rc<Self>, target: &str) {
+    if self.shared.config.hyprland.is_none() {
+      return tracing::warn!(target, "no Hyprland to dispatch to");
+    }
+    let mut guard = self.state.borrow_mut();
+    let state = guard.as_mut().expect("invariant: started by cx.hyprland()");
+    if let Some(lua) = state.lua {
+      drop(guard);
+      return self.dispatch(&focus(lua, target));
+    }
+    if state.focusing.len() >= MAX_DISPATCHES {
+      return tracing::warn!(
+        target,
+        "64 switches wait for Hyprland's version, so this one isn't sent"
+      );
+    }
+    state.focusing.push(target.to_owned());
+    if !state.version_asked {
+      state.version_asked = self.request(state, "j/version", Asked::Version);
+      if !state.version_asked {
+        // Hyprland can't be reached, which `request` logged.
+        state.focusing.clear();
+      }
+    }
+  }
+
+  /// Sends `command` on a connection of its own. `false`, logged once, if
+  /// Hyprland can't be reached.
+  fn request(self: &Rc<Self>, state: &mut State, command: &str, asked: Asked) -> bool {
     let (Some(dir), Some(event_loop)) = (&self.shared.config.hyprland, self.shared.event_loop())
     else {
       return false;
@@ -508,7 +568,7 @@ impl Service {
     };
     state.requests.push(Request {
       id,
-      query,
+      asked,
       stream,
       reader,
       reply: Vec::new(),
@@ -645,8 +705,8 @@ impl Service {
       return self.close();
     }
     let mut chunk = [0; 64 * 1024];
-    let mut state = self.state.borrow_mut();
-    let state = state.as_mut().expect("invariant: started before reading");
+    let mut guard = self.state.borrow_mut();
+    let state = guard.as_mut().expect("invariant: started before reading");
     let Some(at) = state.requests.iter().position(|request| request.id == id) else {
       return;
     };
@@ -664,13 +724,39 @@ impl Service {
     if let Some(event_loop) = self.shared.event_loop() {
       event_loop.remove(request.reader);
     }
-    let Some(query) = request.query else {
-      let reply = String::from_utf8_lossy(&request.reply);
-      if failed.is_some() || reply.trim() != "ok" {
-        let reply = cut(reply.into_owned());
-        tracing::warn!(reply, failed, "Hyprland refused a dispatch");
+    let query = match request.asked {
+      Asked::List(query) => query,
+      Asked::Dispatch => {
+        let reply = String::from_utf8_lossy(&request.reply);
+        if failed.is_some() || reply.trim() != "ok" {
+          let reply = cut(reply.into_owned());
+          tracing::warn!(reply, failed, "Hyprland refused a dispatch");
+        }
+        return;
       }
-      return;
+      Asked::Version => {
+        state.version_asked = false;
+        let lua = failed
+          .is_none()
+          .then(|| reads_lua(&request.reply))
+          .flatten();
+        if lua.is_none() {
+          let reply = cut(String::from_utf8_lossy(&request.reply).into_owned());
+          tracing::warn!(
+            reply,
+            failed,
+            "Hyprland's version says nothing; dispatching as before 0.57"
+          );
+        }
+        let lua = lua.unwrap_or(false);
+        state.lua = Some(lua);
+        let focusing = std::mem::take(&mut state.focusing);
+        drop(guard);
+        for target in focusing {
+          self.dispatch(&focus(lua, &target));
+        }
+        return;
+      }
     };
     match failed {
       Some(why) => {
@@ -940,4 +1026,58 @@ fn cut(mut text: String) -> String {
     text.truncate(text.floor_char_boundary(MAX_TEXT));
   }
   text
+}
+
+/// The dispatch that switches to `target`, in the syntax Hyprland reads.
+fn focus(lua: bool, target: &str) -> String {
+  if lua {
+    format!("hl.dsp.focus({{ workspace = {} }})", lua_string(target))
+  } else {
+    format!("workspace {target}")
+  }
+}
+
+/// `text` as a Lua string literal: quoted, with backslashes, quotes and
+/// control characters escaped, so nothing in it runs.
+fn lua_string(text: &str) -> String {
+  let mut quoted = String::from("\"");
+  for character in text.chars() {
+    match character {
+      '\\' | '"' => {
+        quoted.push('\\');
+        quoted.push(character);
+      }
+      // Three digits, so a digit after it isn't read as part of it.
+      control if control.is_ascii_control() => {
+        quoted.push_str(&format!("\\{:03}", u32::from(control)));
+      }
+      other => quoted.push(other),
+    }
+  }
+  quoted.push('"');
+  quoted
+}
+
+/// What `j/version` says.
+#[derive(Deserialize)]
+struct Version {
+  /// Such as `0.57.2`, from 0.56 on.
+  version: Option<String>,
+  /// Such as `v0.41.2`.
+  tag: Option<String>,
+}
+
+/// Whether the Hyprland that sent `reply` to `j/version` reads dispatches
+/// as Lua, as 0.57 and later do. `None` when the reply says no version.
+fn reads_lua(reply: &[u8]) -> Option<bool> {
+  let Version { version, tag } = serde_json::from_slice(reply).ok()?;
+  let text = version.filter(|version| !version.is_empty()).or(tag)?;
+  let mut parts = text.trim_start_matches('v').split('.').map(|part| {
+    let digits = part
+      .find(|c: char| !c.is_ascii_digit())
+      .unwrap_or(part.len());
+    part[..digits].parse::<u32>().ok()
+  });
+  let (major, minor) = (parts.next()??, parts.next()??);
+  Some((major, minor) >= (0, 57))
 }
