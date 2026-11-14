@@ -333,6 +333,13 @@ struct State {
   events: Option<Events>,
   /// By [`Query`].
   reading: [Reading; 4],
+  /// By [`Query`], the burst a list's read in flight was started for, if
+  /// one was: a show waits for the rest of it. A read again after a later
+  /// event belongs to none, so no list that keeps reading holds the others.
+  burst_of: [Option<u64>; 4],
+  /// The bursts whose reads aren't all answered.
+  bursts: Vec<Burst>,
+  next_burst: u64,
   /// Requests waiting for their reply.
   requests: Vec<Request>,
   next_request: u64,
@@ -357,6 +364,14 @@ struct State {
   queued: VecDeque<(Asked, String)>,
   /// Whether the event socket was connected again since its last event.
   reconnected: bool,
+}
+
+/// The reads one batch of events, or a connect, started.
+struct Burst {
+  id: u64,
+  started: usize,
+  /// How many aren't answered yet.
+  out: usize,
 }
 
 /// What a request asks Hyprland.
@@ -429,6 +444,9 @@ impl Service {
         toplevels: root.signal(Vec::new()),
         events: None,
         reading: [Reading::Idle; 4],
+        burst_of: [None; 4],
+        bursts: Vec::new(),
+        next_burst: 0,
         requests: Vec::new(),
         next_request: 0,
         request_failure_logged: false,
@@ -491,20 +509,33 @@ impl Service {
       reader,
       lines: Lines::default(),
     });
+    let burst = state.burst();
     for query in Query::ALL {
-      self.read(state, query);
+      self.read(state, query, burst);
     }
     true
   }
 
   /// Reads `query`'s list, or once more after the read under way.
-  fn read(self: &Rc<Self>, state: &mut State, query: Query) {
+  fn read(self: &Rc<Self>, state: &mut State, query: Query, burst: u64) {
     let reading = &mut state.reading[query as usize];
     if *reading != Reading::Idle {
       *reading = Reading::Stale;
       return;
     }
     *reading = Reading::Busy;
+    state.burst_of[query as usize] = Some(burst);
+    match state.bursts.iter_mut().find(|open| open.id == burst) {
+      Some(open) => {
+        open.started += 1;
+        open.out += 1;
+      }
+      None => state.bursts.push(Burst {
+        id: burst,
+        started: 1,
+        out: 1,
+      }),
+    }
     self.request(state, query.command(), Asked::List(query));
   }
 
@@ -579,7 +610,10 @@ impl Service {
     }
     if !self.send(state, command, asked) {
       match asked {
-        Asked::List(query) => state.reading[query as usize] = Reading::Idle,
+        Asked::List(query) => {
+          state.reading[query as usize] = Reading::Idle;
+          state.answered(query);
+        }
         Asked::Status => {
           // The switches waiting for it go, as a dispatch would.
           state.status_asked = false;
@@ -715,11 +749,12 @@ impl Service {
     if urgency {
       state.show();
     }
+    let burst = state.burst();
     for query in Query::ALL
       .into_iter()
       .filter(|&query| stale[query as usize])
     {
-      self.read(state, query);
+      self.read(state, query, burst);
     }
     drop(guard);
     for event in events {
@@ -845,9 +880,13 @@ impl Service {
       }
       None => state.raw.apply(query, &request.reply),
     }
-    let reading = std::mem::replace(&mut state.reading[query as usize], Reading::Idle);
-    if reading == Reading::Stale {
-      self.read(state, query);
+    state.answered(query);
+    if state.reading[query as usize] == Reading::Stale {
+      // For a later event, so no show waits for it.
+      state.reading[query as usize] = Reading::Busy;
+      self.request(state, query.command(), Asked::List(query));
+    } else {
+      state.reading[query as usize] = Reading::Idle;
     }
     state.show();
   }
@@ -900,6 +939,8 @@ impl Service {
     let events = state.events.take();
     let requests = std::mem::take(&mut state.requests);
     state.reading = [Reading::Idle; 4];
+    state.burst_of = [None; 4];
+    state.bursts.clear();
     state.queued.clear();
     state.status_asked = false;
     state.focusing.clear();
@@ -914,11 +955,31 @@ impl Service {
 }
 
 impl State {
+  /// A new burst of reads.
+  fn burst(&mut self) -> u64 {
+    self.next_burst += 1;
+    self.next_burst
+  }
+
+  /// `query`'s read for a burst, if it was one, is answered.
+  fn answered(&mut self, query: Query) {
+    let Some(id) = self.burst_of[query as usize].take() else {
+      return;
+    };
+    if let Some(at) = self.bursts.iter().position(|open| open.id == id) {
+      self.bursts[at].out -= 1;
+      if self.bursts[at].out == 0 {
+        self.bursts.remove(at);
+      }
+    }
+  }
+
   /// Builds the lists from what Hyprland last said, and sets each that
-  /// changed. Nothing shows while a read is under way, so a frame never
-  /// mixes the workspaces of one moment with the monitors of another.
+  /// changed. Nothing shows while a burst has some reads answered and
+  /// others not, so a frame never mixes one list's answer to an event
+  /// with another's from before it.
   fn show(&self) {
-    if self.reading.iter().any(|reading| *reading != Reading::Idle) {
+    if self.bursts.iter().any(|open| open.out < open.started) {
       return;
     }
     let raw = &self.raw;

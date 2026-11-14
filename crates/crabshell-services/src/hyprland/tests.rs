@@ -343,9 +343,16 @@ fn missing_sockets_leave_the_lists_empty_and_are_logged_once() {
     hyprland: Some(dir.path().to_owned()),
     ..offline()
   });
-  let (_, logs) = capture_logs_with(|| shell.cx.hyprland());
+  let (hyprland, logs) = capture_logs_with(|| shell.cx.hyprland());
   let failures = logs.matches("can't send Hyprland a request").count();
   assert_eq!(failures, 1, "{logs}");
+  let service = hyprland.service.as_ref().expect("provided");
+  let bursts = service
+    .state
+    .borrow()
+    .as_ref()
+    .map(|state| state.bursts.len());
+  assert_eq!(bursts, Some(0), "reads that went nowhere wait for nothing");
   assert_eq!(run(&mut shell), 1, "nothing wakes the shell");
 }
 
@@ -425,21 +432,25 @@ fn events_during_a_read_read_once_more_after_it() {
   }
   let monitors = MONITORS.replacen(r#"{"id":1,"name":"1"}"#, r#"{"id":3,"name":"3"}"#, 1);
   for request in held {
-    request.answer(WORKSPACES);
+    let reply = if request.command == "j/monitors" {
+      monitors.as_str()
+    } else {
+      WORKSPACES
+    };
+    request.answer(reply);
   }
   run(&mut shell);
-  assert_eq!(
-    hyprland.workspaces().get_untracked(),
-    expected_workspaces(),
-    "the answers in flight wait for the read that catches up"
+  assert!(
+    hyprland.workspaces().get_untracked()[2].focused,
+    "the answers in flight show, as a later event's reads hold nothing"
   );
   assert_eq!(
-    fake.answer(&[("j/workspaces", WORKSPACES), ("j/monitors", &monitors)]),
+    fake.answer(&replies()),
     ["j/workspaces", "j/monitors"],
     "then one more read catches up"
   );
   run(&mut shell);
-  assert!(hyprland.workspaces().get_untracked()[2].focused);
+  assert_eq!(hyprland.workspaces().get_untracked(), expected_workspaces());
   assert!(fake.requests().is_empty());
 }
 
@@ -1109,4 +1120,48 @@ fn at_most_4096_windows_are_kept_urgent() {
   shell.retry_until("the urgent events read", || urgent() >= MAX_LIST, |_| {});
   run(&mut shell);
   assert_eq!(urgent(), MAX_LIST);
+}
+
+/// A window whose title changes faster than Hyprland answers `j/clients`
+/// keeps the windows reading, which holds no other list off the screen.
+#[test]
+fn a_list_that_keeps_reading_holds_no_other_off_the_screen() {
+  let fake = FakeHyprland::new();
+  let (mut shell, hyprland, mut events) = connect(&fake);
+  events.write_all(b"workspacev2>>3,3\n").expect("events");
+  run(&mut shell);
+  let held = fake.requests();
+  events.write_all(b"windowtitlev2>>5a1,a\n").expect("events");
+  run(&mut shell);
+  let mut clients = fake.requests();
+  assert_eq!(clients.len(), 1);
+  let monitors = MONITORS.replacen(r#"{"id":1,"name":"1"}"#, r#"{"id":3,"name":"3"}"#, 1);
+  for request in held {
+    let reply = if request.command == "j/monitors" {
+      monitors.clone()
+    } else {
+      WORKSPACES.to_owned()
+    };
+    request.answer(&reply);
+  }
+  run(&mut shell);
+  assert!(
+    hyprland.workspaces().get_untracked()[2].focused,
+    "the switch shows while the windows are read for a later event"
+  );
+  for round in 0..20 {
+    events.write_all(b"windowtitlev2>>5a1,b\n").expect("events");
+    run(&mut shell);
+    let request = clients.pop().expect("a read of the windows");
+    let title = format!("title {round}");
+    request.answer(&CLIENTS.replacen("vim", &title, 1));
+    run(&mut shell);
+    clients = fake.requests();
+    assert_eq!(clients.len(), 1, "round {round}");
+    let toplevels = hyprland.toplevels().get_untracked();
+    assert_eq!(
+      toplevels[0].title, title,
+      "round {round}: each answer shows"
+    );
+  }
 }
