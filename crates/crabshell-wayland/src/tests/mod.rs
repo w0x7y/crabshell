@@ -3,6 +3,7 @@
 mod buffers;
 mod events;
 mod ext_toplevels;
+mod focus_grab;
 mod foreign_toplevels;
 mod global_shortcuts;
 mod keyboard;

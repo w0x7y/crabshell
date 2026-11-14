@@ -127,6 +127,8 @@ struct Knobs {
   inhibit: Signal<bool>,
   /// Whether the compositor says it gives them.
   inhibited: Signal<bool>,
+  /// Whether every bar holds the focus, in one grab.
+  grab: Signal<bool>,
 }
 
 /// A popup with two entries: the first opens another menu beside it, and
@@ -185,6 +187,7 @@ fn bar(cx: &Cx, output: &str, knobs: Knobs) -> Window {
     .inhibit_idle(move || knobs.awake.get())
     .inhibit_shortcuts(move || knobs.inhibit.get())
     .shortcuts_inhibited(knobs.inhibited)
+    .focus_grab(knobs.grab)
     .on_key(move |_, event| {
       knobs.keys.update(|keys| keys.push(event.clone()));
       false
@@ -314,6 +317,7 @@ impl Shell {
       awake: cx.signal(false),
       inhibit: cx.signal(false),
       inhibited: cx.signal(false),
+      grab: cx.signal(false),
     };
     let mut event_loop = sway.connect();
     let built = Rc::new(RefCell::new(Vec::new()));
@@ -764,6 +768,48 @@ fn global_shortcuts_without_hyprland_are_logged_once_and_the_bar_still_draws() {
   let text = logs.text();
   assert_eq!(
     text.matches("lacks hyprland-global-shortcuts-v1").count(),
+    1,
+    "{text}"
+  );
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_focus_grab_without_hyprland_is_logged_once_and_left_alone() {
+  // Sway lacks hyprland-focus-grab-v1.
+  let (logs, _logging) = capture_logs();
+  let sway = Sway::start();
+  let mut shell = Shell::new(&sway);
+  sway.msg(&["create_output"]);
+  let first = shell.wait_for_bar("HEADLESS-1");
+  shell.wait_for_bar("HEADLESS-2");
+  let grab = shell.knobs.grab;
+  grab.set(true);
+  settle(&mut shell.event_loop);
+  // Asking wakes nothing: one dispatch sleeps the whole time.
+  let started = Instant::now();
+  shell
+    .event_loop
+    .dispatch(Some(Duration::from_secs(2)))
+    .expect("the connection works");
+  let slept = started.elapsed();
+  assert!(slept >= Duration::from_millis(1900), "woke after {slept:?}");
+
+  // One of the bars goes with its output, and the other still draws.
+  sway.msg(&["output", "HEADLESS-2", "unplug"]);
+  let platform = shell.event_loop.platform();
+  let before = platform.window_info(first).expect("held").commits;
+  shell.knobs.label.set(String::from("still drawing"));
+  run_until(&mut shell.event_loop, "a frame and one bar", |platform| {
+    platform.windows().count() == 1
+      && platform
+        .window_info(first)
+        .is_some_and(|info| info.commits > before)
+  });
+  assert!(grab.get_untracked(), "nothing cleared it");
+  let text = logs.text();
+  assert_eq!(
+    text.matches("lacks hyprland-focus-grab-v1").count(),
     1,
     "{text}"
   );

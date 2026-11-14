@@ -34,6 +34,7 @@ use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 use crate::blur::Effects;
 use crate::clipboard::Offered;
 use crate::events::{self, Event, Listener};
+use crate::focus_grab::FocusGrabs;
 use crate::foreign_toplevels::Foreign;
 use crate::global_shortcuts::GlobalShortcuts;
 use crate::idle::Idle;
@@ -304,7 +305,7 @@ pub struct Platform {
   pub(crate) connection: Connection,
   pub(crate) qh: QueueHandle<Platform>,
   handle: LoopHandle<'static, Platform>,
-  signal: LoopSignal,
+  pub(crate) signal: LoopSignal,
   runtime: Runtime,
   pub(crate) registry: RegistryState,
   pub(crate) compositor: CompositorState,
@@ -336,6 +337,8 @@ pub struct Platform {
   pub(crate) shortcuts_inhibit: ShortcutsInhibit,
   /// The shortcuts the compositor binds, and their watches.
   pub(crate) global_shortcuts: GlobalShortcuts,
+  /// The windows' focus grabs.
+  pub(crate) focus_grabs: FocusGrabs,
   /// Every program's windows, once a watch asks.
   pub(crate) foreign: Foreign,
   /// The workspaces, once a watch asks.
@@ -401,6 +404,7 @@ impl Platform {
     );
     let shortcuts_inhibit = ShortcutsInhibit::new(globals.bind(&qh, 1..=1, ()).ok());
     let global_shortcuts = GlobalShortcuts::new(globals.bind(&qh, 1..=1, ()).ok());
+    let focus_grabs = FocusGrabs::new(globals.bind(&qh, 1..=1, ()).ok());
     let effects = Effects {
       manager: globals.bind(&qh, 1..=1, ()).ok(),
       blur: false,
@@ -416,6 +420,7 @@ impl Platform {
       idle_inhibit = idle.inhibit.is_some(),
       shortcuts_inhibit = shortcuts_inhibit.manager.is_some(),
       global_shortcuts = global_shortcuts.manager.is_some(),
+      focus_grab = focus_grabs.manager.is_some(),
       "bound the compositor's globals"
     );
     let mut platform = Platform {
@@ -443,6 +448,7 @@ impl Platform {
       idle,
       shortcuts_inhibit,
       global_shortcuts,
+      focus_grabs,
       foreign: Foreign::default(),
       windowsets: Windowsets::default(),
       locks,
@@ -731,6 +737,7 @@ impl Platform {
         }
       }
     }
+    self.update_focus_grabs();
     self.sync_captures();
     self.paced_captures(&drawn);
     self.sync_text_inputs();
