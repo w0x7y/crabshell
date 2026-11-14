@@ -508,6 +508,38 @@ let offset = cx.animate(move || picked.get() as f32 * 44.0, Transition::new(250)
               <td><code>cx.quantize_colors(path, depth)</code></td>
               <td>an image's main colors, as for a theme from a wallpaper</td>
             </tr>
+            <tr>
+              <td><code>cx.session_lock(SessionLock::new())</code></td>
+              <td>
+                locks the session while <code>locked</code> is true, with a
+                surface on every monitor. keep <code>locked</code> in a json
+                file under <code>$XDG_RUNTIME_DIR</code> so a crash doesn't lose
+                it
+              </td>
+            </tr>
+            <tr>
+              <td><code>cx.pam("login")</code></td>
+              <td>
+                checks a password: <code>start</code>, then
+                <code>respond</code> when it asks. take the password first, as
+                ending an attempt mid-question counts as a failed login
+              </td>
+            </tr>
+            <tr>
+              <td><code>cx.greetd()</code></td>
+              <td>
+                a greeter's login: <code>create_session</code>,
+                <code>respond</code>, <code>start_session</code>, then
+                <code>cx.exit(0)</code>
+              </td>
+            </tr>
+            <tr>
+              <td><code>cx.polkit_agent()</code></td>
+              <td>
+                the shell answers polkit: <code>request()</code> for the dialog,
+                <code>respond</code> and <code>cancel</code>
+              </td>
+            </tr>
           </tbody>
         </table>
       </div>

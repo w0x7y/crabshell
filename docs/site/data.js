@@ -197,19 +197,21 @@ const PHASES = [
   {
     n: 11,
     title: "lock screen, greeter and polkit",
-    state: "next",
-    when: "up next",
+    state: "done",
+    when: "passed 14 nov",
     items: [
-      ["no", "session lock surfaces with pam"],
-      ["no", "a greetd greeter"],
-      ["no", "a polkit agent"],
+      ["yes", "session lock surfaces with pam"],
+      ["yes", "a greetd greeter"],
+      ["yes", "a polkit agent"],
+      ["yes", "exit check: the lock example on headless sway"],
+      ["no", "checked by hand against the real pam, greetd and polkit"],
     ],
   },
   {
     n: 12,
     title: "more compositors",
-    state: "later",
-    when: "after v0.1",
+    state: "next",
+    when: "up next",
     items: [
       ["no", "hyprland: workspaces, monitors, focus grab, global shortcuts"],
       ["no", "i3 and niri"],
@@ -403,8 +405,8 @@ const Q = {
     ["WiredDevice", "part", "a NetworkDevice of kind Ethernet"],
   ],
   "Quickshell.Services.Greetd": [
-    ["Greetd", "no", 11],
-    ["GreetdState", "no", 11],
+    ["Greetd", "yes", "cx.greetd()"],
+    ["GreetdState", "yes", "GreetState"],
   ],
   "Quickshell.Services.Mpris": [
     ["Mpris", "yes", "cx.mpris()"],
@@ -420,9 +422,9 @@ const Q = {
     ["NotificationUrgency", "yes", "Urgency"],
   ],
   "Quickshell.Services.Pam": [
-    ["PamContext", "no", 11],
-    ["PamError", "no", 11],
-    ["PamResult", "no", 11],
+    ["PamContext", "yes", "cx.pam(service)"],
+    ["PamError", "part", "PamResult::Error with PAM's text"],
+    ["PamResult", "yes", "PamResult"],
   ],
   "Quickshell.Services.Pipewire": [
     [
@@ -446,8 +448,8 @@ const Q = {
     ["PwObjectTracker", "na", "every node is followed"],
   ],
   "Quickshell.Services.Polkit": [
-    ["AuthFlow", "no", 11],
-    ["PolkitAgent", "no", 11],
+    ["AuthFlow", "yes", "AuthRequest, with respond, cancel and pick_identity"],
+    ["PolkitAgent", "yes", "cx.polkit_agent()"],
   ],
   "Quickshell.Services.SystemTray": [
     ["Category", "no", "the item's category isn't read yet"],
@@ -472,8 +474,8 @@ const Q = {
     ["ShortcutInhibitor", "no", 12],
     ["Toplevel", "yes", "Toplevel"],
     ["ToplevelManager", "yes", "cx.toplevels()"],
-    ["WlSessionLock", "no", 11],
-    ["WlSessionLockSurface", "no", 11],
+    ["WlSessionLock", "yes", "SessionLock, shown with cx.session_lock"],
+    ["WlSessionLockSurface", "yes", "the surface builder, one per output"],
     ["WlrKeyboardFocus", "yes", "KeyboardFocus: none, exclusive and on demand"],
     ["WlrLayer", "yes", "Layer: background, bottom, top and overlay"],
     [

@@ -17,7 +17,7 @@ Nothing from Quickshell carries over. Users write their shell as a Rust crate th
 | Rendering          | Own CPU renderer, GPU later                | v0.1 had no gradients, shadows or blur. Phase 8 added gradients and shadows, and asks the compositor to blur.                                 |
 | Scope              | Everything Quickshell does, in milestones  | v0.1 is a bar with workspaces, clock, tray and volume. Notifications, launchers, lock screens, OSDs and the rest come in the phases after it. |
 | Compositors        | Sway and other wlroots compositors first   | Hyprland and the rest come after v0.1.                                                                                                        |
-| C libraries        | Fine when the system ships them            | Links libpulse, fontconfig and libxkbcommon at runtime. Wayland itself is pure Rust.                                                          |
+| C libraries        | Fine when the system ships them            | Links libpulse, fontconfig, libxkbcommon and libpam at runtime. Wayland itself is pure Rust.                                                  |
 | Quickshell configs | No compatibility, no migration             | Users rewrite their configs by hand.                                                                                                          |
 | License            | MIT or Apache-2.0                          | Agents write fresh code and never translate Quickshell's LGPL-3.0 source.                                                                     |
 | Team               | You plus AI agents, you new to Rust        | The spec spells out every rule, and each phase ends in a check you can run yourself.                                                          |
@@ -267,6 +267,14 @@ API rules settled in Phase 10, launchers and system integration:
 - `ScreencopyView::new(source)` shows a `CaptureSource`, an output by name or a window by its `Toplevel` id, once or `live`, sized by its style and drawn with a `fit`; every property takes a value or a closure.
 - The prelude adds `untrack`, `Process`, `IntoCommand`, `Socket`, `FileView`, `DesktopEntries`, `DesktopEntry`, `DesktopAction`, `Toplevels`, `Toplevel`, `ScreencopyView` and `CaptureSource`. The overview example shows them together.
 
+API rules settled in Phase 11, lock screen, greeter and polkit:
+
+- `cx.session_lock(SessionLock::new().locked(...).style(...).surface(|cx, output| ...))` comes from `ShellExt` and gives a `ReadSignal<bool>`, `true` while the compositor says the session is locked. Every property takes a value or a closure. Turning `locked` false is the only unlock, and the signal turns false once the compositor has it, so a config may exit then. If the lock's context goes or the shell exits or crashes, the session stays locked. So keep `locked` in a `cx.json_file` under `$XDG_RUNTIME_DIR`: the shell after a reload or a crash locks again, and a reboot starts unlocked. `cx.persist` covers a reload only.
+- `cx.pam(service)` gives a `Pam` for a file in `/etc/pam.d`: `start(user)`, `None` for the shell's own user, `respond(text)` and `abort()`, with `state()` and `messages()` signals. Take the password first, start on Enter and answer as soon as PAM asks: an attempt ended while PAM waits for an answer counts as a failed login where `pam_faillock` counts them.
+- `cx.greetd()` gives `Greetd` for a greeter: `create_session(user)`, `respond(answer)`, `start_session(command, env)` and `cancel()`, with `state()` and `messages()` signals. `cx.exit(code)` comes from `ShellExt` and ends the shell with that status, as a greeter does once its session starts.
+- `cx.polkit_agent()` makes the shell the session's polkit agent and gives a `PolkitAgent`: `request()`, a `ReadSignal<Option<AuthRequest>>`, and `respond(text)`, `cancel()` and `pick_identity(name)`.
+- The prelude adds `SessionLock`, `Pam`, `PamState`, `PamResult`, `PamMessage`, `Greetd`, `GreetState`, `GreetMessage`, `PolkitAgent`, `AuthRequest` and `AuthState`. The lock example shows the lock with PAM, and the greeter example greetd.
+
 ## Process model and reload
 
 Two processes run. The `crabshell` CLI, installed once per machine, is the supervisor. The shell is the user's own compiled binary, which links the `crabshell` library.
@@ -326,6 +334,7 @@ Rules settled for IPC and the supervisor (Phase 10):
 - `crabshell ipc` finds the socket the same way, gives the exchange 5 s, reads the reply to its newline, and exits 0, 1 for an error or no shell, or 2 for bad arguments.
 - The supervisor starts the shell with glibc's `mmap` threshold fixed at 128 KiB (`GLIBC_TUNABLES=glibc.malloc.mmap_threshold=131072`, added to the user's own unless that sets it). Without it, glibc raises the threshold to the size of each large block freed, so a second decoded wallpaper's buffers stay in the heap: 41 MiB for a 4K image, measured. The shell's own spawns take it back out, and the supervisor's socket variable too.
 - Before it exits for a reload or a lost compositor, the shell stops every program `cx.process` started, since `exit` skips the drops that would. On SIGTERM or SIGINT, as from `crabshell run` on Ctrl-C or a session ending, it does the same and removes its IPC socket, then dies by that signal as before. The handlers come from `signal-hook` and only write to a pipe the loop reads: blocking the signals for a signalfd would block them in every program the shell starts too, which inherit the mask.
+- `cx.exit(code)` does the same, then exits with `code`. glibc's `exit` drops the services as well, which stops the programs, but Rust doesn't promise that, so the stop stays explicit.
 
 Panic handling inside the shell:
 
@@ -411,6 +420,7 @@ v0.1 shipped ten widgets, Phase 7 added five, Phase 10 one, and the phases after
 | `Menu`           | A vertical list of buttons built from a DBusMenu layout, with separators, checkmarks and submenus as nested popups.           |
 | `Tray`           | One icon button per tray item, each opening its `Menu`. Built only from the widgets above.                                    |
 | `ScreencopyView` | An output or a window, captured once or live, sized by its style.                                                             |
+| `SessionLock`    | A lock screen with a surface on every output while `locked`, shown with `cx.session_lock`.                                    |
 
 ### Layout
 
@@ -591,6 +601,7 @@ Rules settled while building `crabshell-render` (Phase 8):
 | `ext_idle_notifier_v1`, `zwp_idle_inhibit_manager_v1`                                                                                                                     | Idle watches and inhibitors (Phase 9)            |
 | `zwlr_foreign_toplevel_manager_v1`                                                                                                                                        | Every program's windows (Phase 10)               |
 | `ext_image_copy_capture_manager_v1`, `ext_output_image_capture_source_manager_v1`, `ext_foreign_toplevel_list_v1`, `ext_foreign_toplevel_image_capture_source_manager_v1` | `ScreencopyView` (Phase 10)                      |
+| `ext_session_lock_manager_v1`                                                                                                                                             | `cx.session_lock` (Phase 11)                     |
 
 ### Event loop
 
@@ -710,6 +721,15 @@ Rules settled while building `crabshell-wayland` (Phase 10):
 - `buffer_constraints` starts a new session; any other failure is tried again once. A stopped source ends the session and keeps the last frame; an output announced again gets a new session.
 - Window views pair an `ext_foreign_toplevel_handle_v1` with the wlr toplevel of the same app id and title, oldest unpaired first, freeing a pair whose wlr toplevel went. Two windows with the same app id and title may swap.
 
+Rules settled while building `crabshell-wayland` (Phase 11):
+
+- The lock binds `ext_session_lock_manager_v1` version 1 at startup. Without it, the first lock logs that once and nothing locks.
+- A lock surface is an ordinary window with the path `SessionLock[DP-1]`, made for every output as the session locks and for each output added while locked. Its configure is acked at once, and nothing is committed before it. A widget on a lock surface can't open popups; that is logged once per popup.
+- The platform checks `locked` after each flush, and flushes again if it locked, unlocked or built surfaces. If `locked` turns false before the compositor answers, the answer decides: `unlock_and_destroy` after `locked`, `destroy` after `finished`. `finished` drops the surfaces and is logged, and the lock asks again only once `locked` turns false and true.
+- After `unlock_and_destroy` the signal turns false only when a `wl_display.sync` comes back, so a config that exits on it never leaves the unlock unsent.
+- A lock whose context goes while it holds the session keeps its protocol object, so the session stays locked, and after the shell exits too. A surface builder that panics leaves that output showing only the lock's style, and a `locked` binding that panics is disabled, never read as an unlock.
+- On headless Sway, `locked` arrives 3 to 135 ms after the request, a second client is refused with `finished`, and a locker that dies leaves red on every output until another client locks.
+
 ## Services
 
 v0.1 had four services in `crabshell-services`, and Phase 9 added six; the phases after it add Quickshell's others (see "Beyond v0.1"). Each one owns its connection, runs on the main thread, and hands out `ReadSignal`s plus a few methods. Every service is created on first use and shared by all bars, so two outputs never mean two connections.
@@ -728,6 +748,9 @@ v0.1 had four services in `crabshell-services`, and Phase 9 added six; the phase
 | Notifications     | `list()`, the history, and `popups()`, the ones still showing. `dismiss`, `invoke`, `clear`.                                                                                                                                                                                                      | The shell serves `org.freedesktop.Notifications` on the session bus | `zbus`                        |
 | Desktop entries   | `applications()` gives `DesktopEntry`s with name, comment, icon, exec, categories, keywords, actions and `no_display`. `lookup(app_id)`, `launch(id)`, `launch_action(id, action)`.                                                                                                               | `.desktop` files in the XDG data directories                        | `inotify`, `rustix`           |
 | Programs          | `cx.process(command)` gives a `Process`: `running`, `exit_status`, `stdout`, `stderr`, `on_line`, `write`, `close_stdin`, `kill`, `restart`. `cx.exec_detached(command)`.                                                                                                                         | Programs the shell starts                                           | `rustix`                      |
+| PAM               | `cx.pam(service)` gives a `Pam`: `state()` and `messages()`. `start(user)`, `respond(text)`, `abort()`.                                                                                                                                                                                           | libpam, a thread per attempt                                        | `nonstick`                    |
+| greetd            | `state()` and `messages()`. `create_session(user)`, `respond(answer)`, `start_session(command, env)`, `cancel()`.                                                                                                                                                                                 | greetd's socket at `$GREETD_SOCK`                                   | Own framing with `serde_json` |
+| polkit agent      | `request()` gives an `Option<AuthRequest>` with the action, message, icon, identities, state, info and errors. `respond(text)`, `cancel()`, `pick_identity(name)`.                                                                                                                                | polkit on the system bus, and its `polkit-agent-helper-1`           | `zbus`                        |
 | Files and sockets | `cx.file_view(path)`, `cx.json_file(path, default)`, `cx.socket(path)`.                                                                                                                                                                                                                           | Files and Unix sockets                                              | `inotify`, `serde_json`       |
 
 ### Workspaces
@@ -808,6 +831,14 @@ Rules settled while building `crabshell-services` (Phase 10):
 - Desktop entries come from `applications/` under `$XDG_DATA_HOME` and each of `$XDG_DATA_DIRS`, recursively, links followed and each directory read once. The first file with an ID decides it, even one left out for `Hidden`, its type or a missing `TryExec`. `NoDisplay` and `OnlyShowIn`/`NotShowIn` against `XDG_CURRENT_DESKTOP` set `no_display`. Localized keys follow `LC_ALL`, `LC_MESSAGES` and `LANG` in the spec's order. Exec is parsed strictly by the spec's quoting rules with no shell: `%f %F %u %U` and the deprecated codes are dropped, `%i`, `%c` and `%k` expand, and a malformed line or an unknown code runs nothing. A `Terminal` entry runs in `xdg-terminal-exec`; one that only D-Bus can start is refused for now.
 - The list is read on the loop's next turn after the first call, and again once the files have been still for 100 ms after a change to an entry, a directory or a link; the timer exists only after a change. Files over 64 KiB, lines over 4 KiB, more than 10,000 entries and anything but regular files are left out. `lookup` tries the ID, then the ID ignoring case, then `StartupWMClass`, then the ID's last dotted part.
 
+Rules settled while building `crabshell-services` (Phase 11):
+
+- greetd: one connection, made at the first request and again after one is lost, with one request in flight, as greetd-ipc(7) has it. A message is its length as a native-endian `u32`, then JSON, at most 64 KiB; texts are cut to 4 KiB and the last 64 informative messages kept. Informative and error messages are acknowledged at once, and an error on a create or an answer cancels the attempt so another can begin. A new session cancels the one greetd holds first, and replies to an attempt a queued cancel ends show nothing. `respond` goes only while greetd asks and `start_session` only once authenticated; otherwise they are dropped and logged. An answer is written straight into one buffer, zeroed once sent, and never logged.
+- PAM: each attempt runs `pam_authenticate` on a thread of its own through `nonstick`, and its channel is in the loop only while it runs. A success also runs the account step, where `pam_faillock` forgets past failures; its refusal is only logged. An abort, a second start or the asking context going refuses the waiting question, which ends the thread; under `pam_faillock` that counts as a failed login. `start(None)` finds the user by uid in `/etc/passwd`. PAM's auth error is `Failure`, any other `Error`. Texts are cut to 4 KiB and the last 64 messages kept, and an answer with a NUL is refused before libpam. Answers are zeroed once handed on, except the copy nonstick makes for libpam.
+- polkit: the first `cx.polkit_agent()` registers as `unix-session` from `XDG_SESSION_ID`, else `unix-process`, at `/org/crabshell/PolkitAgent`, and again whenever polkit's name gets a new owner; a refusal is logged. Only the unique name that took the registration may call; others get `AccessDenied`. One request shows and 8 wait; past that, or with a bad cookie or no known user, polkit gets `Failed`.
+- polkit: each try runs `polkit-agent-helper-1` as the first identity, the session's user first, with the cookie on its input and a line per prompt or message. `SUCCESS` answers polkit with an empty return; after 3 failures it gets `Failed`, and a helper that can't start answers `Failed` at once. Answers with a line break or NUL are refused, and a cancel kills the helper. Texts are cut to 4 KiB, with at most 64 identities.
+- No test reaches a real account: PAM's tests run a scripted backend, and the one libpam test uses `other` and skips unless it is `pam_deny` only. polkit's run on a private bus with a fake helper, and greetd's against a fake socket.
+
 Rules settled while building the `Tray` widget (Phase 4, step 5):
 
 - `Tray::new()` takes `icon_size` (16 by default) and `menu_style`, the menu popup's style (light text on dark gray by default). Both take a value or a closure.
@@ -820,24 +851,24 @@ Rules settled while building the `Tray` widget (Phase 4, step 5):
 
 One Cargo workspace with seven crates. Each crate owns one area, so an agent can work inside one without touching the others.
 
-| Crate                | Owns                                                                                                                               | Depends on           | Main external crates                                                                                 |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | -------------------- | ---------------------------------------------------------------------------------------------------- |
-| `crabshell-reactive` | Signals, memos, effects, owners, flush                                                                                             | none                 | `slotmap`                                                                                            |
-| `crabshell-ui`       | `Cx`, widgets, styles, layout, text layout, hit testing, focus, invalidation                                                       | reactive             | `taffy`, `cosmic-text`, `fontconfig`, `unicode-segmentation`                                         |
-| `crabshell-render`   | Drawing into pixmaps, damage tracking, glyphs, icons, images                                                                       | ui                   | `tiny-skia`, `resvg`, `png`, `swash`, `zune-jpeg`, `gif`, `image-webp`                               |
-| `crabshell-wayland`  | Event loop, windows, popups, outputs, pointer, keyboard, text input, clipboard, shm buffers, idle, toplevels                       | reactive, ui, render | `smithay-client-toolkit` (with `xkbcommon`), `calloop`, `wayland-protocols`, `wayland-protocols-wlr` |
-| `crabshell-services` | Workspaces, tray, audio, clock, power, Bluetooth, network, media players, notifications, desktop entries, programs, files, sockets | reactive, ui         | `zbus`, `serde_json`, `libpulse-binding`, `jiff`, `calloop`, `serde`, `inotify`, `rustix`            |
-| `crabshell`          | Public API, `run()`, `prelude`, `cx.persist`, `cx.ipc`, `cx.quantize_colors`, `cx.toplevels`                                       | all of the above     | `serde`, `serde_json`, tracing-subscriber, `signal-hook`                                             |
-| `crabshell-cli`      | The `crabshell` binary with `init`, `run`, `check`, `ipc` and the supervisor                                                       | none                 | `calloop`, `rustix`, `serde_json`, `inotify`, `zbus`                                                 |
+| Crate                | Owns                                                                                                                                                    | Depends on           | Main external crates                                                                                  |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------- |
+| `crabshell-reactive` | Signals, memos, effects, owners, flush                                                                                                                  | none                 | `slotmap`                                                                                             |
+| `crabshell-ui`       | `Cx`, widgets, styles, layout, text layout, hit testing, focus, invalidation                                                                            | reactive             | `taffy`, `cosmic-text`, `fontconfig`, `unicode-segmentation`                                          |
+| `crabshell-render`   | Drawing into pixmaps, damage tracking, glyphs, icons, images                                                                                            | ui                   | `tiny-skia`, `resvg`, `png`, `swash`, `zune-jpeg`, `gif`, `image-webp`                                |
+| `crabshell-wayland`  | Event loop, windows, popups, outputs, pointer, keyboard, text input, clipboard, shm buffers, idle, toplevels, session lock                              | reactive, ui, render | `smithay-client-toolkit` (with `xkbcommon`), `calloop`, `wayland-protocols`, `wayland-protocols-wlr`  |
+| `crabshell-services` | Workspaces, tray, audio, clock, power, Bluetooth, network, media players, notifications, desktop entries, programs, files, sockets, PAM, greetd, polkit | reactive, ui         | `zbus`, `serde_json`, `libpulse-binding`, `jiff`, `calloop`, `serde`, `inotify`, `rustix`, `nonstick` |
+| `crabshell`          | Public API, `run()`, `prelude`, `cx.persist`, `cx.ipc`, `cx.quantize_colors`, `cx.toplevels`, `cx.session_lock`, `cx.exit`                              | all of the above     | `serde`, `serde_json`, tracing-subscriber, `signal-hook`                                              |
+| `crabshell-cli`      | The `crabshell` binary with `init`, `run`, `check`, `ipc` and the supervisor                                                                            | none                 | `calloop`, `rustix`, `serde_json`, `inotify`, `zbus`                                                  |
 
-`Cx` lives in `crabshell-ui` and carries a map of services keyed by type. `crabshell-services` adds `cx.sway()`, `cx.audio()`, `cx.tray()`, `cx.clock()` and the services of Phases 9 and 10 through an extension trait, so `crabshell-ui` never depends on services.
+`Cx` lives in `crabshell-ui` and carries a map of services keyed by type. `crabshell-services` adds `cx.sway()`, `cx.audio()`, `cx.tray()`, `cx.clock()` and the services of Phases 9 to 11 through an extension trait, so `crabshell-ui` never depends on services.
 
 ### Dependency policy
 
 - Pin every external version once, in the workspace `Cargo.toml` under `[workspace.dependencies]`.
 - Add a crate only when it saves more than about 200 lines or implements a protocol or file format. Add it to the table above first.
 - Rust crates must be MIT, Apache-2.0, BSD, ISC, Zlib or Unicode licensed. `cargo deny check licenses` enforces this with `deny.toml`, in CI on every push.
-- System C libraries (libpulse, fontconfig, libxkbcommon) are linked dynamically. sctk speaks the Wayland protocol in pure Rust, so libwayland-client isn't linked.
+- System C libraries (libpulse, fontconfig, libxkbcommon, libpam) are linked dynamically. sctk speaks the Wayland protocol in pure Rust, so libwayland-client isn't linked.
 - Use edition 2024 on the latest stable toolchain. No nightly features.
 
 ## Performance targets
@@ -987,6 +1018,22 @@ Measured on 2026-11-14 with `measure_the_counter_bar`, release builds on one 192
 
 The measurement starts its shells with a cleared environment, so without the glibc tunable `crabshell run` sets. One run with it gave 16.9 MiB for the counter, 19.8 for the bar, 20.4 for the desktop and 19.3 for the overview, all within the noise, and first frames of 10.1, 15.2, 14.9 and 67.3 ms. What it saves comes later: 41 MiB kept after a second 4K wallpaper without it, 0.4 MiB with it.
 
+### Phase 11 results
+
+Measured on 2026-11-14 with `measure_the_counter_bar`, release builds on one 1920×1080 headless Sway output at scale 1. "Before" is caa8728, built in a second checkout. The lock example is locked over IPC as it starts and nobody types, so PAM never runs; its first frame counts the wait for that call.
+
+| Metric                                            | Before Phase 11 | After Phase 11 |
+| ------------------------------------------------- | --------------- | -------------- |
+| Counter example RSS                               | 16.7 MiB        | 16.7 MiB       |
+| Counter first frame                               | 10.8 ms         | 9.5 ms         |
+| v0.1 bar RSS                                      | 19.9 MiB        | 20.2 MiB       |
+| Desktop example RSS                               | 20.5 MiB        | 20.3 MiB       |
+| Overview example RSS, open                        | 19.4 MiB        | 19.7 MiB       |
+| Lock example RSS, locked                          | none            | 24.5 MiB       |
+| Idle wakeups, counter, desktop, overview and lock | 0               | 0              |
+
+Every shell now links libpam, about 0.2 MiB. The lock example's extra RSS is mostly its full-screen surface: 7.9 MiB of pixels at 1920×1080, where a bar holds a strip.
+
 ## Phases
 
 Seven phases to v0.1, totaling 16 to 26 weeks of focused work, all guesses, then the phases in "Beyond v0.1". A phase is done only when its exit check passes. Phase 0 is a go/no-go gate for the whole project.
@@ -1030,6 +1077,8 @@ Phase 8 passed on 2026-11-14, built in the commits from 5c301c4 to 1cb98f5 after
 Phase 9 passed on 2026-11-14, built in the commits from 1954fa0 to afe1fbd after a review per step; agents built MPRIS, notifications, Bluetooth and networking in worktrees of their own, and each was reviewed before its fixes went in. Its exit check, in `crates/crabshell/tests/headless.rs`, runs the desktop example on headless Sway with every Phase 9 service started on private buses and a private pipewire-pulse. It matches its goldens at scales 1, 1.5 and 2, a notification sent with `gdbus` shows as a toast and goes when it expires, and then the shell wakes nothing for 10 s. Each service is tested against a fake daemon on a private bus, and audio also against a private PipeWire. Gaps left for later phases: audio level meters and PipeWire's links, saved network connections and connectivity checks, a Bluetooth pairing agent of the shell's own, and notifications lost while a reload swaps the shell. The same day the rime config gained now playing, Wi-Fi, Bluetooth, the battery and toasts, and the maintainer checked it by hand on the laptop against the real NetworkManager, BlueZ, UPower, power-profiles-daemon, VLC and the session's notification bus. Idle, it woke 12 times a minute, each time for a daemon's signal, such as the Wi-Fi strength or the battery, or for the clock. The check found three things: a config must name its icon theme, since the default is `hicolor`; VLC sends no title for a file without tags; and cosmic-text 0.19 keeps the leading space on the last line of wrapped text that ends in an ellipsis. The player's buttons need a widget's hover as a signal, and the islands a shadow cut out under translucent glass, so both go to Phase 10.
 
 Phase 10 passed on 2026-11-14, built in the commits from 40db193 to 69d4e1b after a review per step; agents built the IPC handler, the color quantizer, toplevels, desktop entries and screencopy in worktrees of their own, and each was reviewed before its fixes went in. Its exit check, in `crates/crabshell/tests/headless.rs`, runs the overview example on headless Sway: closed until an IPC call opens it, it lists the applications from desktop entries in private XDG directories, another program's window with a live picture of it, the wallpaper's main colors and what `uname -s` printed. It matches its goldens at scales 1, 1.5 and 2, wakes nothing for 10 s while open, launches an application on a click, keeps it in a JSON file of recent ones, and lists it first when opened again. Gaps left for later phases: no server sockets, since `cx.ipc` covers calls into the shell; an application only D-Bus can start isn't launched, and the Exec parser refuses entries that break the spec's quoting; a desktop-entry directory behind a link swapped later, as on NixOS, isn't followed until a restart; a file is read again when its writer closes it, not while it writes; views of one source don't share a capture, and live views clipped or scrolled out of sight keep capturing; and window views pair by app id and title, so two windows alike may swap.
+
+Phase 11 passed on 2026-11-14, built in the commits from 5d48dfc to 2e3e624 after a review per step; agents built the session lock, PAM and the polkit agent in worktrees of their own, and each was reviewed before its fixes went in. Its exit check, in `crates/crabshell/tests/headless.rs`, runs the lock example on headless Sway: locked over IPC, it matches its goldens at scales 1, 1.5 and 2, shows typing as dots, says a password PAM refused was wrong, and wakes nothing for 10 s while locked. There its PAM service is `other`, which refuses everyone without asking: no test authenticates against a real account, registers a polkit agent on the real system bus or locks the real session. The greeter example logs in through a fake greetd after a refused password and exits with 0, and the lock example killed while locked locks again when started after. Gaps left for later phases: nothing has run against the real PAM stack with a right password, the real polkit and its helper, or a real greetd, so a hand check waits; nonstick frees its own copy of an answer without zeroing it; no `pam_setcred` runs, so Kerberos tickets aren't refreshed on unlock; a PAM module that blocks without asking, such as a fingerprint reader, can't be aborted; users only NSS knows, as from LDAP or systemd-homed, must be named, and polkit offers only users in `/etc/passwd`; polkit's helper is looked for only in `/usr/lib/polkit-1`; and `cx.persist` keeps a lock only across a reload, so a lock screen keeps `locked` in a JSON file under `$XDG_RUNTIME_DIR`.
 
 ## Rules for AI agents
 

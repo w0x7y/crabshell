@@ -702,6 +702,12 @@ fn measure_the_counter_bar() {
   let opened = overview.start(&sway);
   ipc_call(&sway, "overview", "open");
   report += &format!("overview example opened over IPC, {}\n", measure(&opened));
+  drop(opened);
+  // Then Phase 11's lock screen, locked over IPC at once. Nobody types, so
+  // PAM never runs. Its first frame is the lock surface's.
+  let lock = ExampleBar::start(&sway, "lock", true, &[]);
+  ipc_call(&sway, "lock", "on");
+  report += &format!("lock example locked over IPC, {}\n", measure(&lock));
   eprint!("{report}");
   let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("headless");
   std::fs::create_dir_all(&dir).expect("create the output directory");

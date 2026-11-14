@@ -101,16 +101,16 @@ for comparison, quickshell drawing the [phase 0 test bar](spike/RESULTS.md) uses
 
 ### where it's going
 
-v0.1 is the template bar plus `crabshell run`, on crates.io. phase 7 added floating windows and keyboard input, phase 8 animations and effects, phase 9 desktop services, and phase 10 launchers and system integration. after them come lock screens and greeters, then hyprland, niri and more compositors, until every quickshell feature is covered. the plan is in [the design doc](docs/design.md#beyond-v01), and [docs/site/roadmap.html](docs/site/roadmap.html) shows where each phase stands
+v0.1 is the template bar plus `crabshell run`, on crates.io. phase 7 added floating windows and keyboard input, phase 8 animations and effects, phase 9 desktop services, phase 10 launchers and system integration, and phase 11 the lock screen, a greetd greeter and a polkit agent. next come hyprland, niri and more compositors, until every quickshell feature is covered. the plan is in [the design doc](docs/design.md#beyond-v01), and [docs/site/roadmap.html](docs/site/roadmap.html) shows where each phase stands
 
 ### what's in it
 
-~ [crabshell](crates/crabshell/), `run()`, `per_output`, `cx.floating`, `cx.persist`, the prelude and the examples\
+~ [crabshell](crates/crabshell/), `run()`, `per_output`, `cx.floating`, `cx.persist`, `cx.session_lock`, the prelude and the examples\
 ~ [crabshell-reactive](crates/crabshell-reactive/), signals, memos, effects and owners\
 ~ [crabshell-ui](crates/crabshell-ui/), widgets, styles, layout, text, text editing, focus and hit testing\
 ~ [crabshell-render](crates/crabshell-render/), drawing on the cpu with tiny-skia, damage tracking, clipping, glyphs, icons and images\
-~ [crabshell-wayland](crates/crabshell-wayland/), the event loop, layer-shell and floating windows, popups, buffers, scaling, the pointer, the keyboard, input methods, the clipboard and monitors\
-~ [crabshell-services](crates/crabshell-services/), the clock, sway's workspaces, audio and the tray so far\
+~ [crabshell-wayland](crates/crabshell-wayland/), the event loop, layer-shell and floating windows, popups, buffers, scaling, the pointer, the keyboard, input methods, the clipboard, monitors and the session lock\
+~ [crabshell-services](crates/crabshell-services/), the clock, sway's workspaces, audio, the tray, power, bluetooth, networks, media players, notifications, your apps, programs, files, sockets, pam, greetd and a polkit agent\
 ~ [crabshell-cli](crates/crabshell-cli/), the `crabshell` command: `init`, `check`, and `run`, which rebuilds and supervises your bar\
 ~ [spike](spike/) and [baseline](baseline/), the phase 0 prototype and the quickshell bar it was measured against
 
