@@ -92,6 +92,7 @@ mod surface;
 mod text_input;
 mod toplevels;
 mod windows;
+mod windowsets;
 
 #[cfg(test)]
 mod tests;
@@ -104,3 +105,4 @@ pub use lock::LockId;
 pub use outputs::{Mode, OutputInfo};
 pub use platform::{Error, EventLoop, Platform, Snapshot, Stats, WindowInfo};
 pub use windows::WindowId;
+pub use windowsets::{Windowset, WindowsetProjection};

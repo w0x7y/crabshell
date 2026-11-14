@@ -45,6 +45,7 @@ use crate::screencopy::Captures;
 use crate::surface::{self, Role, Surface};
 use crate::text_input::SeatTextInput;
 use crate::windows::{Entry, WindowId, Windows};
+use crate::windowsets::Windowsets;
 use smithay_client_toolkit::data_device_manager::DataDeviceManagerState;
 use smithay_client_toolkit::data_device_manager::data_device::DataDevice;
 use smithay_client_toolkit::shell::xdg::XdgShell;
@@ -331,6 +332,8 @@ pub struct Platform {
   pub(crate) idle: Idle,
   /// Every program's windows, once a watch asks.
   pub(crate) foreign: Foreign,
+  /// The workspaces, once a watch asks.
+  pub(crate) windowsets: Windowsets,
   /// The session locks.
   pub(crate) locks: Locks,
   /// What screencopy views show.
@@ -429,6 +432,7 @@ impl Platform {
       effects,
       idle,
       foreign: Foreign::default(),
+      windowsets: Windowsets::default(),
       locks,
       captures: Captures::default(),
       data_devices_manager,
@@ -622,13 +626,14 @@ impl Platform {
     self.stats
   }
 
-  /// The work after the sources are dispatched: report the toplevels,
-  /// flush, take new popups and close the ones that asked, set up new
-  /// surfaces, apply changed settings, lay out, draw, start and end
+  /// The work after the sources are dispatched: report the toplevels and
+  /// windowsets, flush, take new popups and close the ones that asked, set
+  /// up new surfaces, apply changed settings, lay out, draw, start and end
   /// captures, flush the connection.
   pub(crate) fn after_dispatch(&mut self) {
     self.stats.iterations += 1;
     self.report_toplevels();
+    self.report_windowsets();
     // Effects created in a flush run in it, so every popup opened so far,
     // by a handler or an effect, has its bindings run.
     self.runtime.flush();

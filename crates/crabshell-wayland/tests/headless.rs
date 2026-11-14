@@ -24,7 +24,9 @@ use crabshell_ui::{
 };
 use crabshell_ui::{CaptureFrame, CaptureSource, FloatingWindow, ScreencopyView, Transition};
 use crabshell_ui::{Lock, SessionLock};
-use crabshell_wayland::{Event, EventLoop, LockId, Platform, Toplevel, WindowId};
+use crabshell_wayland::{
+  Event, EventLoop, LockId, Platform, Toplevel, WindowId, Windowset, WindowsetProjection,
+};
 use sway::{
   AppWindow, Image, InputMethod, Sway, VirtualKeyboard, VirtualPointer, keys, run_until, settle,
 };
@@ -2162,6 +2164,165 @@ fn on_labwc_a_dialog_names_its_parent_until_the_parent_closes() {
   run_until(&mut shell.event_loop, "the dialog without a parent", |_| {
     titled(&heard, "main").is_none()
       && titled(&heard, "dialog").is_some_and(|dialog| dialog.parent.is_none())
+  });
+}
+
+/// What a windowset watch heard: the last lists, and how many came.
+type HeardSets = Rc<RefCell<(Vec<Windowset>, Vec<WindowsetProjection>, u32)>>;
+
+fn watch_windowsets(shell: &mut Shell) -> HeardSets {
+  let heard = HeardSets::default();
+  let log = Rc::clone(&heard);
+  shell
+    .event_loop
+    .platform()
+    .watch_windowsets(move |sets, projections| {
+      let mut log = log.borrow_mut();
+      *log = (sets.to_vec(), projections.to_vec(), log.2 + 1);
+    });
+  heard
+}
+
+/// The windowset named `name` in the last list heard.
+fn named(heard: &HeardSets, name: &str) -> Option<Windowset> {
+  let heard = heard.borrow();
+  heard.0.iter().find(|set| set.name == name).cloned()
+}
+
+/// The projection shown on `output` in the last list heard.
+fn projection_on(heard: &HeardSets, output: &str) -> Option<WindowsetProjection> {
+  let heard = heard.borrow();
+  let mut found = heard
+    .1
+    .iter()
+    .filter(|projection| projection.outputs == [output]);
+  found.next().cloned()
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn sway_lists_each_outputs_windowsets_and_follows_its_outputs() {
+  let sway = Sway::start();
+  let mut shell = Shell::new(&sway);
+  shell.wait_for_bar("HEADLESS-1");
+  let heard = watch_windowsets(&mut shell);
+  run_until(&mut shell.event_loop, "HEADLESS-1's windowset", |_| {
+    let first = projection_on(&heard, "HEADLESS-1").map(|projection| projection.id);
+    first.is_some() && named(&heard, "1").is_some_and(|set| set.active && set.projection == first)
+  });
+  // Sway creates, activates and moves workspaces, and can't deactivate
+  // or remove them.
+  let first = projection_on(&heard, "HEADLESS-1").expect("listed");
+  let one = named(&heard, "1").expect("listed");
+  assert!(first.can_create);
+  assert!(one.can_activate && one.can_assign && !one.can_deactivate && !one.can_remove);
+  assert_ne!(one.id, first.id, "ids name one thing each");
+
+  sway.msg(&["create_output"]);
+  run_until(&mut shell.event_loop, "HEADLESS-2's windowset", |_| {
+    let second = projection_on(&heard, "HEADLESS-2").map(|projection| projection.id);
+    second.is_some() && named(&heard, "2").is_some_and(|set| set.projection == second)
+  });
+  let second = projection_on(&heard, "HEADLESS-2").expect("listed");
+  // Announced again under the same name, an output gets a new projection.
+  sway.msg(&["output", "HEADLESS-2", "disable"]);
+  run_until(
+    &mut shell.event_loop,
+    "HEADLESS-2's projection gone",
+    |_| projection_on(&heard, "HEADLESS-2").is_none() && named(&heard, "2").is_none(),
+  );
+  sway.msg(&["output", "HEADLESS-2", "enable"]);
+  run_until(
+    &mut shell.event_loop,
+    "HEADLESS-2's projection back",
+    |_| {
+      let again = projection_on(&heard, "HEADLESS-2").filter(|again| again.id != second.id);
+      let again = again.map(|again| again.id);
+      again.is_some() && named(&heard, "2").is_some_and(|set| set.projection == again)
+    },
+  );
+  sway.msg(&["output", "HEADLESS-2", "unplug"]);
+  run_until(
+    &mut shell.event_loop,
+    "only HEADLESS-1's projection",
+    |_| heard.borrow().1 == [first.clone()],
+  );
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn nothing_hears_of_windowsets_until_a_watch_asks() {
+  let sway = Sway::start();
+  let mut shell = Shell::new(&sway);
+  shell.wait_for_bar("HEADLESS-1");
+  settle(&mut shell.event_loop);
+  let wakeups = shell.event_loop.platform().stats().wayland_wakeups;
+  sway.msg(&["workspace", "two"]);
+  let until = Instant::now() + Duration::from_millis(500);
+  while Instant::now() < until {
+    shell
+      .event_loop
+      .dispatch(Some(Duration::from_millis(100)))
+      .expect("the connection works");
+  }
+  assert_eq!(shell.event_loop.platform().stats().wayland_wakeups, wakeups);
+
+  let heard = watch_windowsets(&mut shell);
+  run_until(&mut shell.event_loop, "workspace two", |_| {
+    named(&heard, "two").is_some_and(|set| set.active)
+  });
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_windowset_watch_wakes_nothing_while_nothing_changes() {
+  let sway = Sway::start();
+  let mut shell = Shell::new(&sway);
+  shell.wait_for_bar("HEADLESS-1");
+  let heard = watch_windowsets(&mut shell);
+  run_until(&mut shell.event_loop, "workspace 1", |_| {
+    named(&heard, "1").is_some()
+  });
+  settle(&mut shell.event_loop);
+  let lists = heard.borrow().2;
+  // One dispatch is one iteration however soon it wakes, so it is timed.
+  let started = Instant::now();
+  shell
+    .event_loop
+    .dispatch(Some(Duration::from_secs(2)))
+    .expect("the connection works");
+  let slept = started.elapsed();
+  assert!(slept >= Duration::from_millis(1900), "woke after {slept:?}");
+  assert_eq!(heard.borrow().2, lists, "a list came with nothing changed");
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_windowset_watch_that_panics_is_logged_and_the_shell_goes_on() {
+  let (logs, _logging) = capture_logs();
+  let sway = Sway::start();
+  let mut shell = Shell::new(&sway);
+  let id = shell.wait_for_bar("HEADLESS-1");
+  shell
+    .event_loop
+    .platform()
+    .watch_windowsets(|_, _| panic!("windowset panic"));
+  run_until(&mut shell.event_loop, "the panic logged", |_| {
+    logs
+      .text()
+      .contains("a windowset watch panicked: windowset panic")
+  });
+  let before = shell
+    .event_loop
+    .platform()
+    .window_info(id)
+    .expect("held")
+    .commits;
+  shell.knobs.label.set(String::from("after"));
+  run_until(&mut shell.event_loop, "a frame", |platform| {
+    platform
+      .window_info(id)
+      .is_some_and(|info| info.commits > before)
   });
 }
 

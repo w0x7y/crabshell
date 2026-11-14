@@ -16,6 +16,7 @@ mod surface;
 mod text_input;
 mod toplevels;
 mod windows;
+mod windowsets;
 
 use std::io;
 use std::sync::{Arc, Mutex};
