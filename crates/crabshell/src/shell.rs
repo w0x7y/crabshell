@@ -615,6 +615,13 @@ pub trait ShellExt {
   /// `wlr-foreign-toplevel-management` it stays empty, and that is logged.
   fn toplevels(&self) -> Toplevels;
 
+  /// Ends the shell with exit status `code`, as Quickshell's `Qt.quit()`:
+  /// the programs the config started are stopped and the IPC socket
+  /// removed first, then the shell exits. Under `crabshell run`, 0 ends
+  /// the supervisor too, and any status but 0 and 2 starts the shell
+  /// again. A greeter calls it once its session starts.
+  fn exit(&self, code: i32) -> !;
+
   /// Looks icon names up in `theme`, such as `"Adwaita"`, instead of
   /// `hicolor`. Every window is repainted.
   fn set_icon_theme(&self, theme: impl Into<String>);
@@ -842,6 +849,15 @@ impl ShellExt for Cx {
     service
       .ipc
       .register(self, target, function, Box::new(handler), at);
+  }
+
+  fn exit(&self, code: i32) -> ! {
+    tracing::info!(code, "the config ends the shell");
+    if let Some(service) = self.service::<Service>() {
+      service.ipc.remove_socket();
+    }
+    crabshell_services::stop_programs(self);
+    std::process::exit(code)
   }
 
   fn set_icon_theme(&self, theme: impl Into<String>) {

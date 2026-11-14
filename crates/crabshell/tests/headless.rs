@@ -1169,6 +1169,13 @@ fn run_as_child() {
     Ok("panics") => crabshell::run(|_| panic!("a broken config")),
     Ok("counter") => crabshell::run(|cx| cx.per_output(counter::bar)),
     Ok("v0.1") => run_v0_1_bar_logging_its_volume(),
+    Ok("exits") => crabshell::run(|cx| {
+      let program = cx.process(|| ["sh", "-c", "echo $$; exec sleep 30"]);
+      let _program = program.on_line(|pid| eprintln!("the program is {pid}"));
+      let shell = cx.clone();
+      cx.ipc("shell", "exit", move |_| shell.exit(3));
+      cx.per_output(counter::bar);
+    }),
     Ok("programs") => crabshell::run(|cx| {
       let program = cx.process(|| ["sh", "-c", "echo $$; exec sleep 30"]);
       let _program = program.on_line(|pid| eprintln!("the program is {pid}"));
@@ -2394,5 +2401,47 @@ fn a_signal_ends_the_shell_with_its_programs_and_socket() {
       assert!(Instant::now() < deadline, "its program {pid} still runs");
       std::thread::sleep(Duration::from_millis(50));
     }
+  }
+}
+
+/// `cx.exit(code)` ends the shell with that status, its programs stopped
+/// and its IPC socket removed, as a greeter does once its session starts.
+/// glibc's `exit` also drops the services, so the program check holds even
+/// without the explicit stop, which stays because Rust doesn't promise it.
+#[test]
+#[ignore = "needs headless Sway"]
+fn cx_exit_ends_the_shell_with_its_status_programs_and_socket() {
+  use std::io::Write;
+
+  run_as_child();
+  let sway = Sway::start();
+  let mut shell = ExampleBar::spawn(
+    &sway,
+    this_as_shell("cx_exit_ends_the_shell_with_its_status_programs_and_socket"),
+    &[(CHILD, "exits")],
+  );
+  let line = shell.wait_for("the program is ");
+  let pid: u32 = line
+    .rsplit(' ')
+    .next()
+    .and_then(|pid| pid.trim().parse().ok())
+    .expect("a pid");
+  let socket = sway
+    .runtime_dir()
+    .join("crabshell")
+    .join(format!("ipc-{}.sock", sway.display()));
+  let mut client = std::os::unix::net::UnixStream::connect(&socket).expect("the IPC socket");
+  writeln!(
+    client,
+    r#"{{"target":"shell","function":"exit","args":[]}}"#
+  )
+  .expect("asked");
+  let status = shell.exit_status().expect("the shell exits");
+  assert_eq!(status.code(), Some(3), "{status}");
+  assert!(!socket.exists(), "the shell removed its socket");
+  let deadline = Instant::now() + TIMEOUT;
+  while Path::new(&format!("/proc/{pid}")).exists() {
+    assert!(Instant::now() < deadline, "its program {pid} still runs");
+    std::thread::sleep(Duration::from_millis(50));
   }
 }
