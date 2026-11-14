@@ -78,6 +78,13 @@ impl Owner {
     })
   }
 
+  /// Whether this owner was disposed, itself or with its parent, so
+  /// code that may outlive its context can check before it creates
+  /// anything under it, which would panic.
+  pub fn is_disposed(&self) -> bool {
+    runtime::is_disposed(self.id)
+  }
+
   /// Frees this owner and everything created under it, child owners
   /// included. Their values and closures are dropped and their effects
   /// stop. Afterwards their handles' `get()` panics and `try_get()` returns

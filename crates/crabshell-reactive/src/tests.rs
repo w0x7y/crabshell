@@ -378,6 +378,16 @@ fn creating_under_a_disposed_owner_panics() {
 }
 
 #[test]
+fn an_owner_says_whether_it_was_disposed() {
+  let root = Runtime::current().new_owner();
+  let child = root.child();
+  assert!(!root.is_disposed() && !child.is_disposed());
+  root.dispose();
+  assert!(root.is_disposed(), "disposed");
+  assert!(child.is_disposed(), "disposed with its parent");
+}
+
+#[test]
 fn disposing_a_child_leaves_the_parent_alone() {
   let rt = Runtime::current();
   let before = rt.node_count();

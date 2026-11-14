@@ -452,6 +452,11 @@ pub(crate) fn set_name(id: NodeId, name: String) {
   });
 }
 
+/// Whether `id` is gone, or the runtime with it.
+pub(crate) fn is_disposed(id: NodeId) -> bool {
+  try_graph(|g| !g.nodes.contains_key(id)).unwrap_or(true)
+}
+
 /// Reads a signal's or memo's value. A stale memo is recomputed first. If
 /// `track` is true and a memo or effect is running, it starts depending on
 /// this node.
