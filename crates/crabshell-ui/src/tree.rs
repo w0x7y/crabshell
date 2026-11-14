@@ -298,6 +298,8 @@ impl Node {
         | NodeKind::Input(_)
     ) || style.background.is_some()
       || style.gradient.is_some()
+      // A fade still shows what the style had.
+      || self.fade.is_some()
       || style.border.is_some()
   }
 

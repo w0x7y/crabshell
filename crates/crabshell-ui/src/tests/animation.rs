@@ -136,6 +136,30 @@ fn a_zero_transition_jumps_and_a_gone_owner_stops_its_animation() {
 }
 
 #[test]
+fn two_animations_started_together_after_a_rest_both_take_their_time() {
+  let h = Harness::new();
+  let target = h.cx.signal(0.0_f32);
+  let linear = Transition::new(100).easing(Easing::Linear);
+  let first = h.cx.animate(move || target.get(), linear);
+  h.runtime.flush();
+  target.set(1.0);
+  h.runtime.flush();
+  let long_ago = Instant::now();
+  advance_animations(long_ago);
+  assert!(!advance_animations(long_ago + Duration::from_millis(100)));
+
+  // A minute later, one change starts two animations in the same flush.
+  let second = h.cx.animate(move || target.get() * 10.0, linear);
+  target.set(0.0);
+  h.runtime.flush();
+  let now = long_ago + Duration::from_secs(60);
+  advance_animations(now);
+  advance_animations(now + Duration::from_millis(50));
+  assert!(close(first.get(), 0.5), "{}", first.get());
+  assert!(close(second.get(), 5.0), "{}", second.get());
+}
+
+#[test]
 fn colors_blend_channel_by_channel() {
   let from = Color::rgba(0, 100, 200, 0);
   let to = Color::rgba(255, 100, 0, 255);
@@ -178,8 +202,8 @@ mod fades {
 
   use super::super::Harness;
   use crate::{
-    Align, Button, Color, Easing, Icon, Point, Row, Style, Transition, Window, advance_animations,
-    animating,
+    Align, Button, Color, Easing, Icon, Point, Row, Style, Text, Transition, Window,
+    advance_animations, animating,
   };
 
   const FADE: Transition = Transition::new(100).easing(Easing::Linear);
@@ -264,6 +288,42 @@ mod fades {
     window.pointer_motion(Point::new(10.0, 10.0));
     drop(window);
     assert!(!advance_animations(Instant::now()));
+  }
+
+  #[test]
+  fn a_background_fading_out_is_repainted_where_a_layout_moves_it() {
+    let mut h = hover_harness();
+    let shaded = h.cx.signal(true);
+    let label = h.cx.signal(String::from("ab"));
+    let row = Row::new()
+      .align(Align::Start)
+      .child(Text::new(move || label.get()))
+      .child(
+        Row::new()
+          .style(move || {
+            if shaded.get() {
+              NORMAL
+            } else {
+              Style::new().transition(FADE)
+            }
+          })
+          .padding(6, 6)
+          .child(Icon::new("x").size(8)),
+      );
+    let window = h.window(h.panel().child(row), 300.0, 30.0);
+    shaded.set(false);
+    h.runtime.flush();
+    let start = Instant::now();
+    advance_animations(start);
+    advance_animations(start + Duration::from_millis(50));
+    window.take_damage();
+
+    // Mid-fade, the label grows and pushes the fading box along.
+    label.set(String::from("a much longer label"));
+    h.frame(&window);
+    let moved = super::super::rect_at(&window, &[0, 1]);
+    let damage = window.take_damage();
+    assert!(damage.contains(&moved), "{moved:?} missing from {damage:?}");
   }
 
   fn hover_harness() -> Harness {

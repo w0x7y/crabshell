@@ -219,6 +219,11 @@ pub fn advance_animations(now: Instant) -> bool {
     let mut running = running.borrow_mut();
     kept.append(&mut running);
     *running = kept;
+    if running.is_empty() {
+      // The clock stops, so the next animation counts from its own first
+      // tick, not this one.
+      LAST_TICK.with(|last| last.set(None));
+    }
     !running.is_empty()
   })
 }

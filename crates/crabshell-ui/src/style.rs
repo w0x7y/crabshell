@@ -448,7 +448,7 @@ impl Style {
   /// The paint fields `t` of the way from `self` to `to`; every other
   /// field is `to`'s. A field only one side sets fades from or to nothing:
   /// a color from or to its transparent self, a border from or to 0 wide.
-  /// A text color only one sets changes at the end, as the other comes
+  /// A text color only one sets changes at once, as the other comes
   /// from an ancestor. Gradients of different shapes or numbers of colors
   /// change at once.
   pub(crate) fn lerp(&self, to: &Style, t: f32) -> Style {
