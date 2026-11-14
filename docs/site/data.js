@@ -177,6 +177,7 @@ const PHASES = [
       ["yes", "bluetooth and networking"],
       ["yes", "idle monitor and inhibitor"],
       ["yes", "exit check: the desktop example on headless sway"],
+      ["yes", "checked by hand against the laptop's real daemons"],
     ],
   },
   {
@@ -189,6 +190,7 @@ const PHASES = [
       ["no", "processes, files, sockets and json files"],
       ["no", "an ipc handler driven from the command line"],
       ["no", "color quantizing, screencopy and toplevel management"],
+      ["no", "hover as a signal and shadows cut out under glass"],
     ],
   },
   {
