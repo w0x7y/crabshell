@@ -725,6 +725,39 @@ pub trait ShellExt {
   /// and that is logged.
   fn idle_monitor(&self, timeout: Duration) -> ReadSignal<bool>;
 
+  /// Whether the user holds the compositor's binding for `app_id`'s
+  /// global shortcut `name`: `true` from its press to its release, and a
+  /// press shows for at least one flush however quick. On Hyprland a
+  /// line such as `bind = SUPER, D, global, crabshell:launcher` binds it,
+  /// and `hyprctl globalshortcuts` lists it with `description`. Calls
+  /// with the same app id and name share one registration, with the
+  /// first one's description. The watch ends when this context's owner
+  /// goes. Without Hyprland's `hyprland-global-shortcuts-v1` it stays
+  /// `false`, and that is logged once; so it does, logged, if a string
+  /// holds a NUL byte or the three pass 4000 bytes. If another program
+  /// registers the same app id and name, Hyprland ends the connection of
+  /// whichever comes second, so pick an app id of the config's own.
+  ///
+  /// ```no_run
+  /// use crabshell::prelude::*;
+  ///
+  /// crabshell::run(|cx| {
+  ///     let held = cx.global_shortcut("crabshell", "launcher", "Show the launcher");
+  ///     let open = cx.signal(false);
+  ///     cx.effect(move || {
+  ///         if held.get() {
+  ///             open.update(|open| *open = !*open);
+  ///         }
+  ///     });
+  ///     cx.floating(
+  ///         FloatingWindow::new()
+  ///             .visible(move || open.get())
+  ///             .child(Text::new("launcher")),
+  ///     );
+  /// });
+  /// ```
+  fn global_shortcut(&self, app_id: &str, name: &str, description: &str) -> ReadSignal<bool>;
+
   /// Locks the session while `lock`'s `locked` is true, as a lock screen
   /// does, and gives `true` while the compositor says it is locked. Every
   /// output, and each one added while locked, gets a surface covering it,
@@ -936,38 +969,30 @@ impl ShellExt for Cx {
   }
 
   fn idle_monitor(&self, timeout: Duration) -> ReadSignal<bool> {
-    let idle = self.signal(false);
-    let Some(service) = self.service::<Service>() else {
-      tracing::error!("cx.idle_monitor needs the shell crabshell::run starts; it stays false");
-      return idle.read_only();
-    };
-    let watch = Rc::new(Cell::new(None));
-    // Ended soon after this context's owner goes, which also frees it.
-    let (queue, signal, held) = (
-      Rc::clone(&service.idle),
-      service.signal.clone(),
-      Rc::clone(&watch),
-    );
-    let gone = OnDispose(Some(Box::new(move || {
-      schedule(
-        &queue,
-        &signal,
-        "cx.idle_monitor's cleanup",
-        move |platform| {
-          if let Some(watch) = held.take() {
-            platform.unwatch_idle(watch);
-          }
-        },
-      );
-    })));
-    // The signal above was made, so the owner is there.
-    self.owner().signal(gone);
-    service.with_platform("cx.idle_monitor", move |platform| {
-      watch.set(platform.watch_idle(timeout, move |now| {
-        idle.try_set(now);
-      }));
-    });
-    idle.read_only()
+    watch_flag(
+      self,
+      ["cx.idle_monitor", "cx.idle_monitor's cleanup"],
+      move |platform, idle| {
+        platform.watch_idle(timeout, move |now| {
+          idle.try_set(now);
+        })
+      },
+      Platform::unwatch_idle,
+    )
+  }
+
+  fn global_shortcut(&self, app_id: &str, name: &str, description: &str) -> ReadSignal<bool> {
+    let [app_id, name, description] = [app_id, name, description].map(str::to_owned);
+    watch_flag(
+      self,
+      ["cx.global_shortcut", "cx.global_shortcut's cleanup"],
+      move |platform, held| {
+        platform.watch_shortcut(&app_id, &name, &description, move |now| {
+          held.try_set(now);
+        })
+      },
+      Platform::unwatch_shortcut,
+    )
   }
 
   fn session_lock(&self, lock: SessionLock) -> ReadSignal<bool> {
@@ -1136,6 +1161,42 @@ impl ShellExt for Cx {
 
 /// Runs its closure when dropped, as when the owner keeping it is
 /// disposed.
+/// A signal under `cx`, `false` until the watch `start` makes on the
+/// platform writes it, and the watch, ended with `stop` soon after `cx`'s
+/// owner goes. `what` names the start and the end in logs.
+fn watch_flag<W: 'static>(
+  cx: &Cx,
+  [what, cleanup]: [&'static str; 2],
+  start: impl FnOnce(&mut Platform, Signal<bool>) -> Option<W> + 'static,
+  stop: fn(&mut Platform, W),
+) -> ReadSignal<bool> {
+  let flag = cx.signal(false);
+  let Some(service) = cx.service::<Service>() else {
+    tracing::error!("{what} needs the shell crabshell::run starts; it stays false");
+    return flag.read_only();
+  };
+  let watch = Rc::new(Cell::new(None));
+  // Ended soon after this context's owner goes, which also frees it.
+  let (queue, signal, held) = (
+    Rc::clone(&service.idle),
+    service.signal.clone(),
+    Rc::clone(&watch),
+  );
+  let gone = OnDispose(Some(Box::new(move || {
+    schedule(&queue, &signal, cleanup, move |platform| {
+      if let Some(watch) = held.take() {
+        stop(platform, watch);
+      }
+    });
+  })));
+  // The signal above was made, so the owner is there.
+  cx.owner().signal(gone);
+  service.with_platform(what, move |platform| {
+    watch.set(start(platform, flag));
+  });
+  flag.read_only()
+}
+
 pub(crate) struct OnDispose(pub(crate) Option<Box<dyn FnOnce()>>);
 
 impl Drop for OnDispose {

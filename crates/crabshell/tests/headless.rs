@@ -1618,6 +1618,49 @@ fn cx_idle_monitor_turns_true_when_idle_and_ends_with_its_context() {
   assert_eq!(runtime.node_count(), before, "everything it made is freed");
 }
 
+#[test]
+#[ignore = "needs headless Sway"]
+fn cx_global_shortcut_without_hyprland_stays_false_logs_once_and_frees_everything() {
+  use crabshell::prelude::*;
+
+  // Sway lacks hyprland-global-shortcuts-v1.
+  let logs = Logs::default();
+  let _guard = logs.install();
+  let sway = Sway::start();
+  let runtime = Runtime::current();
+  type Kept = Option<(Cx, [ReadSignal<bool>; 2], usize)>;
+  let kept: std::rc::Rc<std::cell::RefCell<Kept>> = Default::default();
+  let hold = std::rc::Rc::clone(&kept);
+  let mut shell = Shell::new(sway.connect(), move |cx| {
+    let before = Runtime::current().node_count();
+    let child = cx.child();
+    let held = [
+      child.global_shortcut("crabshell", "launcher", "Show the launcher"),
+      child.global_shortcut("crabshell", "lock", "Lock the session"),
+    ];
+    *hold.borrow_mut() = Some((child, held, before));
+  })
+  .expect("the root closure runs");
+  run_until(&mut shell, "the missing protocol logged", |_| {
+    logs.text().contains("lacks hyprland-global-shortcuts-v1")
+  });
+  settle(&mut shell);
+  let (child, held, before) = kept.borrow_mut().take().expect("the root ran");
+  assert!(held.iter().all(|held| !held.get_untracked()));
+  assert_eq!(shell.platform().shortcut_watches(), 0);
+  let text = logs.text();
+  assert_eq!(
+    text.matches("lacks hyprland-global-shortcuts-v1").count(),
+    1,
+    "{text}"
+  );
+
+  child.owner().dispose();
+  settle(&mut shell);
+  runtime.flush();
+  assert_eq!(runtime.node_count(), before, "everything it made is freed");
+}
+
 /// A 4 by 4 PNG of one color, in the temp dir.
 fn one_color_png(name: &str, [r, g, b]: [u8; 3]) -> PathBuf {
   let path = std::env::temp_dir().join(format!("crabshell-{}-{name}.png", std::process::id()));
