@@ -221,8 +221,9 @@
               and i3 come in phase 12.
             </li>
             <li>
-              <strong>no animation, blur or shadows yet.</strong> text uses
-              grayscale antialiasing, where qt uses subpixel.
+              <strong>blur is the compositor's.</strong> a window asks for it
+              through ext-background-effect-v1, which sway doesn't have. text
+              uses grayscale antialiasing, where qt uses subpixel.
             </li>
             <li>
               <strong>most of quickshell isn't built yet,</strong> and there are
@@ -236,11 +237,12 @@
       <div class="rail" id="rail" aria-hidden="true"></div>
       <div class="rail-ticks" id="rail-ticks" aria-hidden="true"></div>
       <p>
-        <strong id="phases-done"></strong> v0.1 is out on crates.io, and phase
-        7, windows and input, is done on main: floating windows, keyboard and
-        text input with input methods and the clipboard, scrolling lists, images
-        and clipping. next is phase 8, animation and effects. the
-        <a href="roadmap.html">roadmap</a> has every phase.
+        <strong id="phases-done"></strong> v0.1 is out on crates.io, and phases
+        7 and 8 are done on main: floating windows, keyboard and text input with
+        input methods and the clipboard, scrolling lists, images and clipping,
+        then animations that run only while something moves, style fades,
+        gradients, shadows and blur behind windows. next is phase 9, desktop
+        services. the <a href="roadmap.html">roadmap</a> has every phase.
       </p>
       <p id="types-line"></p>
     </main>

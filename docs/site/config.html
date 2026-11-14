@@ -330,9 +330,11 @@ Button::new(Text::new(move || format!("clicked {}", count.get())))
       <p>
         a <code>Style</code> is <code>Copy</code>, and every method on it is a
         <code>const fn</code>, so a theme is a set of constants. the methods are
-        <code>background</code>, <code>color</code>, <code>font</code>,
-        <code>padding</code>, <code>radius</code>, <code>border</code>,
-        <code>opacity</code> and <code>merge</code>. colors come from
+        <code>background</code>, <code>gradient</code>, <code>shadow</code>,
+        <code>color</code>, <code>font</code>, <code>padding</code>,
+        <code>radius</code>, <code>border</code>, <code>opacity</code>,
+        <code>clip</code>, <code>width</code>, <code>height</code>,
+        <code>transition</code> and <code>merge</code>. colors come from
         <code>Color::rgb</code>, <code>Color::rgba</code> or
         <code>Color::hex</code>.
       </p>
@@ -343,6 +345,29 @@ const PILL_ON: Style = PILL.background(Color::hex("#3a404b"));</pre>
         <code>Text</code> takes its <code>color</code> and
         <code>font</code> from the nearest parent that sets them. nothing else
         is inherited.
+      </p>
+
+      <h2 id="effects">animation and effects</h2>
+      <p>
+        a style with a <code>transition</code> fades in when it takes over, as
+        when a hover style does: its background, gradient, shadow, color,
+        border, radius and opacity move over that time.
+        <code>cx.animate</code> makes any number or color slide to each new
+        target. nothing ticks while nothing moves, so an idle bar still sleeps.
+      </p>
+      <pre class="code" data-lang="rust">
+const TAB: Style = Style::new().radius(6.0).transition(Transition::new(150));
+const CARD: Style = Style::new()
+    .gradient(Gradient::linear(90.0, Color::hex("#1e1e2e"), Color::hex("#313244")))
+    .shadow(Shadow::new(0.0, 2.0, 8.0, Color::rgba(0, 0, 0, 160)));
+
+let offset = cx.animate(move || picked.get() as f32 * 44.0, Transition::new(250));</pre>
+      <p>
+        <code>PanelWindow::blur(Some(region))</code> asks the compositor to blur
+        what is behind that part of the window, through
+        ext-background-effect-v1. a compositor without it, like sway, shows the
+        window unblurred and the log says so once.
+        <code>examples/effects.rs</code> puts it all together.
       </p>
 
       <h2 id="services">services</h2>

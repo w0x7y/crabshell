@@ -4,7 +4,7 @@
 
 a full rust replacement for quickshell: everything quickshell does, crabshell will do. your whole desktop shell is a rust crate, with bars, popups, notifications, launchers, lock screens, osds and the rest. the first milestone, v0.1, is a bar for sway and other wlroots compositors, a checkpoint that proves the approach works before the rest of quickshell's features follow
 
-status: v0.1 is on crates.io, and phase 7 is done on main. bars draw, take clicks, follow monitors as they come and go, and show the clock, sway's workspaces, the volume and the tray with its menus. `crabshell run` rebuilds your bar when you save it and swaps the running one in about a second. on main, windows also take the keyboard, with text fields, input methods and the clipboard, and there are floating windows, scrolling lists, images and clipping
+status: v0.1 is on crates.io, and phases 7 and 8 are done on main. bars draw, take clicks, follow monitors as they come and go, and show the clock, sway's workspaces, the volume and the tray with its menus. `crabshell run` rebuilds your bar when you save it and swaps the running one in about a second. on main, windows also take the keyboard, with text fields, input methods and the clipboard, and there are floating windows, scrolling lists, images and clipping. styles fade between each other, values slide to their targets, boxes take gradients and shadows, and windows can ask the compositor to blur what's behind them, all without waking while nothing moves
 
 ### ai disclosure
 
@@ -101,7 +101,7 @@ for comparison, quickshell drawing the [phase 0 test bar](spike/RESULTS.md) uses
 
 ### where it's going
 
-v0.1 is the template bar plus `crabshell run`, on crates.io. phase 7 added floating windows and keyboard input. after it come animations and effects, a notifications server, media players, battery, bluetooth and networking, launchers and ipc, lock screens and greeters, then hyprland, niri and more compositors, until every quickshell feature is covered. the plan is in [the design doc](docs/design.md#beyond-v01), and [docs/site/roadmap.html](docs/site/roadmap.html) shows where each phase stands
+v0.1 is the template bar plus `crabshell run`, on crates.io. phase 7 added floating windows and keyboard input, and phase 8 animations and effects. after them come a notifications server, media players, battery, bluetooth and networking, launchers and ipc, lock screens and greeters, then hyprland, niri and more compositors, until every quickshell feature is covered. the plan is in [the design doc](docs/design.md#beyond-v01), and [docs/site/roadmap.html](docs/site/roadmap.html) shows where each phase stands
 
 ### what's in it
 

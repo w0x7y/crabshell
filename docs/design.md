@@ -14,7 +14,7 @@ Nothing from Quickshell carries over. Users write their shell as a Rust crate th
 | Config API         | Builder methods and fine-grained signals   | Users learn closures and `move`. Signals are `Copy`, so nobody clones handles.                                                                |
 | Reload             | Supervisor rebuilds, saves state, restarts | The shell blinks for about 100 ms per reload.                                                                                                 |
 | Styling            | Typed Rust styles only                     | Every color change is a rebuild.                                                                                                              |
-| Rendering          | Own CPU renderer, GPU later                | No blur or shadows in v0.1.                                                                                                                   |
+| Rendering          | Own CPU renderer, GPU later                | v0.1 had no gradients, shadows or blur. Phase 8 added gradients and shadows, and asks the compositor to blur.                                 |
 | Scope              | Everything Quickshell does, in milestones  | v0.1 is a bar with workspaces, clock, tray and volume. Notifications, launchers, lock screens, OSDs and the rest come in the phases after it. |
 | Compositors        | Sway and other wlroots compositors first   | Hyprland and the rest come after v0.1.                                                                                                        |
 | C libraries        | Fine when the system ships them            | Links libpulse, fontconfig and libxkbcommon at runtime. Wayland itself is pure Rust.                                                          |
@@ -238,6 +238,15 @@ API rules settled in Phase 7, windows and input:
 - `Style` gets `clip`, `width` and `height`, and `Image` takes a file with `width`, `height` and `fit` (`Fill`, `Contain` or `Cover`). `PopupWindow` takes `edges`, `gravity` and `adjustment`, read when it opens.
 - The prelude adds `KeyboardFocus`, `Margins`, `Region`, `Key`, `KeyEvent`, `Modifiers`, `Image`, `Fit`, `ScrollView`, `ListView`, `TextInput`, `FloatingWindow` and `Adjust`. The launcher example shows them together.
 
+API rules settled in Phase 8, animation and effects:
+
+- `cx.animate(target, transition)` returns a `ReadSignal` that follows the closure `target`, moving to each new value over the transition instead of jumping. It starts at the first value. The value implements `Animate`, as `f32`, `Point` and `Color` do.
+- `Transition::new(ms).easing(Easing::InOutCubic)` is a `const` value. `Easing` has CSS's curves and a `Bezier(x1, y1, x2, y2)`, and the default is `OutCubic`.
+- `Style` gets `transition`, `gradient` and `shadow`, all `const`. `Gradient::linear(angle, from, to)` or `Gradient::radial(from, to)` takes up to two more colors with `.stop(at, color)`. `Shadow::new(x, y, blur, color)` takes `.spread(n)`.
+- A style change fades in over the new style's `transition`: background, gradient, shadow, color, border, radius and opacity. Other fields change at once.
+- `PanelWindow::blur` and `FloatingWindow::blur` take an `Option<Region>` for the compositor to blur behind.
+- The prelude adds `Animate`, `Easing`, `Transition`, `Gradient`, `GradientShape` and `Shadow`. The effects example shows them together.
+
 ## Process model and reload
 
 Two processes run. The `crabshell` CLI, installed once per machine, is the supervisor. The shell is the user's own compiled binary, which links the `crabshell` library.
@@ -382,13 +391,13 @@ v0.1 shipped ten widgets, Phase 7 added five, and the phases after it add the re
 
 ### Invalidation
 
-- Each property is either a layout property or a paint property. Text content, font, padding, gap, size and children are layout. Colors, background, border, opacity and radius are paint.
+- Each property is either a layout property or a paint property. Text content, font, padding, gap, size and children are layout. Colors, background, gradient, border, opacity and radius are paint. A shadow reaches past its widget, so changing one lays the window out again to find the area it paints.
 - A binding that changes a paint property marks only its own widget for repaint. A layout change marks the whole window for layout, then every widget whose rectangle moved is repainted at both its old and new position.
 - When nothing is dirty there is no layout, no paint and no commit.
 
 ### Styles
 
-- `Style` has `background`, `color`, `font` (family, size, weight), `padding`, `radius`, `border` (width, color), `opacity`, `clip`, `width` and `height`. Every field is optional, and an unset field falls back to the widget's default. `clip`, `width` and `height` are layout properties.
+- `Style` has `background`, `gradient`, `shadow`, `color`, `font` (family, size, weight), `padding`, `radius`, `border` (width, color), `opacity`, `clip`, `width`, `height` and `transition`. Every field is optional, and an unset field falls back to the widget's default. `clip`, `width` and `height` are layout properties.
 - `Text` inherits `color` and `font` from the nearest ancestor that sets them. Nothing else inherits, and there are no selectors or classes.
 - Colors are sRGB with alpha. `Color::rgb`, `Color::rgba` and `Color::hex` are all `const fn`.
 
@@ -438,6 +447,14 @@ Rules settled while building `crabshell-ui` (Phase 7):
 - An input method sees the focused field only while the window has the keyboard and never a password. Its preedit shows underlined at the caret, replacing the selection, and moving the focus drops it.
 - A floating window's settings are read after the first flush, like a panel's. Move and resize requests are honored only while a pointer button is held.
 
+Rules settled while building `crabshell-ui` (Phase 8):
+
+- One clock on the UI thread drives every animation, and the platform advances it only while one runs. An animation's first tick is its time 0. One that replaces a running one counts from the clock's last tick, so it moves at the next tick, and the first animation after a rest counts from its own first tick. A transition of 0 ms sets the value in the same flush.
+- A new target while a value moves starts a new animation from where the value is. An animation whose value's owner is gone stops. One that panics is logged as `animation cx.animate at <file:line>` or `<widget path>.transition` and stops, and finished ones are dropped inside `catch_unwind` too.
+- A style fades only on a paint change, on a widget already laid out, when the new style's transition is longer than 0. It blends from what showed, so leaving a hover mid-fade fades back from there. A color only one side sets fades from or to its transparent self, a border from or to 0 wide, a radius from 0 and an opacity from 1. A text color only one side sets, and gradients of different shapes or numbers of colors, change at once. A fading widget counts as drawing, so a layout that moves it repaints both places.
+- A shadow's painted area is its shape grown by 1.5 blurs, past which the blur fades below a 255th. A fading shadow's area covers its start and its end, and a spread that swallows the box still reaches between the edges it would have. A shadow with a number that isn't finite is never drawn.
+- `Gradient::stop` panics past four colors, which is a compile error in a `const`.
+
 ## Rendering
 
 v0.1 draws on the CPU with `tiny-skia`, straight into shared-memory buffers, and repaints only what changed. For a bar that uses less memory than a GPU context. A 1920×30 bar buffer is 225 KiB.
@@ -478,11 +495,13 @@ v0.1 draws on the CPU with `tiny-skia`, straight into shared-memory buffers, and
 
 ### Shapes
 
-Solid fills, rounded rectangles and borders. No blur, shadows or gradients in v0.1.
+Solid fills, gradients, rounded rectangles, borders and shadows. Blur behind a window is the compositor's, through `ext-background-effect-v1`. v0.1 had no gradients, shadows or blur; Phase 8 added them.
 
 ### Later GPU backend
 
 Keep every drawing call inside `crabshell-render`, behind plain functions. A GPU backend using `vello` on `wgpu` replaces that crate's internals later. Don't add a renderer trait until a second backend exists.
+
+Phase 8 checked whether it was needed yet. While the effects bar's indicator slides and a tab's hover fades in, a frame takes 0.31 ms to draw at scale 1 and 0.54 ms at scale 2, release build, on a 1920 pixel wide bar. That is under 4% of a 60 Hz frame, so the CPU renderer stays.
 
 Rules settled while building `crabshell-render` (Phase 2, step 2):
 
@@ -503,6 +522,12 @@ Rules settled while building `crabshell-render` (Phase 7):
 - A clip draws the children into a layer blended in through a mask of the inside of the border, filled in the tile's own pixels on the fixed grid, so a repaint cuts every edge as a full draw does. A text field draws its selection, text and caret the same way, through its content box.
 - Limits on image files: 32 MiB, 8192 pixels a side and 24 million pixels, told to each decoder before it allocates; SVG images up to 4 MiB. A GIF frame with no pixels is refused. Cached pictures past 32 MiB, like icons past 128, are dropped once no recent draw used them. The cache key holds the file's modification time, so a file rewritten in place, or one that appears after a failure, is read again.
 - An image is placed and sized apart, so one past the window's edge is cut there instead of squeezed.
+
+Rules settled while building `crabshell-render` (Phase 8):
+
+- A gradient is laid out in buffer pixels and moved onto each tile, so tiles agree. A linear one takes CSS's angle, with its line long enough for the ends to meet the corners. A radial one is a circle from the middle to the farthest corner. A clear stop fades each side out in its neighbor's color, as CSS blends with the alpha applied. Nothing is dithered, so a subtle gradient across a wide bar shows steps.
+- A shadow is drawn under its box, so a translucent background shows it. A sharp one is a filled shape. A blurred one is a Gaussian of half the blur, worked out for each pixel in buffer pixels: the product of the error function on each axis away from the corners, and eight Gaussian-weighted rows near one. A corner smaller than the spread grows by less, as in CSS, so a square box keeps square corners.
+- A full draw of an 1880 pixel wide box with a 12 pixel blur at scale 2 takes 5.1 ms, 0.8 ms of it without the shadow.
 
 ## Wayland platform
 
@@ -616,6 +641,12 @@ Rules settled while building `crabshell-wayland` (Phase 7):
 - The clipboard offers five text types and moves text through pipes the loop watches only while text is moving, 4 KiB at a time, so a slow program never blocks the shell. A paste reads at most 1 MiB, and an empty one pastes nothing.
 - `XdgShell` is bound with the decoration manager. A floating window asks for server-side decorations, starts at scale 1 until the compositor says otherwise, and is told the size it asks for when a configure leaves the size to it. Size limits are capped at 16384 and a maximum below the minimum is raised to it, since either would end the connection. A hidden floating window drops its toplevel and its popups.
 - A virtual pointer's clicks never reached a toplevel on headless Sway, so the floating window tests click with `swaymsg seat - cursor`.
+
+Rules settled while building `crabshell-wayland` (Phase 8):
+
+- The animation clock ticks from a calloop `Timer` that is in the loop only while something animates, once a frame of the fastest output, or at 60 Hz without one.
+- Blur binds `ext_background_effect_manager_v1` version 1. A surface gets its effect object the first time it asks, and the region is cut to the surface's size and sent before the commit that applies it, and again when the size changes, as the mask is. Without the protocol, or with the compositor's blur off, a window that asks is logged once per shell and shows unblurred. Blur that turns on later shows from each window's next frame. No compositor here has the protocol (SwayFX 0.6, wlroots 0.20, labwc 0.20), so only the path without it is tested.
+- `Stats::drawing` adds up the time spent drawing frames.
 
 ## Services
 
@@ -814,6 +845,21 @@ Measured on 2026-11-14 with `measure_the_counter_bar`, release builds on one 192
 
 Linking libxkbcommon cost about 0.6 MiB; the rest of the phase moved RSS by a few hundred KiB.
 
+### Phase 8 results
+
+Measured on 2026-11-14 with `measure_the_counter_bar`, release builds on one 1920×1080 headless Sway output at scale 1. "Before" is ccc3bf5, built in a second checkout.
+
+| Metric                                     | Before Phase 8 | After Phase 8 |
+| ------------------------------------------ | -------------- | ------------- |
+| Counter example RSS                        | 16.4 MiB       | 16.5 MiB      |
+| Counter first frame                        | 17.4 ms        | 9.5 ms        |
+| v0.1 bar RSS                               | 19.8 MiB       | 19.5 MiB      |
+| Idle wakeups, counter                      | 0              | 0             |
+| Effects bar frame while animating, scale 1 | none           | 0.31 ms       |
+| Effects bar frame while animating, scale 2 | none           | 0.54 ms       |
+
+The phase added no dependency, and RSS moved within the run-to-run noise. The first-frame times vary between runs by more than the phase changed them. The frame times come from `Stats::drawing` in the exit check, run once as a release build at each scale: the effects bar's slide and fade took 15 frames.
+
 ## Phases
 
 Seven phases to v0.1, totaling 16 to 26 weeks of focused work, all guesses, then the phases in "Beyond v0.1". A phase is done only when its exit check passes. Phase 0 is a go/no-go gate for the whole project.
@@ -851,6 +897,8 @@ After v0.1, the phases bring every feature Quickshell has, so any Quickshell set
 | 13    | Parity check                     | A comparison against every Quickshell 0.3.2 type, with each gap closed or written down with a reason                                                                                                                                                                                                                                |
 
 Phase 7 passed on 2026-11-14, built in the commits from aa5d8c5 to a0b82d8 after a review per step. Its exit check, in `crates/crabshell/tests/headless.rs`, runs the launcher example on headless Sway: an overlay panel that takes the keyboard, with a text field filtering 500 rows in a `ListView` and an about `FloatingWindow`. It matches its goldens at scales 1, 1.5 and 2, typing filters the list within one frame a key, the wheel scrolls it, the compositor closes the floating window, the window's nodes come back to their count, and the open launcher wakes nothing while idle. Gaps left for later phases: no drag or kinetic scrolling and no scroll bar, no drag-select in text fields, popups that never shrink to fit, and no wrapper widgets of their own, since a `Stack` or `Button` with a padded style covers `WrapperItem`, `WrapperRectangle` and `WrapperMouseArea`, and `Style::clip` covers `ClippingRectangle`.
+
+Phase 8 passed on 2026-11-14, built in the commits from 5c301c4 to 1cb98f5 after a review per step. Its exit check, in `crates/crabshell/tests/headless.rs`, runs the effects example on headless Sway: a bar with a translucent gradient that asks the compositor to blur behind it, tabs whose hover color fades in, an indicator that slides under the picked tab with `cx.animate`, and a card with a soft shadow. It matches its goldens at scales 1, 1.5 and 2. Picking a tab draws 15 frames while the slide and the fade run, then one dispatch sleeps for 2 s. Sway lacks the blur protocol, which is logged once. The CPU renderer draws each of those frames in well under a millisecond, so the GPU backend waits. Gaps left for later phases: blur is untested against a compositor that has `ext-background-effect-v1`, one shadow per style and no inset shadows, no dithering, no springs, and layout values animate only through `cx.animate` driving a style's size, which lays the window out each frame.
 
 ## Rules for AI agents
 

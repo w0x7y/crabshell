@@ -149,19 +149,23 @@ const PHASES = [
   {
     n: 8,
     title: "animation and effects",
-    state: "next",
-    when: "up next",
+    state: "done",
+    when: "passed 14 nov",
     items: [
-      ["no", "animations that run only while something moves"],
-      ["no", "gradients, shadows and background blur"],
-      ["no", "a gpu backend, if the cpu renderer can't keep up"],
+      ["yes", "animations that run only while something moves"],
+      ["yes", "gradients, shadows and background blur"],
+      [
+        "yes",
+        "checked whether a gpu backend is needed: not yet, a frame draws in under 1 ms",
+      ],
+      ["yes", "exit check: the effects example on headless sway"],
     ],
   },
   {
     n: 9,
     title: "desktop services",
-    state: "later",
-    when: "after v0.1",
+    state: "next",
+    when: "up next",
     items: [
       ["no", "notification server and media players"],
       ["no", "pipewire nodes and levels"],
@@ -251,7 +255,11 @@ const Q = {
     ["DesktopAction", "no", 10],
     ["DesktopEntries", "no", 10],
     ["DesktopEntry", "no", 10],
-    ["EasingCurve", "no", 8],
+    [
+      "EasingCurve",
+      "yes",
+      "Easing, with CSS's curves and Bezier, in a Transition",
+    ],
     ["Edges", "yes", "Edge and Anchors"],
     ["ElapsedTimer", "na", "std::time::Instant"],
     [
@@ -437,7 +445,7 @@ const Q = {
     ["UPowerDeviceType", "no", 9],
   ],
   "Quickshell.Wayland": [
-    ["BackgroundEffect", "no", 8],
+    ["BackgroundEffect", "yes", "PanelWindow::blur and FloatingWindow::blur"],
     ["IdleInhibitor", "no", 9],
     ["IdleMonitor", "no", 9],
     ["ScreencopyView", "no", 10],
