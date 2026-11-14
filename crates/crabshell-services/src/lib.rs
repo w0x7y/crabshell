@@ -91,6 +91,7 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(socket::Sockets(Rc::clone(&shared)));
   cx.provide(process::Processes::new(Rc::clone(&shared)));
   cx.provide(desktop_entries::Service::new(Rc::clone(&shared)));
+  cx.provide(file::Files(Rc::clone(&shared)));
 }
 
 /// Stops every program a config started with `cx.process`. The shell

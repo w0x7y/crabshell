@@ -8,18 +8,55 @@ use std::cell::{Cell, RefCell};
 use std::io::{ErrorKind, Read, Write};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use crabshell_reactive::{ReadSignal, Signal, untrack};
 use crabshell_ui::Cx;
 use serde::Serialize;
 
+use crate::Shared;
 use crate::lines::panic_message;
+use crate::watch::{self, Watch};
 use serde::de::DeserializeOwned;
 
 /// The largest file read; a larger one reads as missing, and that is
 /// logged.
 pub(crate) const MAX_FILE: u64 = 16 * 1024 * 1024;
+
+/// What `cx.file_view` and `cx.json_file` need from the shell: the loop,
+/// to watch files.
+pub(crate) struct Files(pub(crate) Rc<Shared>);
+
+/// Calls `reread` when the file at `path` may have changed: written,
+/// replaced, made or removed. `None` if its directory can't be watched,
+/// which is logged.
+// shortcut: watches the directory the path names, not a link's target's,
+// so an edit through another name of a linked file isn't seen; follow
+// the link when a config needs that.
+fn watch_file(cx: &Cx, path: &Path, reread: impl Fn() + 'static) -> Option<Watch> {
+  let shared = Rc::clone(&cx.service::<Files>()?.0);
+  let (dir, name) = (path.parent()?, path.file_name()?.to_owned());
+  let dir = if dir.as_os_str().is_empty() {
+    Path::new(".")
+  } else {
+    dir
+  };
+  let on_change = move |change: &watch::Change| {
+    // `None`: the directory itself changed, or changes were lost.
+    if change.name.as_ref().is_none_or(|changed| *changed == name) {
+      reread();
+    }
+  };
+  watch::watch(&shared, dir, on_change)
+    .inspect_err(|error| {
+      let path = path.display();
+      tracing::info!(%path, %error, "can't watch the file, so changes to it aren't seen");
+    })
+    .ok()
+}
+
+/// Keeps a file's watch for as long as the opening context's owner.
+struct Keep<T>(#[allow(dead_code, reason = "held for its drop")] Rc<T>);
 
 /// A text file, from `cx.file_view(path)`. Its text is read at once and
 /// again when it changes on disk. A clone is cheap and shares it.
@@ -30,6 +67,7 @@ pub struct FileView {
 
 struct ViewInner {
   path: PathBuf,
+  watch: RefCell<Option<Watch>>,
   /// Lives under the opening context's owner.
   text: Signal<Option<String>>,
   /// The last error logged, so a file that stays missing logs once.
@@ -40,10 +78,20 @@ struct ViewInner {
 pub(crate) fn file_view(cx: &Cx, path: PathBuf) -> FileView {
   let inner = Rc::new(ViewInner {
     text: cx.signal(None),
+    watch: RefCell::new(None),
     path,
     logged: RefCell::new(None),
   });
   inner.reread();
+  let weak = Rc::downgrade(&inner);
+  let watch = watch_file(cx, &inner.path, move || {
+    if let Some(inner) = Weak::upgrade(&weak) {
+      inner.reread();
+    }
+  });
+  inner.watch.replace(watch);
+  // So `text()` follows the file even once every `FileView` is dropped.
+  cx.owner().signal(Keep(Rc::clone(&inner)));
   FileView { inner }
 }
 
@@ -102,8 +150,16 @@ where
     // What the file holds, as far as this shell knows.
     on_disk: RefCell::new(None),
     logged: RefCell::new(None),
+    watch: RefCell::new(None),
   });
   file.reread();
+  let weak = Rc::downgrade(&file);
+  let watch = watch_file(cx, &file.path, move || {
+    if let Some(file) = Weak::upgrade(&weak) {
+      file.reread();
+    }
+  });
+  file.watch.replace(watch);
   let writer = Rc::clone(&file);
   let first = Cell::new(true);
   // Writes what the config sets, not the value it starts from, so a
@@ -125,6 +181,8 @@ struct JsonInner<T: 'static> {
   on_disk: RefCell<Option<String>>,
   /// The last read problem logged, so it logs once until it reads again.
   logged: RefCell<Option<String>>,
+  /// Held by the effect that writes, which lives with the context.
+  watch: RefCell<Option<Watch>>,
 }
 
 impl<T> JsonInner<T>

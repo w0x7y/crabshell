@@ -200,3 +200,75 @@ fn a_panicking_deserialize_is_logged_and_keeps_the_value() {
   assert_eq!(value.unwrap().get_untracked(), Touchy(1));
   assert!(logs.contains("reading it panicked: too big: 99"), "{logs}");
 }
+
+fn run(shell: &mut Harness, ms: u64) -> usize {
+  shell.run_until(std::time::Instant::now() + std::time::Duration::from_millis(ms))
+}
+
+#[test]
+fn a_file_view_follows_writes_replacements_and_removal() {
+  let dir = Dir::new();
+  let path = dir.join("note");
+  std::fs::write(&path, "one").unwrap();
+  let mut shell = Harness::new(offline());
+  // Only the signal is kept, as a binding would keep it.
+  let text = shell.cx.file_view(&path).text();
+  std::fs::write(&path, "two").unwrap();
+  run(&mut shell, 50);
+  assert_eq!(text.get_untracked().as_deref(), Some("two"));
+  std::fs::write(dir.join("new"), "three").unwrap();
+  std::fs::rename(dir.join("new"), &path).unwrap();
+  run(&mut shell, 50);
+  assert_eq!(text.get_untracked().as_deref(), Some("three"));
+  std::fs::remove_file(&path).unwrap();
+  run(&mut shell, 50);
+  assert_eq!(text.get_untracked(), None);
+}
+
+#[test]
+fn a_json_file_follows_the_file_and_doesnt_write_back_what_it_read() {
+  let dir = Dir::new();
+  let path = dir.join("settings.json");
+  std::fs::write(&path, r#"{"volume": 70, "muted": true}"#).unwrap();
+  let mut shell = Harness::new(offline());
+  let settings = shell.cx.json_file(&path, DEFAULT);
+  Runtime::current().flush();
+  std::fs::write(&path, r#"{"volume": 10, "muted": false}"#).unwrap();
+  let inode = std::fs::metadata(&path).unwrap().ino();
+  run(&mut shell, 50);
+  assert_eq!(
+    settings.get_untracked(),
+    Settings {
+      volume: 10,
+      muted: false
+    }
+  );
+  assert_eq!(
+    std::fs::metadata(&path).unwrap().ino(),
+    inode,
+    "not written back"
+  );
+  assert_eq!(
+    std::fs::read_to_string(&path).unwrap(),
+    r#"{"volume": 10, "muted": false}"#
+  );
+}
+
+#[test]
+fn a_watched_file_wakes_nothing_while_it_stays_the_same_and_its_watch_goes_with_its_context() {
+  let dir = Dir::new();
+  let path = dir.join("note");
+  std::fs::write(&path, "one").unwrap();
+  let mut shell = Harness::new(offline());
+  let child = shell.cx.child();
+  let _text = child.file_view(&path).text();
+  run(&mut shell, 20);
+  assert_eq!(run(&mut shell, 500), 1, "only the run's own deadline");
+  let files = shell.cx.service::<super::Files>().unwrap();
+  assert!(files.0.watcher.is_open());
+  child.owner().dispose();
+  assert!(
+    !files.0.watcher.is_open(),
+    "the last watch took inotify away"
+  );
+}
