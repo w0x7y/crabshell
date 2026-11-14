@@ -1,10 +1,12 @@
-//! What the services' tests share: a shell with no compositor, and a
-//! private D-Bus daemon.
+//! What the services' tests share: a shell with no compositor, a private
+//! D-Bus daemon and temporary directories.
 
 use std::cell::RefCell;
 use std::io::{self, BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -110,6 +112,33 @@ pub(crate) fn offline() -> Config {
     sway: None,
     audio: None,
     popup_timeout: crate::notifications::POPUP_TIMEOUT,
+  }
+}
+
+/// A directory of a test's own, empty at first. It goes on drop.
+pub(crate) struct TempDir(PathBuf);
+
+impl TempDir {
+  pub(crate) fn new() -> TempDir {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+      "crabshell-services-dir-{}-{}",
+      std::process::id(),
+      NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a temporary directory");
+    TempDir(dir)
+  }
+
+  pub(crate) fn path(&self) -> &Path {
+    &self.0
+  }
+}
+
+impl Drop for TempDir {
+  fn drop(&mut self) {
+    let _ = std::fs::remove_dir_all(&self.0);
   }
 }
 

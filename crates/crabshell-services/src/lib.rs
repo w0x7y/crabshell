@@ -26,10 +26,15 @@ mod notifications;
 mod power;
 mod process;
 mod socket;
+// Used by the desktop entries, in the next commit.
+#[allow(dead_code)]
+mod spawn;
 mod sway;
 #[cfg(test)]
 mod testing;
 mod tray;
+#[allow(dead_code)]
+mod watch;
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::future::{Future, poll_fn};
@@ -305,6 +310,8 @@ struct Shared {
   /// The one futures executor every service's D-Bus calls run on, added
   /// to the loop on first use. `None` if that failed.
   executor: OnceCell<Option<Scheduler<()>>>,
+  /// The one inotify instance, made for the first directory watched.
+  watcher: watch::Watcher,
   config: Config,
 }
 
@@ -319,6 +326,7 @@ impl Shared {
           .map(|handle| Box::new(handle) as Box<dyn EventLoop>)
       }),
       executor: OnceCell::new(),
+      watcher: watch::Watcher::default(),
       config,
     }
   }

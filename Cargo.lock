@@ -238,6 +238,7 @@ dependencies = [
  "calloop",
  "crabshell-reactive",
  "crabshell-ui",
+ "inotify",
  "jiff",
  "libpulse-binding",
  "rustix",
