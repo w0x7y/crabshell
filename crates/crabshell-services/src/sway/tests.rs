@@ -1,3 +1,6 @@
+mod headless;
+mod outputs;
+
 use std::cell::Cell;
 use std::io::{self, ErrorKind, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -457,9 +460,13 @@ fn without_provide_the_service_is_inert() {
   let sway = cx.sway();
   assert_eq!(sway.workspaces().get_untracked(), []);
   assert_eq!(sway.changed_at(), None);
+  let outputs = sway.outputs();
+  assert_eq!(outputs.get_untracked(), []);
   sway.focus_workspace("1");
+  sway.dispatch("exit");
   cx.owner().dispose();
   assert_eq!(sway.workspaces().try_get(), None);
+  assert_eq!(outputs.try_get(), None);
 }
 
 #[test]
@@ -480,7 +487,9 @@ fn disposing_the_root_frees_the_list_and_closes_the_socket() {
   let before = runtime.node_count();
   let fake = FakeSway::new();
   let (mut shell, mut peer) = Harness::connect(&fake);
-  shell.cx.child().sway();
+  shell.cx.child().sway().outputs();
+  peer.read();
+  peer.read();
   shell.cx.owner().dispose();
   assert_eq!(runtime.node_count(), before);
   // The next message finds the list gone and closes the socket for good.

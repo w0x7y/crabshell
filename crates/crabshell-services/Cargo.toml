@@ -27,5 +27,10 @@ tracing.workspace = true
 zbus.workspace = true
 
 [dev-dependencies]
+# The Sway tests' private headless Sway, through crabshell-wayland's test
+# helper.
+crabshell-wayland.workspace = true
+png.workspace = true
+smithay-client-toolkit.workspace = true
 # Only to capture log lines in tests.
 tracing-subscriber.workspace = true

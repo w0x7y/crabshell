@@ -8,8 +8,12 @@ pub(super) const RUN_COMMAND: u32 = 0;
 pub(super) const GET_WORKSPACES: u32 = 1;
 /// Subscribes the connection to the events named in the payload.
 pub(super) const SUBSCRIBE: u32 = 2;
+/// Asks for the outputs.
+pub(super) const GET_OUTPUTS: u32 = 3;
 /// Sent on a workspace change. Events have the high bit set.
 pub(super) const WORKSPACE_EVENT: u32 = 0x8000_0000;
+/// Sent when an output is added, removed or changed.
+pub(super) const OUTPUT_EVENT: u32 = 0x8000_0001;
 
 const MAGIC: &[u8; 6] = b"i3-ipc";
 const HEADER: usize = 14;

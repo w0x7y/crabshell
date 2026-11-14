@@ -70,7 +70,7 @@ pub use polkit::{AuthRequest, AuthState, PolkitAgent};
 pub use power::{BatteryState, DeviceKind, PowerDevice, PowerProfile, PowerProfiles, UPower};
 pub use process::{IntoCommand, Process};
 pub use socket::Socket;
-pub use sway::{Sway, Workspace};
+pub use sway::{Sway, SwayOutput, Workspace};
 pub use tray::{MenuEntry, MenuToggle, Tray, TrayHost, TrayItem, TrayMenu, TrayStatus};
 
 /// Makes the services reachable from `cx` and every context made from it.
@@ -125,14 +125,16 @@ pub trait ServicesExt {
   /// next tick.
   fn clock(&self, precision: Precision) -> ReadSignal<jiff::Zoned>;
 
-  /// Sway's workspaces, over the IPC socket at `$SWAYSOCK`. Every caller
-  /// shares one connection, made on the first call.
+  /// Sway's workspaces and outputs, and its commands, over the IPC socket
+  /// at `$SWAYSOCK`, as Quickshell's `I3`. Every caller shares one
+  /// connection, made on the first call.
   ///
-  /// The list is empty while Sway isn't there. When `SWAYSOCK` is unset
-  /// or the first connect fails, it stays empty and the service never
-  /// wakes the shell. When a working connection closes, the list is
-  /// empty until a reconnect, tried every 2 s, works. While connected,
-  /// it wakes the shell only when Sway sends something.
+  /// The lists are empty while Sway isn't there. When `SWAYSOCK` is unset
+  /// or the first connect fails, they stay empty and the service never
+  /// wakes the shell. When a working connection closes, they are empty
+  /// until a reconnect, tried every 2 s, works. While connected, it wakes
+  /// the shell only for a workspace event, and for an output event once a
+  /// config asked for the outputs.
   fn sway(&self) -> Sway;
 
   /// The audio server's default sink, with its volume and mute. Every

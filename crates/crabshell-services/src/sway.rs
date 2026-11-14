@@ -1,4 +1,4 @@
-//! Sway's workspaces, over Sway's IPC socket.
+//! Sway's workspaces and outputs, over Sway's IPC socket.
 
 mod ipc;
 #[cfg(test)]
@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use calloop::timer::TimeoutAction;
 use calloop::{Interest, RegistrationToken};
-use crabshell_reactive::{ReadSignal, Signal};
+use crabshell_reactive::{Owner, ReadSignal, Signal, untrack};
 use crabshell_ui::Cx;
 use serde::Deserialize;
 
@@ -44,6 +44,68 @@ pub struct Workspace {
   pub urgent: bool,
 }
 
+/// One of Sway's outputs, a monitor, as `GET_OUTPUTS` describes it and
+/// as Quickshell's `I3Monitor` does.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(from = "RawOutput")]
+pub struct SwayOutput {
+  /// Its name, such as `DP-1`.
+  pub name: String,
+  /// Whether it shows the focused workspace.
+  pub focused: bool,
+  /// Whether it is enabled. One that isn't has no workspace and no size.
+  pub active: bool,
+  /// The name of the workspace it shows. `None` while it isn't active.
+  pub current_workspace: Option<String>,
+  /// Where its top-left corner is in the layout, in logical pixels.
+  pub x: i32,
+  /// See [`x`](Self::x).
+  pub y: i32,
+  /// Its size in logical pixels: its mode's size divided by its scale.
+  pub width: u32,
+  /// See [`width`](Self::width).
+  pub height: u32,
+  /// Its scale, such as 1.5. 1 for an output that isn't active, which
+  /// Sway gives -1 and SwayFX none.
+  pub scale: f64,
+}
+
+/// An output as Sway sends it.
+#[derive(Deserialize)]
+struct RawOutput {
+  name: String,
+  #[serde(default)]
+  focused: bool,
+  active: bool,
+  current_workspace: Option<String>,
+  rect: RawRect,
+  scale: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct RawRect {
+  x: i32,
+  y: i32,
+  width: u32,
+  height: u32,
+}
+
+impl From<RawOutput> for SwayOutput {
+  fn from(raw: RawOutput) -> SwayOutput {
+    SwayOutput {
+      name: raw.name,
+      focused: raw.focused,
+      active: raw.active,
+      current_workspace: raw.current_workspace,
+      x: raw.rect.x,
+      y: raw.rect.y,
+      width: raw.rect.width,
+      height: raw.rect.height,
+      scale: raw.scale.filter(|scale| *scale > 0.0).unwrap_or(1.0),
+    }
+  }
+}
+
 /// Where Sway listens.
 pub(crate) struct Socket {
   pub(crate) path: PathBuf,
@@ -58,6 +120,8 @@ pub struct Sway {
   /// `None` when the shell provided no services.
   service: Option<Rc<Service>>,
   workspaces: ReadSignal<Vec<Workspace>>,
+  /// The asking context's owner, for what a config makes through it.
+  owner: Owner,
 }
 
 impl Sway {
@@ -71,6 +135,7 @@ impl Sway {
     Some(Sway {
       service: Some(service),
       workspaces,
+      owner: cx.owner(),
     })
   }
 
@@ -78,6 +143,17 @@ impl Sway {
   /// isn't connected.
   pub fn workspaces(&self) -> ReadSignal<Vec<Workspace>> {
     self.workspaces
+  }
+
+  /// Every output, enabled or not, in Sway's order, kept current from
+  /// Sway's output and workspace events. Empty while Sway isn't
+  /// connected. Sway is asked for them on the first call, so a bar that
+  /// shows only workspaces never wakes for an output's change.
+  pub fn outputs(&self) -> ReadSignal<Vec<SwayOutput>> {
+    match &self.service {
+      Some(service) => service.outputs(),
+      None => self.owner.signal(Vec::new()).read_only(),
+    }
   }
 
   /// When the workspace event that led to the current list arrived, so
@@ -97,9 +173,25 @@ impl Sway {
       tracing::warn!(name, "Sway can't switch to this workspace by name");
       return;
     };
+    self.dispatch(&command);
+  }
+
+  /// Runs `command` as Sway commands, as `swaymsg` and Quickshell's
+  /// `I3.dispatch` do, such as `layout tabbed` or `[app_id=foot] kill`.
+  /// It is sent as written, so quote a name that has spaces. A call while
+  /// Sway isn't connected is logged and dropped, and so is a command over
+  /// 4 MiB. Sway's refusal is logged too.
+  pub fn dispatch(&self, command: &str) {
+    if command.len() > ipc::MAX_PAYLOAD {
+      let bytes = command.len();
+      return tracing::warn!(bytes, "a Sway command over 4 MiB isn't sent");
+    }
     let service = self.service.as_ref();
     if !service.is_some_and(|service| service.send(ipc::RUN_COMMAND, command.as_bytes())) {
-      tracing::warn!(name, "can't switch workspaces while Sway isn't connected");
+      tracing::warn!(
+        command,
+        "can't run a Sway command while Sway isn't connected"
+      );
     }
   }
 }
@@ -114,12 +206,14 @@ pub(crate) fn sway(cx: &Cx) -> Sway {
     return Sway {
       service: None,
       workspaces: cx.signal(Vec::new()).read_only(),
+      owner: cx.owner(),
     };
   };
   let workspaces = service.start();
   Sway {
     service: Some(service),
     workspaces,
+    owner: cx.owner(),
   }
 }
 
@@ -131,6 +225,9 @@ pub(crate) struct Service {
 
 struct State {
   workspaces: Signal<Vec<Workspace>>,
+  /// `None` until a config asks for the outputs, so a bar that shows only
+  /// workspaces never subscribes to output events.
+  outputs: Option<Signal<Vec<SwayOutput>>>,
   changed_at: Option<Instant>,
   connection: Option<Connection>,
   /// Whether the current outage was logged, so retries stay quiet.
@@ -151,6 +248,9 @@ struct Connection {
   /// One entry per `GET_WORKSPACES` sent and not yet answered, in order:
   /// when the event behind it arrived, or `None` for the first.
   fetches: VecDeque<Option<Instant>>,
+  /// The events this connection subscribed to. Sway has no way to
+  /// unsubscribe.
+  subscribed: Vec<&'static str>,
 }
 
 /// Sway's answer to a `SUBSCRIBE` or to one command.
@@ -178,6 +278,7 @@ impl Service {
     let workspaces = self.shared.root.signal(Vec::new());
     *self.state.borrow_mut() = Some(State {
       workspaces,
+      outputs: None,
       changed_at: None,
       connection: None,
       outage_logged: false,
@@ -190,6 +291,24 @@ impl Service {
       self.connect();
     }
     workspaces.read_only()
+  }
+
+  /// The outputs, asking Sway for them if this is the first ask.
+  fn outputs(self: &Rc<Self>) -> ReadSignal<Vec<SwayOutput>> {
+    let mut state = self.state.borrow_mut();
+    let state = state.as_mut().expect("invariant: started by cx.sway()");
+    if let Some(outputs) = state.outputs {
+      return outputs.read_only();
+    }
+    let outputs = self.shared.root.signal(Vec::new());
+    state.outputs = Some(outputs);
+    let wanted = state.wanted();
+    if let Some(connection) = state.connection.as_mut() {
+      connection.subscribe(&wanted);
+      ipc::encode(ipc::GET_OUTPUTS, b"", &mut connection.outbox);
+      self.flush_with(state);
+    }
+    outputs.read_only()
   }
 
   /// Connects and asks for the list and its changes. `false` if Sway
@@ -237,10 +356,14 @@ impl Service {
       inbox: Vec::new(),
       outbox: Vec::new(),
       fetches: VecDeque::from([None]),
+      subscribed: Vec::new(),
     };
     // Subscribe first, so no change between the two goes unseen.
-    ipc::encode(ipc::SUBSCRIBE, br#"["workspace"]"#, &mut connection.outbox);
+    connection.subscribe(&state.wanted());
     ipc::encode(ipc::GET_WORKSPACES, b"", &mut connection.outbox);
+    if state.outputs.is_some() {
+      ipc::encode(ipc::GET_OUTPUTS, b"", &mut connection.outbox);
+    }
     state.connection = Some(connection);
     self.flush_with(&mut *state);
     true
@@ -292,9 +415,7 @@ impl Service {
       Ok(0) => Some("Sway closed the socket".to_owned()),
       Ok(read) => {
         connection.inbox.extend_from_slice(&chunk[..read]);
-        connection
-          .take_messages(state.workspaces, &mut state.changed_at)
-          .err()
+        state.take_messages().err()
       }
       Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => None,
       Err(error) => Some(error.to_string()),
@@ -369,8 +490,9 @@ impl Service {
     state.outage_logged = true;
     self.drop_connection(state);
     state.changed_at = None;
-    if state.workspaces.try_with(Vec::is_empty) == Some(false) {
-      state.workspaces.set(Vec::new());
+    replace(state.workspaces, Vec::new());
+    if let Some(outputs) = state.outputs {
+      replace(outputs, Vec::new());
     }
     self.retry_later();
   }
@@ -393,31 +515,80 @@ impl Service {
   }
 }
 
+/// Sets `signal` to `list` unless it holds that already, so nothing reads
+/// an unchanged list again. Whether it changed.
+fn replace<T: PartialEq + 'static>(signal: Signal<Vec<T>>, list: Vec<T>) -> bool {
+  let changed = untrack(|| signal.try_with(|old| *old != list)) == Some(true);
+  if changed {
+    signal.set(list);
+  }
+  changed
+}
+
 impl Connection {
+  /// Subscribes to the events in `wanted` it hasn't yet.
+  fn subscribe(&mut self, wanted: &[&'static str]) {
+    let missing: Vec<_> = wanted
+      .iter()
+      .filter(|name| !self.subscribed.contains(name))
+      .copied()
+      .collect();
+    if !missing.is_empty() {
+      let payload = serde_json::to_vec(&missing).expect("invariant: a list of names serializes");
+      ipc::encode(ipc::SUBSCRIBE, &payload, &mut self.outbox);
+      self.subscribed.extend(missing);
+    }
+  }
+}
+
+impl State {
+  /// The events the connection needs: workspace ones for the list, and
+  /// output ones once a config reads the outputs.
+  fn wanted(&self) -> Vec<&'static str> {
+    let mut wanted = vec!["workspace"];
+    if self.outputs.is_some() {
+      wanted.push("output");
+    }
+    wanted
+  }
+
   /// Acts on each whole message in the inbox. An error means the stream
   /// can't be read any further.
-  fn take_messages(
-    &mut self,
-    workspaces: Signal<Vec<Workspace>>,
-    changed_at: &mut Option<Instant>,
-  ) -> Result<(), String> {
+  fn take_messages(&mut self) -> Result<(), String> {
+    let Some(connection) = self.connection.as_mut() else {
+      return Ok(());
+    };
     let now = Instant::now();
-    while let Some((kind, payload)) = ipc::decode(&mut self.inbox)? {
+    while let Some((kind, payload)) = ipc::decode(&mut connection.inbox)? {
       match kind {
         ipc::GET_WORKSPACES => {
-          let event = self.fetches.pop_front().flatten();
+          let event = connection.fetches.pop_front().flatten();
           match serde_json::from_slice::<Vec<Workspace>>(&payload) {
-            Ok(list) if workspaces.with_untracked(|old| *old != list) => {
-              workspaces.set(list);
-              *changed_at = event;
+            Ok(list) => {
+              if replace(self.workspaces, list) {
+                self.changed_at = event;
+              }
             }
-            Ok(_) => {}
             Err(error) => tracing::warn!(%error, "a bad workspace list from Sway"),
           }
         }
-        ipc::WORKSPACE_EVENT => {
-          self.fetches.push_back(Some(now));
-          ipc::encode(ipc::GET_WORKSPACES, b"", &mut self.outbox);
+        ipc::GET_OUTPUTS => match serde_json::from_slice::<Vec<SwayOutput>>(&payload) {
+          Ok(list) => {
+            if let Some(outputs) = self.outputs {
+              replace(outputs, list);
+            }
+          }
+          Err(error) => tracing::warn!(%error, "a bad output list from Sway"),
+        },
+        ipc::WORKSPACE_EVENT | ipc::OUTPUT_EVENT => {
+          if kind == ipc::WORKSPACE_EVENT {
+            connection.fetches.push_back(Some(now));
+            ipc::encode(ipc::GET_WORKSPACES, b"", &mut connection.outbox);
+          }
+          // A workspace event can move an output's workspace or focus.
+          if self.outputs.is_some() {
+            ipc::encode(ipc::GET_OUTPUTS, b"", &mut connection.outbox);
+          }
         }
         ipc::SUBSCRIBE => match serde_json::from_slice::<Outcome>(&payload) {
           Ok(Outcome { success: true, .. }) => {}
@@ -432,7 +603,7 @@ impl Connection {
         ipc::RUN_COMMAND => match serde_json::from_slice::<Vec<Outcome>>(&payload) {
           Ok(outcomes) => {
             for Outcome { error, .. } in outcomes.into_iter().filter(|outcome| !outcome.success) {
-              tracing::warn!(%error, "Sway refused to switch workspaces");
+              tracing::warn!(%error, "Sway refused a command");
             }
           }
           Err(error) => tracing::warn!(%error, "a bad command reply from Sway"),
