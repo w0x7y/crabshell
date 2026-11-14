@@ -76,11 +76,13 @@ mod tests;
 /// so a config can name `jiff::Zoned` without its own copy.
 pub use jiff;
 pub use per_output::IntoPanels;
-pub use shell::{EXIT_NO_COMPOSITOR, EXIT_ROOT_PANICKED, Error, Shell, ShellExt, Toplevels, run};
+pub use shell::{
+  EXIT_NO_COMPOSITOR, EXIT_ROOT_PANICKED, Error, Shell, ShellExt, Toplevels, WindowManager, run,
+};
 
 /// What a bar uses, in one `use crabshell::prelude::*`.
 pub mod prelude {
-  pub use crate::{IntoPanels, ShellExt, Toplevels};
+  pub use crate::{IntoPanels, ShellExt, Toplevels, WindowManager};
   pub use crabshell_reactive::{Effect, Memo, ReadSignal, Signal, untrack};
   pub use crabshell_services::{
     AudioNode, AudioStream, AuthRequest, AuthState, BatteryState, Bluetooth, BluetoothAdapter,
@@ -98,5 +100,5 @@ pub mod prelude {
     Modifiers, Output, Padding, PanelWindow, PopupWindow, Region, Row, ScreencopyView, ScrollView,
     SessionLock, Shadow, Size, Spacer, Stack, Style, Text, TextInput, Transition, Widget,
   };
-  pub use crabshell_wayland::Toplevel;
+  pub use crabshell_wayland::{Toplevel, Windowset, WindowsetProjection};
 }

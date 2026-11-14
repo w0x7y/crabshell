@@ -13,7 +13,9 @@ use calloop::{Interest, Mode};
 use crabshell_reactive::{Owner, ReadSignal, Runtime, Signal};
 use crabshell_services::Sway;
 use crabshell_ui::{Color, Cx, FloatingWindow, IntoProp, Lock, Output, SessionLock, Window};
-use crabshell_wayland::{Event, EventLoop, LoopSignal, Platform, Toplevel, WindowId};
+use crabshell_wayland::{
+  Event, EventLoop, LoopSignal, Platform, Toplevel, WindowId, Windowset, WindowsetProjection,
+};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tracing::level_filters::LevelFilter;
@@ -190,6 +192,7 @@ impl Shell {
       ipc: Ipc::new(&event_loop.handle(), ipc),
       root: cx.owner(),
       toplevels: Cell::new(None),
+      window_manager: Cell::new(None),
     });
     event_loop
       .platform()
@@ -431,6 +434,8 @@ struct Service {
   root: Owner,
   /// `cx.toplevels()`, once a config asked.
   toplevels: Cell<Option<Toplevels>>,
+  /// `cx.window_manager()`, once a config asked.
+  window_manager: Cell<Option<WindowManager>>,
 }
 
 impl Service {
@@ -438,6 +443,16 @@ impl Service {
   /// panic in it is logged; it doesn't end the shell.
   fn with_platform(&self, what: &'static str, f: impl FnOnce(&mut Platform) + 'static) {
     schedule(&self.idle, &self.signal, what, f);
+  }
+
+  /// How a handle shared by every caller reaches the loop: under the root
+  /// owner, so it goes with the shell.
+  fn requests(&self) -> ReadSignal<Requests> {
+    let requests = self.root.signal(Requests {
+      idle: Rc::clone(&self.idle),
+      signal: self.signal.clone(),
+    });
+    requests.read_only()
   }
 }
 
@@ -498,14 +513,125 @@ impl Toplevels {
   }
 
   fn send(&self, what: &'static str, f: impl FnOnce(&mut Platform) + 'static) {
-    // A handle kept after its shell went does nothing.
-    if let Some(requests) = self.requests {
-      requests.try_with(|requests| schedule(&requests.idle, &requests.signal, what, f));
-    }
+    request(self.requests, what, f);
   }
 }
 
-/// How a [`Toplevels`] reaches the platform: the shell's loop.
+/// The compositor's workspaces, from
+/// [`cx.window_manager()`](ShellExt::window_manager), as Quickshell's
+/// `WindowManager` has them: windowsets, each in a projection shown on
+/// some outputs. It is `Copy`, so closures capture it as they do a
+/// signal.
+#[derive(Clone, Copy)]
+pub struct WindowManager {
+  windowsets: ReadSignal<Vec<Windowset>>,
+  projections: ReadSignal<Vec<WindowsetProjection>>,
+  /// `None` on a context the shell didn't set up.
+  requests: Option<ReadSignal<Requests>>,
+}
+
+impl WindowManager {
+  /// Every windowset, in the order the compositor announced them. Empty
+  /// until the compositor answers, and without the protocol.
+  pub fn windowsets(&self) -> ReadSignal<Vec<Windowset>> {
+    self.windowsets
+  }
+
+  /// Every projection, in the order the compositor announced them.
+  pub fn projections(&self) -> ReadSignal<Vec<WindowsetProjection>> {
+    self.projections
+  }
+
+  /// The windowsets in the projections shown on `output`, such as
+  /// `"DP-1"`, as Quickshell's `ScreenProjection` gives them: what a bar
+  /// on that output lists. Read in a binding, it reruns when they change.
+  pub fn windowsets_on(&self, output: &str) -> Vec<Windowset> {
+    let shown: Vec<u64> = self.projections.with(|all| {
+      let on = all
+        .iter()
+        .filter(|projection| projection.outputs.iter().any(|o| o == output));
+      on.map(|projection| projection.id).collect()
+    });
+    self.windowsets.with(|all| {
+      let on = all
+        .iter()
+        .filter(|set| set.projection.is_some_and(|id| shown.contains(&id)));
+      on.cloned().collect()
+    })
+  }
+
+  /// Asks the compositor to show windowset `id`. Here and below, an id
+  /// that isn't listed is ignored, the compositor ignores what the
+  /// windowset's `can_` fields leave out, and the requests made in one
+  /// turn of the loop reach the compositor together.
+  pub fn activate(&self, id: u64) {
+    request(self.requests, "window_manager.activate", move |platform| {
+      platform.activate_windowset(id);
+    });
+  }
+
+  /// Asks the compositor to stop showing windowset `id`.
+  pub fn deactivate(&self, id: u64) {
+    request(
+      self.requests,
+      "window_manager.deactivate",
+      move |platform| {
+        platform.deactivate_windowset(id);
+      },
+    );
+  }
+
+  /// Asks the compositor to remove windowset `id`.
+  pub fn remove(&self, id: u64) {
+    request(self.requests, "window_manager.remove", move |platform| {
+      platform.remove_windowset(id);
+    });
+  }
+
+  /// Asks the compositor to move windowset `id` to projection
+  /// `projection`, as Quickshell's `setProjection`.
+  pub fn assign(&self, id: u64, projection: u64) {
+    request(self.requests, "window_manager.assign", move |platform| {
+      platform.assign_windowset(id, projection);
+    });
+  }
+
+  /// Asks the compositor for a new windowset in projection `projection`,
+  /// named `name` if it agrees. A name past 4000 bytes or with a NUL byte
+  /// is refused and logged.
+  pub fn create_windowset(&self, projection: u64, name: impl Into<String>) {
+    let name = name.into();
+    request(
+      self.requests,
+      "window_manager.create_windowset",
+      move |platform| {
+        platform.create_windowset(projection, name);
+      },
+    );
+  }
+}
+
+/// Runs `f` with the platform soon, unless the handle's shell went.
+fn request(
+  requests: Option<ReadSignal<Requests>>,
+  what: &'static str,
+  f: impl FnOnce(&mut Platform) + 'static,
+) {
+  if let Some(requests) = requests {
+    requests.try_with(|requests| schedule(&requests.idle, &requests.signal, what, f));
+  }
+}
+
+/// Sets `list` to `now` only if it differs, so nothing that reads it
+/// reruns for the same list.
+fn set_if_changed<T: Clone + PartialEq + 'static>(list: Signal<Vec<T>>, now: &[T]) {
+  if list.try_with(|old| old.as_slice() != now) == Some(true) {
+    list.try_set(now.to_vec());
+  }
+}
+
+/// How a [`Toplevels`] or [`WindowManager`] reaches the platform: the
+/// shell's loop.
 struct Requests {
   idle: Idle,
   signal: LoopSignal,
@@ -656,6 +782,32 @@ pub trait ShellExt {
   /// compositor says a window changed. Without
   /// `wlr-foreign-toplevel-management` it stays empty, and that is logged.
   fn toplevels(&self) -> Toplevels;
+
+  /// The compositor's workspaces through `ext-workspace-v1`, as
+  /// Quickshell's `WindowManager`: windowsets, the projections they are
+  /// shown in, and requests to activate, deactivate, remove, move and
+  /// create them. Every caller shares one list, started on the first
+  /// call, which lives as long as the shell and wakes it only when the
+  /// compositor says a workspace changed. Without `ext-workspace-v1` it
+  /// stays empty, and that is logged.
+  ///
+  /// ```no_run
+  /// use crabshell::prelude::*;
+  ///
+  /// fn workspaces(cx: &Cx, output: &Output) -> Row {
+  ///     let manager = cx.window_manager();
+  ///     let name = output.name();
+  ///     Row::new().children_keyed(
+  ///         move || manager.windowsets_on(&name),
+  ///         |set| set.id,
+  ///         move |_, set| {
+  ///             Button::new(Text::new(move || set.get().name))
+  ///                 .on_click(move |_| manager.activate(set.get().id))
+  ///         },
+  ///     )
+  /// }
+  /// ```
+  fn window_manager(&self) -> WindowManager;
 
   /// Ends the shell with exit status `code`, as Quickshell's `Qt.quit()`:
   /// the programs the config started are stopped and the IPC socket
@@ -871,24 +1023,47 @@ impl ShellExt for Cx {
     }
     // Under the root owner, so every caller can share them.
     let list = service.root.signal(Vec::new());
-    let requests = service.root.signal(Requests {
-      idle: Rc::clone(&service.idle),
-      signal: service.signal.clone(),
-    });
     let toplevels = Toplevels {
       list: list.read_only(),
-      requests: Some(requests.read_only()),
+      requests: Some(service.requests()),
     };
     service.toplevels.set(Some(toplevels));
     service.with_platform("cx.toplevels", move |platform| {
-      platform.watch_toplevels(move |now| {
-        // An unchanged list isn't set, so nothing that reads it reruns.
-        if list.try_with(|old| old.as_slice() != now) == Some(true) {
-          list.try_set(now.to_vec());
-        }
-      });
+      platform.watch_toplevels(move |now| set_if_changed(list, now));
     });
     toplevels
+  }
+
+  fn window_manager(&self) -> WindowManager {
+    let Some(service) = self.service::<Service>() else {
+      tracing::error!(
+        "cx.window_manager needs the shell crabshell::run starts; the lists stay empty"
+      );
+      return WindowManager {
+        windowsets: self.signal(Vec::new()).read_only(),
+        projections: self.signal(Vec::new()).read_only(),
+        requests: None,
+      };
+    };
+    if let Some(manager) = service.window_manager.get() {
+      return manager;
+    }
+    // Under the root owner, so every caller can share them.
+    let windowsets = service.root.signal(Vec::new());
+    let projections = service.root.signal(Vec::new());
+    let manager = WindowManager {
+      windowsets: windowsets.read_only(),
+      projections: projections.read_only(),
+      requests: Some(service.requests()),
+    };
+    service.window_manager.set(Some(manager));
+    service.with_platform("cx.window_manager", move |platform| {
+      platform.watch_windowsets(move |sets, now| {
+        set_if_changed(windowsets, sets);
+        set_if_changed(projections, now);
+      });
+    });
+    manager
   }
 
   fn persist<T>(&self, key: &str, default: T) -> Signal<T>

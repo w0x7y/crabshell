@@ -1752,6 +1752,93 @@ fn cx_toplevels_lists_the_shells_floating_window_and_closes_it() {
   });
 }
 
+#[test]
+#[ignore = "needs headless Sway"]
+fn cx_window_manager_lists_sways_workspaces_and_switches_them() {
+  let sway = Sway::start();
+  let runtime = Runtime::current();
+  runtime.flush();
+  let before = runtime.node_count();
+  let kept: std::rc::Rc<std::cell::Cell<Option<WindowManager>>> = Default::default();
+  let hold = std::rc::Rc::clone(&kept);
+  let mut shell = Shell::new(sway.connect(), move |cx| {
+    cx.per_output(counter::bar);
+    hold.set(Some(cx.window_manager()));
+  })
+  .expect("the root closure runs");
+  let manager = kept.take().expect("the root ran");
+  assert!(
+    shell.cx().window_manager().windowsets() == manager.windowsets(),
+    "every caller shares one list"
+  );
+  let named = |name: &str| {
+    let on = manager.windowsets_on("HEADLESS-1");
+    on.into_iter().find(|set| set.name == name)
+  };
+  run_until(&mut shell, "workspace 1", |_| {
+    named("1").is_some_and(|set| set.active)
+  });
+
+  // A window keeps workspace 1 once another shows.
+  let _app = AppWindow::new(&sway, "org.example.App", "another program");
+  sway.msg(&["workspace", "two"]);
+  run_until(&mut shell, "workspace two", |_| {
+    named("two").is_some_and(|set| set.active)
+  });
+  manager.activate(named("1").expect("listed").id);
+  run_until(&mut shell, "workspace 1 again", |_| {
+    named("1").is_some_and(|set| set.active) && named("two").is_none()
+  });
+  let projection = manager.projections().get_untracked()[0].id;
+  manager.create_windowset(projection, "made");
+  run_until(&mut shell, "a new workspace", |_| {
+    named("made").is_some_and(|set| set.active)
+  });
+
+  // Each output lists its own; workspace 1 moves with `assign`.
+  let names_on = |output: &str| -> Vec<String> {
+    let on = manager.windowsets_on(output).into_iter();
+    on.map(|set| set.name).collect()
+  };
+  sway.msg(&["create_output"]);
+  run_until(&mut shell, "HEADLESS-2's workspace", |_| {
+    names_on("HEADLESS-2") == ["2"] && named("2").is_none()
+  });
+  let second = manager.windowsets_on("HEADLESS-2")[0].projection;
+  manager.assign(named("1").expect("listed").id, second.expect("in one"));
+  run_until(&mut shell, "workspace 1 on HEADLESS-2", |_| {
+    names_on("HEADLESS-2").contains(&String::from("1")) && named("1").is_none()
+  });
+  settle(&mut shell);
+
+  // A new scale makes the platform tell the same lists again, which
+  // aren't set, so nothing that reads them runs.
+  let runs = std::rc::Rc::new(std::cell::Cell::new(0));
+  let counted = std::rc::Rc::clone(&runs);
+  let watcher = shell.cx().child();
+  watcher.effect(move || {
+    manager.windowsets_on("HEADLESS-1");
+    counted.set(counted.get() + 1);
+  });
+  runtime.flush();
+  let ran = runs.get();
+  sway.msg(&["output", "HEADLESS-1", "scale", "2"]);
+  settle(&mut shell);
+  assert_eq!(runs.get(), ran, "unchanged lists were set again");
+  watcher.owner().dispose();
+  // Nothing changes, so nothing wakes the shell.
+  let started = Instant::now();
+  shell
+    .dispatch(Some(Duration::from_secs(2)))
+    .expect("the connection works");
+  let slept = started.elapsed();
+  assert!(slept >= Duration::from_millis(1950), "woke after {slept:?}");
+
+  drop(shell);
+  runtime.flush();
+  assert_eq!(runtime.node_count(), before, "everything it made is freed");
+}
+
 /// 500 apps: the example's names, numbered.
 fn many_apps() -> Vec<String> {
   (0..500)
