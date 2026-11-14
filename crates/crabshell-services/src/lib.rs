@@ -18,6 +18,7 @@ mod audio;
 mod bluetooth;
 mod clock;
 mod dbus;
+mod lines;
 mod mpris;
 mod network;
 mod notifications;

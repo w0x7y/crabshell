@@ -14,14 +14,11 @@ use std::rc::Rc;
 use std::sync::Once;
 
 use calloop::{Interest, RegistrationToken};
-use crabshell_reactive::{ReadSignal, Signal};
+use crabshell_reactive::{ReadSignal, Signal, untrack};
 use crabshell_ui::Cx;
 
 use crate::Shared;
-
-/// The longest line passed on. The rest of a longer one, up to its
-/// newline, is dropped.
-pub(crate) const MAX_LINE: usize = 1024 * 1024;
+use crate::lines::{Lines, panic_message};
 
 /// The most bytes left to write before the socket is closed, so a program
 /// that reads nothing can't grow the shell without end.
@@ -63,10 +60,10 @@ struct State {
   on_line: Option<OnLine>,
   /// Where `on_line` was set, for the log if it panics.
   at: Option<&'static Location<'static>>,
-  /// Bytes after the last newline.
-  inbox: Vec<u8>,
-  /// Dropping the rest of a line longer than [`MAX_LINE`].
-  skipping: bool,
+  lines: Lines,
+  /// Counts connects and closes the config asked for, so lines read
+  /// before one aren't passed on after it.
+  serial: u64,
 }
 
 struct Connection {
@@ -77,6 +74,8 @@ struct Connection {
   /// holds back part of `outbox`.
   writer: Option<RegistrationToken>,
   outbox: Vec<u8>,
+  /// Why writing failed, after which only reading goes on.
+  write_failed: Option<String>,
 }
 
 /// `cx.socket(path)`.
@@ -105,6 +104,10 @@ struct CloseOnDrop(Rc<Inner>);
 
 impl Drop for CloseOnDrop {
   fn drop(&mut self) {
+    // Dropped outside the borrow: `on_line` may hold this socket, which
+    // would keep it alive, and its drop may use it.
+    let on_line = self.0.state.borrow_mut().on_line.take();
+    drop(on_line);
     self.0.close();
   }
 }
@@ -140,21 +143,25 @@ impl Socket {
   }
 
   /// Closes it and connects again, as after the other end restarted.
+  /// Lines the old connection read and `on_line` hasn't had yet are
+  /// dropped.
   pub fn reconnect(&self) {
     self.inner.close();
     self.inner.connect();
   }
 
-  /// Closes it. [`reconnect`](Self::reconnect) opens it again.
+  /// Closes it. [`reconnect`](Self::reconnect) opens it again. Lines read
+  /// and not yet passed on are dropped.
   pub fn close(&self) {
     self.inner.close();
   }
 }
 
 impl Inner {
-  /// Whether the opening context is still there.
+  /// Whether the opening context is still there. Untracked, so an effect
+  /// that opens or reconnects a socket doesn't run again for it.
   fn alive(&self) -> bool {
-    self.connected.try_with(|_| ()).is_some()
+    untrack(|| self.connected.try_with(|_| ()).is_some())
   }
 
   fn connect(self: &Rc<Self>) {
@@ -182,13 +189,14 @@ impl Inner {
       return;
     };
     let mut state = self.state.borrow_mut();
-    state.inbox.clear();
-    state.skipping = false;
+    state.lines = Lines::default();
+    state.serial += 1;
     state.connection = Some(Connection {
       stream,
       reader,
       writer: None,
       outbox: Vec::new(),
+      write_failed: None,
     });
     drop(state);
     self.connected.try_set(true);
@@ -203,30 +211,34 @@ impl Inner {
     };
     let (lines, closed) = match connection.stream.read(&mut chunk) {
       Ok(0) => {
-        let rest = std::mem::take(&mut state.inbox);
-        let last = (!rest.is_empty() && !state.skipping)
-          .then(|| String::from_utf8_lossy(&rest).into_owned());
-        (last.into_iter().collect(), Some("the other end closed it"))
+        let last = state.lines.finish();
+        (
+          last.into_iter().collect(),
+          Some(String::from("the other end closed it")),
+        )
       }
-      Ok(read) => (state.take_lines(&chunk[..read], &self.path), None),
+      Ok(read) => (state.lines.push(&chunk[..read], &self.path.display()), None),
       Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
         return;
       }
+      // As a reset from a peer that closed with input unread: the end.
       Err(error) => {
-        drop(state);
-        return self.drop_connection(&error.to_string());
+        let last = state.lines.finish();
+        (last.into_iter().collect(), Some(error.to_string()))
       }
     };
+    let serial = state.serial;
     drop(state);
     // Closed first, so `on_line` may reconnect.
     if let Some(why) = closed {
-      self.drop_connection(why);
+      self.drop_connection(&why);
     }
-    self.deliver(lines);
+    self.deliver(lines, serial);
   }
 
-  /// Calls `on_line` with each line, with nothing borrowed.
-  fn deliver(&self, lines: Vec<String>) {
+  /// Calls `on_line` with each line, with nothing borrowed, until the
+  /// config closes or reconnects the socket.
+  fn deliver(&self, lines: Vec<String>, serial: u64) {
     let (on_line, at) = {
       let state = self.state.borrow();
       (state.on_line.clone(), state.at)
@@ -235,6 +247,9 @@ impl Inner {
       return;
     };
     for line in lines {
+      if self.state.borrow().serial != serial {
+        return;
+      }
       if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| on_line(&line))) {
         let path = self.path.display();
         let at = at.map_or_else(String::new, |at| format!(" (called at {at})"));
@@ -256,9 +271,13 @@ impl Inner {
 
   fn write(self: &Rc<Self>, data: &[u8]) {
     let mut state = self.state.borrow_mut();
-    let Some(connection) = state.connection.as_mut() else {
+    let Some(connection) = state
+      .connection
+      .as_mut()
+      .filter(|connection| connection.write_failed.is_none())
+    else {
       let path = self.path.display();
-      return tracing::warn!(%path, "the socket isn't connected, so a write was dropped");
+      return tracing::warn!(%path, "the socket takes no writes now, so a write was dropped");
     };
     connection.outbox.extend_from_slice(data);
     drop(state);
@@ -283,15 +302,22 @@ impl Inner {
         Err(error) if error.kind() == ErrorKind::Interrupted => {}
         Err(error) if error.kind() == ErrorKind::WouldBlock => break,
         Err(error) => {
-          broken = Some(error.to_string());
+          // The other end may still have sent something: stop writing
+          // and read on to its end.
+          let path = self.path.display();
+          tracing::info!(%path, %error, "the socket takes no more writes");
+          connection.write_failed = Some(error.to_string());
+          connection.outbox = Vec::new();
           break;
         }
       }
     }
-    if broken.is_none() && connection.outbox.len() > MAX_OUTBOX {
+    if connection.outbox.len() > MAX_OUTBOX {
       broken = Some(String::from("the other end reads nothing it is sent"));
     }
     if broken.is_none() && connection.outbox.is_empty() {
+      // A big write's room isn't kept.
+      connection.outbox.shrink_to(64 * 1024);
       if let Some(writer) = connection.writer.take() {
         event_loop.remove(writer);
       }
@@ -312,18 +338,27 @@ impl Inner {
   }
 
   /// Ends the connection the other end ended or broke, and logs why.
+  /// Lines it read before still reach `on_line`.
   fn drop_connection(&self, why: &str) {
     if self.state.borrow().connection.is_some() {
       let path = self.path.display();
       tracing::info!(%path, why, "the socket closed");
     }
-    self.close();
+    self.end(false);
   }
 
+  /// Closes it as the config asked, so lines read before are dropped.
   fn close(&self) {
+    self.end(true);
+  }
+
+  fn end(&self, asked: bool) {
     let connection = {
       let mut state = self.state.borrow_mut();
-      state.inbox.clear();
+      state.lines = Lines::default();
+      if asked {
+        state.serial += 1;
+      }
       state.connection.take()
     };
     if let (Some(connection), Some(event_loop)) = (
@@ -335,45 +370,8 @@ impl Inner {
         event_loop.remove(writer);
       }
     }
-    if self.connected.try_with(|connected| *connected) == Some(true) {
+    if untrack(|| self.connected.try_with(|connected| *connected)) == Some(true) {
       self.connected.try_set(false);
     }
-  }
-}
-
-impl State {
-  /// The whole lines `bytes` completes, keeping the rest for later.
-  fn take_lines(&mut self, bytes: &[u8], path: &std::path::Path) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut pieces = bytes.split(|&byte| byte == b'\n').peekable();
-    while let Some(piece) = pieces.next() {
-      let ended = pieces.peek().is_some();
-      if !self.skipping {
-        self.inbox.extend_from_slice(piece);
-        if self.inbox.len() > MAX_LINE {
-          let path = path.display();
-          tracing::warn!(%path, "a line over 1 MiB from the socket was dropped");
-          self.inbox.clear();
-          self.skipping = true;
-        }
-      }
-      if ended {
-        if !std::mem::take(&mut self.skipping) {
-          lines.push(String::from_utf8_lossy(&self.inbox).into_owned());
-        }
-        self.inbox.clear();
-      }
-    }
-    lines
-  }
-}
-
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
-  if let Some(message) = payload.downcast_ref::<&str>() {
-    (*message).to_owned()
-  } else if let Some(message) = payload.downcast_ref::<String>() {
-    message.clone()
-  } else {
-    String::from("(panic payload is not a string)")
   }
 }

@@ -8,8 +8,9 @@ use std::time::{Duration, Instant};
 
 use crabshell_reactive::Runtime;
 
-use super::{MAX_LINE, MAX_OUTBOX, Socket};
+use super::{MAX_OUTBOX, Socket};
 use crate::ServicesExt;
+use crate::lines::MAX_LINE;
 use crate::testing::{Harness, capture_logs, offline};
 
 /// A listening socket in a short temporary directory, since socket paths
@@ -249,4 +250,102 @@ fn an_other_end_that_reads_nothing_is_dropped() {
   assert!(!socket.connected().get_untracked());
   assert!(logs.contains("reads nothing"), "{logs}");
   Runtime::current().flush();
+}
+
+#[test]
+fn reconnecting_from_an_effect_connects_once_per_run() {
+  let server = Server::new();
+  server.listener.set_nonblocking(true).unwrap();
+  let mut shell = Harness::new(offline());
+  let socket = open(&shell, server.path()).0;
+  let poke = shell.cx.signal(0);
+  shell.cx.effect(move || {
+    poke.get();
+    socket.reconnect();
+  });
+  Runtime::current().flush();
+  poke.set(1);
+  Runtime::current().flush();
+  run(&mut shell, 20);
+  let accepted = std::iter::from_fn(|| server.listener.accept().ok()).count();
+  // The first open, the effect's first run, and the poke.
+  assert_eq!(accepted, 3);
+}
+
+#[test]
+fn opening_a_socket_in_an_effect_opens_one() {
+  let server = Server::new();
+  server.listener.set_nonblocking(true).unwrap();
+  let mut shell = Harness::new(offline());
+  let cx = shell.cx.clone();
+  let path = server.path();
+  shell.cx.effect(move || {
+    let _socket = cx.socket(path.clone());
+  });
+  Runtime::current().flush();
+  run(&mut shell, 20);
+  let accepted = std::iter::from_fn(|| server.listener.accept().ok()).count();
+  assert_eq!(accepted, 1);
+}
+
+#[test]
+fn an_on_line_that_holds_its_socket_doesnt_keep_it_once_its_context_goes() {
+  let server = Server::new();
+  let shell = Harness::new(offline());
+  let child = shell.cx.child();
+  let socket = child.socket(server.path());
+  let held = socket.clone();
+  let socket = socket.on_line(move |line| held.write(line));
+  let weak = Rc::downgrade(&socket.inner);
+  drop(socket);
+  child.owner().dispose();
+  assert!(weak.upgrade().is_none(), "the socket was freed");
+}
+
+#[test]
+fn a_write_the_other_end_refuses_still_lets_its_last_lines_in() {
+  let server = Server::new();
+  let mut shell = Harness::new(offline());
+  let (socket, lines) = open(&shell, server.path());
+  let mut peer = server.accept();
+  peer.write_all(b"result\n").unwrap();
+  drop(peer);
+  socket.write(b"ack\n");
+  run(&mut shell, 50);
+  assert_eq!(*lines.borrow(), ["result"]);
+}
+
+#[test]
+fn a_reset_still_passes_on_the_last_line() {
+  let server = Server::new();
+  let mut shell = Harness::new(offline());
+  let (socket, lines) = open(&shell, server.path());
+  let mut peer = server.accept();
+  // Left unread, so the peer's close resets the connection.
+  socket.write(b"unread\n");
+  run(&mut shell, 20);
+  peer.write_all(b"one\nlast").unwrap();
+  drop(peer);
+  run(&mut shell, 50);
+  assert_eq!(*lines.borrow(), ["one", "last"]);
+}
+
+#[test]
+fn lines_after_on_line_closes_the_socket_are_dropped() {
+  let server = Server::new();
+  let mut shell = Harness::new(offline());
+  let lines = Rc::new(RefCell::new(Vec::new()));
+  let kept = Rc::clone(&lines);
+  let socket = shell.cx.socket(server.path());
+  let closer = socket.clone();
+  let _socket = socket.on_line(move |line| {
+    kept.borrow_mut().push(line.to_owned());
+    if line == "bye" {
+      closer.close();
+    }
+  });
+  let mut peer = server.accept();
+  peer.write_all(b"bye\nafter\n").unwrap();
+  run(&mut shell, 50);
+  assert_eq!(*lines.borrow(), ["bye"]);
 }
