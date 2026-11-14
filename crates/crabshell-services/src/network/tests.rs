@@ -439,13 +439,17 @@ fn methods_reach_networkmanager_and_the_password_is_never_logged() {
     let (settings, device, at): (Settings, OwnedObjectPath, OwnedObjectPath) =
       call.body().deserialize().ok()?;
     let wireless = &settings["802-11-wireless"];
-    let security = &settings["802-11-wireless-security"];
+    let security = settings.get("802-11-wireless-security")?;
     let ssid = Vec::<u8>::try_from(wireless["ssid"].try_clone().ok()?).ok()?;
-    let key = |name: &str| <&str>::try_from(&security[name]).ok().map(str::to_owned);
+    let key = |name: &str| {
+      <&str>::try_from(security.get(name)?)
+        .ok()
+        .map(str::to_owned)
+    };
     sink.borrow_mut().push(format!(
       "{} {ssid:?} {:?} {:?} {device} {at}",
       named(call),
-      key("key-mgmt")?,
+      key("key-mgmt"),
       key("psk")?
     ));
     let name = "org.freedesktop.NetworkManager.Settings.Connection.InvalidProperty";
@@ -488,9 +492,7 @@ fn methods_reach_networkmanager_and_the_password_is_never_logged() {
     bodies,
     [
       format!("{NM}.ActivateConnection / {WLAN} {HOME}"),
-      format!(
-        "{NM}.AddAndActivateConnection [99, 97, 102, 233] \"wpa-psk\" \"hunter22\" {WLAN} {CAFE}"
-      ),
+      format!("{NM}.AddAndActivateConnection [99, 97, 102, 233] None \"hunter22\" {WLAN} {CAFE}"),
       format!("{DEVICE}.Disconnect"),
       format!("{WIRELESS}.RequestScan a{{sv}} 0"),
     ],
@@ -698,7 +700,10 @@ fn at_most_64_devices_connections_and_512_access_points_are_kept() {
     "the first by number"
   );
   assert_eq!(devices[57].connection, "c64");
-  assert_eq!(devices[58].connection, "", "no room for c65");
+  assert_eq!(
+    devices[58].connection, "c65",
+    "connections aren't capped apart"
+  );
   let shown = |networks: &[WifiNetwork], n| networks.iter().any(|w| w.access_point == point(n));
   assert_eq!(networks.get_untracked().len(), 512);
   assert!(shown(&networks.get_untracked(), 512));
@@ -715,13 +720,15 @@ fn at_most_64_devices_connections_and_512_access_points_are_kept() {
     WIRELESS,
     &[("AccessPoints", paths(&more))],
   );
-  // AccessPoint/1, the first one.
-  let faint = [("Strength", Variant::from(10u8))];
-  nm.set(&mut shell, HOME, ACCESS_POINT, &faint);
-  wait_for(&mut shell, "a faint first one", || {
-    networks.get_untracked().last().map(|w| w.strength) == Some(10)
+  // The strongest shows past the cap, and the faintest makes room.
+  wait_for(&mut shell, "the extra, strongest", || {
+    networks
+      .get_untracked()
+      .first()
+      .map(|w| w.access_point.clone())
+      == Some(point(601))
   });
-  assert_eq!(networks.get_untracked().len(), 512, "no room for the extra");
+  assert_eq!(networks.get_untracked().len(), 512);
 }
 
 #[test]
@@ -755,4 +762,85 @@ fn an_idle_networkmanager_wakes_nothing_and_none_at_all_is_quiet() {
     assert_eq!(network.devices().get_untracked(), []);
   });
   assert!(logs.contains("no system bus"), "{logs}");
+}
+
+#[test]
+fn only_what_networking_reads_is_asked_of_the_bus() {
+  use crate::dbus::Daemon;
+
+  let rules = super::NetworkService::rules();
+  assert_eq!(rules.len(), 6, "{rules:?}");
+  assert!(
+    rules
+      .iter()
+      .all(|rule| rule.contains(&format!("sender='{NM}'")))
+  );
+  assert!(rules[0].contains(&format!("interface='{OBJECT_MANAGER}'")));
+  let read = [NM, DEVICE, WIRELESS, ACCESS_POINT, ACTIVE];
+  for (rule, interface) in rules[1..].iter().zip(read) {
+    assert!(rule.contains(&format!("arg0='{interface}'")), "{rule}");
+  }
+}
+
+#[test]
+fn an_open_network_with_no_saved_connection_gets_a_new_one() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let nm = fake_nm(&mut shell, &bus);
+  nm.on("ActivateConnection", |call| {
+    let name = "org.freedesktop.NetworkManager.UnknownConnection";
+    Some(zbus::Message::error(&call.header(), name).build(&("no connection",)))
+  });
+  let added = Rc::new(RefCell::new(None));
+  let sink = Rc::clone(&added);
+  nm.on("AddAndActivateConnection", move |call| {
+    type Settings = HashMap<String, HashMap<String, OwnedVariant>>;
+    let (settings, _, _): (Settings, OwnedObjectPath, OwnedObjectPath) =
+      call.body().deserialize().ok()?;
+    let mut groups: Vec<String> = settings.keys().cloned().collect();
+    groups.sort();
+    *sink.borrow_mut() = Some(groups);
+    let made = (
+      ObjectPath::try_from(HOME_CONNECTION).ok()?,
+      ObjectPath::try_from(HOME_CONNECTION).ok()?,
+    );
+    reply(call, &made)
+  });
+  let network = shell.cx.network();
+  let networks = network.wifi_networks();
+  wait_for(&mut shell, "the networks", || {
+    networks.get_untracked().len() == 3
+  });
+  network.connect(&library(), None);
+  wait_for(&mut shell, "a new connection", || added.borrow().is_some());
+  assert_eq!(
+    added.borrow().clone(),
+    Some(vec!["802-11-wireless".to_owned()])
+  );
+
+  // A secured one with no saved connection needs its password.
+  let logs = capture_logs(|| {
+    network.connect(&home(), None);
+    shell.run_until(Instant::now() + Duration::from_millis(300));
+  });
+  assert!(logs.contains("no saved connection"), "{logs}");
+}
+
+#[test]
+fn enhanced_open_networks_are_open() {
+  // RSN with OWE key management and CCMP, but no key to ask for.
+  let owe = access_point(b"owe", 60, (1, 0, 0x888));
+  assert!(!super::secured(
+    &owe
+      .into_iter()
+      .map(|(k, v)| (k.to_owned(), v.try_to_owned().expect("owned")))
+      .collect()
+  ));
+  let sae = access_point(b"sae", 60, (1, 0, 0x488));
+  assert!(super::secured(
+    &sae
+      .into_iter()
+      .map(|(k, v)| (k.to_owned(), v.try_to_owned().expect("owned")))
+      .collect()
+  ));
 }

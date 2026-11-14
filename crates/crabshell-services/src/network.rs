@@ -42,6 +42,11 @@ const UNMANAGED: u32 = 10;
 const ACTIVATED: u32 = 100;
 /// The `Flags` bit for an access point that asks for a key, as WEP does.
 const PRIVACY: u32 = 0x1;
+/// The WPA and RSN key managements that ask for a key: a password,
+/// 802.1X, SAE and Suite B 192.
+const KEY_MGMT_KEYED: u32 = 0x100 | 0x200 | 0x400 | 0x2000;
+/// The most objects kept, so a flood can't take the memory.
+const MAX_OBJECTS: usize = 4096;
 
 /// What a network device is, from NetworkManager's `DeviceType`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -182,8 +187,7 @@ impl Network {
       return tracing::info!(network.ssid, "no such Wi-Fi network; nothing sent");
     };
     let Some(password) = password else {
-      let pick = ObjectPath::from_static_str_unchecked("/");
-      return self.call(NM_PATH, NM, "ActivateConnection", (pick, device, at));
+      return self.activate(network, device, at);
     };
     // The access point's own bytes: `ssid` may have lost some.
     let ssid = self
@@ -196,16 +200,61 @@ impl Network {
       })
       .unwrap_or_else(|| network.ssid.clone().into_bytes());
     let wireless = HashMap::from([("ssid", Variant::from(ssid))]);
-    let security = HashMap::from([
-      ("key-mgmt", Variant::from("wpa-psk")),
-      ("psk", Variant::from(password.to_owned())),
-    ]);
+    // NetworkManager picks the key management, WPA2 or WPA3, from the
+    // access point.
+    let security = HashMap::from([("psk", Variant::from(password.to_owned()))]);
     let settings = HashMap::from([
       ("802-11-wireless", wireless),
       ("802-11-wireless-security", security),
     ]);
     let body = (settings, device, at);
     self.call(NM_PATH, NM, "AddAndActivateConnection", body);
+  }
+
+  /// Connects through a saved connection NetworkManager picks, and for
+  /// an open network with none, through a new one.
+  fn activate(&self, network: &WifiNetwork, device: ObjectPath<'static>, at: ObjectPath<'static>) {
+    let Some(service) = &self.service else {
+      return;
+    };
+    let connection = service
+      .state
+      .borrow()
+      .as_ref()
+      .and_then(|s| s.connection.clone());
+    let Some(connection) = connection else {
+      return tracing::info!("NetworkManager isn't running; nothing sent");
+    };
+    let (shared, open) = (Rc::clone(&service.shared), !network.secured);
+    let ssid = network.ssid.clone().into_bytes();
+    let ssid = self
+      .service
+      .as_ref()
+      .and_then(|service| {
+        let state = service.state.borrow();
+        let object = state.as_ref()?.objects.get(&network.access_point)?;
+        Some(self::ssid(object.access_point.as_ref()?))
+      })
+      .unwrap_or(ssid);
+    service.shared.spawn(async move {
+      let pick = ObjectPath::from_static_str_unchecked("/");
+      let body = (pick, &device, &at);
+      let call = connection.call_method(Some(NM), NM_PATH, Some(NM), "ActivateConnection", &body);
+      let Err(error) = shared.timeout(CALL_TIMEOUT, call).await else {
+        return;
+      };
+      if !open {
+        return tracing::warn!(%error, "no saved connection for that network");
+      }
+      let wireless = HashMap::from([("ssid", Variant::from(ssid))]);
+      let settings = HashMap::from([("802-11-wireless", wireless)]);
+      let body = (settings, &device, &at);
+      let method = "AddAndActivateConnection";
+      let call = connection.call_method(Some(NM), NM_PATH, Some(NM), method, &body);
+      if let Err(error) = shared.timeout(CALL_TIMEOUT, call).await {
+        tracing::warn!(%error, method, "NetworkManager refused it");
+      }
+    });
   }
 
   /// Disconnects the device at `device`, until it is connected again.
@@ -337,28 +386,49 @@ fn paths<'a>(props: &'a Props, name: &str) -> impl Iterator<Item = &'a str> {
     })
 }
 
-/// Gives the object at `path` `interfaces`, unless that would make more
-/// devices, access points or active connections than the caps allow.
+/// Gives the object at `path` `interfaces`. Past [`MAX_OBJECTS`] a new
+/// one is left out; which are shown is decided as they are.
 fn add(objects: &mut BTreeMap<String, Object>, path: String, interfaces: HashMap<String, Props>) {
+  if objects.len() >= MAX_OBJECTS && !objects.contains_key(&path) {
+    return tracing::debug!(path, "too many network objects; leaving one out");
+  }
   let mut object = objects.remove(&path).unwrap_or_default();
-  let count = |kind: fn(&Object) -> bool| objects.values().filter(|object| kind(object)).count();
   for (interface, props) in interfaces {
-    let full = match interface.as_str() {
-      DEVICE => object.device.is_none() && count(|o| o.device.is_some()) >= MAX_DEVICES,
-      ACTIVE => object.active.is_none() && count(|o| o.active.is_some()) >= MAX_DEVICES,
-      ACCESS_POINT => {
-        object.access_point.is_none() && count(|o| o.access_point.is_some()) >= MAX_ACCESS_POINTS
-      }
-      _ => false,
-    };
-    if full {
-      tracing::warn!(path, interface, "too many network objects; leaving one out");
-    } else if let Some(slot) = object.slot(&interface) {
+    if let Some(slot) = object.slot(&interface) {
       *slot = Some(props);
     }
   }
   if object.kept() {
     objects.insert(path, object);
+  }
+}
+
+/// Whether the access point `point` asks for a key: WEP, or WPA with a
+/// password, 802.1X or SAE. Enhanced Open (OWE) encrypts without one.
+fn secured(point: &Props) -> bool {
+  let flags = |name| dbus::get::<u32>(point, name).unwrap_or(0);
+  let keyed = (flags("WpaFlags") | flags("RsnFlags")) & KEY_MGMT_KEYED != 0;
+  let wep = flags("Flags") & PRIVACY != 0 && flags("WpaFlags") == 0 && flags("RsnFlags") == 0;
+  keyed || wep
+}
+
+/// The properties this service reads, by interface: a change to any
+/// other, such as an access point's `LastSeen` on each scan, shows
+/// nothing new.
+fn read(interface: &str, name: &str) -> bool {
+  match interface {
+    NM => name == "WirelessEnabled",
+    DEVICE => matches!(
+      name,
+      "Interface" | "DeviceType" | "State" | "ActiveConnection"
+    ),
+    WIRELESS => matches!(name, "AccessPoints" | "ActiveAccessPoint"),
+    ACCESS_POINT => matches!(
+      name,
+      "Ssid" | "Strength" | "Flags" | "WpaFlags" | "RsnFlags"
+    ),
+    ACTIVE => name == "Id",
+    _ => false,
   }
 }
 
@@ -385,11 +455,10 @@ fn wifi_networks(objects: &BTreeMap<String, Object>) -> Vec<WifiNetwork> {
       if ssid.iter().all(|byte| *byte == 0) {
         continue;
       }
-      let flags = |name| dbus::get::<u32>(point, name).unwrap_or(0);
       let network = WifiNetwork {
         ssid: String::from_utf8_lossy(&ssid).into_owned(),
         strength: dbus::get::<u8>(point, "Strength").unwrap_or(0).min(100),
-        secured: flags("Flags") & PRIVACY != 0 || flags("WpaFlags") != 0 || flags("RsnFlags") != 0,
+        secured: secured(point),
         connected: on && active == Some(at),
         device: path.clone(),
         access_point: at.to_owned(),
@@ -413,6 +482,7 @@ fn wifi_networks(objects: &BTreeMap<String, Object>) -> Vec<WifiNetwork> {
     let ties = || (&a.ssid, &a.device).cmp(&(&b.ssid, &b.device));
     b.strength.cmp(&a.strength).then_with(ties)
   });
+  networks.truncate(MAX_ACCESS_POINTS);
   networks
 }
 
@@ -482,6 +552,7 @@ impl NetworkService {
         })
         .collect::<Vec<_>>();
       devices.sort_by(|a, b| by_number(&a.path, &b.path));
+      devices.truncate(MAX_DEVICES);
       let shown = (enabled, devices, wifi_networks(objects));
       (
         state.wifi_enabled,
@@ -501,6 +572,24 @@ impl NetworkService {
 
 impl Daemon for NetworkService {
   const NAME: &'static str = NM;
+
+  /// Only what this service reads: NetworkManager also broadcasts IP and
+  /// DHCP settings, statistics and saved connections, which would each
+  /// wake the shell for nothing.
+  fn rules() -> Vec<String> {
+    let mut rules = vec![format!(
+      "type='signal',sender='{NM}',path='{ROOT}',interface='{OBJECT_MANAGER}'"
+    )];
+    rules.extend(
+      [NM, DEVICE, WIRELESS, ACCESS_POINT, ACTIVE].map(|interface| {
+        format!(
+          "type='signal',sender='{NM}',interface='{PROPERTIES}',member='PropertiesChanged',\
+         arg0='{interface}'"
+        )
+      }),
+    );
+    rules
+  }
 
   fn alive(&self) -> bool {
     let state = self.state.borrow();
@@ -576,7 +665,14 @@ impl Daemon for NetworkService {
         let Some(props) = props else {
           return;
         };
+        let shown = changed
+          .keys()
+          .chain(&dropped)
+          .any(|name| read(&interface, name));
         dbus::apply(props, changed, dropped);
+        if !shown {
+          return;
+        }
       }
       return self.publish();
     }
