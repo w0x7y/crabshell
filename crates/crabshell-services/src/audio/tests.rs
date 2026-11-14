@@ -11,16 +11,25 @@ use crabshell_reactive::Runtime;
 use crabshell_ui::Cx;
 use libpulse_binding::volume::{ChannelVolumes, Volume};
 
-use super::{AudioService, Event, Info, SETTLE, Server, changed, percent};
+use super::{AudioService, Event, Info, SETTLE, Server, StreamInfo, changed, percent};
 use crate::{Config, ServicesExt};
 use fake::{
-  Client, FakePulse, GET_SERVER_INFO, GET_SINK_INFO, SET_SINK_MUTE, SET_SINK_VOLUME, SUBSCRIBE,
+  Client, FakePulse, GET_SERVER_INFO, GET_SINK_INFO, GET_SINK_INFO_LIST, GET_SINK_INPUT_INFO_LIST,
+  GET_SOURCE_INFO_LIST, MOVE_SINK_INPUT, SET_DEFAULT_SINK, SET_DEFAULT_SOURCE, SET_SINK_INPUT_MUTE,
+  SET_SINK_INPUT_VOLUME, SET_SINK_MUTE, SET_SINK_VOLUME, SUBSCRIBE,
 };
 
 mod fake;
 mod pipewire;
 
 const NORM: u32 = Volume::NORMAL.0;
+
+/// What the service asks for to read every sink, source and stream.
+const LISTS: [u32; 3] = [
+  GET_SINK_INFO_LIST,
+  GET_SOURCE_INFO_LIST,
+  GET_SINK_INPUT_INFO_LIST,
+];
 
 /// No commands.
 const NOTHING: [u32; 0] = [];
@@ -305,7 +314,8 @@ fn connect(shell: &mut Harness, fake: &FakePulse) -> Client {
       .map(|p| p.intro.is_some());
     pulse == Some(true)
   });
-  assert_eq!(client.command_numbers(), [SUBSCRIBE, GET_SERVER_INFO]);
+  let expected = [[SUBSCRIBE, GET_SERVER_INFO].as_slice(), &LISTS].concat();
+  assert_eq!(client.command_numbers(), expected);
   client
 }
 
@@ -555,12 +565,25 @@ fn reads_follow_the_server_and_the_shown_sink_only() {
   assert_eq!(client.command_numbers(), [GET_SINK_INFO]);
   shell.send(Event::Info(Some(info(3, 50, false))));
   assert_eq!(sink.get_untracked(), Some(info(3, 50, false).sink()));
+  // Another sink: only the list of sinks is read again.
   shell.send(Event::Sink(4));
-  assert_eq!(client.command_numbers(), NOTHING, "another sink changed");
+  assert_eq!(
+    client.command_numbers(),
+    [GET_SINK_INFO_LIST],
+    "another sink changed"
+  );
   shell.send(Event::Sink(3));
-  assert_eq!(client.command_numbers(), [GET_SERVER_INFO]);
+  assert_eq!(
+    client.command_numbers(),
+    [GET_SERVER_INFO, GET_SINK_INFO_LIST]
+  );
   shell.send(Event::Server);
-  assert_eq!(client.command_numbers(), [GET_SERVER_INFO]);
+  let expected = [[GET_SERVER_INFO].as_slice(), &LISTS].concat();
+  assert_eq!(client.command_numbers(), expected);
+  shell.send(Event::Source);
+  assert_eq!(client.command_numbers(), [GET_SOURCE_INFO_LIST]);
+  shell.send(Event::Stream);
+  assert_eq!(client.command_numbers(), [GET_SINK_INPUT_INFO_LIST]);
   shell.send(Event::Default(None));
   assert_eq!(sink.get_untracked(), None);
   assert_eq!(client.command_numbers(), NOTHING);
@@ -710,4 +733,55 @@ fn each_drop_of_a_working_connection_gets_a_new_while() {
     "{logs}"
   );
   assert_eq!(logs.matches("stopped trying").count(), 1, "{logs}");
+}
+
+#[test]
+fn new_defaults_are_asked_of_the_server_by_name() {
+  let _one = one_at_a_time();
+  let fake = FakePulse::new("defaults");
+  let (shell, mut client) = connected(&fake);
+  let audio = shell.cx.audio();
+  audio.set_default_sink("headphones");
+  audio.set_default_source("microphone");
+  let sent = client.commands();
+  let named = |number| {
+    sent
+      .iter()
+      .find(|(command, _)| *command == number)
+      .map(|(_, rest)| String::from_utf8_lossy(rest).into_owned())
+  };
+  assert!(named(SET_DEFAULT_SINK).is_some_and(|rest| rest.contains("headphones")));
+  assert!(named(SET_DEFAULT_SOURCE).is_some_and(|rest| rest.contains("microphone")));
+}
+
+#[test]
+fn stream_commands_name_their_stream_and_an_unknown_one_sends_nothing() {
+  let _one = one_at_a_time();
+  let fake = FakePulse::new("streams");
+  let (shell, mut client) = connected(&fake);
+  let audio = shell.cx.audio();
+  shell.send(Event::Streams(vec![StreamInfo {
+    index: 7,
+    app_name: "player".to_owned(),
+    title: "a song".to_owned(),
+    icon_name: String::new(),
+    sink: 3,
+    volumes: channels(&[level(50); 2]),
+    muted: false,
+  }]));
+  let streams = audio.streams().get_untracked();
+  assert_eq!(streams.len(), 1);
+  assert_eq!(streams[0].volume_percent, 50);
+  audio.set_stream_volume(7, 30);
+  audio.set_stream_mute(7, true);
+  audio.move_stream(7, "headphones");
+  audio.set_stream_volume(8, 30);
+  let sent = client.commands();
+  let numbers: Vec<u32> = sent.iter().map(|(command, _)| *command).collect();
+  assert_eq!(
+    numbers,
+    [SET_SINK_INPUT_VOLUME, SET_SINK_INPUT_MUTE, MOVE_SINK_INPUT]
+  );
+  let moved = String::from_utf8_lossy(&sent[2].1).into_owned();
+  assert!(moved.contains("headphones"), "{moved}");
 }

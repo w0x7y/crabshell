@@ -1,5 +1,6 @@
-//! Audio: the default sink's volume and mute, from the PulseAudio server,
-//! which pipewire-pulse serves on PipeWire systems.
+//! Audio: the default sink's volume and mute, and every sink, source and
+//! app stream with theirs, from the PulseAudio server, which
+//! pipewire-pulse serves on PipeWire systems.
 //!
 //! libpulse runs its mainloop on a thread of its own. Every libpulse call
 //! from this side runs on the main thread under the mainloop's lock.
@@ -16,13 +17,16 @@ use calloop::timer::TimeoutAction;
 use crabshell_reactive::{ReadSignal, Signal};
 use crabshell_ui::Cx;
 use libpulse_binding::callbacks::ListResult;
-use libpulse_binding::context::introspect::{Introspector, ServerInfo, SinkInfo};
+use libpulse_binding::context::introspect::{
+  Introspector, ServerInfo, SinkInfo, SinkInputInfo, SourceInfo,
+};
 use libpulse_binding::context::subscribe::{Facility, InterestMaskSet};
 use libpulse_binding::context::{Context, FlagSet, State};
 use libpulse_binding::mainloop::threaded::Mainloop;
 use libpulse_binding::volume::{ChannelVolumes, Volume};
 
 use crate::Shared;
+use crate::dbus::set_changed;
 
 #[cfg(test)]
 mod tests;
@@ -36,6 +40,9 @@ pub(crate) const RETRY_FOR: Duration = Duration::from_secs(60);
 
 /// How long a command's result stands in for the server's reads.
 pub(crate) const SETTLE: Duration = Duration::from_millis(250);
+
+/// The most sinks, sources or streams kept, each.
+const MAX_NODES: usize = 128;
 
 /// Where the audio server is.
 pub(crate) struct Server {
@@ -61,10 +68,44 @@ pub struct Sink {
   pub muted: bool,
 }
 
+/// A sink or a source: where sound goes out, such as speakers, or comes
+/// in, such as a microphone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AudioNode {
+  /// Its name on the server, which the setters take.
+  pub name: String,
+  /// What a person calls it, such as `Built-in Audio Analog Stereo`.
+  pub description: String,
+  /// The average of its channels' volumes, as [`Sink`]'s.
+  pub volume_percent: u32,
+  /// Whether it is muted.
+  pub muted: bool,
+}
+
+/// An app playing sound: one of the server's sink inputs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AudioStream {
+  /// The server's number for it, which the setters take.
+  pub index: u32,
+  /// The app's name, such as `Firefox`.
+  pub app_name: String,
+  /// What it plays, such as a tab's title.
+  pub title: String,
+  /// The app's icon name, or `""`.
+  pub icon_name: String,
+  /// The name of the sink it plays to.
+  pub sink: String,
+  /// The average of its channels' volumes, as [`Sink`]'s.
+  pub volume_percent: u32,
+  /// Whether it is muted.
+  pub muted: bool,
+}
+
 /// The audio service, from `cx.audio()`. Cloning it is cheap.
 #[derive(Clone)]
 pub struct Audio {
   sink: ReadSignal<Option<Sink>>,
+  lists: ReadLists,
   /// `None` on a context the shell didn't set up.
   service: Option<Rc<AudioService>>,
 }
@@ -91,6 +132,82 @@ impl Audio {
     self.command(Pulse::toggle_mute);
   }
 
+  /// Every sink, in the server's order. Empty while there is no server.
+  pub fn sinks(&self) -> ReadSignal<Vec<AudioNode>> {
+    self.lists.sinks
+  }
+
+  /// Every source except sinks' monitors, in the server's order.
+  pub fn sources(&self) -> ReadSignal<Vec<AudioNode>> {
+    self.lists.sources
+  }
+
+  /// The default source, where a call's microphone sound comes from.
+  pub fn default_source(&self) -> ReadSignal<Option<AudioNode>> {
+    self.lists.default_source
+  }
+
+  /// Every app playing sound, in the server's order.
+  pub fn streams(&self) -> ReadSignal<Vec<AudioStream>> {
+    self.lists.streams
+  }
+
+  /// Makes the sink called `name` the default.
+  pub fn set_default_sink(&self, name: &str) {
+    let name = name.to_owned();
+    self.command(move |pulse| pulse.set_default(Kind::Sink, &name));
+  }
+
+  /// Makes the source called `name` the default.
+  pub fn set_default_source(&self, name: &str) {
+    let name = name.to_owned();
+    self.command(move |pulse| pulse.set_default(Kind::Source, &name));
+  }
+
+  /// Sets every channel of the sink called `name` to `percent`, at most
+  /// 100.
+  pub fn set_sink_volume(&self, name: &str, percent: u32) {
+    let name = name.to_owned();
+    self.command(move |pulse| pulse.set_node_volume(Kind::Sink, &name, percent));
+  }
+
+  /// Mutes the sink called `name`, or unmutes it.
+  pub fn set_sink_mute(&self, name: &str, muted: bool) {
+    let name = name.to_owned();
+    self.command(move |pulse| pulse.set_node_mute(Kind::Sink, &name, muted));
+  }
+
+  /// Sets every channel of the source called `name` to `percent`, at most
+  /// 100.
+  pub fn set_source_volume(&self, name: &str, percent: u32) {
+    let name = name.to_owned();
+    self.command(move |pulse| pulse.set_node_volume(Kind::Source, &name, percent));
+  }
+
+  /// Mutes the source called `name`, or unmutes it, as a microphone
+  /// button does.
+  pub fn set_source_mute(&self, name: &str, muted: bool) {
+    let name = name.to_owned();
+    self.command(move |pulse| pulse.set_node_mute(Kind::Source, &name, muted));
+  }
+
+  /// Sets every channel of the stream numbered `index` to `percent`, at
+  /// most 100.
+  pub fn set_stream_volume(&self, index: u32, percent: u32) {
+    self.command(move |pulse| pulse.set_stream_volume(index, percent));
+  }
+
+  /// Mutes the stream numbered `index`, or unmutes it.
+  pub fn set_stream_mute(&self, index: u32, muted: bool) {
+    self.command(move |pulse| pulse.set_stream_mute(index, muted));
+  }
+
+  /// Moves the stream numbered `index` to play to the sink called `sink`.
+  pub fn move_stream(&self, index: u32, sink: &str) {
+    let sink = sink.to_owned();
+    self.command(move |pulse| pulse.move_stream(index, &sink));
+  }
+
   fn command(&self, command: impl FnOnce(&mut Pulse)) {
     let mut pulse = self
       .service
@@ -114,8 +231,47 @@ pub(crate) fn audio(cx: &Cx) -> Audio {
   });
   Audio {
     sink: cx.signal(None).read_only(),
+    lists: Lists {
+      sinks: cx.signal(Vec::new()).read_only(),
+      sources: cx.signal(Vec::new()).read_only(),
+      streams: cx.signal(Vec::new()).read_only(),
+      default_source: cx.signal(None).read_only(),
+    },
     service: None,
   }
+}
+
+/// The lists the service shows, as signals to set or read.
+#[derive(Clone, Copy)]
+struct Lists<N, S, D> {
+  sinks: N,
+  sources: N,
+  streams: S,
+  default_source: D,
+}
+
+type ReadLists =
+  Lists<ReadSignal<Vec<AudioNode>>, ReadSignal<Vec<AudioStream>>, ReadSignal<Option<AudioNode>>>;
+
+type ListSignals =
+  Lists<Signal<Vec<AudioNode>>, Signal<Vec<AudioStream>>, Signal<Option<AudioNode>>>;
+
+impl ListSignals {
+  fn read_only(&self) -> ReadLists {
+    Lists {
+      sinks: self.sinks.read_only(),
+      sources: self.sources.read_only(),
+      streams: self.streams.read_only(),
+      default_source: self.default_source.read_only(),
+    }
+  }
+}
+
+/// A sink or a source, for the setters both have.
+#[derive(Clone, Copy, Debug)]
+enum Kind {
+  Sink,
+  Source,
 }
 
 /// The audio service of one shell. It connects on first use.
@@ -123,6 +279,8 @@ pub(crate) struct AudioService {
   shared: Rc<Shared>,
   /// The default sink, under the root owner. Made on first use.
   sink: OnceCell<Signal<Option<Sink>>>,
+  /// The sinks, sources and streams, made with `sink`.
+  lists: OnceCell<ListSignals>,
   /// libpulse, from first use on. `None` before that, and if libpulse
   /// couldn't start its thread.
   pulse: RefCell<Option<Pulse>>,
@@ -141,6 +299,18 @@ pub(crate) enum Event {
   Sink(u32),
   /// The server's default sink name.
   Default(Option<String>),
+  /// The server's default source name.
+  DefaultSource(Option<String>),
+  /// A source changed.
+  Source,
+  /// A stream changed.
+  Stream,
+  /// Every sink, read.
+  Sinks(Vec<NodeInfo>),
+  /// Every source but monitors, read.
+  Sources(Vec<NodeInfo>),
+  /// Every stream, read.
+  Streams(Vec<StreamInfo>),
   /// The sink asked for by name, or `None` for no such sink.
   Info(Option<Info>),
 }
@@ -150,6 +320,7 @@ impl AudioService {
     AudioService {
       shared,
       sink: OnceCell::new(),
+      lists: OnceCell::new(),
       pulse: RefCell::new(None),
     }
   }
@@ -160,8 +331,18 @@ impl AudioService {
       self.after(Duration::ZERO, AudioService::start);
       self.shared.root.signal(None)
     });
+    let lists = *self.lists.get_or_init(|| {
+      let root = &self.shared.root;
+      Lists {
+        sinks: root.signal(Vec::new()),
+        sources: root.signal(Vec::new()),
+        streams: root.signal(Vec::new()),
+        default_source: root.signal(None),
+      }
+    });
     Audio {
       sink: sink.read_only(),
+      lists: lists.read_only(),
       service: Some(Rc::clone(self)),
     }
   }
@@ -176,6 +357,10 @@ impl AudioService {
       .sink
       .get()
       .expect("the sink is made before libpulse starts");
+    let lists = *self
+      .lists
+      .get()
+      .expect("the lists are made before libpulse starts");
     let Some(event_loop) = self.shared.event_loop() else {
       return;
     };
@@ -198,6 +383,8 @@ impl AudioService {
       shown: None,
       asked: None,
       sink,
+      lists,
+      nodes: Nodes::default(),
       down: false,
       retry_until: Instant::now() + server.retry_for,
     };
@@ -239,13 +426,36 @@ impl AudioService {
           self.lost(pulse, &why);
         }
       }
-      Event::Server => pulse.read_default(),
-      Event::Sink(index) if pulse.shown.as_ref().is_some_and(|s| s.index == index) => {
+      Event::Server => {
         pulse.read_default();
+        pulse.read_lists();
       }
-      Event::Sink(_) => {}
+      Event::Sink(index) => {
+        if pulse.shown.as_ref().is_some_and(|s| s.index == index) {
+          pulse.read_default();
+        }
+        pulse.read_sinks();
+      }
       Event::Default(name) => pulse.read_sink(name),
       Event::Info(info) => pulse.show(info),
+      Event::DefaultSource(name) => {
+        pulse.nodes.default_source = name;
+        pulse.show_lists();
+      }
+      Event::Source => pulse.read_sources(),
+      Event::Stream => pulse.read_streams(),
+      Event::Sinks(sinks) => {
+        pulse.nodes.sinks = sinks;
+        pulse.show_lists();
+      }
+      Event::Sources(sources) => {
+        pulse.nodes.sources = sources;
+        pulse.show_lists();
+      }
+      Event::Streams(streams) => {
+        pulse.nodes.streams = streams;
+        pulse.show_lists();
+      }
     }
   }
 
@@ -317,10 +527,72 @@ struct Pulse {
   /// read echoes it or [`SETTLE`] passes.
   asked: Option<(Info, Instant)>,
   sink: Signal<Option<Sink>>,
+  lists: ListSignals,
+  /// Every sink, source and stream as last read.
+  nodes: Nodes,
   /// Whether the server is gone and that was logged.
   down: bool,
   /// When the service stops trying to connect, if it can't.
   retry_until: Instant,
+}
+
+/// Every sink, source and stream as libpulse last reported them.
+#[derive(Default)]
+struct Nodes {
+  sinks: Vec<NodeInfo>,
+  sources: Vec<NodeInfo>,
+  streams: Vec<StreamInfo>,
+  default_source: Option<String>,
+}
+
+/// A sink or source as libpulse reported it.
+#[derive(Clone, PartialEq)]
+pub(crate) struct NodeInfo {
+  index: u32,
+  name: String,
+  description: String,
+  volumes: ChannelVolumes,
+  muted: bool,
+}
+
+impl NodeInfo {
+  fn node(&self) -> AudioNode {
+    AudioNode {
+      name: self.name.clone(),
+      description: self.description.clone(),
+      volume_percent: percent(self.volumes.avg()),
+      muted: self.muted,
+    }
+  }
+}
+
+/// A sink input as libpulse reported it.
+#[derive(Clone, PartialEq)]
+pub(crate) struct StreamInfo {
+  index: u32,
+  app_name: String,
+  title: String,
+  icon_name: String,
+  sink: u32,
+  volumes: ChannelVolumes,
+  muted: bool,
+}
+
+impl StreamInfo {
+  fn read(info: &SinkInputInfo) -> StreamInfo {
+    use libpulse_binding::proplist::properties::{APPLICATION_ICON_NAME, APPLICATION_NAME};
+
+    let property = |key| info.proplist.get_str(key).unwrap_or_default();
+    StreamInfo {
+      index: info.index,
+      app_name: property(APPLICATION_NAME),
+      title: info.name.as_deref().unwrap_or_default().to_owned(),
+      icon_name: property(APPLICATION_ICON_NAME),
+      sink: info.sink,
+      volumes: info.volume,
+      muted: info.mute,
+    }
+  }
 }
 
 /// The default sink as libpulse reported it.
@@ -364,12 +636,17 @@ impl Pulse {
           let event = match facility {
             Some(Facility::Server) => Event::Server,
             Some(Facility::Sink) => Event::Sink(index),
+            Some(Facility::Source) => Event::Source,
+            Some(Facility::SinkInput) => Event::Stream,
             _ => return,
           };
           let _ = sender.send((generation, event));
         };
         context.set_subscribe_callback(Some(Box::new(on_pa_thread(on_event))));
-        let interest = InterestMaskSet::SINK | InterestMaskSet::SERVER;
+        let interest = InterestMaskSet::SINK
+          | InterestMaskSet::SOURCE
+          | InterestMaskSet::SINK_INPUT
+          | InterestMaskSet::SERVER;
         context.subscribe(interest, on_pa_thread(|_| {}));
         self.intro = Some(context.introspect());
         drop(lock);
@@ -379,6 +656,7 @@ impl Pulse {
           tracing::debug!("connected to the audio server");
         }
         self.read_default();
+        self.read_lists();
         Ok(())
       }
       State::Failed | State::Terminated => Err(format!("{}", context.errno())),
@@ -390,10 +668,15 @@ impl Pulse {
   /// whether it ran. libpulse returns no operation from a context that
   /// isn't, and the binding panics on that.
   fn when_ready(&mut self, call: impl FnOnce(&mut Introspector)) -> bool {
+    self.when_ready_with(|_, intro| call(intro))
+  }
+
+  /// [`when_ready`](Self::when_ready), with the context too.
+  fn when_ready_with(&mut self, call: impl FnOnce(&mut Context, &mut Introspector)) -> bool {
     let _lock = Locked::new(&mut self.mainloop);
-    match (&self.context, &mut self.intro) {
+    match (&mut self.context, &mut self.intro) {
       (Some(context), Some(intro)) if context.get_state() == State::Ready => {
-        call(intro);
+        call(context, intro);
         true
       }
       _ => false,
@@ -407,11 +690,13 @@ impl Pulse {
       // shortcut: on an error reply libpulse-binding panics on its thread instead of calling
       // this, and the panic hook prints it raw; logging it needs the C API, so `unsafe`.
       intro.get_server_info(on_pa_thread(move |info: &ServerInfo| {
-        let name = info
-          .default_sink_name
-          .as_deref()
-          .filter(|name| !name.is_empty());
-        let _ = sender.send((generation, Event::Default(name.map(str::to_owned))));
+        let name = |name: &Option<std::borrow::Cow<'_, str>>| {
+          let name = name.as_deref().filter(|name| !name.is_empty());
+          name.map(str::to_owned)
+        };
+        let _ = sender.send((generation, Event::Default(name(&info.default_sink_name))));
+        let source = Event::DefaultSource(name(&info.default_source_name));
+        let _ = sender.send((generation, source));
       }));
     });
   }
@@ -432,6 +717,167 @@ impl Pulse {
       };
       intro.get_sink_info_by_name(&name, on_pa_thread(on_result));
     });
+  }
+
+  /// Asks for every sink, source and stream.
+  fn read_lists(&mut self) {
+    self.read_sinks();
+    self.read_sources();
+    self.read_streams();
+  }
+
+  fn read_sinks(&mut self) {
+    let (sender, generation) = (Arc::clone(&self.sender), self.generation);
+    self.when_ready(|intro| {
+      let mut found = Vec::new();
+      let on_result = move |result: ListResult<&SinkInfo>| match result {
+        ListResult::Item(info) => found.extend(node(
+          info.index,
+          &info.name,
+          &info.description,
+          info.volume,
+          info.mute,
+        )),
+        ListResult::End | ListResult::Error => {
+          let _ = sender.send((generation, Event::Sinks(std::mem::take(&mut found))));
+        }
+      };
+      intro.get_sink_info_list(on_pa_thread(on_result));
+    });
+  }
+
+  fn read_sources(&mut self) {
+    let (sender, generation) = (Arc::clone(&self.sender), self.generation);
+    self.when_ready(|intro| {
+      let mut found = Vec::new();
+      let on_result = move |result: ListResult<&SourceInfo>| match result {
+        // A sink's monitor isn't a source a person picks.
+        ListResult::Item(info) if info.monitor_of_sink.is_none() => {
+          found.extend(node(
+            info.index,
+            &info.name,
+            &info.description,
+            info.volume,
+            info.mute,
+          ));
+        }
+        ListResult::Item(_) => {}
+        ListResult::End | ListResult::Error => {
+          let _ = sender.send((generation, Event::Sources(std::mem::take(&mut found))));
+        }
+      };
+      intro.get_source_info_list(on_pa_thread(on_result));
+    });
+  }
+
+  fn read_streams(&mut self) {
+    let (sender, generation) = (Arc::clone(&self.sender), self.generation);
+    self.when_ready(|intro| {
+      let mut found = Vec::new();
+      let on_result = move |result: ListResult<&SinkInputInfo>| match result {
+        ListResult::Item(info) if info.volume.is_valid() => found.push(StreamInfo::read(info)),
+        ListResult::Item(_) => {}
+        ListResult::End | ListResult::Error => {
+          let _ = sender.send((generation, Event::Streams(std::mem::take(&mut found))));
+        }
+      };
+      intro.get_sink_input_info_list(on_pa_thread(on_result));
+    });
+  }
+
+  /// Shows the lists as last read, capped. Each signal is set only when
+  /// what it shows changed.
+  fn show_lists(&mut self) {
+    let Nodes {
+      sinks,
+      sources,
+      streams,
+      default_source,
+    } = &self.nodes;
+    let capped = |nodes: &[NodeInfo]| -> Vec<AudioNode> {
+      nodes.iter().take(MAX_NODES).map(NodeInfo::node).collect()
+    };
+    let sink_name = |index| {
+      let sink = sinks.iter().find(|sink| sink.index == index);
+      sink.map_or(String::new(), |sink| sink.name.clone())
+    };
+    let streams = streams
+      .iter()
+      .take(MAX_NODES)
+      .map(|stream| AudioStream {
+        index: stream.index,
+        app_name: stream.app_name.clone(),
+        title: stream.title.clone(),
+        icon_name: stream.icon_name.clone(),
+        sink: sink_name(stream.sink),
+        volume_percent: percent(stream.volumes.avg()),
+        muted: stream.muted,
+      })
+      .collect();
+    let default = default_source
+      .as_ref()
+      .and_then(|name| sources.iter().find(|source| source.name == *name))
+      .map(NodeInfo::node);
+    set_changed(self.lists.sinks, capped(sinks));
+    set_changed(self.lists.sources, capped(sources));
+    set_changed(self.lists.streams, streams);
+    set_changed(self.lists.default_source, default);
+  }
+
+  fn set_default(&mut self, kind: Kind, name: &str) {
+    let sent = self.when_ready_with(|context, _| {
+      let done = on_pa_thread(|_| {});
+      match kind {
+        Kind::Sink => drop(context.set_default_sink(name, done)),
+        Kind::Source => drop(context.set_default_source(name, done)),
+      }
+    });
+    if !sent {
+      tracing::debug!(name, "no audio server: the default stays");
+    }
+  }
+
+  fn set_node_volume(&mut self, kind: Kind, name: &str, percent: u32) {
+    let nodes = match kind {
+      Kind::Sink => &self.nodes.sinks,
+      Kind::Source => &self.nodes.sources,
+    };
+    let Some(node) = nodes.iter().find(|node| node.name == name) else {
+      return tracing::debug!(name, ?kind, "no such node: its volume stays");
+    };
+    let volumes = at(node.volumes, percent);
+    self.when_ready(|intro| match kind {
+      Kind::Sink => drop(intro.set_sink_volume_by_name(name, &volumes, None)),
+      Kind::Source => drop(intro.set_source_volume_by_name(name, &volumes, None)),
+    });
+  }
+
+  fn set_node_mute(&mut self, kind: Kind, name: &str, muted: bool) {
+    self.when_ready(|intro| match kind {
+      Kind::Sink => drop(intro.set_sink_mute_by_name(name, muted, None)),
+      Kind::Source => drop(intro.set_source_mute_by_name(name, muted, None)),
+    });
+  }
+
+  fn set_stream_volume(&mut self, index: u32, percent: u32) {
+    let Some(stream) = self
+      .nodes
+      .streams
+      .iter()
+      .find(|stream| stream.index == index)
+    else {
+      return tracing::debug!(index, "no such stream: its volume stays");
+    };
+    let volumes = at(stream.volumes, percent);
+    self.when_ready(|intro| drop(intro.set_sink_input_volume(index, &volumes, None)));
+  }
+
+  fn set_stream_mute(&mut self, index: u32, muted: bool) {
+    self.when_ready(|intro| drop(intro.set_sink_input_mute(index, muted, None)));
+  }
+
+  fn move_stream(&mut self, index: u32, sink: &str) {
+    self.when_ready(|intro| drop(intro.move_sink_input_by_name(index, sink, None)));
   }
 
   /// Shows `info`, or no sink. The signal is set only when that changes
@@ -505,6 +951,8 @@ impl Pulse {
     drop(lock);
     self.generation += 1;
     self.show(None);
+    self.nodes = Nodes::default();
+    self.show_lists();
     !std::mem::replace(&mut self.down, true)
   }
 }
@@ -589,5 +1037,33 @@ fn changed(mut volumes: ChannelVolumes, delta: i32) -> ChannelVolumes {
     // Within 0..=norm, which fits.
     volume.0 = (i64::from(volume.0) + shift).clamp(0, norm) as u32;
   }
+  volumes
+}
+
+/// A sink or source as libpulse reported it, unless it has no name or a
+/// bad volume.
+fn node(
+  index: u32,
+  name: &Option<std::borrow::Cow<'_, str>>,
+  description: &Option<std::borrow::Cow<'_, str>>,
+  volumes: ChannelVolumes,
+  muted: bool,
+) -> Option<NodeInfo> {
+  let name = name.as_deref().filter(|_| volumes.is_valid())?;
+  Some(NodeInfo {
+    index,
+    name: name.to_owned(),
+    description: description.as_deref().unwrap_or(name).to_owned(),
+    volumes,
+    muted,
+  })
+}
+
+/// `volumes` with every channel at `percent`, at most 100.
+fn at(mut volumes: ChannelVolumes, percent: u32) -> ChannelVolumes {
+  let norm = u64::from(Volume::NORMAL.0);
+  let level = (u64::from(percent.min(100)) * norm + 50) / 100;
+  // At most norm, which fits.
+  volumes.set(volumes.len(), Volume(level as u32));
   volumes
 }

@@ -115,3 +115,100 @@ fn a_killed_server_gives_none_then_the_sink_again() {
     "{logs}"
   );
 }
+
+#[test]
+#[ignore = "needs pipewire; run by hand"]
+fn sinks_sources_and_streams_show_and_follow_the_server() {
+  let _one = one_at_a_time();
+  let server = PrivateServer::start("lists");
+  let mut shell = Harness::new(&server.address());
+  let audio = shell.cx.audio();
+  let (sinks, sources, streams) = (audio.sinks(), audio.sources(), audio.streams());
+  shell.run_until(|_| sinks.get_untracked().len() == 2 && sources.get_untracked().len() == 1);
+  let names: Vec<String> = sinks
+    .get_untracked()
+    .into_iter()
+    .map(|sink| sink.name)
+    .collect();
+  assert!(names.contains(&"test-sink".to_owned()), "{names:?}");
+  let other = sinks
+    .get_untracked()
+    .into_iter()
+    .find(|sink| sink.name == "other-sink");
+  assert_eq!(
+    other.map(|sink| sink.description),
+    Some("Other Sink".to_owned())
+  );
+  // The sinks' monitors aren't listed.
+  assert_eq!(sources.get_untracked()[0].name, "test-source");
+  let default_source = audio.default_source();
+  shell.run_until(|_| default_source.get_untracked().is_some());
+  assert_eq!(
+    default_source.get_untracked().map(|s| s.name),
+    Some("test-source".to_owned())
+  );
+
+  // With no session manager, nothing links the stream to a sink, so
+  // its sink and moves are checked against the fake server instead.
+  let mut player = server.play();
+  shell.run_until(|_| streams.get_untracked().len() == 1);
+  let stream = streams.get_untracked()[0].clone();
+  assert_eq!(stream.app_name, "pacat");
+  audio.set_stream_mute(stream.index, true);
+  shell.run_until(|_| streams.get_untracked().first().is_some_and(|s| s.muted));
+  player.kill().expect("pacat killed");
+  player.wait().expect("pacat reaped");
+  shell.run_until(|_| streams.get_untracked().is_empty());
+}
+
+#[test]
+#[ignore = "needs pipewire; run by hand"]
+fn defaults_volumes_and_mutes_reach_the_server() {
+  let _one = one_at_a_time();
+  let server = PrivateServer::start("setters");
+  let mut shell = Harness::new(&server.address());
+  let audio = shell.cx.audio();
+  let (sink, sinks, source) = (audio.default_sink(), audio.sinks(), audio.default_source());
+  shell.run_until(|_| sinks.get_untracked().len() == 2 && source.get_untracked().is_some());
+
+  // A new default needs a session manager, which this server has none
+  // of; the commands are checked against the fake server instead.
+  assert_eq!(
+    sink.get_untracked().map(|s| s.name),
+    Some("test-sink".to_owned())
+  );
+  audio.set_sink_volume("test-sink", 40);
+  let test_sink = move || {
+    sinks
+      .get_untracked()
+      .into_iter()
+      .find(|s| s.name == "test-sink")
+  };
+  shell.run_until(|_| test_sink().map(|s| s.volume_percent) == Some(40));
+  assert!(server.volume().contains(" 40% "), "{}", server.volume());
+  audio.set_sink_mute("test-sink", true);
+  shell.run_until(|_| test_sink().is_some_and(|s| s.muted));
+
+  audio.set_source_volume("test-source", 70);
+  shell.run_until(|_| source.get_untracked().map(|s| s.volume_percent) == Some(70));
+  audio.set_source_mute("test-source", true);
+  shell.run_until(|_| source.get_untracked().is_some_and(|s| s.muted));
+  let muted = server.pactl(&["get-source-mute", "test-source"]);
+  assert_eq!(muted.trim(), "Mute: yes");
+}
+
+#[test]
+#[ignore = "needs pipewire; run by hand"]
+fn a_playing_stream_wakes_nothing() {
+  let _one = one_at_a_time();
+  let server = PrivateServer::start("playing");
+  let mut shell = Harness::new(&server.address());
+  let streams = shell.cx.audio().streams();
+  let mut player = server.play();
+  shell.run_until(|_| streams.get_untracked().len() == 1);
+  shell.run_for(Duration::from_millis(500));
+  // One wakeup: the one that ends the run.
+  assert_eq!(shell.run_for(Duration::from_secs(3)), 1);
+  player.kill().expect("pacat killed");
+  player.wait().expect("pacat reaped");
+}

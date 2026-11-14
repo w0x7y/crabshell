@@ -80,6 +80,23 @@ impl PrivateServer {
     String::from_utf8(output.stdout).expect("UTF-8 from pactl")
   }
 
+  /// Plays silence to the default sink with `pacat`, as an app would,
+  /// until the returned child is killed.
+  pub fn play(&self) -> Child {
+    let silence = std::fs::File::open("/dev/zero").expect("/dev/zero");
+    Command::new("pacat")
+      .arg(format!("--server={}", self.address()))
+      .arg("--playback")
+      .env_clear()
+      .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+      .env("XDG_RUNTIME_DIR", &self.runtime)
+      .stdin(silence)
+      .stdout(Stdio::null())
+      .stderr(Stdio::null())
+      .spawn()
+      .expect("pacat starts")
+  }
+
   pub fn volume(&self) -> String {
     self.pactl(&["get-sink-volume", "test-sink"])
   }

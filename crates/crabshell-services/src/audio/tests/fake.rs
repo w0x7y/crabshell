@@ -16,9 +16,17 @@ pub(super) const AUTH: u32 = 8;
 pub(super) const SET_CLIENT_NAME: u32 = 9;
 pub(super) const GET_SERVER_INFO: u32 = 20;
 pub(super) const GET_SINK_INFO: u32 = 21;
+pub(super) const GET_SINK_INFO_LIST: u32 = 22;
+pub(super) const GET_SOURCE_INFO_LIST: u32 = 24;
+pub(super) const GET_SINK_INPUT_INFO_LIST: u32 = 30;
 pub(super) const SUBSCRIBE: u32 = 35;
 pub(super) const SET_SINK_VOLUME: u32 = 36;
 pub(super) const SET_SINK_MUTE: u32 = 39;
+pub(super) const SET_DEFAULT_SINK: u32 = 44;
+pub(super) const SET_DEFAULT_SOURCE: u32 = 45;
+pub(super) const SET_SINK_INPUT_VOLUME: u32 = 37;
+pub(super) const MOVE_SINK_INPUT: u32 = 67;
+pub(super) const SET_SINK_INPUT_MUTE: u32 = 69;
 
 /// A listening socket in a directory of its own.
 pub(super) struct FakePulse {
