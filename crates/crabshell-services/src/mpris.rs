@@ -639,6 +639,14 @@ impl Service {
           .any(|name| changed.contains_key(*name));
       for id in ids {
         self.with_entry(&id, |entry| {
+          // Where it got to under the old status and rate stands until
+          // the new position is read.
+          if moved && let Some(props) = &entry.props {
+            let (position, at) = entry.position;
+            let now = Instant::now();
+            let player = Player::from_props(entry.id.clone(), props, position, at);
+            entry.position = (player.position_at(now), now);
+          }
           let Some((root, props)) = &mut entry.props else {
             return;
           };
@@ -664,7 +672,11 @@ impl Service {
     if let (true, Ok(at)) = (seeked, message.body().deserialize::<i64>()) {
       let position = micros(&Variant::I64(at)).unwrap_or_default();
       for id in ids {
-        self.with_entry(&id, |entry| entry.position = (position, Instant::now()));
+        self.with_entry(&id, |entry| {
+          entry.position = (position, Instant::now());
+          // A position read under way is older than this.
+          entry.reads += 1;
+        });
       }
       self.publish();
     }

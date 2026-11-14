@@ -650,3 +650,38 @@ fn disposing_the_root_frees_the_players() {
   vlc.emit(&mut shell, PATH, PLAYER, "Seeked", 1i64);
   shell.run_until(Instant::now() + Duration::from_millis(100));
 }
+
+#[test]
+fn a_pause_shows_where_it_stopped_before_the_position_is_read() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let vlc = fake_player(&mut shell, &bus, VLC, "VLC");
+  let players = shell.cx.mpris().players();
+  wait_for(&mut shell, "the player", || {
+    !players.get_untracked().is_empty()
+  });
+  vlc.set(
+    &mut shell,
+    PATH,
+    PLAYER,
+    &[("PlaybackStatus", Variant::from("Playing"))],
+  );
+  let playing = || players.get_untracked()[0].status == PlaybackStatus::Playing;
+  wait_for(&mut shell, "playing", playing);
+  // Its position reads stay unanswered for now.
+  vlc.hold();
+  shell.run_until(Instant::now() + Duration::from_millis(400));
+  vlc.set(
+    &mut shell,
+    PATH,
+    PLAYER,
+    &[("PlaybackStatus", Variant::from("Paused"))],
+  );
+  wait_for(&mut shell, "paused", || !playing());
+  let shown = players.get_untracked()[0].position_at(Instant::now());
+  assert!(
+    shown >= Duration::from_millis(10_300),
+    "{shown:?}, not where it stopped"
+  );
+  vlc.release(&mut shell);
+}
