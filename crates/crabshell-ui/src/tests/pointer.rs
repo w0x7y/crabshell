@@ -688,3 +688,64 @@ fn focus_from_code_takes_the_focus_unless_disabled() {
     Some("PanelWindow[DP-1]/Row/Button[0]")
   );
 }
+
+#[test]
+fn a_panicking_enabled_or_cursor_binding_is_logged_and_the_button_still_clicks() {
+  let mut h = Harness::new();
+  let clicks = Counter::default();
+  let counted = clicks.clone();
+  let row = Row::new().align(Align::Start).child(
+    Button::new(square())
+      .enabled(|| -> bool { panic!("enabled failure") })
+      .cursor(|| -> CursorShape { panic!("cursor failure") })
+      .on_click(move |_| counted.hit()),
+  );
+  let mut window = None;
+  let logs = capture_logs(|| {
+    let built = h.window(h.panel().child(row), 200.0, 30.0);
+    built.pointer_motion(Point::new(5.0, 5.0));
+    click_at(&built, 0);
+    window = Some(built);
+  });
+  for name in ["enabled", "cursor"] {
+    assert!(
+      logs.contains(&format!(
+        "effect PanelWindow[DP-1]/Row/Button[0].{name} panicked and is disabled"
+      )),
+      "{logs}"
+    );
+  }
+  assert_eq!(clicks.get(), 1, "the button stays on, with its own cursor");
+  let window = window.expect("built");
+  assert_eq!(window.cursor(), CursorShape::Pointer);
+
+  // An End that panics while `enabled` cuts its drag short is logged too.
+  let on = h.cx.signal(true);
+  let row =
+    Row::new()
+      .align(Align::Start)
+      .child(
+        Button::new(square())
+          .enabled(move || on.get())
+          .on_drag(|_, drag| {
+            if drag.phase == DragPhase::End {
+              panic!("end failure")
+            }
+          }),
+      );
+  let other = h.window(h.panel().child(row), 200.0, 30.0);
+  let logs = capture_logs(|| {
+    other.pointer_motion(Point::new(5.0, 5.0));
+    other.pointer_button(PointerButton::Left, true);
+    on.set(false);
+    h.frame(&other);
+  });
+  assert!(
+    logs.contains("handler PanelWindow[DP-1]/Row/Button[0].on_drag panicked and is disabled"),
+    "{logs}"
+  );
+  assert!(
+    !logs.contains("effect PanelWindow[DP-1]/Row/Button[0].enabled"),
+    "{logs}"
+  );
+}
