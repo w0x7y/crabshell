@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use crabshell_reactive::Runtime;
 use zbus::{ObjectPath, OwnedObjectPath, OwnedVariant, Variant};
 
 use super::saved::{SAVED, SETTINGS, SETTINGS_PATH};
@@ -578,6 +579,52 @@ fn methods_reach_networkmanager_and_the_password_is_never_logged() {
   assert!(logs.contains("InvalidProperty"), "{logs}");
   assert_eq!(logs.matches("refused").count(), 1, "{logs}");
   assert!(!logs.contains("hunter22"), "{logs}");
+}
+
+#[test]
+fn disposing_the_root_frees_networking_and_ends_both_watches() {
+  let runtime = Runtime::current();
+  let before = runtime.node_count();
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let nm = fake_nm(&mut shell, &bus);
+  let _saved = saved(&nm);
+  let query = shell.block_on(bus.connect(&[]));
+  // How many connections the bus has, as unique names.
+  let connected = Rc::new(Cell::new(0));
+  let count = |shell: &mut Harness, connected: &Rc<Cell<usize>>| {
+    let query = query.clone();
+    let names = shell.block_on(async move {
+      let (bus, path) = (crate::dbus::BUS, crate::dbus::BUS_PATH);
+      let call = query.call_method(Some(bus), path, Some(bus), "ListNames", &());
+      let names: Vec<String> = call.await?.body().deserialize()?;
+      zbus::Result::Ok(names)
+    });
+    let names = names.expect("the bus's names");
+    connected.set(names.iter().filter(|name| name.starts_with(':')).count());
+  };
+  count(&mut shell, &connected);
+  let alone = connected.get();
+  let network = shell.cx.network();
+  let (devices, list) = (network.devices(), network.saved_connections());
+  wait_for(&mut shell, "the devices and saved connections", || {
+    !devices.get_untracked().is_empty() && !list.get_untracked().is_empty()
+  });
+  count(&mut shell, &connected);
+  assert_eq!(connected.get(), alone + 2, "one for each watch");
+
+  shell.cx.owner().dispose();
+  assert_eq!(runtime.node_count(), before);
+  // Nothing comes from NetworkManager, yet both watches hang up.
+  shell.retry_until(
+    "both watches gone",
+    || connected.get() == alone,
+    |shell| count(shell, &connected),
+  );
+  assert_eq!(
+    shell.run_until(Instant::now() + Duration::from_millis(300)),
+    1
+  );
 }
 
 #[test]

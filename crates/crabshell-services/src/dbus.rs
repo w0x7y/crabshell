@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::future::poll_fn;
 use std::pin::Pin;
 use std::rc::Rc;
+use std::task::{Poll, Waker};
 use std::time::Duration;
 
 use crabshell_reactive::{Signal, untrack};
@@ -221,11 +222,28 @@ fn read<D: Daemon>(
   });
 }
 
+/// Wakes a follow loop when the root owner it is kept under goes, so the
+/// loop hangs up then rather than at the bus's next message.
+struct WakeOnDispose(Rc<Cell<Option<Waker>>>);
+
+impl Drop for WakeOnDispose {
+  fn drop(&mut self) {
+    if let Some(waker) = self.0.take() {
+      waker.wake();
+    }
+  }
+}
+
 /// Follows `daemon` on the bus at `address`, until the bus closes or the
-/// service's signals are disposed. While the daemon isn't running, this
-/// waits on the bus and never wakes the shell.
+/// root owner, with the service's signals, is disposed. While the daemon
+/// isn't running, this waits on the bus and never wakes the shell.
 pub(crate) async fn follow<D: Daemon>(shared: Rc<Shared>, daemon: Rc<D>, address: zbus::Address) {
   let name = D::NAME;
+  if shared.root.is_disposed() {
+    return;
+  }
+  let waker = Rc::new(Cell::new(None));
+  shared.root.signal(WakeOnDispose(Rc::clone(&waker)));
   let connection = match zbus::connection::Builder::address(address).build().await {
     Ok(connection) => connection,
     Err(error) => return tracing::info!(%error, name, "can't reach the system bus"),
@@ -246,8 +264,17 @@ pub(crate) async fn follow<D: Daemon>(shared: Rc<Shared>, daemon: Rc<D>, address
     None => tracing::info!(name, "not running; waiting for it"),
   }
   loop {
-    let next = poll_fn(|cx| Pin::new(&mut messages).poll_next(cx)).await;
+    let next = poll_fn(|cx| {
+      if !daemon.alive() {
+        return Poll::Ready(None);
+      }
+      waker.set(Some(cx.waker().clone()));
+      Pin::new(&mut messages).poll_next(cx)
+    })
+    .await;
     if !daemon.alive() {
+      // Drops the connection a service keeps for its methods too.
+      daemon.clear();
       return;
     }
     let message = match next {
