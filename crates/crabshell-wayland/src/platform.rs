@@ -719,7 +719,7 @@ impl Platform {
       }
       if entry.window.needs_layout() {
         entry.window.layout(text);
-        surface.fit(entry.window.size());
+        surface.fit(&entry.window);
         // A layout can move a button out from under a still
         // pointer, or under it.
         for pointer in pointers

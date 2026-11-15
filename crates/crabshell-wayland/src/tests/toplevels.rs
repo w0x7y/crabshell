@@ -56,4 +56,7 @@ fn adjustments_map_flag_by_flag() {
     adjustment(Adjust::FLIP | Adjust::SLIDE_Y),
     ConstraintAdjustment::FlipX | ConstraintAdjustment::FlipY | ConstraintAdjustment::SlideY
   );
+  assert_eq!(adjustment(Adjust::RESIZE_X), ConstraintAdjustment::ResizeX);
+  assert_eq!(adjustment(Adjust::RESIZE_Y), ConstraintAdjustment::ResizeY);
+  assert_eq!(adjustment(Adjust::ALL), ConstraintAdjustment::all());
 }

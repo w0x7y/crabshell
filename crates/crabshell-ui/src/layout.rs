@@ -41,14 +41,25 @@ enum Parent {
 
 impl Tree {
   /// Lays the window out at `self.size` and records damage. A popup first
-  /// takes the size its content wants, rounded up to whole pixels.
+  /// takes the size its content wants, rounded up to whole pixels, within
+  /// the size the compositor shrank it to.
   pub(crate) fn layout(&mut self, text: &mut TextSystem) {
     let root = self.root;
     self.sync(root, Parent::Flex, Font::DEFAULT, text);
 
     let fonts = text.font_system();
     if self.popup.is_some() {
-      self.size = self.natural_size(fonts);
+      let wanted = self.natural_size(fonts);
+      self.size = wanted;
+      if let Some(popup) = self.popup.as_mut() {
+        popup.wanted = wanted;
+        if let Some(limit) = popup.limit {
+          self.size = crate::Size::new(
+            wanted.width.min(limit.width),
+            wanted.height.min(limit.height),
+          );
+        }
+      }
       let mut style = self.taffy.style(root).cloned().unwrap_or_default();
       style.size = definite(self.size);
       let _ = self.taffy.set_style(root, style);

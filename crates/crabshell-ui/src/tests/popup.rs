@@ -270,3 +270,47 @@ fn a_popup_carries_the_placement_its_config_set() {
   let plain = opener(&mut h, |_| PopupWindow::new().child(square()));
   assert_eq!(open(&mut h, &plain).placement(), Placement::default());
 }
+
+#[test]
+fn all_adjustments_include_resizing_as_in_quickshell() {
+  use crate::Adjust;
+
+  assert_eq!(Adjust::RESIZE, Adjust::RESIZE_X | Adjust::RESIZE_Y);
+  assert_eq!(Adjust::ALL, Adjust::FLIP | Adjust::SLIDE | Adjust::RESIZE);
+  assert!(!Adjust::SLIDE.contains(Adjust::RESIZE_X));
+}
+
+#[test]
+fn a_popup_the_compositor_shrinks_is_laid_out_at_that_size() {
+  let mut h = Harness::new();
+  let window = opener(&mut h, |_| {
+    PopupWindow::new()
+      .style(Style::new().background(crate::Color::hex("#313244")))
+      .child(Icon::new("x").size(40))
+  });
+  let popup = open(&mut h, &window);
+  assert_eq!(popup.size(), Size::new(40.0, 40.0));
+  popup.take_damage();
+
+  popup.limit_size(Some(Size::new(25.0, 100.0)));
+  assert!(popup.needs_layout());
+  h.frame(&popup);
+  // No larger than the limit, nor than its content.
+  assert_eq!(popup.size(), Size::new(25.0, 40.0));
+  assert_eq!(popup.wanted_size(), Size::new(40.0, 40.0));
+  assert!(
+    popup
+      .take_damage()
+      .contains(&Rect::new(0.0, 0.0, 25.0, 40.0)),
+    "repainted whole"
+  );
+
+  // Given what it asks for again, it is its content's size.
+  popup.limit_size(None);
+  h.frame(&popup);
+  assert_eq!(popup.size(), Size::new(40.0, 40.0));
+  // A panel takes the size it is given, and has no limit.
+  window.limit_size(Some(Size::new(1.0, 1.0)));
+  assert!(!window.needs_layout());
+  assert_eq!(window.wanted_size(), window.size());
+}

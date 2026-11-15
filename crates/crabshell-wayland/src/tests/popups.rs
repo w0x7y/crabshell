@@ -1,8 +1,10 @@
-//! Placing a popup: the anchor rectangle `xdg_positioner` gets.
+//! Placing a popup: the anchor rectangle `xdg_positioner` gets, and the
+//! limit a configure sets on its size.
 
-use crabshell_ui::{Edge, Rect};
+use crabshell_ui::{Edge, Rect, Size};
+use smithay_client_toolkit::shell::xdg::popup::ConfigureKind;
 
-use crate::popups::{Side, anchor_rect};
+use crate::popups::{Side, anchor_rect, limit};
 
 #[test]
 fn a_popup_goes_beside_a_popup_or_a_vertical_bar_and_below_any_other_bar() {
@@ -35,4 +37,22 @@ fn the_anchor_stays_inside_the_parent_and_is_never_empty() {
   assert_eq!(anchor_rect(nan, (100, 100)), [0, 99, 1, 1]);
   // A parent with no size yet still gives a valid rectangle.
   assert_eq!(anchor_rect(Rect::default(), (0, 0)), [0, 0, 1, 1]);
+}
+
+#[test]
+fn a_configure_of_another_size_than_asked_limits_the_popup() {
+  let first = ConfigureKind::Initial;
+  // Resized to fit, or given what it asked.
+  assert_eq!(
+    limit(&first, (1914, 48), 0, (3252, 48)),
+    Some(Some(Size::new(1914.0, 48.0)))
+  );
+  assert_eq!(limit(&first, (3252, 48), 0, (3252, 48)), Some(None));
+  // The answer to the last reposition counts; an older one doesn't.
+  let answer = |token| ConfigureKind::Reposition { token };
+  assert_eq!(limit(&answer(2), (100, 48), 2, (100, 48)), Some(None));
+  assert_eq!(limit(&answer(1), (100, 48), 2, (300, 48)), None);
+  // A side under 1 can't be drawn at.
+  assert_eq!(limit(&first, (0, 48), 0, (300, 48)), None);
+  assert_eq!(limit(&first, (300, -1), 0, (300, 48)), None);
 }

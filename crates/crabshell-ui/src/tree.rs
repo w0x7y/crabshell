@@ -72,6 +72,10 @@ pub(crate) struct PopupState {
   pub(crate) alive: Signal<()>,
   /// Where it goes, as the config set it.
   pub(crate) placement: crate::popup::Placement,
+  /// The size its content wanted at the last layout.
+  pub(crate) wanted: Size,
+  /// The size the compositor shrank it to, which it is laid out within.
+  pub(crate) limit: Option<Size>,
 }
 
 pub(crate) struct Node {

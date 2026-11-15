@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 
 use crabshell_reactive::{ReadSignal, Runtime, Signal};
 use crabshell_ui::{
-  Align, Button, Color, Column, Content, Cx, Edge, Key, KeyEvent, KeyboardFocus, Margins, Output,
-  PanelWindow, PopupWindow, Rect, Region, Row, Spacer, Style, Text, TextInput, Window,
+  Adjust, Align, Button, Color, Column, Content, Cx, Edge, Key, KeyEvent, KeyboardFocus, Margins,
+  Output, PanelWindow, PopupWindow, Rect, Region, Row, Spacer, Style, Text, TextInput, Window,
 };
 use crabshell_ui::{CaptureFrame, CaptureSource, FloatingWindow, ScreencopyView, Transition};
 use crabshell_ui::{Lock, SessionLock};
@@ -129,12 +129,15 @@ struct Knobs {
   inhibited: Signal<bool>,
   /// Whether every bar holds the focus, in one grab.
   grab: Signal<bool>,
+  /// How every [`menu`] may move or shrink to stay on the output.
+  adjust: Signal<Adjust>,
 }
 
 /// A popup with two entries: the first opens another menu beside it, and
 /// the second closes them all.
 fn menu(knobs: Knobs) -> PopupWindow {
   PopupWindow::new()
+    .adjustment(move || knobs.adjust.get())
     .style(
       Style::new()
         .background(Color::hex("#313244"))
@@ -318,6 +321,7 @@ impl Shell {
       inhibit: cx.signal(false),
       inhibited: cx.signal(false),
       grab: cx.signal(false),
+      adjust: cx.signal(Adjust::FLIP | Adjust::SLIDE),
     };
     let mut event_loop = sway.connect();
     let built = Rc::new(RefCell::new(Vec::new()));
@@ -1876,6 +1880,74 @@ fn a_menu_that_grows_before_its_first_frame_is_placed_again() {
         .is_some_and(|(x, _)| x == 0)
     },
   );
+}
+
+/// The menu the bar's button opens, wider than the output, as `adjust`
+/// lets it fit, and the size its content wants.
+fn wide_menu(menus: &mut Menus, adjust: Adjust) -> (WindowId, (u32, u32)) {
+  menus.shell.knobs.adjust.set(adjust);
+  // About 3300 logical pixels: wider than the output at scale 1, and
+  // inside the largest buffer at scale 2.
+  menus.shell.knobs.entry.set("wide ".repeat(100));
+  let popup = menus.open_from_bar();
+  let (_, window) = menus
+    .shell
+    .event_loop
+    .platform()
+    .windows()
+    .find(|(id, _)| *id == popup)
+    .expect("held");
+  let wanted = window.wanted_size();
+  (popup, (wanted.width as u32, wanted.height as u32))
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_menu_too_wide_for_the_output_is_drawn_at_the_width_sway_resizes_it_to() {
+  for scale in ["1", "1.25", "1.5", "1.75", "2"] {
+    let sway = Sway::start();
+    let mut menus = Menus::start(&sway, scale);
+    let (popup, wanted) = wide_menu(&mut menus, Adjust::RESIZE);
+    let info = menus.info(popup);
+    let (x, y) = info.position.expect("placed");
+    // Not slid: cut at the output's right edge, at its first frame.
+    let width = menus.layout.0 - x as u32;
+    assert!(wanted.0 > width, "{wanted:?} at {scale}");
+    assert_eq!(info.size, Some((width, wanted.1)), "at {scale}");
+    assert_eq!(info.commits, 1, "at {scale}");
+    let factor: f64 = scale.parse().expect("a scale");
+    let pixels = |side: u32| (f64::from(side) * factor).round() as u32;
+    assert_eq!(
+      info.buffer_size,
+      Some((pixels(width), pixels(wanted.1))),
+      "at {scale}"
+    );
+    // At fractional scales the compositor rounds the place to pixels.
+    if scale == "1" || scale == "2" {
+      let snapshot = menus
+        .shell
+        .event_loop
+        .platform()
+        .snapshot(popup)
+        .expect("the menu draws offscreen");
+      assert_matches_at(
+        &format!("resized menu@{scale}"),
+        &sway.screenshot("HEADLESS-1"),
+        &snapshot,
+        (pixels(x as u32), pixels(y as u32)),
+      );
+    }
+  }
+
+  // Without resizing it slides to the output's left edge and keeps its
+  // size, most of it off the output.
+  let sway = Sway::start();
+  let mut menus = Menus::start(&sway, "1");
+  let (popup, wanted) = wide_menu(&mut menus, Adjust::FLIP | Adjust::SLIDE);
+  let info = menus.info(popup);
+  assert_eq!(info.position.map(|(x, _)| x), Some(0));
+  assert_eq!(info.size, Some(wanted));
+  assert_eq!(info.buffer_size, Some(wanted));
 }
 
 #[test]

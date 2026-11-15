@@ -146,8 +146,10 @@ pub(crate) struct PopupRole {
   pub(crate) popup: Popup,
   /// Kept to send a new size with: its anchor rectangle and gravity stay.
   pub(crate) positioner: XdgPositioner,
-  /// The size the compositor last placed it at.
+  /// The size last sent for the compositor to place it at.
   pub(crate) placed: (u32, u32),
+  /// The token of the last `reposition`, which its configure carries.
+  pub(crate) token: u32,
   /// Whether it took a pointer grab. A popup opened from it may take one
   /// only if it did.
   pub(crate) grabbed: bool,
@@ -239,29 +241,31 @@ impl Surface {
     }
   }
 
-  /// A popup is the size its content wants, which its layout just worked
-  /// out.
-  pub(crate) fn fit(&mut self, size: Size) {
+  /// A popup is drawn at the size its layout just worked out, and asks
+  /// the compositor for the size its content wants.
+  pub(crate) fn fit(&mut self, window: &Window) {
     if let Role::Popup(_) = self.role {
-      self.size = Some((size.width as u32, size.height as u32));
-      self.place_again();
+      self.size = Some(whole(window.size()));
+      self.place_again(window);
     }
   }
 
-  /// Sends a popup's new size so the compositor places it again, once it
-  /// is mapped: `reposition` is only for a mapped popup. A no-op before
-  /// `xdg_wm_base` version 3, where the new size still shows.
-  fn place_again(&mut self) {
-    let (Role::Popup(popup), Some(size)) = (&mut self.role, self.size) else {
+  /// Sends the size a popup's content wants so the compositor places it
+  /// again, once it is mapped: `reposition` is only for a mapped popup. A
+  /// no-op before `xdg_wm_base` version 3, where the new size still shows.
+  fn place_again(&mut self, window: &Window) {
+    let Role::Popup(popup) = &mut self.role else {
       return;
     };
-    if self.commits == 0 || popup.placed == size {
+    let wanted = whole(window.wanted_size());
+    if self.commits == 0 || popup.placed == wanted {
       return;
     }
-    popup.placed = size;
-    let [width, height] = [size.0, size.1].map(|side| i32::try_from(side).unwrap_or(i32::MAX));
+    popup.placed = wanted;
+    popup.token = popup.token.wrapping_add(1);
+    let [width, height] = [wanted.0, wanted.1].map(|side| i32::try_from(side).unwrap_or(i32::MAX));
     popup.positioner.set_size(width, height);
-    popup.popup.reposition(&popup.positioner, 0);
+    popup.popup.reposition(&popup.positioner, popup.token);
   }
 
   /// Takes a configure's size. Returns the size, or `None` if it can't be
@@ -445,9 +449,14 @@ impl Surface {
     self.last_damage = report;
     self.buffer_size = Some((buffer_width, buffer_height));
     // A popup that grew before its first frame is mapped only now.
-    self.place_again();
+    self.place_again(window);
     true
   }
+}
+
+/// A popup's size in the whole pixels its layout rounded it to.
+fn whole(size: Size) -> (u32, u32) {
+  (size.width as u32, size.height as u32)
 }
 
 impl Drop for Surface {

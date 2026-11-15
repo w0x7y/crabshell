@@ -8,7 +8,7 @@ use std::rc::Rc;
 use crabshell_reactive::untrack;
 
 use crate::cx::{Anchor, Cx};
-use crate::geometry::Rect;
+use crate::geometry::{Rect, Size};
 use crate::input::panic_message;
 use crate::prop::{IntoProp, Prop};
 use crate::style::Style;
@@ -35,8 +35,9 @@ pub struct PopupWindow {
   adjustment: Option<Prop<Adjust>>,
 }
 
-/// How a popup may move to stay on its output, combined with `|`, as
-/// `xdg_positioner`'s constraint adjustments.
+/// How a popup may move or shrink to stay on its output, combined with
+/// `|`, as `xdg_positioner`'s constraint adjustments. The compositor
+/// flips first, then slides, then resizes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Adjust(u8);
 
@@ -51,13 +52,19 @@ impl Adjust {
   pub const FLIP_X: Adjust = Adjust(4);
   /// Flipped to above or below.
   pub const FLIP_Y: Adjust = Adjust(8);
+  /// Made narrower, to the part on the output. It is laid out at the
+  /// width the compositor gives, and what doesn't fit is cut off.
+  pub const RESIZE_X: Adjust = Adjust(16);
+  /// Made shorter, to the part on the output, as `RESIZE_X`.
+  pub const RESIZE_Y: Adjust = Adjust(32);
   /// Slid either way.
   pub const SLIDE: Adjust = Adjust(1 | 2);
   /// Flipped either way.
   pub const FLIP: Adjust = Adjust(4 | 8);
-  /// Any of them, flipping first, then sliding. A popup is never resized:
-  /// it is the size of its content.
-  pub const ALL: Adjust = Adjust(15);
+  /// Resized either way.
+  pub const RESIZE: Adjust = Adjust(16 | 32);
+  /// Any of them: flipped, then slid, then resized.
+  pub const ALL: Adjust = Adjust(63);
 
   /// Whether every adjustment in `other` is allowed.
   pub const fn contains(self, other: Adjust) -> bool {
@@ -122,8 +129,8 @@ impl PopupWindow {
     self
   }
 
-  /// Sets how the popup may move to stay on its output. Read when it
-  /// opens.
+  /// Sets how the popup may move or shrink to stay on its output. The
+  /// default flips and slides it. Read when it opens.
   pub fn adjustment(mut self, adjustment: impl IntoProp<Adjust>) -> PopupWindow {
     self.adjustment = Some(adjustment.into_prop());
     self
@@ -196,6 +203,8 @@ impl Cx {
         close: false,
         alive,
         placement: Placement::default(),
+        wanted: Size::default(),
+        limit: None,
       });
       RefCell::new(tree)
     });
@@ -282,6 +291,28 @@ impl Window {
       .as_ref()
       .map(|popup| popup.placement)
       .unwrap_or_default()
+  }
+
+  /// For a popup, the size the compositor shrank it to, so it fits on
+  /// its output, or `None` once it takes the size it wants. It is laid
+  /// out and drawn no larger, its content cut off. Other windows ignore
+  /// it.
+  pub fn limit_size(&self, limit: Option<Size>) {
+    let mut tree = borrow(&self.tree);
+    let Some(popup) = tree.popup.as_mut() else {
+      return;
+    };
+    if popup.limit != limit {
+      popup.limit = limit;
+      tree.needs_layout = true;
+    }
+  }
+
+  /// The size the window asks the compositor for: a popup's content size
+  /// at its last layout, before any limit; another window's size.
+  pub fn wanted_size(&self) -> Size {
+    let tree = self.tree.borrow();
+    tree.popup.as_ref().map_or(tree.size, |popup| popup.wanted)
   }
 
   /// Whether this window is a popup.

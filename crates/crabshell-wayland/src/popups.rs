@@ -1,9 +1,12 @@
 //! Popups: taking the ones widgets opened, placing each next to its
 //! widget with `xdg_positioner`, and what the compositor says about them.
 
-use crabshell_ui::{Adjust, Anchors, Edge, Placement, Rect};
+use crabshell_ui::{Adjust, Anchors, Edge, Placement, Rect, Size};
+use smithay_client_toolkit::reexports::client::protocol::wl_output::WlOutput;
 use smithay_client_toolkit::reexports::client::{Connection, QueueHandle};
-use smithay_client_toolkit::shell::xdg::popup::{Popup, PopupConfigure, PopupHandler};
+use smithay_client_toolkit::shell::xdg::popup::{
+  ConfigureKind, Popup, PopupConfigure, PopupHandler,
+};
 use smithay_client_toolkit::shell::xdg::{XdgPositioner, XdgShell, XdgSurface};
 use smithay_client_toolkit::shm::slot::SlotPool;
 use wayland_protocols::xdg::shell::client::xdg_positioner::{
@@ -12,6 +15,7 @@ use wayland_protocols::xdg::shell::client::xdg_positioner::{
 
 use crate::platform::{INITIAL_POOL_BYTES, Platform};
 use crate::surface::{PopupRole, Role, Surface};
+use crate::windows::Entry;
 
 /// Which side of the widget that opened it a popup goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -142,6 +146,7 @@ impl Platform {
       popup,
       positioner,
       placed: size,
+      token: 0,
       grabbed: grab.is_some(),
       position: None,
     });
@@ -150,14 +155,13 @@ impl Platform {
     self.windows.entries[index].surface = Some(surface);
   }
 
-  fn by_popup(&mut self, popup: &Popup) -> Option<(crate::windows::WindowId, &mut Surface)> {
-    self.windows.entries.iter_mut().find_map(|entry| {
-      let id = entry.id;
+  fn by_popup(&mut self, popup: &Popup) -> Option<&mut Entry<Surface, WlOutput>> {
+    self.windows.entries.iter_mut().find(|entry| {
       entry
         .surface
-        .as_mut()
-        .filter(|surface| surface.popup().is_some_and(|ours| ours.popup == *popup))
-        .map(|surface| (id, surface))
+        .as_ref()
+        .and_then(Surface::popup)
+        .is_some_and(|ours| ours.popup == *popup)
     })
   }
 }
@@ -223,6 +227,8 @@ pub(crate) fn adjustment(adjust: Adjust) -> ConstraintAdjustment {
     (Adjust::SLIDE_Y, ConstraintAdjustment::SlideY),
     (Adjust::FLIP_X, ConstraintAdjustment::FlipX),
     (Adjust::FLIP_Y, ConstraintAdjustment::FlipY),
+    (Adjust::RESIZE_X, ConstraintAdjustment::ResizeX),
+    (Adjust::RESIZE_Y, ConstraintAdjustment::ResizeY),
   ]
   .into_iter()
   .filter(|(ours, _)| adjust.contains(*ours))
@@ -246,8 +252,31 @@ pub(crate) fn anchor_rect(rect: Rect, (width, height): (u32, u32)) -> [i32; 4] {
   [x, y, width, height]
 }
 
+/// The limit a configure of `kind` giving `(width, height)` sets on a
+/// popup that last asked for `asked` with reposition `token`: the size
+/// given when it isn't the size asked, as when the compositor resized
+/// the popup to fit, or no limit. `None` changes nothing: the configure
+/// answers an older request, or gives a side under 1.
+pub(crate) fn limit(
+  kind: &ConfigureKind,
+  (width, height): (i32, i32),
+  token: u32,
+  asked: (u32, u32),
+) -> Option<Option<Size>> {
+  if let ConfigureKind::Reposition { token: answered } = kind
+    && *answered != token
+  {
+    return None;
+  }
+  let width = u32::try_from(width).ok().filter(|side| *side > 0)?;
+  let height = u32::try_from(height).ok().filter(|side| *side > 0)?;
+  Some((asked != (width, height)).then(|| Size::new(width as f32, height as f32)))
+}
+
 impl PopupHandler for Platform {
-  /// sctk has acknowledged the configure; the next commit applies it.
+  /// sctk has acknowledged the configure; the next commit applies it. A
+  /// size other than the one asked for, as when the compositor resized
+  /// the popup to fit, limits its layout.
   fn configure(
     &mut self,
     _: &Connection,
@@ -255,11 +284,18 @@ impl PopupHandler for Platform {
     popup: &Popup,
     configure: PopupConfigure,
   ) {
-    let Some((_, surface)) = self.by_popup(popup) else {
+    let Some(entry) = self.by_popup(popup) else {
+      return;
+    };
+    let Some(surface) = entry.surface.as_mut() else {
       return;
     };
     if let Role::Popup(ours) = &mut surface.role {
       ours.position = Some(configure.position);
+      let given = (configure.width, configure.height);
+      if let Some(limit) = limit(&configure.kind, given, ours.token, ours.placed) {
+        entry.window.limit_size(limit);
+      }
     }
     surface.frames.pacing.configure();
   }
@@ -267,7 +303,7 @@ impl PopupHandler for Platform {
   /// The compositor dismissed the popup, as after a click outside it. It
   /// goes, with the popups it opened.
   fn done(&mut self, _: &Connection, _: &QueueHandle<Self>, popup: &Popup) {
-    let Some((id, _)) = self.by_popup(popup) else {
+    let Some(id) = self.by_popup(popup).map(|entry| entry.id) else {
       return;
     };
     tracing::debug!(?id, "the compositor dismissed a popup");

@@ -556,7 +556,8 @@ impl Window {
   }
 
   /// The window's size in logical pixels: the size the compositor gave a
-  /// panel, or the size a popup's content wants, from its last layout.
+  /// panel, or the size a popup's content wants within any limit, from
+  /// its last layout.
   pub fn size(&self) -> Size {
     self.tree.borrow().size
   }
