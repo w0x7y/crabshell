@@ -442,3 +442,20 @@ fn a_container_that_moves_too_moves_at_once_and_its_children_slide_within_it() {
   tick(&mut h, &window, start, 100);
   assert_eq!(inner(&window, 0), 40.0);
 }
+
+#[test]
+fn a_static_child_after_an_empty_list_slides_when_the_first_item_comes() {
+  let mut h = Harness::new();
+  let items = h.cx.signal(Vec::<u32>::new());
+  let row = sliding_row(items).child(Row::new().style(BOX));
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+  assert_eq!(drawn_x(&window, 0), 0.0);
+  items.set(vec![1]);
+  h.frame(&window);
+  assert_eq!(laid_x(&window, 1), 20.0);
+  assert_eq!(
+    drawn_x(&window, 1),
+    0.0,
+    "the box after the list slides from where it was"
+  );
+}

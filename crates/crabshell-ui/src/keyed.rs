@@ -232,12 +232,11 @@ where
         }
       }
 
-      // Read before the tree is borrowed, and only once something is
-      // drawn that a change could move.
-      let slide = match &displaced {
-        Some(displaced) if !order.is_empty() => displaced_transition(&label, displaced.as_ref()),
-        _ => None,
-      };
+      // Read before the tree is borrowed. Even the first items can move
+      // the container's other children.
+      let slide = displaced
+        .as_ref()
+        .and_then(|displaced| displaced_transition(&label, displaced.as_ref()));
 
       let Some(tree) = slot.tree.upgrade() else {
         return;
