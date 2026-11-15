@@ -249,8 +249,11 @@ macro_rules! container_methods {
     /// before it, and its context's [`leaving`](Cx::leaving) turns `true`,
     /// so its own `cx.animate` can fade or shrink it out. After `exit` it
     /// is freed. If its key comes back first, the same child, with its
-    /// state, takes the key's new place.
-    pub fn exit(mut self, exit: Duration) -> Self {
+    /// state, takes the key's new place. A closure is read as each key
+    /// leaves, and an exit of 0 removes at once. Leaving children still
+    /// take pointer and keyboard input; a handler can check
+    /// [`cx.leaving()`](Cx::leaving) to ignore clicks during the exit.
+    pub fn exit(mut self, exit: impl IntoProp<Duration>) -> Self {
       let last = self
         .children
         .iter_mut()
@@ -260,7 +263,7 @@ macro_rules! container_methods {
           Child::One(_) => None,
         });
       match last {
-        Some(list) => list.exit = Some(exit),
+        Some(list) => list.exit = Some(exit.into_prop()),
         None => tracing::warn!("`exit` was called before any `children_keyed`; it does nothing"),
       }
       self

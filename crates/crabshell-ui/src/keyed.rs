@@ -9,10 +9,11 @@ use std::panic::{self, AssertUnwindSafe};
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
-use crabshell_reactive::{Memo, Signal, untrack};
+use crabshell_reactive::{Memo, Owner, Signal, untrack};
 
 use crate::cx::Cx;
 use crate::input::panic_message;
+use crate::prop::Prop;
 use crate::timer::Timer;
 use crate::tree::{NodeId, Tree, borrow};
 use crate::widgets::{Element, Stack, Widget};
@@ -32,17 +33,20 @@ pub(crate) struct KeyedSlot {
 /// type-erased here, so containers don't carry the item types.
 pub(crate) type KeyedMount = Box<dyn FnOnce(KeyedSlot)>;
 
+/// How long a leaving child stays, as a value or a binding.
+type Exit = Rc<dyn Fn() -> Duration>;
+
 /// A keyed list before its container is in a window, with the exit that
 /// `exit` may still set.
 pub(crate) struct KeyedList {
-  pub(crate) exit: Option<Duration>,
-  start: Box<dyn FnOnce(KeyedSlot, Option<Duration>)>,
+  pub(crate) exit: Option<Prop<Duration>>,
+  start: Box<dyn FnOnce(KeyedSlot, Option<Exit>)>,
 }
 
 impl KeyedList {
   pub(crate) fn into_mount(self) -> KeyedMount {
     let KeyedList { exit, start } = self;
-    Box::new(move |slot| start(slot, exit))
+    Box::new(move |slot| start(slot, exit.map(Prop::shared)))
   }
 }
 
@@ -54,8 +58,10 @@ struct Entry<T> {
   node: NodeId,
   /// What its context's `leaving` reads, in a list with an exit.
   leaving: Option<Signal<bool>>,
-  /// Ends its exit; made the first time it leaves.
-  timer: Option<Timer>,
+  /// The owner and timer of its exit while it leaves. The owner goes when
+  /// its key comes back, so a child holds one timer however often it
+  /// leaves.
+  exit: Option<(Owner, Timer)>,
 }
 
 /// The element `view` builds. If it panics, that is logged and an empty
@@ -73,6 +79,21 @@ fn build<W: Widget>(label: &str, view: impl FnOnce() -> W) -> Element {
   }
 }
 
+/// How long a child leaves for, read untracked as its key leaves. If the
+/// binding panics, that is logged and the child goes at once.
+fn exit_duration(label: &str, exit: &dyn Fn() -> Duration) -> Duration {
+  match panic::catch_unwind(AssertUnwindSafe(|| untrack(exit))) {
+    Ok(duration) => duration,
+    Err(payload) => {
+      tracing::error!(
+        "{label}: its exit panicked; the child goes at once: {}",
+        panic_message(payload.as_ref())
+      );
+      Duration::ZERO
+    }
+  }
+}
+
 pub(crate) fn mount<T, K, W>(
   mut items: impl FnMut() -> Vec<T> + 'static,
   mut key: impl FnMut(&T) -> K + 'static,
@@ -83,7 +104,7 @@ where
   K: Eq + Hash + 'static,
   W: Widget,
 {
-  let start = move |slot: KeyedSlot, exit: Option<Duration>| {
+  let start = move |slot: KeyedSlot, exit: Option<Exit>| {
     let label = format!("{}.children", slot.path);
     let mut entries: HashMap<K, Entry<T>> = HashMap::new();
     let mut order: Vec<NodeId> = Vec::new();
@@ -93,7 +114,7 @@ where
     let cx = slot.cx.clone();
     let name = label.clone();
     cx.effect(move || {
-      if let Some((_, finished)) = exit {
+      if let Some((_, finished)) = &exit {
         finished.get();
       }
       let list = items();
@@ -121,21 +142,23 @@ where
       let mut kept = Vec::with_capacity(next.len());
       for (item_key, item) in next {
         match old.remove(&item_key) {
-          Some(entry) => {
+          Some(mut entry) => {
             // Its memo tells the child only if the value changed.
             entry.value.set(item);
-            // Back while leaving: it stays, and its exit stops.
+            // Back while leaving: it stays, and its exit's timer goes.
             if let Some(leaving) = entry.leaving
               && leaving.get_untracked()
             {
               leaving.set(false);
-              entry.timer.inspect(Timer::stop);
+              if let Some((owner, _)) = entry.exit.take() {
+                owner.dispose();
+              }
             }
             kept.push((item_key, Some(entry)));
           }
           None => {
             let cx = slot.cx.child();
-            let leaving = exit.map(|_| cx.signal(false));
+            let leaving = exit.as_ref().map(|_| cx.signal(false));
             let cx = match leaving {
               Some(leaving) => cx.in_item(leaving.read_only()),
               None => cx,
@@ -153,23 +176,29 @@ where
       let mut removed = Vec::new();
       let mut going = Vec::new();
       for (item_key, mut entry) in old {
-        let (Some((duration, finished)), Some(leaving)) = (exit, entry.leaving) else {
+        let (Some((duration, finished)), Some(leaving)) = (exit.as_ref(), entry.leaving) else {
           removed.push(entry);
           continue;
         };
         if !leaving.get_untracked() {
-          leaving.set(true);
-          match entry.timer {
-            Some(timer) => timer.restart(),
-            None => {
-              let end = move || {
-                finished.try_set(());
-              };
-              entry.timer = Some(entry.cx.after(duration, end));
-            }
+          let duration = exit_duration(&label, duration.as_ref());
+          // An exit of 0 removes at once, as a list without one does.
+          if duration.is_zero() {
+            removed.push(entry);
+            continue;
           }
+          leaving.set(true);
+          let finished = *finished;
+          let scope = entry.cx.child();
+          let timer = scope.after(duration, move || {
+            finished.try_set(());
+          });
+          entry.exit = Some((scope.owner(), timer));
           going.push((item_key, entry));
-        } else if entry.timer.is_some_and(|timer| untrack(|| timer.running())) {
+        } else if entry
+          .exit
+          .is_some_and(|(_, timer)| untrack(|| timer.running()))
+        {
           going.push((item_key, entry));
         } else {
           removed.push(entry);
@@ -196,7 +225,7 @@ where
                 value,
                 node,
                 leaving,
-                timer: None,
+                exit: None,
               }
             }
           };

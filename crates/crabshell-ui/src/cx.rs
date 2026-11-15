@@ -30,8 +30,9 @@ pub struct Cx {
   /// [`open_popup`](Self::open_popup). A child context shares it.
   pub(crate) anchor: Option<Rc<Anchor>>,
   /// Whether the keyed item this context is in is leaving. A child context
-  /// shares it.
-  leaving: Option<ReadSignal<bool>>,
+  /// shares it; outside such an item it is the root's signal that stays
+  /// `false`.
+  leaving: ReadSignal<bool>,
 }
 
 /// Where a widget is: its window's tree and its node. Set once the node
@@ -71,10 +72,10 @@ impl Cx {
   /// yet.
   pub fn new(owner: Owner) -> Cx {
     Cx {
+      leaving: owner.signal(false).read_only(),
       owner,
       services: Rc::default(),
       anchor: None,
-      leaving: None,
     }
   }
 
@@ -99,21 +100,14 @@ impl Cx {
   /// Whether the keyed item this context is in is leaving: `true` from
   /// when its key leaves a list with an [`exit`](crate::Row::exit) until
   /// it is removed, or until the key comes back. Every context made inside
-  /// the item reads the same signal. Call it while building, as with
-  /// [`signal`](Self::signal): outside such an item, each call makes a
-  /// signal that stays `false`.
+  /// the item reads the same signal, and outside one it stays `false`.
   pub fn leaving(&self) -> ReadSignal<bool> {
-    self
-      .leaving
-      .unwrap_or_else(|| self.signal(false).read_only())
+    self.leaving
   }
 
   /// The context of an item of a list with an exit.
   pub(crate) fn in_item(self, leaving: ReadSignal<bool>) -> Cx {
-    Cx {
-      leaving: Some(leaving),
-      ..self
-    }
+    Cx { leaving, ..self }
   }
 
   /// Gives the context's owner a debug name, such as a widget path.
