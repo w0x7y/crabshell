@@ -247,14 +247,17 @@ impl Tree {
       } else {
         scroll.offset.clamp(0.0, most)
       };
+      // An overshoot is only shown, as a paint move of the child.
+      let moved = shown + scroll.overshoot;
       if horizontal {
-        origin.x -= shown;
+        origin.x -= moved;
       } else {
-        origin.y -= shown;
+        origin.y -= moved;
       }
       if let Some(NodeKind::Scroll(scroll)) = self.node_mut(id).map(|node| &mut node.kind) {
         scroll.shown = shown;
         scroll.most = most;
+        scroll.length = length;
       }
     }
     self.begin_slide(id, Point::new(layout.location.x, layout.location.y));

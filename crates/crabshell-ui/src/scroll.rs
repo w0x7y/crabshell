@@ -25,6 +25,8 @@ pub(crate) const BAR_MIN_LENGTH: f32 = 16.0;
 pub(crate) struct ScrollProps {
   pub(crate) offset: Option<Signal<f32>>,
   pub(crate) horizontal: Option<Prop<bool>>,
+  pub(crate) kinetic: Option<Prop<bool>>,
+  pub(crate) overshoot: Option<Prop<bool>>,
   pub(crate) scroll_bar: Option<Prop<Option<Style>>>,
 }
 
@@ -51,6 +53,8 @@ impl ScrollView {
       scroll: ScrollProps {
         offset: None,
         horizontal: None,
+        kinetic: None,
+        overshoot: None,
         scroll_bar: None,
       },
       common: Common::default(),
@@ -60,8 +64,8 @@ impl ScrollView {
 
   /// Shares the offset: how many logical pixels of the child are
   /// scrolled out of view above, or to the left in a horizontal view.
-  /// Scrolling writes it, and setting it scrolls. Values past either end
-  /// show that end.
+  /// Scrolling writes it, and setting it scrolls, stopping a fling. Values
+  /// past either end show that end.
   pub fn offset(mut self, offset: Signal<f32>) -> ScrollView {
     self.scroll.offset = Some(offset);
     self
@@ -72,6 +76,25 @@ impl ScrollView {
   /// touchpad's sideways motion scroll it. Both at once isn't offered.
   pub fn horizontal(mut self, horizontal: impl IntoProp<bool>) -> ScrollView {
     self.scroll.horizontal = Some(horizontal.into_prop());
+    self
+  }
+
+  /// Keeps the child moving after a touchpad fling or a drag of the child
+  /// ends, slowing down by 1500 logical pixels a second each second from
+  /// at most 2500 a second, as Qt's `Flickable`. On by default. A mouse
+  /// wheel's notch still moves 48 pixels at once.
+  pub fn kinetic(mut self, kinetic: impl IntoProp<bool>) -> ScrollView {
+    self.scroll.kinetic = Some(kinetic.into_prop());
+    self
+  }
+
+  /// Lets a touchpad, a drag or a fling carry the child past either end,
+  /// against a pull that grows with the distance and stops it within a
+  /// quarter of the box, and springs it back once let go, as Qt's
+  /// `DragAndOvershootBounds`. Only shown: the offset stays within the
+  /// content. On by default.
+  pub fn overshoot(mut self, overshoot: impl IntoProp<bool>) -> ScrollView {
+    self.scroll.overshoot = Some(overshoot.into_prop());
     self
   }
 
@@ -148,6 +171,8 @@ struct ListProps {
   offset: Option<Signal<f32>>,
   style: Option<Prop<Style>>,
   scroll_bar: Option<Prop<Option<Style>>>,
+  kinetic: Option<Prop<bool>>,
+  overshoot: Option<Prop<bool>>,
 }
 
 impl ListView {
@@ -177,6 +202,8 @@ impl ListView {
         offset: None,
         style: None,
         scroll_bar: None,
+        kinetic: None,
+        overshoot: None,
       },
       common: Common::default(),
     }
@@ -204,6 +231,20 @@ impl ListView {
   /// Shares the offset, as [`ScrollView::offset`] does.
   pub fn offset(mut self, offset: Signal<f32>) -> ListView {
     self.props.offset = Some(offset);
+    self
+  }
+
+  /// Keeps the list moving after a fling, as [`ScrollView::kinetic`]
+  /// does. On by default.
+  pub fn kinetic(mut self, kinetic: impl IntoProp<bool>) -> ListView {
+    self.props.kinetic = Some(kinetic.into_prop());
+    self
+  }
+
+  /// Lets the list go past its ends, as [`ScrollView::overshoot`] does.
+  /// On by default.
+  pub fn overshoot(mut self, overshoot: impl IntoProp<bool>) -> ListView {
+    self.props.overshoot = Some(overshoot.into_prop());
     self
   }
 
@@ -274,6 +315,8 @@ where
     offset,
     style,
     scroll_bar,
+    kinetic,
+    overshoot,
   } = props;
   let offset = offset.unwrap_or_else(|| cx.signal(0.0));
   let row_height = cx.memo(prop_fn(row_height, ListView::DEFAULT_ROW_HEIGHT));
@@ -359,6 +402,12 @@ where
   let mut scroll = ScrollView::new(rows).offset(offset);
   if let Some(bar) = scroll_bar {
     scroll = scroll.scroll_bar(bar);
+  }
+  if let Some(kinetic) = kinetic {
+    scroll = scroll.kinetic(kinetic);
+  }
+  if let Some(overshoot) = overshoot {
+    scroll = scroll.overshoot(overshoot);
   }
   scroll = scroll.style(move || {
     let own = style.as_ref().map(|style| style()).unwrap_or_default();

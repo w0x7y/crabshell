@@ -17,6 +17,7 @@ mod input;
 mod invalidation;
 mod keyboard;
 mod keyed;
+mod kinetic;
 mod layout;
 mod lock;
 mod menu;

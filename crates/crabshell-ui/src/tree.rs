@@ -27,6 +27,7 @@ use crate::keyed::KeyedSlot;
 use crate::prop::{IntoProp, Prop, PropKind};
 use crate::region::Region;
 use crate::screencopy::CaptureNode;
+use crate::scrolling::Motion;
 use crate::style::{Padding, Style};
 use crate::text::TextNode;
 use crate::text_input::InputNode;
@@ -214,6 +215,16 @@ pub(crate) struct ScrollNode {
   /// The bar's track and handle from the last layout, in the node's own
   /// coordinates, while the child is longer than the box.
   pub(crate) handle: Option<(Rect, Rect)>,
+  /// The box's length along its axis at the last layout.
+  pub(crate) length: f32,
+  /// A touchpad fling and a dragged child's release keep it moving.
+  pub(crate) kinetic: bool,
+  /// A touchpad, drag or fling may go past either end.
+  pub(crate) overshoots: bool,
+  /// How far past an end the child is shown, in logical pixels: below 0
+  /// before the start, above it past the end.
+  pub(crate) overshoot: f32,
+  pub(crate) motion: Motion,
 }
 
 pub(crate) struct ImageNode {
@@ -720,6 +731,11 @@ impl Tree {
         horizontal: false,
         bar: None,
         handle: None,
+        length: 0.0,
+        kinetic: true,
+        overshoots: true,
+        overshoot: 0.0,
+        motion: Motion::default(),
       })),
       ElementKind::Image(_) => NodeKind::Image(ImageNode {
         source: None,
@@ -853,6 +869,18 @@ impl Tree {
       ElementKind::Scroll(props) => {
         self.bind_opt(id, props.horizontal, "horizontal", |tree, id, value| {
           tree.update_scroll(id, |scroll| replace(&mut scroll.horizontal, value));
+        });
+        self.bind_opt(id, props.kinetic, "kinetic", |tree, id, value| {
+          tree.update_scroll(id, |scroll| {
+            scroll.kinetic = value;
+            Change::None
+          });
+        });
+        self.bind_opt(id, props.overshoot, "overshoot", |tree, id, value| {
+          tree.update_scroll(id, |scroll| {
+            scroll.overshoots = value;
+            scroll.stop_overshoot()
+          });
         });
         self.bind_opt(id, props.scroll_bar, "scroll_bar", |tree, id, value| {
           // Placed again to find the handle, which repaints it.

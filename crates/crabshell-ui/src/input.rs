@@ -305,6 +305,8 @@ pub(crate) struct Pointer {
   pressed: Option<Press>,
   /// A scroll bar's handle held, until the left button comes up.
   pub(crate) bar: Option<BarDrag>,
+  /// The scroll view the touchpad gesture under way moves.
+  pub(crate) gesture: Option<NodeId>,
   /// The last left click, with the time it came up and where it went
   /// down, which a second one may make a double click.
   last_click: Option<(NodeId, u32, Point)>,
@@ -351,9 +353,7 @@ impl Pointer {
     if source_gone || self.drop_over.is_some_and(|(id, _)| removed.contains(&id)) {
       self.set_drop_over(None);
     }
-    if self.bar.is_some_and(|bar| removed.contains(&bar.view)) {
-      self.bar = None;
-    }
+    self.forget_views(removed);
     if self
       .last_click
       .is_some_and(|(id, _, _)| removed.contains(&id))
@@ -454,19 +454,21 @@ impl Window {
   /// The pointer scrolled. A button under the pointer with `on_wheel`
   /// gets every event, and one with `on_scroll` the whole vertical steps
   /// as they add up. Without either, the innermost scroll view under the
-  /// pointer that can still move that way scrolls along its axis. A vertical `stop` drops a touchpad's
+  /// pointer that can still move that way scrolls along its axis. A
+  /// touchpad takes it past an end, and a fling keeps it going after the
+  /// fingers lift. A vertical `stop` drops a touchpad's
   /// partial step, so it doesn't carry into the next gesture; a wheel's
   /// partial notch is kept.
   pub fn pointer_scroll(&self, wheel: Wheel) {
-    let scrolled = borrow(&self.tree).scroll(wheel);
-    match scrolled {
-      Some(Scrolled::Buttons(calls)) => run_all(calls),
-      // A signal whose owner is gone just doesn't scroll.
-      Some(Scrolled::View(signal, offset)) => {
-        signal.try_set(offset);
-      }
-      None => {}
-    }
+    self.pointer_scroll_at(wheel, now_ms());
+  }
+
+  /// The pointer scrolled at `time`, in milliseconds as `wl_pointer.axis`
+  /// counts them, which a touchpad's fling is timed by. See
+  /// [`pointer_scroll`](Self::pointer_scroll).
+  pub fn pointer_scroll_at(&self, wheel: Wheel, time: u32) {
+    let calls = borrow(&self.tree).scroll(wheel, time);
+    run_all(calls);
   }
 
   /// The cursor to show.
@@ -999,6 +1001,9 @@ impl Tree {
   pub(crate) fn leave(&mut self) -> Vec<Call> {
     self.pointer.position = None;
     self.pointer.bar = None;
+    if let Some(id) = self.pointer.gesture.take() {
+      self.release_view(id, None);
+    }
     let calls = self.end_press(None).into_iter().collect();
     self.set_hovered(None, &[]);
     self.set_positions(&[], None);
@@ -1068,11 +1073,14 @@ impl Tree {
     }
   }
 
-  fn scroll(&mut self, wheel: Wheel) -> Option<Scrolled> {
+  fn scroll(&mut self, wheel: Wheel, time: u32) -> Vec<Call> {
     let wants = |h: &Handlers| h.scroll.is_some() || h.wheel.is_some();
     let target = self.pointer.hovered.filter(|&id| self.has(id, wants));
-    let scrolled = match target {
-      None => self.scroll_view(wheel),
+    let calls = match target {
+      None => {
+        self.scroll_view(wheel, time);
+        Vec::new()
+      }
       Some(target) => {
         let mut calls = Vec::new();
         if self.has(target, |h| h.wheel.is_some()) {
@@ -1085,13 +1093,13 @@ impl Tree {
             calls.extend(self.call(target, Action::Scroll(down.saturating_neg())));
           }
         }
-        Some(Scrolled::Buttons(calls))
+        calls
       }
     };
     if wheel.y.stop {
       self.pointer.pixels = 0.0;
     }
-    scrolled
+    calls
   }
 
   /// The whole steps down that `axis` adds up to, rounded toward zero;
@@ -1211,14 +1219,6 @@ pub(crate) fn local(node: &Node, point: Point) -> Option<Point> {
     Some(transform) => Some(transform.invert()?.map(point)),
     None => Some(point),
   }
-}
-
-/// What a scroll does, once the tree is released.
-pub(crate) enum Scrolled {
-  /// Runs a button's `on_wheel` and `on_scroll`.
-  Buttons(Vec<Call>),
-  /// Writes a scroll view's offset.
-  View(Signal<f32>, f32),
 }
 
 #[derive(Clone)]

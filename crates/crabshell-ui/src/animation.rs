@@ -305,7 +305,7 @@ impl Spring {
   /// Moves the value `x`, with speed `v`, toward `goal` over `seconds`,
   /// in implicit Euler steps of at most a millisecond, which stay stable
   /// whatever the spring and the step.
-  fn advance(self, x: &mut f64, v: &mut f64, goal: f64, seconds: f64) {
+  pub(crate) fn advance(self, x: &mut f64, v: &mut f64, goal: f64, seconds: f64) {
     let k = f64::from(self.stiffness);
     let c = 2.0 * f64::from(self.damping) * k.sqrt();
     let steps = (seconds * 1000.0).ceil().max(1.0);
