@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
+use crate::animation::Transition;
 use crate::input::CursorShape;
 use crate::menu::MenuEntry;
 use crate::popup::Adjust;
@@ -110,6 +111,7 @@ value_props!(
   Vec<MenuEntry>,
   Duration,
   CursorShape,
+  Transition,
 );
 
 impl IntoProp<String> for &str {

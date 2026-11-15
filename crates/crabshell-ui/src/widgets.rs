@@ -233,7 +233,8 @@ pub struct IconPixels {
   pub data: Rc<[u8]>,
 }
 
-/// The methods every container has: `child`, `children_keyed` and `exit`.
+/// The methods every container has: `child`, `children_keyed`, `exit`
+/// and `displaced`.
 macro_rules! container_methods {
   () => {
     /// Adds `child` after the children added so far.
@@ -292,6 +293,36 @@ macro_rules! container_methods {
       match last {
         Some(list) => list.exit = Some(exit.into_prop()),
         None => tracing::warn!("`exit` was called before any `children_keyed`; it does nothing"),
+      }
+      self
+    }
+
+    /// Slides the children that a change of the last
+    /// [`children_keyed`](Self::children_keyed) list moves, instead of
+    /// jumping: when its keys are added, leave (once their
+    /// [`exit`](Self::exit) ends) or move, each child of this container
+    /// whose place changes goes from where it was drawn to its new place
+    /// over `transition`. It moves where it is drawn and hit, as
+    /// [`Style::translate`](crate::Style::translate) does, so a slide never
+    /// lays the window out again. A child moved again mid-slide starts from
+    /// where it is drawn. Other layout changes, such as a resize or text
+    /// growing, still move children at once, and a new child shows in its
+    /// place. A closure is read at each change of the list, and a
+    /// transition of 0 jumps.
+    pub fn displaced(mut self, transition: impl IntoProp<crate::Transition>) -> Self {
+      let last = self
+        .children
+        .iter_mut()
+        .rev()
+        .find_map(|child| match child {
+          Child::Keyed(list) => Some(list),
+          Child::One(_) => None,
+        });
+      match last {
+        Some(list) => list.displaced = Some(transition.into_prop()),
+        None => {
+          tracing::warn!("`displaced` was called before any `children_keyed`; it does nothing")
+        }
       }
       self
     }

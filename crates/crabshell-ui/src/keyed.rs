@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use crabshell_reactive::{Memo, Owner, Signal, untrack};
 
+use crate::animation::Transition;
 use crate::cx::Cx;
 use crate::input::panic_message;
 use crate::prop::Prop;
@@ -36,17 +37,28 @@ pub(crate) type KeyedMount = Box<dyn FnOnce(KeyedSlot)>;
 /// How long a leaving child stays, as a value or a binding.
 type Exit = Rc<dyn Fn() -> Duration>;
 
-/// A keyed list before its container is in a window, with the exit that
-/// `exit` may still set.
+/// How the children a change moves slide, as a value or a binding.
+type Displaced = Rc<dyn Fn() -> Transition>;
+
+/// A keyed list before its container is in a window, with the exit and
+/// slide that `exit` and `displaced` may still set.
 pub(crate) struct KeyedList {
   pub(crate) exit: Option<Prop<Duration>>,
-  start: Box<dyn FnOnce(KeyedSlot, Option<Exit>)>,
+  pub(crate) displaced: Option<Prop<Transition>>,
+  start: Start,
 }
+
+/// Starts the list in its slot, with its exit and slide.
+type Start = Box<dyn FnOnce(KeyedSlot, Option<Exit>, Option<Displaced>)>;
 
 impl KeyedList {
   pub(crate) fn into_mount(self) -> KeyedMount {
-    let KeyedList { exit, start } = self;
-    Box::new(move |slot| start(slot, exit.map(Prop::shared)))
+    let KeyedList {
+      exit,
+      displaced,
+      start,
+    } = self;
+    Box::new(move |slot| start(slot, exit.map(Prop::shared), displaced.map(Prop::shared)))
   }
 }
 
@@ -79,6 +91,21 @@ fn build<W: Widget>(label: &str, view: impl FnOnce() -> W) -> Element {
   }
 }
 
+/// The slide of the children a change moves, read untracked, or `None`
+/// for a jump. If the binding panics, that is logged and they jump.
+fn displaced_transition(label: &str, displaced: &dyn Fn() -> Transition) -> Option<Transition> {
+  match panic::catch_unwind(AssertUnwindSafe(|| untrack(displaced))) {
+    Ok(transition) => (!transition.is_instant()).then_some(transition),
+    Err(payload) => {
+      tracing::error!(
+        "{label}: its displaced transition panicked; the children jump: {}",
+        panic_message(payload.as_ref())
+      );
+      None
+    }
+  }
+}
+
 /// How long a child leaves for, read untracked as its key leaves. If the
 /// binding panics, that is logged and the child goes at once.
 fn exit_duration(label: &str, exit: &dyn Fn() -> Duration) -> Duration {
@@ -104,7 +131,7 @@ where
   K: Eq + Hash + 'static,
   W: Widget,
 {
-  let start = move |slot: KeyedSlot, exit: Option<Exit>| {
+  let start = move |slot: KeyedSlot, exit: Option<Exit>, displaced: Option<Displaced>| {
     let label = format!("{}.children", slot.path);
     let mut entries: HashMap<K, Entry<T>> = HashMap::new();
     let mut order: Vec<NodeId> = Vec::new();
@@ -205,6 +232,13 @@ where
         }
       }
 
+      // Read before the tree is borrowed, and only once something is
+      // drawn that a change could move.
+      let slide = match &displaced {
+        Some(displaced) if !order.is_empty() => displaced_transition(&label, displaced.as_ref()),
+        _ => None,
+      };
+
       let Some(tree) = slot.tree.upgrade() else {
         return;
       };
@@ -250,6 +284,9 @@ where
         if nodes != order {
           tree.set_group(slot.container, slot.group, nodes.clone());
           order = nodes;
+          if let Some(transition) = slide {
+            tree.slide_children(slot.container, transition);
+          }
         }
       }
       // Free the removed children only after the tree is released, since
@@ -262,6 +299,7 @@ where
   };
   KeyedList {
     exit: None,
+    displaced: None,
     start: Box::new(start),
   }
 }

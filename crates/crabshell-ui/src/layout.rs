@@ -240,10 +240,11 @@ impl Tree {
         scroll.most = most;
       }
     }
+    self.begin_slide(id, Point::new(layout.location.x, layout.location.y));
     let Some(node) = self.node_mut(id) else {
       return rect;
     };
-    let transform = node.shown_style().transform(rect);
+    let transform = displaced(node.shown_style().transform(rect), node.displace);
     node.transform = transform;
     chain.extend(transform);
     let mut children = Rect::default();
@@ -376,6 +377,24 @@ impl Tree {
     node.changed = false;
     bounds
   }
+}
+
+/// `transform`, then a slide's move `by`, in the parent's coordinates.
+fn displaced(transform: Option<Affine>, by: Point) -> Option<Affine> {
+  if by == Point::default() {
+    return transform;
+  }
+  let mut moved = transform.unwrap_or(Affine {
+    sx: 1.0,
+    ky: 0.0,
+    kx: 0.0,
+    sy: 1.0,
+    tx: 0.0,
+    ty: 0.0,
+  });
+  moved.tx += by.x;
+  moved.ty += by.y;
+  Some(moved)
 }
 
 /// Measures a leaf: text through its buffer, an icon as a square, an

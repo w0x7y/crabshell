@@ -144,6 +144,14 @@ pub(crate) struct Node {
   pub(crate) changed: bool,
   /// Shown, rather than taken out of the layout with everything in it.
   pub(crate) visible: bool,
+  /// A keyed list's change asked it to slide over this from where it is
+  /// drawn, once the next layout says where it goes.
+  pub(crate) slide: Option<Transition>,
+  /// How far from its laid-out place a slide draws it, in its parent's
+  /// coordinates, and the count of slides started, which tells a slide's
+  /// clock step whether it was replaced.
+  pub(crate) displace: Point,
+  pub(crate) slides: u64,
   /// Written with `rect` when a layout changes it.
   pub(crate) geometry: Option<Signal<Rect>>,
   /// What `geometry` was last written, so a layout that moves nothing
@@ -342,6 +350,9 @@ impl Node {
       fades: 0,
       changed: true,
       visible: true,
+      slide: None,
+      displace: Point::default(),
+      slides: 0,
       geometry: None,
       written: None,
     }
@@ -1165,6 +1176,78 @@ impl Tree {
             fade.t = t;
           }
           if moves { Change::Place } else { Change::Paint }
+        });
+        mine && !ended
+      }),
+    );
+  }
+
+  /// Asks every child of `container` to slide over `transition` from
+  /// where it is drawn to where the next layout puts it.
+  pub(crate) fn slide_children(&mut self, container: NodeId, transition: Transition) {
+    for child in self.taffy.children(container).unwrap_or_default() {
+      if let Some(node) = self.node_mut(child) {
+        node.slide = Some(transition);
+      }
+    }
+  }
+
+  /// Starts node `id`'s pending slide, now that the layout put it at
+  /// `location` in its parent: it is drawn where it was, `displace` away,
+  /// and eases to its place. A node not drawn before has nowhere to come
+  /// from.
+  pub(crate) fn begin_slide(&mut self, id: NodeId, location: Point) {
+    let parent = self
+      .taffy
+      .parent(id)
+      .and_then(|parent| self.node(parent)?.rect);
+    let Some(node) = self.node_mut(id) else {
+      return;
+    };
+    let Some(transition) = node.slide.take() else {
+      return;
+    };
+    let (Some(old), Some(parent)) = (node.rect, parent) else {
+      return;
+    };
+    // Against the parent, so a parent that moved too moves it at once.
+    let by = Point::new(
+      old.x - parent.x + node.displace.x - location.x,
+      old.y - parent.y + node.displace.y - location.y,
+    );
+    if by == node.displace {
+      return;
+    }
+    node.displace = by;
+    node.slides += 1;
+    let generation = node.slides;
+    let label: Rc<str> = format!("{}.displaced", node.path).into();
+    let tree = self.this.clone();
+    let mut started = animation::start_time();
+    animation::start(
+      label,
+      Box::new(move |now| {
+        let Some(tree) = tree.upgrade() else {
+          return false;
+        };
+        let Ok(mut tree) = tree.try_borrow_mut() else {
+          return true;
+        };
+        let begun = *started.get_or_insert(now);
+        let (t, ended) = transition.progress(begun, now);
+        let left = if ended { 0.0 } else { 1.0 - t };
+        let mut mine = false;
+        tree.update(id, |node| {
+          if node.slides != generation {
+            return Change::None;
+          }
+          mine = true;
+          let at = Point::new(by.x * left, by.y * left);
+          if std::mem::replace(&mut node.displace, at) == at {
+            Change::None
+          } else {
+            Change::Place
+          }
         });
         mine && !ended
       }),
