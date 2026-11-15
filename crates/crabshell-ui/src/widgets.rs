@@ -1017,12 +1017,14 @@ impl Button {
 
   /// Makes a drag of this button carry `data`, which a button whose
   /// [`on_drop`](Self::on_drop) takes a `T` is given when the drag is
-  /// released over it. `None` carries nothing. A closure is read as it
-  /// changes, and a drop gets the value it holds at the release. A button
-  /// with data drags as one with [`on_drag`](Self::on_drag) does, and its
-  /// `on_drag` still runs, so it can follow the pointer with a translate;
-  /// its `End` says whether it was dropped. A drag carries data only
-  /// within its window.
+  /// released over it. A closure is read as it changes, and a drop gets
+  /// the value it holds at the release. While it holds a value, the button
+  /// drags as one with [`on_drag`](Self::on_drag) does, and its `on_drag`
+  /// still runs, so it can follow the pointer with a translate; its `End`
+  /// says whether it was dropped. While it holds `None`, the button acts as
+  /// if it had no data: it clicks, and drags only with its own `on_drag`,
+  /// so `editing.get().then_some(id)` drags only in an edit mode. A drag
+  /// carries data only within its window.
   pub fn drag_data<T: Clone + 'static>(mut self, data: impl IntoProp<Option<T>>) -> Button {
     let data = data
       .into_prop()

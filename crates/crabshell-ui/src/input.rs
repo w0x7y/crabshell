@@ -606,13 +606,10 @@ impl Tree {
     }
   }
 
-  /// Whether button `id` drags: it has `on_drag` or `drag_data`.
+  /// Whether button `id` drags: it has `on_drag`, or its `drag_data`
+  /// holds a value now.
   fn drags(&self, id: NodeId) -> bool {
-    let carries = matches!(
-      self.node(id).map(|node| &node.kind),
-      Some(NodeKind::Button(button)) if button.drag_data.is_some()
-    );
-    carries || self.has(id, |h| h.drag.is_some())
+    self.drag_type(id).is_some() || self.has(id, |h| h.drag.is_some())
   }
 
   /// The nodes from the root down to `id`, both included.

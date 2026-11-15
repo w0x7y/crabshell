@@ -425,3 +425,39 @@ fn a_target_sliding_out_from_under_a_still_pointer_lets_go() {
   window.pointer_button(PointerButton::Left, false);
   assert!(drops.borrow().is_empty());
 }
+
+#[test]
+fn a_button_whose_drag_data_holds_none_clicks_and_drags_once_it_holds_a_value() {
+  let mut h = Harness::new();
+  let editing = h.cx.signal(false);
+  let clicks = h.cx.signal(0);
+  let drops = Drops::default();
+  let hovered = h.cx.signal(false);
+  let source = Button::new(square())
+    .on_click(move |_| clicks.update(|n| *n += 1))
+    .drag_data(move || editing.get().then_some(7u32));
+  let row = Row::new()
+    .align(Align::Start)
+    .child(source)
+    .child(square())
+    .child(target(&drops, hovered));
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+
+  // A 12 px wobble inside the button, past the drag threshold.
+  window.pointer_motion(Point::new(4.0, 5.0));
+  window.pointer_button(PointerButton::Left, true);
+  window.pointer_motion(Point::new(16.0, 5.0));
+  window.pointer_button(PointerButton::Left, false);
+  assert_eq!(clicks.get_untracked(), 1, "with no data it clicks");
+
+  editing.set(true);
+  h.frame(&window);
+  window.pointer_motion(Point::new(4.0, 5.0));
+  window.pointer_button(PointerButton::Left, true);
+  window.pointer_motion(Point::new(16.0, 5.0));
+  window.pointer_motion(Point::new(45.0, 5.0));
+  assert!(hovered.get_untracked(), "with data it drags");
+  window.pointer_button(PointerButton::Left, false);
+  assert_eq!(*drops.borrow(), [7]);
+  assert_eq!(clicks.get_untracked(), 1, "and the drag doesn't click");
+}
