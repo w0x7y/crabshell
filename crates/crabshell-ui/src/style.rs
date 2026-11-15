@@ -3,6 +3,7 @@
 
 use crate::animation::{Animate, Transition};
 use crate::geometry::{Affine, Point, Rect};
+use crate::widgets::Align;
 
 /// An sRGB color with straight (not premultiplied) alpha.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -342,8 +343,10 @@ pub struct Padding {
 /// [`Text`](crate::Text) takes `color` and `font` from the nearest widget
 /// that sets them, starting with itself and going up. Nothing else inherits.
 ///
-/// `font`, `padding`, `clip`, `width` and `height` change the layout; the
-/// other fields only change how the widget is painted.
+/// `font`, `padding`, `clip`, the sizes, the flex fields, the alignment,
+/// the absolute position and `span` change the layout, at once; the other
+/// fields only change how the widget is painted. A number that isn't
+/// finite counts as unset.
 ///
 /// `translate`, `scale`, `rotate` and `origin` move the widget and
 /// everything inside it where it is drawn and where the pointer finds it,
@@ -388,6 +391,48 @@ pub struct Style {
   pub width: Option<f32>,
   /// The height in logical pixels, instead of what the content needs.
   pub height: Option<f32>,
+  /// The least width in logical pixels.
+  pub min_width: Option<f32>,
+  /// The least height in logical pixels.
+  pub min_height: Option<f32>,
+  /// The most width in logical pixels.
+  pub max_width: Option<f32>,
+  /// The most height in logical pixels.
+  pub max_height: Option<f32>,
+  /// How much of a row's or column's free space it takes, against its
+  /// siblings', as CSS's `flex-grow`. 0 by default.
+  pub grow: Option<f32>,
+  /// How much it gives up when a row or column is too small, against its
+  /// siblings', as CSS's `flex-shrink`. 1 by default.
+  pub shrink: Option<f32>,
+  /// Its size along a row or column before growing or shrinking, in
+  /// logical pixels, as CSS's `flex-basis`.
+  pub basis: Option<f32>,
+  /// How it is placed across its row's or column's direction, or
+  /// vertically in a stack's or grid's cell, instead of the parent's
+  /// `align`.
+  pub align_self: Option<Align>,
+  /// How it is placed horizontally in a stack's or grid's cell. Rows and
+  /// columns ignore it, as CSS's flexbox does.
+  pub justify_self: Option<Align>,
+  /// Logical pixels from its parent's left edge, inside the border.
+  /// Any of `left`, `top`, `right` and `bottom` takes the widget out of
+  /// its parent's flow, as CSS's `position: absolute`: it is placed from
+  /// those edges and no longer sizes its parent.
+  pub left: Option<f32>,
+  /// Logical pixels from its parent's top edge, as `left`.
+  pub top: Option<f32>,
+  /// Logical pixels from its parent's right edge, as `left`.
+  pub right: Option<f32>,
+  /// Logical pixels from its parent's bottom edge, as `left`.
+  pub bottom: Option<f32>,
+  /// The order it is drawn and found by the pointer among its siblings,
+  /// lowest first; siblings of equal `z` keep their order, later on top.
+  /// 0 by default. It changes no layout.
+  pub z: Option<i32>,
+  /// The columns and rows of a [`Grid`](crate::Grid) it takes, each at
+  /// least 1.
+  pub span: Option<(u32, u32)>,
   /// How far the widget is moved, right and down, in logical pixels,
   /// after it is scaled and turned.
   pub translate: Option<Point>,
@@ -422,6 +467,21 @@ impl Style {
       clip: None,
       width: None,
       height: None,
+      min_width: None,
+      min_height: None,
+      max_width: None,
+      max_height: None,
+      grow: None,
+      shrink: None,
+      basis: None,
+      align_self: None,
+      justify_self: None,
+      left: None,
+      top: None,
+      right: None,
+      bottom: None,
+      z: None,
+      span: None,
       translate: None,
       scale: None,
       rotate: None,
@@ -599,6 +659,149 @@ impl Style {
     }
   }
 
+  /// Sets the least width in logical pixels.
+  pub const fn min_width(self, width: f32) -> Style {
+    Style {
+      min_width: Some(width),
+      ..self
+    }
+  }
+
+  /// Sets the least height in logical pixels.
+  pub const fn min_height(self, height: f32) -> Style {
+    Style {
+      min_height: Some(height),
+      ..self
+    }
+  }
+
+  /// Sets the most width in logical pixels.
+  pub const fn max_width(self, width: f32) -> Style {
+    Style {
+      max_width: Some(width),
+      ..self
+    }
+  }
+
+  /// Sets the most height in logical pixels.
+  pub const fn max_height(self, height: f32) -> Style {
+    Style {
+      max_height: Some(height),
+      ..self
+    }
+  }
+
+  /// Sets how much of a row's or column's free space the widget takes,
+  /// against its siblings': two children with a grow of 1 and 3 take a
+  /// quarter and three quarters. A [`Spacer`](crate::Spacer) grows by 1.
+  ///
+  /// ```
+  /// use crabshell_ui::Style;
+  ///
+  /// const FILL: Style = Style::new().grow(1.0).basis(0.0);
+  /// ```
+  pub const fn grow(self, grow: f32) -> Style {
+    Style {
+      grow: Some(grow),
+      ..self
+    }
+  }
+
+  /// Sets how much the widget gives up, against its siblings', when its
+  /// row or column is too small for them all. 0 keeps its size.
+  pub const fn shrink(self, shrink: f32) -> Style {
+    Style {
+      shrink: Some(shrink),
+      ..self
+    }
+  }
+
+  /// Sets the widget's size along its row or column, in logical pixels,
+  /// before it grows or shrinks.
+  pub const fn basis(self, basis: f32) -> Style {
+    Style {
+      basis: Some(basis),
+      ..self
+    }
+  }
+
+  /// Sets how the widget is placed across its row's or column's
+  /// direction, or vertically in a stack's or grid's cell, instead of
+  /// the parent's `align`.
+  pub const fn align_self(self, align: Align) -> Style {
+    Style {
+      align_self: Some(align),
+      ..self
+    }
+  }
+
+  /// Sets how the widget is placed horizontally in a stack's or grid's
+  /// cell. Rows and columns ignore it.
+  pub const fn justify_self(self, justify: Align) -> Style {
+    Style {
+      justify_self: Some(justify),
+      ..self
+    }
+  }
+
+  /// Places the widget `left` logical pixels from its parent's left edge,
+  /// inside the border, out of the parent's flow.
+  ///
+  /// ```
+  /// use crabshell_ui::Style;
+  ///
+  /// // A badge in a stack's top-right corner.
+  /// const BADGE: Style = Style::new().top(2.0).right(2.0);
+  /// ```
+  pub const fn left(self, left: f32) -> Style {
+    Style {
+      left: Some(left),
+      ..self
+    }
+  }
+
+  /// Places the widget `top` logical pixels from its parent's top edge,
+  /// as [`left`](Self::left) does.
+  pub const fn top(self, top: f32) -> Style {
+    Style {
+      top: Some(top),
+      ..self
+    }
+  }
+
+  /// Places the widget `right` logical pixels from its parent's right
+  /// edge, as [`left`](Self::left) does.
+  pub const fn right(self, right: f32) -> Style {
+    Style {
+      right: Some(right),
+      ..self
+    }
+  }
+
+  /// Places the widget `bottom` logical pixels from its parent's bottom
+  /// edge, as [`left`](Self::left) does.
+  pub const fn bottom(self, bottom: f32) -> Style {
+    Style {
+      bottom: Some(bottom),
+      ..self
+    }
+  }
+
+  /// Sets the order the widget is drawn and hit in among its siblings,
+  /// lowest first. Equal ones keep their order.
+  pub const fn z(self, z: i32) -> Style {
+    Style { z: Some(z), ..self }
+  }
+
+  /// Makes the widget take `columns` columns and `rows` rows of its
+  /// [`Grid`](crate::Grid). 0 counts as 1.
+  pub const fn span(self, columns: u32, rows: u32) -> Style {
+    Style {
+      span: Some((columns, rows)),
+      ..self
+    }
+  }
+
   /// Moves the widget and everything inside it `x` logical pixels right
   /// and `y` down where it is drawn, after it is scaled and turned. The
   /// layout doesn't move.
@@ -674,6 +877,21 @@ impl Style {
       clip: or(over.clip, self.clip),
       width: or(over.width, self.width),
       height: or(over.height, self.height),
+      min_width: or(over.min_width, self.min_width),
+      min_height: or(over.min_height, self.min_height),
+      max_width: or(over.max_width, self.max_width),
+      max_height: or(over.max_height, self.max_height),
+      grow: or(over.grow, self.grow),
+      shrink: or(over.shrink, self.shrink),
+      basis: or(over.basis, self.basis),
+      align_self: or(over.align_self, self.align_self),
+      justify_self: or(over.justify_self, self.justify_self),
+      left: or(over.left, self.left),
+      top: or(over.top, self.top),
+      right: or(over.right, self.right),
+      bottom: or(over.bottom, self.bottom),
+      z: or(over.z, self.z),
+      span: or(over.span, self.span),
       translate: or(over.translate, self.translate),
       scale: or(over.scale, self.scale),
       rotate: or(over.rotate, self.rotate),
@@ -687,14 +905,38 @@ impl Style {
     self.clip == Some(true)
   }
 
-  /// Whether the two styles lay out the same: same font, padding, size
-  /// and clipping, which changes how far the children's painting reaches.
+  /// Whether the two styles lay out the same: same font, padding, sizes,
+  /// flex fields, alignment, position and span, and clipping, which
+  /// changes how far the children's painting reaches.
   pub(crate) fn same_layout(&self, other: &Style) -> bool {
     self.font == other.font
       && self.padding == other.padding
       && self.width == other.width
       && self.height == other.height
+      && self.min_width == other.min_width
+      && self.min_height == other.min_height
+      && self.max_width == other.max_width
+      && self.max_height == other.max_height
+      && self.grow == other.grow
+      && self.shrink == other.shrink
+      && self.basis == other.basis
+      && self.align_self == other.align_self
+      && self.justify_self == other.justify_self
+      && self.left == other.left
+      && self.top == other.top
+      && self.right == other.right
+      && self.bottom == other.bottom
+      && self.span == other.span
       && self.clips() == other.clips()
+  }
+
+  /// Whether any of `left`, `top`, `right` and `bottom` is set to a
+  /// finite number, which takes the widget out of its parent's flow.
+  pub(crate) fn absolute(&self) -> bool {
+    [self.left, self.top, self.right, self.bottom]
+      .into_iter()
+      .flatten()
+      .any(f32::is_finite)
   }
 
   /// Whether the two styles move the widget the same way where it is

@@ -16,11 +16,11 @@ use cosmic_text::FontSystem;
 use taffy::prelude::{TaffyGridLine, TaffyGridSpan};
 use taffy::{
   AlignItems, AvailableSpace, Dimension, Display, FlexDirection, GridPlacement, JustifyContent,
-  LengthPercentage, Line, Overflow,
+  LengthPercentage, LengthPercentageAuto, Line, Overflow, Position,
 };
 
 use crate::geometry::{Affine, Point, Rect, through};
-use crate::style::Font;
+use crate::style::{Font, Style};
 use crate::text::TextSystem;
 use crate::text_input::DEFAULT_WIDTH;
 use crate::tree::{Node, NodeId, NodeKind, Tree, add_damage, centered, icon_rect};
@@ -413,12 +413,7 @@ fn taffy_style(node: &Node, parent: Parent, size: crate::Size) -> taffy::Style {
         width: gap,
         height: gap,
       };
-      style.align_items = match flex.align {
-        Align::Start => AlignItems::START,
-        Align::Center => AlignItems::CENTER,
-        Align::End => AlignItems::END,
-        Align::Stretch => AlignItems::STRETCH,
-      };
+      style.align_items = align_items(flex.align);
       style.justify_content = match flex.justify {
         Justify::Start => JustifyContent::START,
         Justify::Center => JustifyContent::CENTER,
@@ -453,14 +448,7 @@ fn taffy_style(node: &Node, parent: Parent, size: crate::Size) -> taffy::Style {
   // window's own.
   let own = node.effective_style();
   if !matches!(node.kind, NodeKind::Root) {
-    let length = |value: Option<f32>| match value {
-      Some(value) if value.is_finite() => Dimension::length(value.max(0.0)),
-      _ => Dimension::auto(),
-    };
-    style.size = taffy::Size {
-      width: length(own.width),
-      height: length(own.height),
-    };
+    own_layout(&mut style, &own, parent);
   }
   if parent == Parent::Scroll {
     // A child with a height of its own would otherwise shrink to what its
@@ -475,16 +463,75 @@ fn taffy_style(node: &Node, parent: Parent, size: crate::Size) -> taffy::Style {
     style.grid_row = cell.clone();
     style.grid_column = cell;
   }
-  if parent == Parent::Window {
-    // As in CSS, an item can't be smaller than its content by default.
-    // The window's size comes from the compositor, so its child is
-    // exactly that size, and content too wide overflows inside it.
-    style.min_size = taffy::Size {
-      width: taffy::LengthPercentageAuto::length(0.0),
-      height: taffy::LengthPercentageAuto::length(0.0),
+  style
+}
+
+/// What a widget's own style says about its place: sizes, flex fields,
+/// alignment and absolute position. A number that isn't finite is unset.
+fn own_layout(style: &mut taffy::Style, own: &Style, parent: Parent) {
+  let finite = |value: Option<f32>| value.filter(|value| value.is_finite());
+  let length = |value: Option<f32>| match finite(value) {
+    Some(value) => Dimension::length(value.max(0.0)),
+    None => Dimension::auto(),
+  };
+  let limit = |value: Option<f32>, none: LengthPercentageAuto| match finite(value) {
+    Some(value) => LengthPercentageAuto::length(value.max(0.0)),
+    None => none,
+  };
+  style.size = taffy::Size {
+    width: length(own.width),
+    height: length(own.height),
+  };
+  // As in CSS, an item can't be smaller than its content by default.
+  // The window's size comes from the compositor, so its child is exactly
+  // that size, and content too wide overflows inside it.
+  let least = if parent == Parent::Window {
+    LengthPercentageAuto::length(0.0)
+  } else {
+    LengthPercentageAuto::auto()
+  };
+  style.min_size = taffy::Size {
+    width: limit(own.min_width, least),
+    height: limit(own.min_height, least),
+  };
+  style.max_size = taffy::Size {
+    width: limit(own.max_width, LengthPercentageAuto::auto()),
+    height: limit(own.max_height, LengthPercentageAuto::auto()),
+  };
+  if let Some(grow) = finite(own.grow) {
+    style.flex_grow = grow.max(0.0);
+  }
+  if let Some(shrink) = finite(own.shrink) {
+    style.flex_shrink = shrink.max(0.0);
+  }
+  if let Some(basis) = finite(own.basis) {
+    style.flex_basis = Dimension::length(basis.max(0.0));
+  }
+  style.align_self = own.align_self.map(align_items);
+  style.justify_self = own.justify_self.map(align_items);
+  if own.absolute() {
+    let inset = |value: Option<f32>| match finite(value) {
+      Some(value) => LengthPercentageAuto::length(value),
+      None => LengthPercentageAuto::auto(),
+    };
+    style.position = Position::Absolute;
+    style.inset = taffy::Rect {
+      left: inset(own.left),
+      right: inset(own.right),
+      top: inset(own.top),
+      bottom: inset(own.bottom),
     };
   }
-  style
+}
+
+/// `align` as taffy's.
+fn align_items(align: Align) -> AlignItems {
+  match align {
+    Align::Start => AlignItems::START,
+    Align::Center => AlignItems::CENTER,
+    Align::End => AlignItems::END,
+    Align::Stretch => AlignItems::STRETCH,
+  }
 }
 
 /// A taffy size of exactly `size`.

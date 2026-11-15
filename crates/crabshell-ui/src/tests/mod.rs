@@ -15,6 +15,7 @@ mod keyed;
 mod layout;
 mod lock;
 mod menu;
+mod placement;
 mod popup;
 mod region;
 mod screencopy;

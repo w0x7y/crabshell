@@ -249,3 +249,50 @@ fn shadows_blend_and_fade_in_from_clear() {
   let going = to.lerp(&Style::new(), 0.75).shadow.expect("on its way out");
   assert_eq!(going.color, Color::rgba(0, 0, 0, 50));
 }
+
+#[test]
+fn merge_takes_each_place_field_from_the_style_on_top() {
+  const BASE: Style = Style::new()
+    .grow(1.0)
+    .min_width(10.0)
+    .left(4.0)
+    .z(2)
+    .span(2, 1);
+  const OVER: Style = Style::new()
+    .grow(2.0)
+    .max_height(8.0)
+    .align_self(crate::Align::End)
+    .top(1.0);
+  let merged = BASE.merge(OVER);
+  assert_eq!(merged.grow, Some(2.0));
+  assert_eq!(merged.min_width, Some(10.0));
+  assert_eq!(merged.max_height, Some(8.0));
+  assert_eq!(merged.align_self, Some(crate::Align::End));
+  assert_eq!((merged.left, merged.top), (Some(4.0), Some(1.0)));
+  assert_eq!(merged.z, Some(2));
+  assert_eq!(merged.span, Some((2, 1)));
+}
+
+#[test]
+fn place_fields_change_the_layout_and_z_only_the_paint() {
+  let base = Style::new();
+  for other in [
+    base.grow(1.0),
+    base.shrink(0.0),
+    base.basis(4.0),
+    base.min_width(1.0),
+    base.min_height(1.0),
+    base.max_width(1.0),
+    base.max_height(1.0),
+    base.align_self(crate::Align::Center),
+    base.justify_self(crate::Align::Center),
+    base.left(1.0),
+    base.top(1.0),
+    base.right(1.0),
+    base.bottom(1.0),
+    base.span(2, 2),
+  ] {
+    assert!(!base.same_layout(&other), "{other:?}");
+  }
+  assert!(base.same_layout(&base.z(3)));
+}

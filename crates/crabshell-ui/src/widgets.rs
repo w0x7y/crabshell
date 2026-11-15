@@ -149,7 +149,9 @@ pub(crate) struct ButtonProps {
 }
 
 /// How a [`Row`] or [`Column`] places children across its direction: up and
-/// down in a row, left and right in a column.
+/// down in a row, left and right in a column. As a child's own
+/// [`Style::align_self`] and [`Style::justify_self`], it also places the
+/// child in a [`Stack`]'s or grid's cell: start is the top or the left.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Align {
   /// At the start: the top of a row, the left of a column.
