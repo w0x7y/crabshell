@@ -4,10 +4,10 @@
 
 use std::rc::Rc;
 
-use crabshell_reactive::Memo;
+use crabshell_reactive::{Memo, Signal};
 use crabshell_ui::{
-  Align, Button, Color, Cx, Element, Icon, IconSource, IntoProp, Menu, PopupWindow, Prop, Row,
-  Style, Widget,
+  Align, Button, Color, Cx, Element, Icon, IconSource, IntoProp, Menu, PopupWindow, Prop, Rect,
+  Row, Style, Widget,
 };
 
 use super::{TrayHost, TrayItem};
@@ -49,6 +49,8 @@ type Shared<T> = Rc<dyn Fn() -> T>;
 pub struct Tray {
   icon_size: Option<Prop<u32>>,
   menu_style: Option<Prop<Style>>,
+  visible: Option<Prop<bool>>,
+  geometry: Option<Signal<Rect>>,
 }
 
 impl Tray {
@@ -70,6 +72,19 @@ impl Tray {
     self.menu_style = Some(style.into_prop());
     self
   }
+
+  /// Shows or hides the tray, as [`Row::visible`] does for a row.
+  pub fn visible(mut self, visible: impl IntoProp<bool>) -> Tray {
+    self.visible = Some(visible.into_prop());
+    self
+  }
+
+  /// Shares where the tray is after each layout that moves it, as
+  /// [`Row::geometry`] does for a row.
+  pub fn geometry(mut self, geometry: Signal<Rect>) -> Tray {
+    self.geometry = Some(geometry);
+    self
+  }
 }
 
 impl Widget for Tray {
@@ -82,7 +97,7 @@ impl Widget for Tray {
       .map_or_else(|| Rc::new(|| MENU), Prop::shared);
     // `cx.tray()` needs a context, which a keyed child's view gets, so the
     // tray is one such child: a row of the items.
-    let tray = Row::new().children_keyed(
+    let mut tray = Row::new().children_keyed(
       || vec![()],
       |_| (),
       move |cx, _| {
@@ -96,6 +111,12 @@ impl Widget for Tray {
         )
       },
     );
+    if let Some(visible) = self.visible {
+      tray = tray.visible(visible);
+    }
+    if let Some(geometry) = self.geometry {
+      tray = tray.geometry(geometry);
+    }
     Box::new(tray).into_element()
   }
 }

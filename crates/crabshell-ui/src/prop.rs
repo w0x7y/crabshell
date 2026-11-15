@@ -64,6 +64,14 @@ where
   }
 }
 
+/// A property taken from one widget can be handed to another, as a widget
+/// built from others passes its own on.
+impl<T> IntoProp<T> for Prop<T> {
+  fn into_prop(self) -> Prop<T> {
+    self
+  }
+}
+
 /// Lets each listed type be passed as a plain value.
 macro_rules! value_props {
     ($($ty:ty),* $(,)?) => {

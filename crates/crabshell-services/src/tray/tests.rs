@@ -1803,3 +1803,29 @@ fn a_call_that_ends_leaves_no_timer_and_one_that_hangs_times_out() {
   let error = hung.expect_err("no answer");
   assert!(error.to_string().contains("no answer in time"), "{error}");
 }
+
+#[test]
+fn a_tray_hides_and_shares_its_rectangle_as_every_widget_does() {
+  let cx = Cx::new(Runtime::current().new_owner());
+  let shown = cx.signal(true);
+  let geometry = cx.signal(Rect::default());
+  let row = crabshell_ui::Row::new()
+    .gap(4)
+    .child(crabshell_ui::Icon::new("before").size(10))
+    .child(Tray::new().visible(move || shown.get()).geometry(geometry));
+  let window = Window::new(&cx, PanelWindow::new(&Output::new("DP-1")).child(row));
+  window.set_size(Size::new(200.0, 30.0));
+  let mut text = TextSystem::new();
+  frame(&window, &mut text);
+  assert_eq!(geometry.get_untracked(), Rect::new(14.0, 0.0, 0.0, 30.0));
+  let shown_children = || {
+    let view = window.view();
+    let row = view.root().children().next().expect("the row");
+    row.children().count()
+  };
+  assert_eq!(shown_children(), 2);
+  shown.set(false);
+  frame(&window, &mut text);
+  assert_eq!(shown_children(), 1);
+  cx.owner().dispose();
+}
