@@ -1,6 +1,7 @@
 [package]
 name = "crabshell-services"
-version.workspace = true
+# 0.2.1 reaches polkit's helper through its socket; the rest stay at 0.2.0.
+version = "0.2.1"
 description = "Crabshell's services: workspaces, tray, audio, clock, power, Bluetooth, network, media players, notifications, apps, programs, files, PAM, greetd and polkit"
 edition.workspace = true
 rust-version.workspace = true
