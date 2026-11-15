@@ -7,13 +7,14 @@
 use std::hash::Hash;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
 
 use crabshell_reactive::{Memo, Signal};
 
 use crate::cx::Cx;
 use crate::input::{Handler, Handlers};
 use crate::keyboard::KeyEvent;
-use crate::keyed::{self, KeyedMount};
+use crate::keyed::{self, KeyedList, KeyedMount};
 use crate::prop::{IntoProp, Prop};
 use crate::screencopy::ScreencopyProps;
 use crate::scroll::ScrollProps;
@@ -74,7 +75,7 @@ pub(crate) enum ElementKind {
 /// that grows and shrinks.
 pub(crate) enum Child {
   One(Box<dyn Widget>),
-  Keyed(KeyedMount),
+  Keyed(KeyedList),
 }
 
 /// A [`Child`] with its widget turned into an element.
@@ -90,7 +91,7 @@ fn describe(children: Vec<Child>) -> Vec<ElementChild> {
     .into_iter()
     .map(|child| match child {
       Child::One(widget) => ElementChild::One(Box::new(widget.into_element())),
-      Child::Keyed(mount) => ElementChild::Keyed(mount),
+      Child::Keyed(list) => ElementChild::Keyed(list.into_mount()),
     })
     .collect()
 }
@@ -205,7 +206,7 @@ pub struct IconPixels {
   pub data: Rc<[u8]>,
 }
 
-/// The methods every container has: `child` and `children_keyed`.
+/// The methods every container has: `child`, `children_keyed` and `exit`.
 macro_rules! container_methods {
   () => {
     /// Adds `child` after the children added so far.
@@ -222,8 +223,9 @@ macro_rules! container_methods {
     /// its key stays in the list, even if it moves. `view` receives the
     /// item's [`Cx`] and a [`Memo`] that updates when that item's value
     /// changes. When a key leaves the list, its child and everything
-    /// created in `view` are freed. If two items share a key, only the
-    /// first is shown and the duplicate is logged.
+    /// created in `view` are freed, at once or after an
+    /// [`exit`](Self::exit). If two items share a key, only the first is
+    /// shown and the duplicate is logged.
     pub fn children_keyed<T, K, W>(
       mut self,
       items: impl FnMut() -> Vec<T> + 'static,
@@ -238,6 +240,29 @@ macro_rules! container_methods {
       self
         .children
         .push(Child::Keyed(keyed::mount(items, key, view)));
+      self
+    }
+
+    /// Lets the children of the last [`children_keyed`](Self::children_keyed)
+    /// list added leave over `exit` instead of at once. A child whose key
+    /// leaves stays mounted and painted right after the child that was
+    /// before it, and its context's [`leaving`](Cx::leaving) turns `true`,
+    /// so its own `cx.animate` can fade or shrink it out. After `exit` it
+    /// is freed. If its key comes back first, the same child, with its
+    /// state, takes the key's new place.
+    pub fn exit(mut self, exit: Duration) -> Self {
+      let last = self
+        .children
+        .iter_mut()
+        .rev()
+        .find_map(|child| match child {
+          Child::Keyed(list) => Some(list),
+          Child::One(_) => None,
+        });
+      match last {
+        Some(list) => list.exit = Some(exit),
+        None => tracing::warn!("`exit` was called before any `children_keyed`; it does nothing"),
+      }
       self
     }
   };

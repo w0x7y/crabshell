@@ -1,9 +1,14 @@
 //! `children_keyed`: children follow the items, reused by key.
 
-use super::{Counter, Harness, capture_logs, node_at, paths};
-use crabshell_reactive::Signal;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 
-use crate::{Button, Content, Element, Icon, Row, Text, Widget, Window};
+use super::{Counter, Harness, capture_logs, node_at, paths};
+use crabshell_reactive::{ReadSignal, Signal};
+
+use crate::{Button, Content, Element, Icon, Row, Text, Widget, Window, fire_timers, next_timer};
 
 /// The text of each child of the window's row.
 fn texts(window: &Window) -> Vec<String> {
@@ -250,4 +255,289 @@ fn a_view_may_change_the_list_while_it_is_built() {
   );
   let window = h.window(h.panel().child(row), 400.0, 30.0);
   assert_eq!(texts(&window), ["1", "2"]);
+}
+
+const EXIT: Duration = Duration::from_millis(200);
+
+/// What each item's view saw, by key: its `leaving` signal and a signal of
+/// its own state.
+type Seen = Rc<RefCell<HashMap<u32, (ReadSignal<bool>, Signal<u32>)>>>;
+
+/// A row of `items` that leave over `EXIT`, each showing its key and its
+/// own state.
+fn exiting_row(items: Signal<Vec<u32>>, seen: &Seen, built: &Counter) -> Row {
+  let seen = Rc::clone(seen);
+  let built = built.clone();
+  Row::new()
+    .children_keyed(
+      move || items.get(),
+      |n| *n,
+      move |cx, n| {
+        built.hit();
+        let state = cx.signal(0);
+        seen
+          .borrow_mut()
+          .insert(n.get_untracked(), (cx.leaving(), state));
+        Text::new(move || format!("{} {}", n.get(), state.get()))
+      },
+    )
+    .exit(EXIT)
+}
+
+fn leaving(seen: &Seen, key: u32) -> bool {
+  seen.borrow()[&key].0.get_untracked()
+}
+
+#[test]
+fn a_context_outside_an_exiting_item_is_never_leaving() {
+  let mut h = Harness::new();
+  assert!(!h.cx.leaving().get_untracked());
+  let items = h.cx.signal(vec![1]);
+  let seen = Seen::default();
+  let window = h.window(
+    h.panel()
+      .child(exiting_row(items, &seen, &Counter::default())),
+    400.0,
+    30.0,
+  );
+  assert!(!leaving(&seen, 1), "an item in the list isn't leaving");
+  drop(window);
+}
+
+#[test]
+fn removed_items_stay_while_they_leave_then_go_with_everything_they_made() {
+  let mut h = Harness::new();
+  let items = h.cx.signal(vec![1]);
+  let seen = Seen::default();
+  let window = h.window(
+    h.panel()
+      .child(exiting_row(items, &seen, &Counter::default())),
+    400.0,
+    30.0,
+  );
+  let one = h.runtime.node_count();
+
+  items.set(vec![1, 2, 3]);
+  h.frame(&window);
+  let bounds: Vec<_> = {
+    let view = window.view();
+    node_at(view.root(), &[0])
+      .children()
+      .skip(1)
+      .map(|child| child.bounds())
+      .collect()
+  };
+  window.take_damage();
+
+  // Both leave at once and stay where they were, untouched: the list
+  // lays nothing out and repaints nothing for them.
+  items.set(vec![1]);
+  h.frame(&window);
+  assert_eq!(texts(&window), ["1 0", "2 0", "3 0"]);
+  assert!(leaving(&seen, 2) && leaving(&seen, 3));
+  assert!(!leaving(&seen, 1));
+  assert!(!window.needs_layout());
+  assert!(!window.has_damage());
+
+  let due = next_timer().expect("an exit timer runs");
+  fire_timers(due - Duration::from_nanos(1));
+  h.frame(&window);
+  assert_eq!(texts(&window).len(), 3, "not done yet");
+
+  // Each has its own timer, started a moment apart.
+  fire_timers(due + Duration::from_millis(1));
+  h.frame(&window);
+  assert_eq!(texts(&window), ["1 0"]);
+  assert_eq!(h.runtime.node_count(), one);
+  assert_eq!(next_timer(), None, "nothing left to wake for");
+  let damage = window.take_damage();
+  for area in bounds {
+    assert!(damage.contains(&area), "{area:?} missing from {damage:?}");
+  }
+}
+
+#[test]
+fn a_key_that_comes_back_while_leaving_keeps_its_child_and_state() {
+  let mut h = Harness::new();
+  let items = h.cx.signal(vec![1, 2, 3]);
+  let seen = Seen::default();
+  let built = Counter::default();
+  let window = h.window(
+    h.panel().child(exiting_row(items, &seen, &built)),
+    400.0,
+    30.0,
+  );
+  seen.borrow()[&2].1.set(5);
+
+  items.set(vec![1, 3]);
+  h.frame(&window);
+  assert!(leaving(&seen, 2));
+
+  // It comes back at its new place, as the same child.
+  items.set(vec![2, 1, 3]);
+  h.frame(&window);
+  assert_eq!(texts(&window), ["2 5", "1 0", "3 0"]);
+  assert!(!leaving(&seen, 2));
+  assert_eq!(built.get(), 3, "nothing was rebuilt");
+  assert_eq!(next_timer(), None, "its exit timer stopped");
+
+  // Leaving again counts the whole exit from then.
+  items.set(vec![1, 3]);
+  h.frame(&window);
+  assert!(leaving(&seen, 2));
+  fire_timers(next_timer().expect("its exit timer runs again"));
+  h.frame(&window);
+  assert_eq!(texts(&window), ["1 0", "3 0"]);
+}
+
+#[test]
+fn a_leaving_child_stays_right_after_the_child_before_it() {
+  let mut h = Harness::new();
+  let items = h.cx.signal(vec![1, 2, 3, 4]);
+  let seen = Seen::default();
+  let window = h.window(
+    h.panel()
+      .child(exiting_row(items, &seen, &Counter::default())),
+    400.0,
+    30.0,
+  );
+
+  // 2 follows 1 and 4 follows 3 wherever they move; 5 is new.
+  items.set(vec![5, 3, 1]);
+  h.frame(&window);
+  assert_eq!(texts(&window), ["5 0", "3 0", "4 0", "1 0", "2 0"]);
+
+  // The first child leaving stays first, and one that leaves after a
+  // leaving child follows it.
+  items.set(vec![3, 1]);
+  h.frame(&window);
+  assert_eq!(texts(&window), ["5 0", "3 0", "4 0", "1 0", "2 0"]);
+  items.set(vec![3]);
+  h.frame(&window);
+  assert_eq!(texts(&window), ["5 0", "3 0", "4 0", "1 0", "2 0"]);
+
+  fire_timers(Instant::now() + 10 * EXIT);
+  h.frame(&window);
+  assert_eq!(texts(&window), ["3 0"]);
+}
+
+#[test]
+fn disposing_the_list_while_items_leave_frees_them_all_at_once() {
+  let mut h = Harness::new();
+  let outer = h.cx.signal(Vec::<u32>::new());
+  let items = h.cx.signal(vec![1, 2, 3]);
+  let seen = Seen::default();
+  let row = Row::new().children_keyed(
+    move || outer.get(),
+    |n| *n,
+    move |_cx, _n| exiting_row(items, &seen, &Counter::default()),
+  );
+  let window = h.window(h.panel().child(row), 400.0, 30.0);
+  let empty = h.runtime.node_count();
+
+  outer.set(vec![0]);
+  h.frame(&window);
+  items.set(Vec::new());
+  h.frame(&window);
+  assert!(next_timer().is_some(), "the items are leaving");
+
+  outer.set(Vec::new());
+  h.frame(&window);
+  assert_eq!(h.runtime.node_count(), empty);
+  assert_eq!(next_timer(), None, "no exit timer is left");
+}
+
+#[test]
+fn nested_contexts_of_a_leaving_item_read_the_same_signal() {
+  let mut h = Harness::new();
+  let items = h.cx.signal(vec![1]);
+  let inner = Rc::new(RefCell::new(None));
+  let kept = Rc::clone(&inner);
+  let row = Row::new()
+    .children_keyed(
+      move || items.get(),
+      |n| *n,
+      move |cx, _n| {
+        *kept.borrow_mut() = Some(cx.child().child().leaving());
+        Text::new("x")
+      },
+    )
+    .exit(EXIT);
+  let window = h.window(h.panel().child(row), 400.0, 30.0);
+  let inner = inner.borrow().expect("the view ran");
+  assert!(!inner.get_untracked());
+  items.set(Vec::new());
+  h.frame(&window);
+  assert!(inner.get_untracked());
+}
+
+#[test]
+fn a_list_without_an_exit_removes_at_once_and_arms_no_timer() {
+  let mut h = Harness::new();
+  let items = h.cx.signal(vec![1, 2]);
+  let seen: Seen = Seen::default();
+  let kept = Rc::clone(&seen);
+  let row = Row::new().children_keyed(
+    move || items.get(),
+    |n| *n,
+    move |cx, n| {
+      let state = cx.signal(0);
+      kept
+        .borrow_mut()
+        .insert(n.get_untracked(), (cx.leaving(), state));
+      Text::new(move || format!("{} {}", n.get(), state.get()))
+    },
+  );
+  let window = h.window(h.panel().child(row), 400.0, 30.0);
+  assert!(!leaving(&seen, 2));
+  items.set(vec![1]);
+  h.frame(&window);
+  assert_eq!(texts(&window), ["1 0"]);
+  assert_eq!(next_timer(), None);
+}
+
+#[test]
+fn a_panicking_view_in_an_exiting_list_shows_empty_and_still_leaves() {
+  let mut h = Harness::new();
+  let items = h.cx.signal(vec![1, 2]);
+  let row = Row::new()
+    .children_keyed(
+      move || items.get(),
+      |n| *n,
+      |_cx, n| {
+        if n.get_untracked() == 2 {
+          panic!("no view for 2");
+        }
+        Text::new("1")
+      },
+    )
+    .exit(EXIT);
+  let mut shown = Vec::new();
+  let logs = capture_logs(|| {
+    let window = h.window(h.panel().child(row), 400.0, 30.0);
+    shown.push(texts(&window));
+    items.set(vec![1]);
+    h.frame(&window);
+    shown.push(texts(&window));
+    fire_timers(Instant::now() + 10 * EXIT);
+    h.frame(&window);
+    shown.push(texts(&window));
+  });
+  assert_eq!(
+    shown,
+    [vec!["1", "(not text)"], vec!["1", "(not text)"], vec!["1"]]
+  );
+  assert!(logs.contains("building an item panicked"), "{logs}");
+}
+
+#[test]
+fn an_exit_before_any_keyed_list_warns_and_does_nothing() {
+  let mut h = Harness::new();
+  let mut window = None;
+  let logs = capture_logs(|| {
+    let row = Row::new().exit(EXIT).child(Text::new("a"));
+    window = Some(h.window(h.panel().child(row), 400.0, 30.0));
+  });
+  assert_eq!(texts(&window.expect("the window was built")), ["a"]);
+  assert!(logs.contains("`exit` was called before any"), "{logs}");
 }

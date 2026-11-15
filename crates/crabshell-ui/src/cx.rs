@@ -5,7 +5,7 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
-use crabshell_reactive::{Effect, Memo, Owner, Signal};
+use crabshell_reactive::{Effect, Memo, Owner, ReadSignal, Signal};
 
 use crate::tree::{NodeId, Tree};
 
@@ -29,6 +29,9 @@ pub struct Cx {
   /// The widget this context belongs to, if any, for
   /// [`open_popup`](Self::open_popup). A child context shares it.
   pub(crate) anchor: Option<Rc<Anchor>>,
+  /// Whether the keyed item this context is in is leaving. A child context
+  /// shares it.
+  leaving: Option<ReadSignal<bool>>,
 }
 
 /// Where a widget is: its window's tree and its node. Set once the node
@@ -71,6 +74,7 @@ impl Cx {
       owner,
       services: Rc::default(),
       anchor: None,
+      leaving: None,
     }
   }
 
@@ -88,6 +92,27 @@ impl Cx {
       owner: self.owner.child(),
       services: Rc::clone(&self.services),
       anchor: self.anchor.clone(),
+      leaving: self.leaving,
+    }
+  }
+
+  /// Whether the keyed item this context is in is leaving: `true` from
+  /// when its key leaves a list with an [`exit`](crate::Row::exit) until
+  /// it is removed, or until the key comes back. Every context made inside
+  /// the item reads the same signal. Call it while building, as with
+  /// [`signal`](Self::signal): outside such an item, each call makes a
+  /// signal that stays `false`.
+  pub fn leaving(&self) -> ReadSignal<bool> {
+    self
+      .leaving
+      .unwrap_or_else(|| self.signal(false).read_only())
+  }
+
+  /// The context of an item of a list with an exit.
+  pub(crate) fn in_item(self, leaving: ReadSignal<bool>) -> Cx {
+    Cx {
+      leaving: Some(leaving),
+      ..self
     }
   }
 

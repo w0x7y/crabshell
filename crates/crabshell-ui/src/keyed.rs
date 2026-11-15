@@ -1,16 +1,19 @@
 //! `children_keyed`: a list of children that follows a list of items,
-//! keeping each child while its item's key stays in the list.
+//! keeping each child while its item's key stays in the list, and while
+//! it leaves when the list has an exit.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::panic::{self, AssertUnwindSafe};
 use std::rc::{Rc, Weak};
+use std::time::Duration;
 
 use crabshell_reactive::{Memo, Signal, untrack};
 
 use crate::cx::Cx;
 use crate::input::panic_message;
+use crate::timer::Timer;
 use crate::tree::{NodeId, Tree, borrow};
 use crate::widgets::{Element, Stack, Widget};
 
@@ -29,12 +32,30 @@ pub(crate) struct KeyedSlot {
 /// type-erased here, so containers don't carry the item types.
 pub(crate) type KeyedMount = Box<dyn FnOnce(KeyedSlot)>;
 
+/// A keyed list before its container is in a window, with the exit that
+/// `exit` may still set.
+pub(crate) struct KeyedList {
+  pub(crate) exit: Option<Duration>,
+  start: Box<dyn FnOnce(KeyedSlot, Option<Duration>)>,
+}
+
+impl KeyedList {
+  pub(crate) fn into_mount(self) -> KeyedMount {
+    let KeyedList { exit, start } = self;
+    Box::new(move |slot| start(slot, exit))
+  }
+}
+
 /// One item's child.
 struct Entry<T> {
   /// Owns the item's signal, memo and everything `view` created.
   cx: Cx,
   value: Signal<T>,
   node: NodeId,
+  /// What its context's `leaving` reads, in a list with an exit.
+  leaving: Option<Signal<bool>>,
+  /// Ends its exit; made the first time it leaves.
+  timer: Option<Timer>,
 }
 
 /// The element `view` builds. If it panics, that is logged and an empty
@@ -56,20 +77,25 @@ pub(crate) fn mount<T, K, W>(
   mut items: impl FnMut() -> Vec<T> + 'static,
   mut key: impl FnMut(&T) -> K + 'static,
   mut view: impl FnMut(&Cx, Memo<T>) -> W + 'static,
-) -> KeyedMount
+) -> KeyedList
 where
   T: Clone + PartialEq + 'static,
   K: Eq + Hash + 'static,
   W: Widget,
 {
-  Box::new(move |slot: KeyedSlot| {
+  let start = move |slot: KeyedSlot, exit: Option<Duration>| {
     let label = format!("{}.children", slot.path);
     let mut entries: HashMap<K, Entry<T>> = HashMap::new();
     let mut order: Vec<NodeId> = Vec::new();
     let mut warned = false;
+    // An exit timer sets `finished` as it ends, which reruns the list.
+    let exit = exit.map(|exit| (exit, slot.cx.signal(())));
     let cx = slot.cx.clone();
     let name = label.clone();
     cx.effect(move || {
+      if let Some((_, finished)) = exit {
+        finished.get();
+      }
       let list = items();
 
       // Keys aren't `Clone`, so duplicates are found by comparing with
@@ -98,19 +124,57 @@ where
           Some(entry) => {
             // Its memo tells the child only if the value changed.
             entry.value.set(item);
+            // Back while leaving: it stays, and its exit stops.
+            if let Some(leaving) = entry.leaving
+              && leaving.get_untracked()
+            {
+              leaving.set(false);
+              entry.timer.inspect(Timer::stop);
+            }
             kept.push((item_key, Some(entry)));
           }
           None => {
             let cx = slot.cx.child();
+            let leaving = exit.map(|_| cx.signal(false));
+            let cx = match leaving {
+              Some(leaving) => cx.in_item(leaving.read_only()),
+              None => cx,
+            };
             let value = cx.signal(item);
             let memo = cx.memo(move || value.get());
             let element = untrack(|| build(&label, || view(&cx, memo)));
-            added.push((cx, value, element));
+            added.push((cx, value, leaving, element));
             kept.push((item_key, None));
           }
         }
       }
-      let removed: Vec<Entry<T>> = old.into_values().collect();
+
+      // The keys that left go now, or start or go on leaving.
+      let mut removed = Vec::new();
+      let mut going = Vec::new();
+      for (item_key, mut entry) in old {
+        let (Some((duration, finished)), Some(leaving)) = (exit, entry.leaving) else {
+          removed.push(entry);
+          continue;
+        };
+        if !leaving.get_untracked() {
+          leaving.set(true);
+          match entry.timer {
+            Some(timer) => timer.restart(),
+            None => {
+              let end = move || {
+                finished.try_set(());
+              };
+              entry.timer = Some(entry.cx.after(duration, end));
+            }
+          }
+          going.push((item_key, entry));
+        } else if entry.timer.is_some_and(|timer| untrack(|| timer.running())) {
+          going.push((item_key, entry));
+        } else {
+          removed.push(entry);
+        }
+      }
 
       let Some(tree) = slot.tree.upgrade() else {
         return;
@@ -123,16 +187,34 @@ where
           let entry = match entry {
             Some(entry) => entry,
             None => {
-              let (cx, value, element) = added
+              let (cx, value, leaving, element) = added
                 .next()
                 .expect("invariant: every new key has a built element");
               let node = tree.mount(element, &cx, slot.container);
-              Entry { cx, value, node }
+              Entry {
+                cx,
+                value,
+                node,
+                leaving,
+                timer: None,
+              }
             }
           };
           nodes.push(entry.node);
           entries.insert(item_key, entry);
         }
+        // A leaving child goes right after the child before it in the last
+        // order, and one that was first stays first.
+        let mut at = 0;
+        for node in &order {
+          if going.iter().any(|(_, entry)| entry.node == *node) {
+            nodes.insert(at, *node);
+            at += 1;
+          } else if let Some(index) = nodes.iter().position(|kept| kept == node) {
+            at = index + 1;
+          }
+        }
+        entries.extend(going);
         for entry in &removed {
           tree.unmount(entry.node);
         }
@@ -148,5 +230,9 @@ where
       }
     })
     .named(name);
-  })
+  };
+  KeyedList {
+    exit: None,
+    start: Box::new(start),
+  }
 }
