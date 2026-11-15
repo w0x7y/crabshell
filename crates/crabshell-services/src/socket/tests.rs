@@ -250,7 +250,12 @@ fn the_socket_closes_when_its_context_goes() {
   run(&mut shell, 50);
   assert!(lines.borrow().is_empty());
   let mut rest = Vec::new();
-  assert_eq!(peer.read_to_end(&mut rest).unwrap(), 0, "the shell hung up");
+  let hung_up = match peer.read_to_end(&mut rest) {
+    Ok(_) => rest.is_empty(),
+    // The write above, unread when the shell hung up, resets it instead.
+    Err(error) => error.kind() == ErrorKind::ConnectionReset,
+  };
+  assert!(hung_up, "the shell hung up");
   socket.reconnect();
   assert!(
     server.listener.set_nonblocking(true).is_ok()
