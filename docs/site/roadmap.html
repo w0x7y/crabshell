@@ -47,8 +47,9 @@
       <h1>roadmap</h1>
       <p>
         fourteen phases. a phase is done only when its exit check passes. phases
-        0 to 6 reach v0.1, a bar for sway. phases 7 to 13 bring the rest of
-        quickshell.
+        0 to 6 reach v0.1, a bar for sway. phases 7 to 12 bring most of the rest
+        of quickshell and shipped as v0.2. phase 13 checks every quickshell
+        type.
       </p>
 
       <div class="gauges">
@@ -135,6 +136,8 @@
       for (const p of PHASES) {
         if (p.n === 7)
           html += `<li class="milestone"><strong>v0.1</strong>a bar for sway, the first release</li>`;
+        if (p.n === 13)
+          html += `<li class="milestone"><strong>v0.2</strong>phases 7 to 12, with hyprland</li>`;
         html += `<li class="${p.state}">
     <span class="dot" aria-hidden="true">${p.state === "done" ? cs.ICON.yes : ""}</span>
     <div class="phase-head"><span class="num">phase ${p.n}</span><h3>${p.title}</h3><span class="when">${p.when}</span></div>

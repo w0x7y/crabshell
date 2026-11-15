@@ -26,7 +26,7 @@ crabshell run
 
 `init` writes a cargo project to `~/.config/crabshell` and never overwrites one. `crabshell init --path <clone>` builds against a clone of this repository instead. the first run compiles the toolkit, which takes a few minutes, then a bar shows up at the top of every monitor with sway's workspaces, the tray, the volume and the clock. stop any other bar first
 
-to start it with sway, add `exec ~/.cargo/bin/crabshell run` to your sway config, with `cargo` on the `PATH` your session starts with
+to start it with sway, add `exec ~/.cargo/bin/crabshell run` to your sway config, or give hyprland the same command with `exec-once`. `cargo` has to be on the `PATH` your session starts with
 
 ### edit it
 

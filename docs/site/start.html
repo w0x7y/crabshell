@@ -52,8 +52,9 @@
       <ul>
         <li>rust 1.99 or newer</li>
         <li>
-          sway, or another wlroots compositor with layer-shell. labwc works too,
-          though only sway shows workspaces for now
+          sway, hyprland or another compositor with layer-shell, like labwc. the
+          template bar shows sway's workspaces. on hyprland, read them from
+          <code>cx.hyprland()</code>, as the <code>hyprland</code> example does
         </li>
         <li>linux 5.3 or newer, for the supervisor's process handles</li>
         <li>
@@ -116,6 +117,10 @@ $ cargo install --locked crabshell-cli</pre>
         <code>PATH</code> your session starts with:
       </p>
       <pre class="code" data-lang="sh">exec ~/.cargo/bin/crabshell run</pre>
+      <p>
+        with hyprland, start the same command from your config's
+        <code>exec-once</code>.
+      </p>
       <p>
         run only one <code>crabshell run</code> at a time, or you get two bars.
       </p>

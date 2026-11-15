@@ -223,6 +223,7 @@ const PHASES = [
       ["yes", "generic workspaces and the shortcut inhibitor"],
       ["yes", "exit check: the hyprland example against a fake hyprland"],
       ["no", "checked by hand on a real hyprland"],
+      ["yes", "phases 7 to 12 released as v0.2 on crates.io"],
     ],
   },
   {
