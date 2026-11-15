@@ -69,7 +69,8 @@ pub(crate) enum ElementKind {
   Capture(ScreencopyProps),
   // Boxed: a button's handlers make it the largest by far.
   Button(Box<ButtonProps>),
-  Scroll(ScrollProps),
+  // Boxed: its scroll bar's style makes it large.
+  Scroll(Box<ScrollProps>),
   Input(Box<InputProps>),
 }
 

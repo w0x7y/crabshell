@@ -170,7 +170,8 @@ pub(crate) enum NodeKind {
   Icon(IconNode),
   Image(ImageNode),
   Capture(CaptureNode),
-  Scroll(ScrollNode),
+  // Boxed: its scroll bar's style makes it large.
+  Scroll(Box<ScrollNode>),
   Input(Box<InputNode>),
   // Boxed: its three styles make it the largest by far.
   Button(Box<ButtonNode>),
@@ -206,6 +207,13 @@ pub(crate) struct ScrollNode {
   pub(crate) shown: f32,
   /// How far the child can scroll, from the last layout.
   pub(crate) most: f32,
+  /// Scrolls along x, with its child at full width.
+  pub(crate) horizontal: bool,
+  /// The scroll bar's style, when it has one.
+  pub(crate) bar: Option<Style>,
+  /// The bar's track and handle from the last layout, in the node's own
+  /// coordinates, while the child is longer than the box.
+  pub(crate) handle: Option<(Rect, Rect)>,
 }
 
 pub(crate) struct ImageNode {
@@ -704,12 +712,15 @@ impl Tree {
         props.text,
         cx.signal(props.on_accept.take()),
       ))),
-      ElementKind::Scroll(props) => NodeKind::Scroll(ScrollNode {
+      ElementKind::Scroll(props) => NodeKind::Scroll(Box::new(ScrollNode {
         signal: props.offset.unwrap_or_else(|| cx.signal(0.0)),
         offset: 0.0,
         shown: 0.0,
         most: 0.0,
-      }),
+        horizontal: false,
+        bar: None,
+        handle: None,
+      })),
       ElementKind::Image(_) => NodeKind::Image(ImageNode {
         source: None,
         width: crate::Image::DEFAULT_SIZE,
@@ -839,7 +850,17 @@ impl Tree {
           }
         });
       }
-      ElementKind::Scroll(_) => {
+      ElementKind::Scroll(props) => {
+        self.bind_opt(id, props.horizontal, "horizontal", |tree, id, value| {
+          tree.update_scroll(id, |scroll| replace(&mut scroll.horizontal, value));
+        });
+        self.bind_opt(id, props.scroll_bar, "scroll_bar", |tree, id, value| {
+          // Placed again to find the handle, which repaints it.
+          tree.update_scroll(id, |scroll| match replace(&mut scroll.bar, value) {
+            Change::None => Change::None,
+            _ => Change::Place,
+          });
+        });
         if let Some(NodeKind::Scroll(scroll)) = self.node(id).map(|node| &node.kind) {
           let signal = scroll.signal;
           self.bind(
@@ -1274,6 +1295,13 @@ impl Tree {
   fn update_grid(&mut self, id: NodeId, f: impl FnOnce(&mut GridNode) -> Change) {
     self.update(id, |node| match &mut node.kind {
       NodeKind::Grid(grid) => f(grid),
+      _ => Change::None,
+    });
+  }
+
+  pub(crate) fn update_scroll(&mut self, id: NodeId, f: impl FnOnce(&mut ScrollNode) -> Change) {
+    self.update(id, |node| match &mut node.kind {
+      NodeKind::Scroll(scroll) => f(scroll),
       _ => Change::None,
     });
   }

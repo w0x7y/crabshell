@@ -142,6 +142,12 @@ impl IntoProp<Option<Region>> for Region {
   }
 }
 
+impl IntoProp<Option<Style>> for Style {
+  fn into_prop(self) -> Prop<Option<Style>> {
+    Prop(PropKind::Value(Some(self)))
+  }
+}
+
 impl IntoProp<Anchors> for Edge {
   fn into_prop(self) -> Prop<Anchors> {
     Prop(PropKind::Value(Anchors::from(self)))

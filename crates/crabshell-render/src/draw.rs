@@ -541,6 +541,9 @@ impl Painter<'_> {
         self.node(pixmap, child);
       }
     }
+    if let Some((handle, bar)) = node.scroll_bar() {
+      self.draw_box(pixmap, handle, &bar);
+    }
   }
 
   /// `node`'s children, drawn into a layer that is blended in through a

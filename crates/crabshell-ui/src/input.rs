@@ -19,7 +19,7 @@ use crate::cx::Cx;
 use crate::geometry::{Point, Rect, Size};
 use crate::keyboard::KeyHandler;
 use crate::prop::{Prop, PropKind};
-use crate::scroll::PIXELS_PER_NOTCH;
+use crate::scrolling::BarDrag;
 use crate::tree::{ButtonNode, Change, Node, NodeId, NodeKind, Tree, borrow};
 use crate::window::Window;
 
@@ -292,7 +292,7 @@ struct Press {
 /// Where the pointer is and what it is doing.
 #[derive(Default)]
 pub(crate) struct Pointer {
-  position: Option<Point>,
+  pub(crate) position: Option<Point>,
   /// The button under the pointer.
   hovered: Option<NodeId>,
   /// The buttons with a `hovered` signal that the pointer is inside: the
@@ -303,6 +303,8 @@ pub(crate) struct Pointer {
   positions: Vec<(NodeId, Signal<Option<Point>>, Point)>,
   /// The button a pointer button went down on, until it comes up.
   pressed: Option<Press>,
+  /// A scroll bar's handle held, until the left button comes up.
+  pub(crate) bar: Option<BarDrag>,
   /// The last left click, with the time it came up and where it went
   /// down, which a second one may make a double click.
   last_click: Option<(NodeId, u32, Point)>,
@@ -348,6 +350,9 @@ impl Pointer {
     }
     if source_gone || self.drop_over.is_some_and(|(id, _)| removed.contains(&id)) {
       self.set_drop_over(None);
+    }
+    if self.bar.is_some_and(|bar| removed.contains(&bar.view)) {
+      self.bar = None;
     }
     if self
       .last_click
@@ -412,6 +417,7 @@ impl Window {
     let calls = {
       let mut tree = borrow(&self.tree);
       tree.pointer.position = Some(position);
+      tree.bar_motion(position);
       let calls = tree.drag_motion(position);
       tree.hover_at(position);
       calls
@@ -448,7 +454,7 @@ impl Window {
   /// The pointer scrolled. A button under the pointer with `on_wheel`
   /// gets every event, and one with `on_scroll` the whole vertical steps
   /// as they add up. Without either, the innermost scroll view under the
-  /// pointer scrolls vertically. A vertical `stop` drops a touchpad's
+  /// pointer that can still move that way scrolls along its axis. A vertical `stop` drops a touchpad's
   /// partial step, so it doesn't carry into the next gesture; a wheel's
   /// partial notch is kept.
   pub fn pointer_scroll(&self, wheel: Wheel) {
@@ -764,6 +770,13 @@ impl Tree {
   }
 
   fn press(&mut self, button: PointerButton) -> Vec<Call> {
+    // A scroll bar is drawn over what is under it, so it takes the press.
+    if let (PointerButton::Left, None, Some(at)) =
+      (button, self.pointer.pressed, self.pointer.position)
+      && self.press_bar(at)
+    {
+      return Vec::new();
+    }
     let (None, Some(id), Some(at)) = (
       self.pointer.pressed,
       self.pointer.hovered,
@@ -799,6 +812,9 @@ impl Tree {
   }
 
   fn release(&mut self, button: PointerButton, time: u32) -> Vec<Call> {
+    if button == PointerButton::Left {
+      self.pointer.bar = None;
+    }
     let Some(press) = self.pointer.pressed.filter(|press| press.button == button) else {
       return Vec::new();
     };
@@ -982,6 +998,7 @@ impl Tree {
   /// click, and nothing is hovered.
   pub(crate) fn leave(&mut self) -> Vec<Call> {
     self.pointer.position = None;
+    self.pointer.bar = None;
     let calls = self.end_press(None).into_iter().collect();
     self.set_hovered(None, &[]);
     self.set_positions(&[], None);
@@ -1126,57 +1143,10 @@ impl Tree {
     untrack(|| button.handlers.try_with(f)).unwrap_or(false)
   }
 
-  /// Scrolls the innermost scroll view under the pointer vertically by
-  /// `wheel`, as far as its content goes.
-  fn scroll_view(&mut self, wheel: Wheel) -> Option<Scrolled> {
-    let position = self.pointer.position?;
-    let id = self.scroll_view_at(self.root, position)?;
-    let pixels = match wheel.y {
-      WheelAxis { notches, .. } if notches != 0.0 && notches.is_finite() => {
-        notches * PIXELS_PER_NOTCH
-      }
-      WheelAxis { pixels, .. } if pixels != 0.0 && pixels.is_finite() => pixels,
-      _ => return None,
-    };
-    let NodeKind::Scroll(scroll) = &self.node(id)?.kind else {
-      return None;
-    };
-    // From the signal, not the last layout, so scrolls and writes since
-    // then add up.
-    let now = untrack(|| scroll.signal.try_get())?;
-    let now = if now.is_nan() {
-      0.0
-    } else {
-      now.clamp(0.0, scroll.most)
-    };
-    let offset = (now + pixels).clamp(0.0, scroll.most);
-    (offset != now).then_some(Scrolled::View(scroll.signal, offset))
-  }
-
-  /// The innermost scroll view under `point` in `id`'s subtree, where its
-  /// ancestors' clips let the pointer reach.
-  fn scroll_view_at(&self, id: NodeId, point: Point) -> Option<NodeId> {
-    let node = self.node(id)?;
-    let point = local(node, point)?;
-    // As in `hit`: the subtree's area for the children, the box for itself.
-    if !node.inner_bounds.contains(point) {
-      return None;
-    }
-    self
-      .drawn_children(id)
-      .into_iter()
-      .rev()
-      .find_map(|child| self.scroll_view_at(child, point))
-      .or_else(|| {
-        let inside = node.rect.is_some_and(|rect| rect.contains(point));
-        (inside && matches!(node.kind, NodeKind::Scroll(_))).then_some(id)
-      })
-  }
-
   /// `point`, in window coordinates, in the coordinates node `id`'s
   /// rectangle is in, through the transforms of the node and its
   /// ancestors. `None` if one of them squashes it flat.
-  fn local_point(&self, id: NodeId, point: Point) -> Option<Point> {
+  pub(crate) fn local_point(&self, id: NodeId, point: Point) -> Option<Point> {
     self
       .path_to(id)
       .iter()
@@ -1236,7 +1206,7 @@ fn long_press_fired(tree: &Weak<RefCell<Tree>>, id: NodeId) {
 /// `point`, in the coordinates of `node`'s parent, in the node's own:
 /// moved back through its transform. `None` for a transform that squashes
 /// it flat, as a scale of 0 does, which nothing can point at.
-fn local(node: &Node, point: Point) -> Option<Point> {
+pub(crate) fn local(node: &Node, point: Point) -> Option<Point> {
   match node.transform {
     Some(transform) => Some(transform.invert()?.map(point)),
     None => Some(point),
@@ -1244,7 +1214,7 @@ fn local(node: &Node, point: Point) -> Option<Point> {
 }
 
 /// What a scroll does, once the tree is released.
-enum Scrolled {
+pub(crate) enum Scrolled {
   /// Runs a button's `on_wheel` and `on_scroll`.
   Buttons(Vec<Call>),
   /// Writes a scroll view's offset.

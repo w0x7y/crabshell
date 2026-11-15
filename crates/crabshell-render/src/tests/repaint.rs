@@ -722,3 +722,49 @@ fn scrolling_repaints_match_drawing_everything() {
     }
   }
 }
+
+#[test]
+fn a_scroll_bar_repaints_where_it_moves_and_where_it_was_once_it_goes() {
+  let mut scene = Scene::new();
+  let offset = scene.cx.signal(0.0);
+  let tall = scene.cx.signal(true);
+  let column = crabshell_ui::Column::new()
+    .child(Row::new().style(Style::new().height(20.0).background(Color::hex("#45475a"))))
+    .child(Row::new().style(move || Style::new().height(if tall.get() { 80.0 } else { 0.0 })));
+  let bar = Style::new()
+    .width(4.0)
+    .radius(2.0)
+    .background(Color::hex("#f9e2af"));
+  let panel = scene
+    .panel()
+    .style(Style::new().background(Color::rgb(30, 30, 46)))
+    .child(
+      Row::new().padding(5, 5).align(Align::Start).child(
+        crabshell_ui::ScrollView::new(column)
+          .offset(offset)
+          .scroll_bar(bar)
+          .style(Style::new().width(30.0).height(40.0)),
+      ),
+    );
+  let window = scene.window(panel, 60.0, 50.0);
+  for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+    offset.set(0.0);
+    tall.set(true);
+    scene.frame(&window);
+    window.take_damage();
+    let mut history = DamageHistory::new();
+    let mut buffer = Buffer::new(&window, scale);
+    repaint(&mut scene, &window, &[], &mut history, &mut buffer);
+    for (step, keep) in [(13.5, true), (60.0, true), (60.0, false)] {
+      offset.set(step);
+      tall.set(keep);
+      scene.frame(&window);
+      let damage = window.take_damage();
+      repaint(&mut scene, &window, &damage, &mut history, &mut buffer);
+      assert!(
+        buffer.pixels == scene.full(&window, scale).pixels,
+        "at {step}, tall {keep}, scale {scale}, a repaint differs from a full draw"
+      );
+    }
+  }
+}

@@ -374,6 +374,54 @@ fn clip() {
   });
 }
 
+/// A bordered, rounded view scrolled partway with a rounded bar inside
+/// its border, and a horizontal one with its bar along the bottom.
+#[test]
+fn scroll_bar() {
+  check("scroll_bar", 140.0, 60.0, |scene| {
+    let bands = || {
+      (0..8).fold(Column::new(), |list, n| {
+        let shade = if n % 2 == 0 { "#45475a" } else { "#585b70" };
+        list.child(Row::new().style(Style::new().height(12.0).background(Color::hex(shade))))
+      })
+    };
+    let across = (0..8).fold(Row::new(), |row, n| {
+      let shade = if n % 2 == 0 { "#45475a" } else { "#585b70" };
+      row.child(Row::new().style(Style::new().width(12.0).background(Color::hex(shade))))
+    });
+    let bar = Style::new()
+      .width(5.0)
+      .radius(2.5)
+      .background(Color::hex("#f9e2af"));
+    let offset = scene.cx.signal(30.0);
+    scene.panel().style(BAR).child(
+      Row::new()
+        .padding(5, 5)
+        .gap(10)
+        .align(Align::Start)
+        .child(
+          crabshell_ui::ScrollView::new(bands())
+            .offset(offset)
+            .scroll_bar(bar)
+            .style(
+              Style::new()
+                .width(40.0)
+                .height(50.0)
+                .radius(6.0)
+                .border(1.5, Color::hex("#89b4fa")),
+            ),
+        )
+        .child(
+          crabshell_ui::ScrollView::new(across)
+            .horizontal(true)
+            .offset(offset)
+            .scroll_bar(bar.width(3.0))
+            .style(Style::new().width(60.0).height(30.0)),
+        ),
+    )
+  });
+}
+
 /// The stripes picture in 30 by 30 boxes: filled, contained and covered.
 #[test]
 fn images() {

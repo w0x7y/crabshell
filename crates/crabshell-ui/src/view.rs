@@ -117,6 +117,15 @@ impl<'a> NodeView<'a> {
     self.node.clips()
   }
 
+  /// A scroll view's scroll bar handle and the style to draw it with,
+  /// over its children, while it shows one.
+  pub fn scroll_bar(&self) -> Option<(Rect, Style)> {
+    match &self.node.kind {
+      NodeKind::Scroll(scroll) => Some((scroll.handle?.1, scroll.bar?)),
+      _ => None,
+    }
+  }
+
   /// What the node draws besides its background and border.
   pub fn content(&self) -> Content<'a> {
     match &self.node.kind {

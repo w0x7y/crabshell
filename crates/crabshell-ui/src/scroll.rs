@@ -15,8 +15,17 @@ use crate::widgets::{
 /// Logical pixels a mouse wheel scrolls per notch.
 pub(crate) const PIXELS_PER_NOTCH: f32 = 48.0;
 
+/// The scroll bar's thickness when its style sets no `width`.
+pub(crate) const BAR_WIDTH: f32 = 6.0;
+
+/// The shortest a scroll bar's handle gets, so a long list's stays
+/// grabbable.
+pub(crate) const BAR_MIN_LENGTH: f32 = 16.0;
+
 pub(crate) struct ScrollProps {
   pub(crate) offset: Option<Signal<f32>>,
+  pub(crate) horizontal: Option<Prop<bool>>,
+  pub(crate) scroll_bar: Option<Prop<Option<Style>>>,
 }
 
 /// A box that shows part of its child, which may be taller, and scrolls
@@ -39,17 +48,42 @@ impl ScrollView {
   /// A scroll view of `child`.
   pub fn new(child: impl Widget) -> ScrollView {
     ScrollView {
-      scroll: ScrollProps { offset: None },
+      scroll: ScrollProps {
+        offset: None,
+        horizontal: None,
+        scroll_bar: None,
+      },
       common: Common::default(),
       child: Box::new(child),
     }
   }
 
   /// Shares the offset: how many logical pixels of the child are
-  /// scrolled out of view above. Scrolling writes it, and setting it
-  /// scrolls. Values past either end show that end.
+  /// scrolled out of view above, or to the left in a horizontal view.
+  /// Scrolling writes it, and setting it scrolls. Values past either end
+  /// show that end.
   pub fn offset(mut self, offset: Signal<f32>) -> ScrollView {
     self.scroll.offset = Some(offset);
+    self
+  }
+
+  /// Scrolls sideways instead: the child is laid out at its full width
+  /// rather than its full height, and the wheel, tilted or turned, and the
+  /// touchpad's sideways motion scroll it. Both at once isn't offered.
+  pub fn horizontal(mut self, horizontal: impl IntoProp<bool>) -> ScrollView {
+    self.scroll.horizontal = Some(horizontal.into_prop());
+    self
+  }
+
+  /// Draws a scroll bar while the child is longer than the box: a handle
+  /// along the right edge, or the bottom of a horizontal view, inside the
+  /// border, as long as the part shown and placed by the offset, over
+  /// the child. Its style's `background` and `radius` draw the handle,
+  /// and its `width`, 6 by default, is its thickness. Dragging the handle
+  /// scrolls, and a press beside it pages toward the press. `None`, the
+  /// default, draws none.
+  pub fn scroll_bar(mut self, style: impl IntoProp<Option<Style>>) -> ScrollView {
+    self.scroll.scroll_bar = Some(style.into_prop());
     self
   }
 
@@ -73,7 +107,7 @@ impl Widget for ScrollView {
     Element {
       name: "ScrollView",
       common,
-      kind: ElementKind::Scroll(scroll),
+      kind: ElementKind::Scroll(Box::new(scroll)),
       children: vec![ElementChild::One(Box::new(child.into_element()))],
     }
   }
@@ -113,6 +147,7 @@ struct ListProps {
   current: Option<Prop<Option<usize>>>,
   offset: Option<Signal<f32>>,
   style: Option<Prop<Style>>,
+  scroll_bar: Option<Prop<Option<Style>>>,
 }
 
 impl ListView {
@@ -141,6 +176,7 @@ impl ListView {
         current: None,
         offset: None,
         style: None,
+        scroll_bar: None,
       },
       common: Common::default(),
     }
@@ -168,6 +204,12 @@ impl ListView {
   /// Shares the offset, as [`ScrollView::offset`] does.
   pub fn offset(mut self, offset: Signal<f32>) -> ListView {
     self.props.offset = Some(offset);
+    self
+  }
+
+  /// Draws a scroll bar, as [`ScrollView::scroll_bar`] does.
+  pub fn scroll_bar(mut self, style: impl IntoProp<Option<Style>>) -> ListView {
+    self.props.scroll_bar = Some(style.into_prop());
     self
   }
 
@@ -231,6 +273,7 @@ where
     current,
     offset,
     style,
+    scroll_bar,
   } = props;
   let offset = offset.unwrap_or_else(|| cx.signal(0.0));
   let row_height = cx.memo(prop_fn(row_height, ListView::DEFAULT_ROW_HEIGHT));
@@ -314,6 +357,9 @@ where
       },
     );
   let mut scroll = ScrollView::new(rows).offset(offset);
+  if let Some(bar) = scroll_bar {
+    scroll = scroll.scroll_bar(bar);
+  }
   scroll = scroll.style(move || {
     let own = style.as_ref().map(|style| style()).unwrap_or_default();
     own.height(height.get() as f32)

@@ -20,10 +20,11 @@ use taffy::{
 };
 
 use crate::geometry::{Affine, Point, Rect, through};
+use crate::scroll::{BAR_MIN_LENGTH, BAR_WIDTH};
 use crate::style::{Font, Style};
 use crate::text::TextSystem;
 use crate::text_input::DEFAULT_WIDTH;
-use crate::tree::{Node, NodeId, NodeKind, Tree, add_damage, centered, icon_rect};
+use crate::tree::{Node, NodeId, NodeKind, ScrollNode, Tree, add_damage, centered, icon_rect};
 use crate::widgets::{Align, Justify};
 
 /// The kind of container a node sits in, which decides how it is placed.
@@ -216,27 +217,41 @@ impl Tree {
       (layout.content_box_height()).max(0.0),
     );
 
-    // A scroll view shows its child moved up by the offset, clamped so
-    // neither end scrolls past the box.
+    // A scroll view shows its child moved up, or left, by the offset,
+    // clamped so neither end scrolls past the box.
     let mut origin = Point::new(rect.x, rect.y);
     if let Some(NodeKind::Scroll(scroll)) = self.node(id).map(|node| &node.kind) {
-      let bottom = self
+      let horizontal = scroll.horizontal;
+      let end = self
         .taffy
         .children(id)
         .unwrap_or_default()
         .into_iter()
         .filter_map(|child| self.taffy.layout(child).ok())
         .map(|child| {
-          child.location.y + child.size.height + layout.padding.bottom + layout.border.bottom
+          if horizontal {
+            child.location.x + child.size.width + layout.padding.right + layout.border.right
+          } else {
+            child.location.y + child.size.height + layout.padding.bottom + layout.border.bottom
+          }
         })
         .fold(0.0, f32::max);
-      let most = (bottom - layout.size.height).max(0.0);
+      let length = if horizontal {
+        layout.size.width
+      } else {
+        layout.size.height
+      };
+      let most = (end - length).max(0.0);
       let shown = if scroll.offset.is_nan() {
         0.0
       } else {
         scroll.offset.clamp(0.0, most)
       };
-      origin.y -= shown;
+      if horizontal {
+        origin.x -= shown;
+      } else {
+        origin.y -= shown;
+      }
       if let Some(NodeKind::Scroll(scroll)) = self.node_mut(id).map(|node| &mut node.kind) {
         scroll.shown = shown;
         scroll.most = most;
@@ -253,11 +268,38 @@ impl Tree {
     for child in self.taffy.children(id).unwrap_or_default() {
       children = children.union(self.place(child, origin, chain, fonts));
     }
+    self.place_bar(id, rect, chain);
     let bounds = self.finish_place(id, rect, content, children, chain, fonts);
     if transform.is_some() {
       chain.pop();
     }
     bounds
+  }
+
+  /// Places scroll view `id`'s bar along its right or bottom edge, inside
+  /// the border, and repaints where its handle was and is when it moves,
+  /// comes or goes. `chain` ends with the node's own transform.
+  fn place_bar(&mut self, id: NodeId, rect: Rect, chain: &[Affine]) {
+    let Some(node) = self.taffy.get_node_context_mut(id) else {
+      return;
+    };
+    let border = node
+      .effective_style()
+      .border
+      .map_or(0.0, |border| border.width.max(0.0));
+    let NodeKind::Scroll(scroll) = &mut node.kind else {
+      return;
+    };
+    let handle = scroll
+      .bar
+      .filter(|_| scroll.most > 0.0)
+      .and_then(|bar| bar_rects(scroll, bar, rect, border));
+    let old = std::mem::replace(&mut scroll.handle, handle);
+    if old != handle {
+      for (_, shape) in [old, handle].into_iter().flatten() {
+        add_damage(&mut self.damage, through(chain, shape));
+      }
+    }
   }
 
   /// Forgets where a hidden node and everything in it were, repainting
@@ -399,6 +441,47 @@ fn displaced(transform: Option<Affine>, by: Point) -> Option<Affine> {
   Some(moved)
 }
 
+/// A scroll bar's track and handle inside `rect`, a scroll view's box
+/// with a border `border` wide: as long as the part shown, placed by the
+/// offset shown, and never shorter than [`BAR_MIN_LENGTH`] unless the
+/// track is.
+fn bar_rects(scroll: &ScrollNode, bar: Style, rect: Rect, border: f32) -> Option<(Rect, Rect)> {
+  let width = bar
+    .width
+    .filter(|w| w.is_finite() && *w > 0.0)
+    .unwrap_or(BAR_WIDTH);
+  let (along, start) = if scroll.horizontal {
+    (rect.width - 2.0 * border, rect.x + border)
+  } else {
+    (rect.height - 2.0 * border, rect.y + border)
+  };
+  if along <= 0.0 {
+    return None;
+  }
+  let view = if scroll.horizontal {
+    rect.width
+  } else {
+    rect.height
+  };
+  let length = (along * view / (view + scroll.most))
+    .max(BAR_MIN_LENGTH)
+    .min(along);
+  let at = start + (along - length) * scroll.shown / scroll.most;
+  Some(if scroll.horizontal {
+    let y = rect.bottom() - border - width;
+    (
+      Rect::new(start, y, along, width),
+      Rect::new(at, y, length, width),
+    )
+  } else {
+    let x = rect.right() - border - width;
+    (
+      Rect::new(x, start, width, along),
+      Rect::new(x, at, width, length),
+    )
+  })
+}
+
 /// Measures a leaf: text through its buffer, an icon as a square, an
 /// image at its size.
 fn measure(
@@ -507,13 +590,21 @@ fn taffy_style(node: &Node, parent: Parent, size: crate::Size) -> taffy::Style {
       };
     }
     NodeKind::Stack => style.display = Display::Grid,
-    NodeKind::Scroll(_) => {
-      style.flex_direction = FlexDirection::Column;
+    NodeKind::Scroll(scroll) => {
       // As in CSS, a scroll container isn't held to its content's size.
-      style.overflow = taffy::Point {
-        x: Overflow::Visible,
-        y: Overflow::Scroll,
-      };
+      if scroll.horizontal {
+        style.flex_direction = FlexDirection::Row;
+        style.overflow = taffy::Point {
+          x: Overflow::Scroll,
+          y: Overflow::Visible,
+        };
+      } else {
+        style.flex_direction = FlexDirection::Column;
+        style.overflow = taffy::Point {
+          x: Overflow::Visible,
+          y: Overflow::Scroll,
+        };
+      }
       style.scrollbar_width = 0.0;
     }
     NodeKind::Spacer => style.flex_grow = 1.0,

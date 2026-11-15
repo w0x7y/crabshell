@@ -3,7 +3,8 @@
 
 use super::{Counter, Harness, node_at, paths, pixels, rect_at, wheel};
 use crate::{
-  Align, Button, Column, Icon, ListView, Point, Rect, Row, ScrollView, Style, Text, Window,
+  Align, Button, Column, Icon, ListView, Point, PointerButton, Rect, Row, ScrollSource, ScrollView,
+  Style, Text, Wheel, WheelAxis, Window,
 };
 
 /// A 50-pixel-tall scroll view of ten 20-pixel icons in a column.
@@ -155,6 +156,26 @@ fn a_list_builds_only_the_rows_in_view_and_frees_the_rest() {
     paths(&window)
       .iter()
       .any(|path| path.starts_with("PanelWindow[DP-1]/ListView"))
+  );
+}
+
+#[test]
+fn a_list_passes_its_scroll_bar_on() {
+  let mut h = Harness::new();
+  let list = ListView::new(
+    || (0..50).collect::<Vec<u32>>(),
+    |n| *n,
+    |_, n| Text::new(move || n.get().to_string()),
+  )
+  .row_height(20)
+  .height(100)
+  .scroll_bar(Style::new());
+  let window = h.window(h.panel().child(list), 100.0, 200.0);
+  // The list's scroll view: 100 of 1000 pixels shown.
+  let bar = node_at(window.view().root(), &[0, 0]).scroll_bar();
+  assert_eq!(
+    bar.map(|(rect, _)| rect),
+    Some(Rect::new(94.0, 0.0, 6.0, 16.0))
   );
 }
 
@@ -313,4 +334,200 @@ fn current_allows_for_padding_that_differs_above_and_below() {
   current.set(Some(7));
   h.frame(&window);
   assert_eq!(offset.get(), 100.0);
+}
+
+/// A 50 by 20 horizontal view of ten 20-pixel icons in a row.
+fn ten_across(h: &mut Harness, offset: crabshell_reactive::Signal<f32>) -> Window {
+  let row = (0..10).fold(Row::new(), |row, _| row.child(Icon::new("x").size(20)));
+  let view = ScrollView::new(row)
+    .horizontal(true)
+    .offset(offset)
+    .style(Style::new().width(50.0).height(20.0));
+  let outer = Row::new().align(Align::Start).child(view);
+  h.window(h.panel().child(outer), 100.0, 100.0)
+}
+
+fn sideways(axis: WheelAxis, source: ScrollSource) -> Wheel {
+  Wheel {
+    source,
+    x: axis,
+    y: WheelAxis::default(),
+  }
+}
+
+#[test]
+fn a_horizontal_view_lays_its_child_out_at_full_width_and_scrolls_sideways() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(30.0);
+  let window = ten_across(&mut h, offset);
+  assert_eq!(rect_at(&window, &[0, 0, 0]).width, 200.0);
+  assert_eq!(first_icon(&window).x, -30.0);
+  offset.set(1000.0);
+  h.frame(&window);
+  assert_eq!(first_icon(&window).x, -150.0);
+  offset.set(0.0);
+  h.frame(&window);
+  window.pointer_motion(Point::new(10.0, 10.0));
+  // A turned wheel scrolls it sideways, having nothing else to do.
+  window.pointer_scroll(wheel(120));
+  assert_eq!(offset.get(), 48.0);
+  let tilt = WheelAxis {
+    pixels: 15.0,
+    notches: 1.0,
+    stop: false,
+  };
+  window.pointer_scroll(sideways(tilt, ScrollSource::WheelTilt));
+  assert_eq!(offset.get(), 96.0);
+  let finger = WheelAxis {
+    pixels: -6.0,
+    ..WheelAxis::default()
+  };
+  window.pointer_scroll(sideways(finger, ScrollSource::Finger));
+  assert_eq!(offset.get(), 90.0);
+  // A touchpad's up and down is for a view around it.
+  window.pointer_scroll(pixels(10.0));
+  assert_eq!(offset.get(), 90.0);
+}
+
+#[test]
+fn the_innermost_view_that_can_still_move_takes_the_wheel() {
+  let mut h = Harness::new();
+  let (inner, outer) = (h.cx.signal(0.0), h.cx.signal(0.0));
+  let column = (0..3).fold(Column::new(), |column, _| {
+    column.child(Icon::new("x").size(20))
+  });
+  let content = Column::new()
+    .child(
+      ScrollView::new(column)
+        .offset(inner)
+        .style(Style::new().height(30.0)),
+    )
+    .child(Icon::new("x").size(100));
+  let view = ScrollView::new(content)
+    .offset(outer)
+    .style(Style::new().height(50.0));
+  let window = h.window(h.panel().child(view), 100.0, 100.0);
+  window.pointer_motion(Point::new(10.0, 10.0));
+  window.pointer_scroll(wheel(120));
+  assert_eq!(
+    (inner.get(), outer.get()),
+    (30.0, 0.0),
+    "the inner one, to its end"
+  );
+  h.frame(&window);
+  window.pointer_scroll(wheel(120));
+  assert_eq!(
+    (inner.get(), outer.get()),
+    (30.0, 48.0),
+    "then the outer one"
+  );
+  h.frame(&window);
+  // Over the inner view again, up moves it first: it can.
+  window.pointer_scroll(wheel(-120));
+  assert_eq!(
+    (inner.get(), outer.get()),
+    (30.0, 0.0),
+    "out of sight above"
+  );
+  h.frame(&window);
+  window.pointer_scroll(wheel(-120));
+  assert_eq!((inner.get(), outer.get()), (0.0, 0.0));
+}
+
+/// A 40 by 100 view of 200 pixels of icons, with a bordered box and a
+/// four-pixel bar.
+fn barred(h: &mut Harness, offset: crabshell_reactive::Signal<f32>) -> (Window, Counter) {
+  let clicks = Counter::default();
+  let c = clicks.clone();
+  let column = Column::new()
+    .child(Button::new(Icon::new("x").size(40)).on_click(move |_| c.hit()))
+    .child(Icon::new("x").size(160));
+  let view = ScrollView::new(column)
+    .offset(offset)
+    .scroll_bar(
+      Style::new()
+        .width(4.0)
+        .radius(2.0)
+        .background(crate::Color::rgb(1, 2, 3)),
+    )
+    .style(Style::new().width(40.0).height(100.0));
+  let row = Row::new().align(Align::Start).child(view);
+  (h.window(h.panel().child(row), 100.0, 200.0), clicks)
+}
+
+fn bar(window: &Window) -> Option<Rect> {
+  node_at(window.view().root(), &[0, 0])
+    .scroll_bar()
+    .map(|(rect, _)| rect)
+}
+
+#[test]
+fn a_scroll_bar_is_as_long_as_the_part_shown_and_placed_by_the_offset() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0);
+  let (window, _) = barred(&mut h, offset);
+  // A 100-pixel view of 200 shows half: a 50-pixel handle at the top.
+  assert_eq!(bar(&window), Some(Rect::new(36.0, 0.0, 4.0, 50.0)));
+  offset.set(50.0);
+  h.frame(&window);
+  assert_eq!(bar(&window), Some(Rect::new(36.0, 25.0, 4.0, 50.0)));
+  // Content that fits shows none, and a view without one never does.
+  let fits = ScrollView::new(Icon::new("x").size(20))
+    .scroll_bar(Style::new())
+    .style(Style::new().height(50.0));
+  let plain = ScrollView::new(Icon::new("x").size(200)).style(Style::new().height(50.0));
+  let row = Row::new().align(Align::Start).child(fits).child(plain);
+  let other = h.window(h.panel().child(row), 100.0, 100.0);
+  assert_eq!(node_at(other.view().root(), &[0, 0]).scroll_bar(), None);
+  assert_eq!(node_at(other.view().root(), &[0, 1]).scroll_bar(), None);
+}
+
+#[test]
+fn a_bar_sits_inside_the_border_and_along_the_bottom_of_a_horizontal_view() {
+  let mut h = Harness::new();
+  let row = (0..10).fold(Row::new(), |row, _| row.child(Icon::new("x").size(20)));
+  let view = ScrollView::new(row)
+    .horizontal(true)
+    .scroll_bar(Style::new())
+    .style(
+      Style::new()
+        .width(54.0)
+        .height(30.0)
+        .border(2.0, crate::Color::rgb(0, 0, 0)),
+    );
+  let outer = Row::new().align(Align::Start).child(view);
+  let window = h.window(h.panel().child(outer), 100.0, 100.0);
+  // 54 of 204 shown would be 13 of the 50 inside the border, under the
+  // shortest handle; 6 thick by default.
+  assert_eq!(bar(&window), Some(Rect::new(2.0, 22.0, 16.0, 6.0)));
+}
+
+#[test]
+fn dragging_the_bar_scrolls_and_a_press_beside_it_pages() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0);
+  let (window, clicks) = barred(&mut h, offset);
+  // The handle's 50 pixels of room stand for 100 of content.
+  window.pointer_motion(Point::new(38.0, 10.0));
+  window.pointer_button_at(PointerButton::Left, true, 0);
+  window.pointer_motion(Point::new(60.0, 35.0));
+  assert_eq!(offset.get(), 50.0);
+  window.pointer_motion(Point::new(38.0, 500.0));
+  assert_eq!(offset.get(), 100.0);
+  window.pointer_button_at(PointerButton::Left, false, 50);
+  window.pointer_motion(Point::new(38.0, 600.0));
+  assert_eq!(offset.get(), 100.0, "let go");
+  h.frame(&window);
+  // The handle is at 50 to 100 now; a press above it pages up.
+  window.pointer_motion(Point::new(38.0, 20.0));
+  window.pointer_button_at(PointerButton::Left, true, 100);
+  window.pointer_button_at(PointerButton::Left, false, 150);
+  assert_eq!(offset.get(), 0.0);
+  h.frame(&window);
+  // The bar covers the button below it, which doesn't click.
+  assert_eq!(clicks.get(), 0);
+  window.pointer_motion(Point::new(10.0, 20.0));
+  window.pointer_button_at(PointerButton::Left, true, 200);
+  window.pointer_button_at(PointerButton::Left, false, 250);
+  assert_eq!(clicks.get(), 1);
 }
