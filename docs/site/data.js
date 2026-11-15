@@ -237,7 +237,7 @@ const PHASES = [
       ],
       ["yes", "seven steps, each reviewed and its fixes in"],
       ["yes", "checked by hand on hyprland 0.57.2"],
-      ["no", "released on crates.io, as 0.3"],
+      ["yes", "released on crates.io, as 0.3"],
     ],
   },
 ];

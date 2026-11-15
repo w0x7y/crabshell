@@ -1,7 +1,6 @@
 [package]
 name = "crabshell"
-# 0.2.1 depends on crabshell-services 0.2.1; the rest stay at 0.2.0.
-version = "0.2.1"
+version.workspace = true
 description = "A full Rust replacement for Quickshell, where your whole shell is a Rust crate"
 edition.workspace = true
 rust-version.workspace = true

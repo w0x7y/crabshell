@@ -1,7 +1,6 @@
 [package]
 name = "crabshell-cli"
-# 0.2.1 fixes `init --path`; the other crates stay at the workspace's 0.2.0.
-version = "0.2.1"
+version.workspace = true
 description = "The crabshell command: creates, checks, runs and calls into a Crabshell config"
 edition.workspace = true
 rust-version.workspace = true
