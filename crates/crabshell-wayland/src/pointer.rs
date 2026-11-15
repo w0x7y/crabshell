@@ -15,14 +15,15 @@ use crate::windows::WindowId;
 /// What one pointer event means to a window.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Input {
-  /// The pointer entered or moved, to this point in logical pixels.
-  Motion(Point),
+  /// The pointer entered or moved, to this point in logical pixels, at
+  /// this time in milliseconds; an enter has none.
+  Motion(Point, Option<u32>),
   /// The pointer left.
   Leave,
   /// A button went down (`true`) or up, at this time in milliseconds.
   Button(PointerButton, bool, u32),
-  /// Scrolling on either axis, or its end.
-  Scroll(Wheel),
+  /// Scrolling on either axis, or its end, at this time in milliseconds.
+  Scroll(Wheel, u32),
 }
 
 /// The inputs a pointer event at `position` makes. Buttons other than
@@ -30,9 +31,14 @@ pub(crate) enum Input {
 /// numbers, make none.
 pub(crate) fn inputs(kind: &PointerEventKind, (x, y): (f64, f64)) -> Vec<Input> {
   match kind {
-    PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
-      point(x, y).map(Input::Motion).into_iter().collect()
-    }
+    PointerEventKind::Enter { .. } => point(x, y)
+      .map(|at| Input::Motion(at, None))
+      .into_iter()
+      .collect(),
+    PointerEventKind::Motion { time } => point(x, y)
+      .map(|at| Input::Motion(at, Some(*time)))
+      .into_iter()
+      .collect(),
     PointerEventKind::Leave { .. } => vec![Input::Leave],
     PointerEventKind::Press { button, time, .. } => button_input(*button, true, *time),
     PointerEventKind::Release { button, time, .. } => button_input(*button, false, *time),
@@ -40,9 +46,9 @@ pub(crate) fn inputs(kind: &PointerEventKind, (x, y): (f64, f64)) -> Vec<Input> 
       horizontal,
       vertical,
       source,
-      ..
+      time,
     } => scroll_input(horizontal, vertical, *source)
-      .map(Input::Scroll)
+      .map(|wheel| Input::Scroll(wheel, *time))
       .into_iter()
       .collect(),
   }
@@ -109,10 +115,11 @@ fn axis(axis: &AxisScroll) -> Option<WheelAxis> {
 /// returns the cursor to show afterward.
 pub(crate) fn apply(window: &Window, input: Input) -> CursorShape {
   match input {
-    Input::Motion(position) => return window.pointer_motion(position),
+    Input::Motion(position, Some(time)) => return window.pointer_motion_at(position, time),
+    Input::Motion(position, None) => return window.pointer_motion(position),
     Input::Leave => window.pointer_leave(),
     Input::Button(button, pressed, time) => window.pointer_button_at(button, pressed, time),
-    Input::Scroll(wheel) => window.pointer_scroll(wheel),
+    Input::Scroll(wheel, time) => window.pointer_scroll_at(wheel, time),
   }
   window.cursor()
 }
@@ -185,15 +192,15 @@ impl Touch {
     };
     self.active = Some((id, window));
     vec![
-      Input::Motion(at),
+      Input::Motion(at, Some(time)),
       Input::Button(PointerButton::Left, true, time),
     ]
   }
 
-  /// The followed finger moved.
-  pub(crate) fn motion(&mut self, id: i32, (x, y): (f64, f64)) -> Vec<Input> {
+  /// The followed finger moved, at `time`.
+  pub(crate) fn motion(&mut self, id: i32, (x, y): (f64, f64), time: u32) -> Vec<Input> {
     match point(x, y) {
-      Some(at) if self.follows(id) => vec![Input::Motion(at)],
+      Some(at) if self.follows(id) => vec![Input::Motion(at, Some(time))],
       _ => Vec::new(),
     }
   }

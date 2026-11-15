@@ -46,23 +46,33 @@ fn vertical(axis: AxisScroll) -> PointerEventKind {
 
 /// What a mouse wheel turned on the vertical axis gives.
 fn notches(pixels: f32, notches: f32) -> Input {
-  Input::Scroll(Wheel {
-    source: ScrollSource::Wheel,
-    x: WheelAxis::default(),
-    y: WheelAxis {
-      pixels,
-      notches,
-      stop: false,
+  Input::Scroll(
+    Wheel {
+      source: ScrollSource::Wheel,
+      x: WheelAxis::default(),
+      y: WheelAxis {
+        pixels,
+        notches,
+        stop: false,
+      },
     },
-  })
+    0,
+  )
 }
 
 #[test]
 fn positions_buttons_and_leaving() {
   let at = (12.5, 7.0);
-  let point = Input::Motion(Point::new(12.5, 7.0));
-  assert_eq!(inputs(&PointerEventKind::Enter { serial: 1 }, at), [point]);
-  assert_eq!(inputs(&PointerEventKind::Motion { time: 0 }, at), [point]);
+  let point = Point::new(12.5, 7.0);
+  assert_eq!(
+    inputs(&PointerEventKind::Enter { serial: 1 }, at),
+    [Input::Motion(point, None)]
+  );
+  // A motion's time times a drag's fling.
+  assert_eq!(
+    inputs(&PointerEventKind::Motion { time: 7 }, at),
+    [Input::Motion(point, Some(7))]
+  );
   assert_eq!(
     inputs(&PointerEventKind::Leave { serial: 1 }, at),
     [Input::Leave]
@@ -126,7 +136,7 @@ fn wheels_touchpads_and_the_end_of_a_gesture() {
   assert_eq!(inputs(&vertical(old_wheel), at), [notches(-15.0, -2.0)]);
   // Fingers, said so, then lifting with the last pixels.
   let fingers = |vertical, horizontal| PointerEventKind::Axis {
-    time: 0,
+    time: 9,
     horizontal,
     vertical,
     source: Some(AxisSource::Finger),
@@ -143,26 +153,29 @@ fn wheels_touchpads_and_the_end_of_a_gesture() {
   };
   assert_eq!(
     inputs(&fingers(last_and_lift, sideways), at),
-    [Input::Scroll(Wheel {
-      source: ScrollSource::Finger,
-      x: WheelAxis {
-        pixels: -4.5,
-        notches: 0.0,
-        stop: true,
+    [Input::Scroll(
+      Wheel {
+        source: ScrollSource::Finger,
+        x: WheelAxis {
+          pixels: -4.5,
+          notches: 0.0,
+          stop: true,
+        },
+        y: WheelAxis {
+          pixels: 1.0,
+          notches: 0.0,
+          stop: true,
+        },
       },
-      y: WheelAxis {
-        pixels: 1.0,
-        notches: 0.0,
-        stop: true,
-      },
-    })]
+      9
+    )]
   );
   // Pixels with no source count as continuous.
   let touchpad = AxisScroll {
     absolute: 3.5,
     ..AxisScroll::default()
   };
-  let Input::Scroll(scrolled) = inputs(&vertical(touchpad), at)[0] else {
+  let Input::Scroll(scrolled, _) = inputs(&vertical(touchpad), at)[0] else {
     panic!("scrolling");
   };
   assert_eq!(scrolled.source, ScrollSource::Continuous);
@@ -173,7 +186,7 @@ fn wheels_touchpads_and_the_end_of_a_gesture() {
     vertical: AxisScroll::default(),
     source: Some(AxisSource::WheelTilt),
   };
-  let Input::Scroll(tilted) = inputs(&tilt, at)[0] else {
+  let Input::Scroll(tilted, _) = inputs(&tilt, at)[0] else {
     panic!("scrolling");
   };
   assert_eq!(
@@ -208,20 +221,20 @@ fn one_finger_is_a_pointer_that_taps_and_drags() {
   assert_eq!(
     touch.down(1, window, (10.0, 5.0), 100),
     [
-      Input::Motion(Point::new(10.0, 5.0)),
+      Input::Motion(Point::new(10.0, 5.0), Some(100)),
       Input::Button(PointerButton::Left, true, 100),
     ]
   );
   assert_eq!(touch.window(), Some(window));
   // A second finger is ignored, down, moving and up.
   assert_eq!(touch.down(2, WindowId(5), (50.0, 5.0), 110), []);
-  assert_eq!(touch.motion(2, (60.0, 5.0)), []);
+  assert_eq!(touch.motion(2, (60.0, 5.0), 115), []);
   assert_eq!(touch.up(2, 120), []);
   assert_eq!(
-    touch.motion(1, (30.0, 6.0)),
-    [Input::Motion(Point::new(30.0, 6.0))]
+    touch.motion(1, (30.0, 6.0), 150),
+    [Input::Motion(Point::new(30.0, 6.0), Some(150))]
   );
-  assert_eq!(touch.motion(1, (f64::NAN, 6.0)), []);
+  assert_eq!(touch.motion(1, (f64::NAN, 6.0), 160), []);
   assert_eq!(
     touch.up(1, 200),
     [Input::Button(PointerButton::Left, false, 200), Input::Leave]

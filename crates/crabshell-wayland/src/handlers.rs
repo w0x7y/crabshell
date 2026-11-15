@@ -482,7 +482,7 @@ impl TouchHandler for Platform {
     _: &Connection,
     _: &QueueHandle<Self>,
     touch: &WlTouch,
-    _: u32,
+    time: u32,
     id: i32,
     position: (f64, f64),
   ) {
@@ -490,7 +490,7 @@ impl TouchHandler for Platform {
       return;
     };
     let window = ours.state.window();
-    let inputs = ours.state.motion(id, position);
+    let inputs = ours.state.motion(id, position, time);
     if let Some(window) = window {
       self.touch_inputs(window, inputs);
     }

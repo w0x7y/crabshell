@@ -20,7 +20,8 @@ use std::time::{Duration, Instant};
 use crabshell_reactive::{ReadSignal, Runtime, Signal};
 use crabshell_ui::{
   Adjust, Align, Button, Color, Column, Content, Cx, Edge, Key, KeyEvent, KeyboardFocus, Margins,
-  Output, PanelWindow, PopupWindow, Rect, Region, Row, Spacer, Style, Text, TextInput, Window,
+  Output, PanelWindow, PopupWindow, Rect, Region, Row, ScrollView, Slider, Spacer, Style, Text,
+  TextInput, Window,
 };
 use crabshell_ui::{CaptureFrame, CaptureSource, FloatingWindow, ScreencopyView, Transition};
 use crabshell_ui::{Layer, Lock, SessionLock};
@@ -4398,5 +4399,89 @@ fn a_virtual_pointer_drops_a_chip_on_the_trash_and_the_rest_slide_then_sleep() {
     .collect();
   assert_eq!(placed, [(0.0, None), (110.0, None), (220.0, None)]);
   drop(view);
+  sleeps_through(&mut shell.event_loop, Duration::from_secs(2));
+}
+
+/// A bar along the bottom with a 120-pixel slider over 0 to 104, so its
+/// value is where its handle's left edge is, and a 40-pixel square view of
+/// 30 rows 20 tall.
+fn slider_bar(cx: &Cx, value: Signal<f32>, dragging: Signal<bool>, offset: Signal<f32>) -> Window {
+  let rows = (0..30).fold(Column::new(), |column, n| {
+    let shade = if n % 2 == 0 { "#45475a" } else { "#585b70" };
+    column.child(Row::new().style(Style::new().height(20.0).background(Color::hex(shade))))
+  });
+  let panel = PanelWindow::new(&Output::new("HEADLESS-1"))
+    .anchors(Edge::Bottom | Edge::Left | Edge::Right)
+    .height(40)
+    .style(Style::new().background(Color::hex("#1e1e2e")))
+    .child(
+      Row::new()
+        .gap(10)
+        .align(Align::Start)
+        .child(
+          Slider::new(value)
+            .range(0.0, 104.0)
+            .dragging(dragging)
+            .style(Style::new().background(Color::hex("#45475a")))
+            .fill_style(Style::new().background(Color::hex("#89b4fa")))
+            .handle_style(Style::new().radius(8.0).background(Color::hex("#cdd6f4"))),
+        )
+        .child(
+          ScrollView::new(rows)
+            .offset(offset)
+            .style(Style::new().width(40.0).height(40.0)),
+        ),
+    );
+  Window::new(cx, panel)
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_virtual_pointer_drags_a_slider_and_a_touchpad_flings_a_view_to_rest() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let mut shell = Shell::new(&sway);
+  let mut pointer = VirtualPointer::new(&sway);
+  shell.wait_for_bar("HEADLESS-1");
+  let cx = Cx::new(shell.runtime.new_owner());
+  let (value, dragging, offset) = (cx.signal(0.0), cx.signal(false), cx.signal(0.0));
+  let id = shell
+    .event_loop
+    .platform()
+    .add_window(slider_bar(&cx, value, dragging, offset));
+  run_until(&mut shell.event_loop, "the bar's frame", |platform| {
+    platform
+      .window_info(id)
+      .is_some_and(|info| info.commits > 0)
+  });
+  settle(&mut shell.event_loop);
+
+  // The handle is 16 tall at the bar's top; its middle follows the
+  // pointer from the press, with no threshold.
+  pointer.move_to(60, 1048, OUTPUT);
+  pointer.press(VirtualPointer::LEFT);
+  run_until(&mut shell.event_loop, "the press", |_| value.get() == 52.0);
+  assert!(dragging.get());
+  pointer.move_to(400, 900, OUTPUT);
+  run_until(&mut shell.event_loop, "the drag to the end", |_| {
+    value.get() == 104.0
+  });
+  pointer.move_to(30, 1048, OUTPUT);
+  pointer.release(VirtualPointer::LEFT);
+  run_until(&mut shell.event_loop, "the release", |_| !dragging.get());
+  assert_eq!(value.get(), 22.0);
+
+  // Five 10-pixel moves 10 ms apart lift at 1000 pixels a second.
+  pointer.move_to(150, 1060, OUTPUT);
+  for _ in 0..5 {
+    pointer.swipe(0.0, 10.0, false);
+    std::thread::sleep(Duration::from_millis(10));
+  }
+  pointer.swipe(0.0, 0.0, true);
+  run_until(&mut shell.event_loop, "the fling's rest", |_| {
+    offset.get() > 50.0 && !crabshell_ui::animating()
+  });
+  assert!(offset.get() > 150.0, "it flung on to {}", offset.get());
+  settle(&mut shell.event_loop);
   sleeps_through(&mut shell.event_loop, Duration::from_secs(2));
 }
