@@ -64,6 +64,22 @@ pub enum TrayStatus {
   NeedsAttention,
 }
 
+/// What kind of app a tray item is, from its `Category`, so a bar can
+/// group or order its items.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TrayCategory {
+  /// An ordinary app, and the kind of any item that says none or one
+  /// the spec doesn't name.
+  #[default]
+  ApplicationStatus,
+  /// A chat or mail app.
+  Communications,
+  /// A system service, such as an input method or a disk indexer.
+  SystemServices,
+  /// A hardware control, such as a battery or volume indicator.
+  Hardware,
+}
+
 /// One app's tray icon, as its StatusNotifierItem describes it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TrayItem {
@@ -95,6 +111,8 @@ pub struct TrayItem {
   /// Where its menu is on the bus, or empty for none. Open it with
   /// [`TrayHost::open_menu`].
   pub menu: String,
+  /// What kind of app it is.
+  pub category: TrayCategory,
 }
 
 impl TrayItem {
@@ -770,6 +788,7 @@ struct Properties {
   tool_tip: Option<(String, Pixmaps, String, String)>,
   item_is_menu: Option<bool>,
   menu: Option<zbus::OwnedObjectPath>,
+  category: Option<String>,
 }
 
 impl Properties {
@@ -785,6 +804,20 @@ impl Properties {
           "a tray item's status is unknown; taken as Active"
         );
         TrayStatus::Active
+      }
+    };
+    let category = match self.category.as_deref() {
+      Some("Communications") => TrayCategory::Communications,
+      Some("SystemServices") => TrayCategory::SystemServices,
+      Some("Hardware") => TrayCategory::Hardware,
+      Some("ApplicationStatus") | None => TrayCategory::ApplicationStatus,
+      Some(other) => {
+        tracing::debug!(
+          id,
+          category = other,
+          "a tray item's category is unknown; taken as ApplicationStatus"
+        );
+        TrayCategory::ApplicationStatus
       }
     };
     TrayItem {
@@ -806,6 +839,7 @@ impl Properties {
         .map(|path| path.to_string())
         .filter(|path| path != "/NO_DBUSMENU")
         .unwrap_or_default(),
+      category,
       id,
     }
   }

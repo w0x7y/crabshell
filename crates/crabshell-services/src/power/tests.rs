@@ -3,9 +3,12 @@ use std::time::{Duration, Instant};
 use zbus::{ObjectPath, Variant};
 
 use super::{
-  BatteryState, DEVICE, DeviceKind, PROFILES, PROFILES_PATH, PowerProfile, UPOWER, UPOWER_PATH,
+  BatteryState, DEVICE, DeviceKind, PROFILES, PROFILES_PATH, PerformanceDegradation, PowerProfile,
+  UPOWER, UPOWER_PATH,
 };
-use crate::testing::{FakeService, Harness, PrivateBus, capture_logs, offline, reply};
+use crate::testing::{
+  FakeService, Harness, PrivateBus, capture_logs, capture_logs_from, offline, reply,
+};
 use crate::{Config, ServicesExt};
 
 const BATTERY: &str = "/org/freedesktop/UPower/devices/battery_BAT0";
@@ -292,6 +295,7 @@ fn fake_profiles(shell: &mut Harness, bus: &PrivateBus, active: &str) -> FakeSer
     &[
       ("ActiveProfile", Variant::from(active)),
       ("Profiles", Variant::from(profiles)),
+      ("PerformanceDegraded", Variant::from("")),
     ],
   );
   daemon.own(shell);
@@ -332,6 +336,59 @@ fn the_active_profile_shows_and_setting_one_asks_the_daemon() {
     active.get_untracked().is_none()
   });
   assert_eq!(profiles.available().get_untracked(), []);
+}
+
+#[test]
+fn the_degradation_reason_follows_the_daemon() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let daemon = fake_profiles(&mut shell, &bus, "performance");
+  let profiles = shell.cx.power_profiles();
+  let (active, degradation) = (profiles.active(), profiles.degradation());
+  wait_for(&mut shell, "the active profile", || {
+    active.get_untracked().is_some()
+  });
+  assert_eq!(degradation.get_untracked(), PerformanceDegradation::None);
+
+  let mut set = |sent: &'static str, read: PerformanceDegradation| {
+    let value = [("PerformanceDegraded", Variant::from(sent))];
+    daemon.set(&mut shell, PROFILES_PATH, PROFILES, &value);
+    wait_for(&mut shell, sent, || degradation.get_untracked() == read);
+  };
+  set("lap-detected", PerformanceDegradation::LapDetected);
+  set(
+    "high-operating-temperature",
+    PerformanceDegradation::HighTemperature,
+  );
+  let logs = capture_logs_from(tracing::Level::DEBUG, || {
+    set("too-loud", PerformanceDegradation::Other);
+  });
+  assert!(logs.contains("an unknown reason"), "{logs}");
+  set("", PerformanceDegradation::None);
+
+  set("lap-detected", PerformanceDegradation::LapDetected);
+  daemon.leave(&mut shell);
+  wait_for(&mut shell, "no degradation", || {
+    degradation.get_untracked() == PerformanceDegradation::None
+  });
+}
+
+#[test]
+fn a_daemon_that_names_no_degradation_reads_as_none() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  // As power-profiles-daemon before 0.9, which had no such property.
+  let daemon = FakeService::start(&mut shell, &bus, PROFILES);
+  let profile = [("ActiveProfile", Variant::from("balanced"))];
+  daemon.add(PROFILES_PATH, PROFILES, &profile);
+  daemon.own(&mut shell);
+  let profiles = shell.cx.power_profiles();
+  let active = profiles.active();
+  wait_for(&mut shell, "the active profile", || {
+    active.get_untracked().is_some()
+  });
+  let degradation = profiles.degradation().get_untracked();
+  assert_eq!(degradation, PerformanceDegradation::None);
 }
 
 #[test]

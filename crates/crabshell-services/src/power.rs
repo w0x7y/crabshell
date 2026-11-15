@@ -452,12 +452,47 @@ impl PowerProfile {
   }
 }
 
+/// Why the performance profile runs slower than it could, from the
+/// daemon's `PerformanceDegraded`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PerformanceDegradation {
+  /// It isn't, as far as the daemon can tell, or the daemon isn't
+  /// running.
+  #[default]
+  None,
+  /// The machine is on someone's lap, so it is kept cooler.
+  LapDetected,
+  /// The machine is close to overheating.
+  HighTemperature,
+  /// For a reason this list doesn't know. The daemon's docs say new ones
+  /// may come, and to show a generic reason for them.
+  Other,
+}
+
+impl PerformanceDegradation {
+  fn parse(reason: &str) -> PerformanceDegradation {
+    match reason {
+      "" => PerformanceDegradation::None,
+      "lap-detected" => PerformanceDegradation::LapDetected,
+      "high-operating-temperature" => PerformanceDegradation::HighTemperature,
+      other => {
+        tracing::debug!(
+          reason = other,
+          "power-profiles-daemon names an unknown reason for degraded performance"
+        );
+        PerformanceDegradation::Other
+      }
+    }
+  }
+}
+
 /// The power profile, from `cx.power_profiles()`. Cloning it is cheap.
 #[derive(Clone)]
 pub struct PowerProfiles {
   service: Option<Rc<ProfilesService>>,
   active: ReadSignal<Option<PowerProfile>>,
   available: ReadSignal<Vec<PowerProfile>>,
+  degradation: ReadSignal<PerformanceDegradation>,
 }
 
 impl PowerProfiles {
@@ -471,6 +506,12 @@ impl PowerProfiles {
   /// without a performance mode leave it out.
   pub fn available(&self) -> ReadSignal<Vec<PowerProfile>> {
     self.available
+  }
+
+  /// Why the performance profile runs slower than it could, which shows
+  /// whichever profile is active.
+  pub fn degradation(&self) -> ReadSignal<PerformanceDegradation> {
+    self.degradation
   }
 
   /// Asks the daemon to switch to `profile`. It shows in [`active`]
@@ -513,6 +554,7 @@ pub(crate) fn power_profiles(cx: &Cx) -> PowerProfiles {
       service: None,
       active: cx.signal(None).read_only(),
       available: cx.signal(Vec::new()).read_only(),
+      degradation: cx.signal(PerformanceDegradation::None).read_only(),
     };
   };
   service.start()
@@ -527,6 +569,7 @@ pub(crate) struct ProfilesService {
 struct ProfilesState {
   active: Signal<Option<PowerProfile>>,
   available: Signal<Vec<PowerProfile>>,
+  degradation: Signal<PerformanceDegradation>,
   props: Props,
   /// The bus, while the daemon runs, for `set`.
   connection: Option<Connection>,
@@ -547,13 +590,16 @@ impl ProfilesService {
         service: Some(Rc::clone(self)),
         active: state.active.read_only(),
         available: state.available.read_only(),
+        degradation: state.degradation.read_only(),
       };
     }
     let root = &self.shared.root;
     let (active, available) = (root.signal(None), root.signal(Vec::new()));
+    let degradation = root.signal(PerformanceDegradation::None);
     *self.state.borrow_mut() = Some(ProfilesState {
       active,
       available,
+      degradation,
       props: Props::new(),
       connection: None,
       generation: 0,
@@ -569,6 +615,7 @@ impl ProfilesService {
       service: Some(Rc::clone(self)),
       active: active.read_only(),
       available: available.read_only(),
+      degradation: degradation.read_only(),
     }
   }
 
@@ -576,16 +623,18 @@ impl ProfilesService {
     let shown = self.state.borrow().as_ref().map(|state| {
       let active = dbus::get::<&str>(&state.props, "ActiveProfile").and_then(PowerProfile::parse);
       let available = state.props.get("Profiles").map(profiles);
+      let degradation = dbus::get::<&str>(&state.props, "PerformanceDegraded")
+        .map_or(PerformanceDegradation::None, PerformanceDegradation::parse);
       (
-        state.active,
-        active,
-        state.available,
-        available.unwrap_or_default(),
+        (state.active, active),
+        (state.available, available.unwrap_or_default()),
+        (state.degradation, degradation),
       )
     });
-    if let Some((active_signal, active, available_signal, available)) = shown {
-      set_changed(active_signal, active);
-      set_changed(available_signal, available);
+    if let Some((active, available, degradation)) = shown {
+      set_changed(active.0, active.1);
+      set_changed(available.0, available.1);
+      set_changed(degradation.0, degradation.1);
     }
   }
 }

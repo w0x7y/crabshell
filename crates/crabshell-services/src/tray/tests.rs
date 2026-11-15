@@ -18,10 +18,10 @@ use zbus::{Connection, MessageStream, OwnedVariant, Variant};
 
 use super::menu::{Child, DBUSMENU, Layout, Props, entries, without_access_keys};
 use super::{
-  BUS, BUS_PATH, ITEM, ITEM_PATH, MenuEntry, MenuToggle, PROPERTIES, Properties, Tray, TrayItem,
-  TrayMenu, TrayStatus, WATCHER, WATCHER_PATH,
+  BUS, BUS_PATH, ITEM, ITEM_PATH, MenuEntry, MenuToggle, PROPERTIES, Properties, Tray,
+  TrayCategory, TrayItem, TrayMenu, TrayStatus, WATCHER, WATCHER_PATH,
 };
-use crate::testing::{Harness, PrivateBus, capture_logs, offline};
+use crate::testing::{Harness, PrivateBus, capture_logs, capture_logs_from, offline};
 use crate::{Config, ServicesExt};
 
 fn online(bus: &PrivateBus) -> Config {
@@ -50,6 +50,7 @@ fn sample() -> Properties {
     )),
     item_is_menu: Some(true),
     menu: Some(MENU_PATH.try_into().expect("an object path")),
+    category: Some("Hardware".into()),
   }
 }
 
@@ -169,6 +170,7 @@ fn sample_item(id: &str) -> TrayItem {
     tooltip: "Connected".into(),
     item_is_menu: true,
     menu: MENU_PATH.into(),
+    category: TrayCategory::Hardware,
   }
 }
 
@@ -745,6 +747,35 @@ fn an_item_with_wrongly_typed_properties_is_logged_and_not_shown() {
   *app.properties.borrow_mut() = Some(sample());
   app.emit(&mut shell, "NewIcon");
   wait_for(&mut shell, "the item", || items.get_untracked().len() == 1);
+}
+
+#[test]
+fn a_category_reads_as_the_spec_names_it_and_anything_else_as_application_status() {
+  let category = |sent: Option<&str>| {
+    let properties = Properties {
+      category: sent.map(str::to_owned),
+      ..sample()
+    };
+    properties.into_item("x".into()).category
+  };
+  assert_eq!(
+    category(Some("ApplicationStatus")),
+    TrayCategory::ApplicationStatus
+  );
+  assert_eq!(
+    category(Some("Communications")),
+    TrayCategory::Communications
+  );
+  assert_eq!(
+    category(Some("SystemServices")),
+    TrayCategory::SystemServices
+  );
+  assert_eq!(category(Some("Hardware")), TrayCategory::Hardware);
+  assert_eq!(category(None), TrayCategory::ApplicationStatus);
+  let logs = capture_logs_from(tracing::Level::DEBUG, || {
+    assert_eq!(category(Some("hardware")), TrayCategory::ApplicationStatus);
+  });
+  assert!(logs.contains("a tray item's category is unknown"), "{logs}");
 }
 
 #[test]

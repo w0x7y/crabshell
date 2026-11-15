@@ -69,11 +69,16 @@ pub use network::{Network, NetworkDevice, NetworkKind, NetworkState, WifiNetwork
 pub use notifications::{Notification, Notifications, Timeout, Urgency};
 pub use pam::{Pam, PamMessage, PamResult, PamState};
 pub use polkit::{AuthRequest, AuthState, PolkitAgent};
-pub use power::{BatteryState, DeviceKind, PowerDevice, PowerProfile, PowerProfiles, UPower};
+pub use power::{
+  BatteryState, DeviceKind, PerformanceDegradation, PowerDevice, PowerProfile, PowerProfiles,
+  UPower,
+};
 pub use process::{IntoCommand, Process};
 pub use socket::Socket;
 pub use sway::{Sway, SwayEvent, SwayEventKind, SwayOutput, Workspace};
-pub use tray::{MenuEntry, MenuToggle, Tray, TrayHost, TrayItem, TrayMenu, TrayStatus};
+pub use tray::{
+  MenuEntry, MenuToggle, Tray, TrayCategory, TrayHost, TrayItem, TrayMenu, TrayStatus,
+};
 
 /// Makes the services reachable from `cx` and every context made from it.
 /// The shell calls this once, with its root context and its event loop.
