@@ -46,6 +46,9 @@ const LOOPBACK: u32 = 32;
 const UNMANAGED: u32 = 10;
 const ACTIVATED: u32 = 100;
 const FAILED: u32 = 120;
+/// The `InterfaceFlags` bit for a link, from NetworkManager 1.22, which
+/// takes over from `Device.Wired.Carrier`.
+const CARRIER: u32 = 0x10000;
 /// The `Flags` bit for an access point that asks for a key, as WEP does.
 const PRIVACY: u32 = 0x1;
 /// The key managements in an access point's `WpaFlags` and `RsnFlags`,
@@ -186,7 +189,9 @@ pub struct NetworkDevice {
   /// For a wired device, its link's speed in Mb/s; 0 when not known, and
   /// for any other device.
   pub link_speed: u32,
-  /// For a wired device, whether a cable is in; `false` for any other.
+  /// For a wired device, whether a cable is in, from the carrier bit of
+  /// `InterfaceFlags`, or `Carrier` before NetworkManager 1.22; `false`
+  /// for any other.
   pub has_link: bool,
 }
 
@@ -226,7 +231,13 @@ impl NetworkDevice {
         _ => WifiMode::Unknown,
       },
       link_speed: wired.and_then(|w| dbus::get(w, "Speed")).unwrap_or(0),
-      has_link: wired.and_then(|w| dbus::get(w, "Carrier")).unwrap_or(false),
+      has_link: wired
+        .and_then(|wired| {
+          let flags = dbus::get::<u32>(props, "InterfaceFlags");
+          let carrier = flags.map(|flags| flags & CARRIER != 0);
+          carrier.or_else(|| dbus::get(wired, "Carrier"))
+        })
+        .unwrap_or(false),
     })
   }
 }
@@ -679,7 +690,7 @@ fn read(interface: &str, name: &str) -> bool {
     NM => matches!(name, "WirelessEnabled" | "Connectivity"),
     DEVICE => matches!(
       name,
-      "Interface" | "DeviceType" | "State" | "StateReason" | "ActiveConnection"
+      "Interface" | "DeviceType" | "State" | "StateReason" | "ActiveConnection" | "InterfaceFlags"
     ),
     WIRELESS => matches!(name, "AccessPoints" | "ActiveAccessPoint" | "Mode"),
     WIRED => matches!(name, "Speed" | "Carrier"),

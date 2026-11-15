@@ -582,6 +582,36 @@ fn methods_reach_networkmanager_and_the_password_is_never_logged() {
 }
 
 #[test]
+fn the_carrier_bit_wins_over_the_old_carrier_property() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let nm = fake_nm(&mut shell, &bus);
+  let devices = shell.cx.network().devices();
+  wait_for(&mut shell, "the devices", || {
+    !devices.get_untracked().is_empty()
+  });
+  let flags = |flags: u32| [("InterfaceFlags", Variant::from(flags))];
+  // Up, lower up and carrier, while the old property says no cable.
+  nm.set(&mut shell, ETH, DEVICE, &flags(0x10003));
+  wait_for(&mut shell, "a cable in", || {
+    devices.get_untracked()[1].has_link
+  });
+
+  nm.set(&mut shell, ETH, WIRED, &[("Carrier", Variant::from(true))]);
+  nm.set(&mut shell, ETH, DEVICE, &flags(0x1));
+  wait_for(&mut shell, "no cable", || {
+    !devices.get_untracked()[1].has_link
+  });
+  // Wi-Fi has a carrier too, but no cable.
+  nm.set(&mut shell, WLAN, DEVICE, &flags(0x10003));
+  nm.set(&mut shell, ETH, DEVICE, &flags(0x10001));
+  wait_for(&mut shell, "a cable again", || {
+    devices.get_untracked()[1].has_link
+  });
+  assert!(!devices.get_untracked()[0].has_link);
+}
+
+#[test]
 fn disposing_the_root_frees_networking_and_ends_both_watches() {
   let runtime = Runtime::current();
   let before = runtime.node_count();
