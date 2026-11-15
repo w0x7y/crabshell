@@ -60,6 +60,13 @@ mod effects;
 
 #[allow(
   dead_code,
+  reason = "the example's windows are tested; its main isn't run here"
+)]
+#[path = "../examples/motion.rs"]
+mod motion;
+
+#[allow(
+  dead_code,
   reason = "the example's lock screen is tested; its main isn't run here"
 )]
 #[path = "../examples/lock.rs"]
@@ -2321,7 +2328,7 @@ fn the_effects_bar_draws_only_while_it_moves_and_matches_its_goldens() {
 /// The private buses and audio server the desktop example runs on, and
 /// the environment that points it at them, never at the desktop's.
 struct Desktop {
-  _server: PrivateServer,
+  server: PrivateServer,
   _system: PrivateBus,
   session: PrivateBus,
   env: Vec<(&'static str, String)>,
@@ -2337,7 +2344,7 @@ impl Desktop {
       ("DBUS_SESSION_BUS_ADDRESS", session.address.clone()),
     ];
     Desktop {
-      _server: server,
+      server,
       _system: system,
       session,
       env,
@@ -2345,8 +2352,13 @@ impl Desktop {
   }
 
   fn start(&self, sway: &Sway) -> ExampleBar {
+    self.run(sway, "desktop")
+  }
+
+  /// Starts the example `name` on these buses and this audio server.
+  fn run(&self, sway: &Sway, name: &str) -> ExampleBar {
     let env: Vec<(&str, &str)> = self.env.iter().map(|(k, v)| (*k, v.as_str())).collect();
-    ExampleBar::start(sway, "desktop", true, &env)
+    ExampleBar::start(sway, name, true, &env)
   }
 
   /// Sends a notification, as an app would, and returns gdbus's answer.
@@ -2533,6 +2545,11 @@ fn small_png(path: &Path, colors: &[[u8; 3]]) -> PathBuf {
 /// Calls the shell's IPC handler `target`.`function` on `sway`, as
 /// `crabshell ipc` does, and returns the reply line.
 fn ipc_call(sway: &Sway, target: &str, function: &str) -> String {
+  ipc_call_with(sway, target, function, &[])
+}
+
+/// [`ipc_call`] with `args`.
+fn ipc_call_with(sway: &Sway, target: &str, function: &str, args: &[&str]) -> String {
   use std::io::Write;
   let socket = sway
     .runtime_dir()
@@ -2549,9 +2566,10 @@ fn ipc_call(sway: &Sway, target: &str, function: &str) -> String {
   stream
     .set_read_timeout(Some(TIMEOUT))
     .expect("a read timeout");
+  let args = serde_json::to_string(args).expect("the arguments as JSON");
   writeln!(
     stream,
-    r#"{{"target":"{target}","function":"{function}","args":[]}}"#
+    r#"{{"target":"{target}","function":"{function}","args":{args}}}"#
   )
   .expect("the request");
   let mut reply = String::new();
@@ -3304,5 +3322,321 @@ fn the_hyprland_bar_follows_hyprland_switches_and_sleeps() {
   });
 
   let wakeups = bar.wakeups_for(Duration::from_secs(10));
+  assert!(wakeups.is_empty(), "woke while idle: {wakeups:?}");
+}
+
+/// The motion example's output: 1680 by 1050 is a whole number of logical
+/// pixels at every scale from 1 to 2 in quarters.
+const MOTION_MODE: &str = "1680x1050";
+
+/// A sink at `percent`, for the motion example's OSD.
+fn sink_at(percent: u32) -> Sink {
+  Sink {
+    name: String::from("test"),
+    volume_percent: percent,
+    muted: false,
+  }
+}
+
+/// A notification with only an id and a summary.
+fn notification(id: u32, summary: &str) -> Notification {
+  Notification {
+    id,
+    app_name: String::new(),
+    app_icon: String::new(),
+    summary: summary.to_owned(),
+    body: String::from("from the test"),
+    actions: Vec::new(),
+    urgency: Urgency::Normal,
+    timeout: Timeout::Never,
+    image: None,
+    desktop_entry: String::new(),
+    category: String::new(),
+    resident: false,
+    transient: false,
+    received: SystemTime::now(),
+  }
+}
+
+/// The window whose namespace is `namespace`.
+fn window_named(platform: &Platform, namespace: &str) -> WindowId {
+  platform
+    .windows()
+    .find(|(_, window)| window.surface().namespace == namespace)
+    .map(|(id, _)| id)
+    .unwrap_or_else(|| panic!("no {namespace} window"))
+}
+
+/// What `id` takes pointer input in, as its mask says.
+fn mask_of(platform: &Platform, id: WindowId) -> Option<Region> {
+  let (_, window) = platform
+    .windows()
+    .find(|(held, _)| *held == id)
+    .expect("the window is held");
+  window.surface().mask
+}
+
+/// How many toasts the motion example's toasts window holds, leaving
+/// ones included.
+fn toast_count(platform: &Platform, id: WindowId) -> usize {
+  let (_, window) = platform
+    .windows()
+    .find(|(held, _)| *held == id)
+    .expect("the toasts are held");
+  let view = window.view();
+  let column = view.root().children().next().expect("the toasts' column");
+  column.children().count()
+}
+
+/// Dispatches until `at`, 20 ms at a time, so a signal set from here is
+/// flushed at once.
+fn dispatch_until(shell: &mut Shell, at: Instant) {
+  while Instant::now() < at {
+    let left = at.saturating_duration_since(Instant::now());
+    shell
+      .dispatch(Some(left.min(Duration::from_millis(20))))
+      .expect("the connection works");
+  }
+}
+
+/// Part of Phase 14's exit check, in this process with plain signals for
+/// the services: the motion example's spinner draws only while it turns,
+/// at scale 2, and rests where it started; its OSD shows on a change,
+/// hides 1.5 s after the last one, slides out and then lets the pointer
+/// through; and a toast slides in, leaves over its exit and frees
+/// everything it made.
+#[test]
+#[ignore = "needs headless Sway"]
+fn the_motion_windows_draw_only_while_they_move() {
+  type Handles = (
+    Signal<bool>,
+    Signal<Option<Sink>>,
+    Signal<Vec<Notification>>,
+  );
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", MOTION_MODE, "scale", "2"]);
+  let runtime = Runtime::current();
+  let handles: Rc<std::cell::Cell<Option<Handles>>> = Rc::default();
+  let held = Rc::clone(&handles);
+  let mut shell = Shell::new(sway.connect(), move |cx| {
+    let busy = cx.signal(false);
+    let sink = cx.signal(Some(sink_at(50)));
+    let popups = cx.signal(Vec::new());
+    let pinned = cx.signal(false);
+    held.set(Some((busy, sink, popups)));
+    cx.per_output(move |cx, output| {
+      vec![
+        motion::bar(cx, output, busy.read_only()),
+        motion::osd(cx, output, sink.read_only(), pinned.read_only()),
+        motion::toasts(output, popups.read_only()),
+      ]
+    });
+  })
+  .expect("the root closure runs");
+  let (busy, sink, popups) = handles.take().expect("the root closure ran");
+  run_until(&mut shell, "every window's first frame", |platform| {
+    platform.windows().all(|(id, _)| {
+      platform
+        .window_info(id)
+        .is_some_and(|info| info.commits > 0)
+    }) && platform.windows().count() == 3
+  });
+  settle(&mut shell);
+  let platform = shell.platform();
+  let osd = window_named(platform, "osd");
+  let toasts = window_named(platform, "toasts");
+  let bar = platform
+    .windows()
+    .map(|(id, _)| id)
+    .find(|id| ![osd, toasts].contains(id))
+    .expect("the bar");
+  // Hidden from the start, and never taking space.
+  assert_eq!(mask_of(platform, osd), Some(Region::empty()));
+  let (_, window) = platform.windows().find(|(id, _)| *id == osd).expect("held");
+  assert_eq!(window.surface().exclusive_zone, 0);
+
+  // The spinner turns while busy, and only then.
+  let resting = shell.platform().snapshot(bar).expect("the bar draws");
+  let before = shell.platform().stats();
+  busy.set(true);
+  dispatch_until(&mut shell, Instant::now() + Duration::from_secs(2));
+  let turning = shell.platform().stats();
+  let frames = turning.commits - before.commits;
+  // 2 s at 60 Hz is 120 frames.
+  assert!(frames >= 60, "{frames} frames in 2 s of turning");
+  eprintln!(
+    "the spinner drew {frames} frames in 2 s at scale 2, in {:.3} ms each",
+    (turning.drawing - before.drawing).as_secs_f64() * 1000.0 / frames as f64
+  );
+  busy.set(false);
+  settle(&mut shell);
+  let rested = shell.platform().snapshot(bar).expect("the bar draws");
+  assert!(
+    rested.rgba == resting.rgba,
+    "the spinner rests where it began"
+  );
+  let before = shell.platform().stats().iterations;
+  shell
+    .dispatch(Some(Duration::from_secs(1)))
+    .expect("the connection works");
+  assert_eq!(shell.platform().stats().iterations, before + 1, "asleep");
+
+  // A change shows the OSD; a second one 1 s later keeps it 1.5 s more.
+  let changed = Instant::now();
+  let before = shell.platform().stats().commits;
+  sink.set(Some(sink_at(60)));
+  run_until(&mut shell, "the OSD to show", |platform| {
+    mask_of(platform, osd).is_none()
+  });
+  dispatch_until(&mut shell, changed + Duration::from_millis(600));
+  let shown = shell.platform().stats().commits;
+  assert!(
+    shown - before >= 5,
+    "it slid in over {} frames",
+    shown - before
+  );
+  dispatch_until(&mut shell, changed + Duration::from_millis(1000));
+  assert_eq!(shell.platform().stats().commits, shown, "still while shown");
+  sink.set(Some(sink_at(70)));
+  run_until(&mut shell, "the OSD to hide and slide out", |platform| {
+    mask_of(platform, osd) == Some(Region::empty())
+  });
+  let hidden = changed.elapsed();
+  // 1 s, then 1.5 s, then the 300 ms slide.
+  assert!(
+    (Duration::from_millis(2800)..Duration::from_millis(3600)).contains(&hidden),
+    "hidden after {hidden:?}"
+  );
+  let empty = shell.platform().snapshot(osd).expect("the OSD draws");
+  assert!(empty.rgba.iter().all(|byte| *byte == 0), "nothing shows");
+
+  // A toast slides in, then out over its exit, and frees what it made.
+  settle(&mut shell);
+  let nodes = runtime.node_count();
+  let before = shell.platform().stats().commits;
+  popups.set(vec![notification(1, "Hello")]);
+  run_until(&mut shell, "the toast", |platform| {
+    toast_count(platform, toasts) == 1
+  });
+  settle(&mut shell);
+  let slid = shell.platform().stats().commits - before;
+  assert!(slid >= 5, "it slid in over {slid} frames");
+  let shot = shell.platform().snapshot(toasts).expect("the toasts draw");
+  // 6 logical pixels into the toast, at scale 2.
+  let at = (12 * shot.width as usize + 12) * 4;
+  assert_eq!(
+    &shot.rgba[at..at + 4],
+    &[0x31, 0x32, 0x44, 0xff],
+    "in place"
+  );
+  let left = Instant::now();
+  let before = shell.platform().stats().commits;
+  popups.set(Vec::new());
+  run_until(&mut shell, "the toast to go", |platform| {
+    toast_count(platform, toasts) == 0
+  });
+  let stayed = left.elapsed();
+  let frames = shell.platform().stats().commits - before;
+  assert!(
+    stayed >= Duration::from_millis(250),
+    "it left after {stayed:?}"
+  );
+  assert!(frames >= 5, "it slid out over {frames} frames");
+  settle(&mut shell);
+  assert_eq!(runtime.node_count(), nodes, "the toast freed what it made");
+  let empty = shell.platform().snapshot(toasts).expect("the toasts draw");
+  assert!(empty.rgba.iter().all(|byte| *byte == 0), "nothing shows");
+}
+
+/// The motion example's OSD card color, from examples/motion.rs.
+const OSD_CARD: [u8; 3] = [0x31, 0x32, 0x44];
+
+/// Whether the motion example's OSD card shows at the bottom middle of a
+/// screenshot at scale 1.
+fn osd_shows(shot: &Image) -> bool {
+  let middle = shot.width / 2;
+  (middle - 140..middle + 140).any(|x| rgb(shot, x, shot.height - 48) == OSD_CARD)
+}
+
+/// Phase 14's exit check: the motion example, on a private audio server
+/// and session bus, matches its goldens at all five scales with its OSD
+/// pinned up and a toast shown; a volume change shows the OSD until 1.5 s
+/// after it; a program run over IPC turns the spinner until it ends; a
+/// notification shows as a toast and goes when it expires; and then the
+/// shell sleeps for a minute.
+#[test]
+#[ignore = "needs headless Sway and pipewire"]
+fn the_motion_example_slides_spins_and_sleeps() {
+  let desktop = Desktop::new("motion");
+  desktop
+    .server
+    .pactl(&["set-sink-volume", "@DEFAULT_SINK@", "50%"]);
+  for scale in ["1", "1.25", "1.5", "1.75", "2"] {
+    let sway = Sway::start();
+    sway.msg(&["output", "HEADLESS-1", "mode", MOTION_MODE, "scale", scale]);
+    let shell = desktop.run(&sway, "motion");
+    shell.wait_for(FIRST_FRAME);
+    steady_shot(&sway, "HEADLESS-1");
+    // Settled states only: a toast that never expires, the OSD held up.
+    desktop.notify("Hello", 0);
+    assert_eq!(ipc_call(&sway, "osd", "pin"), "{\"ok\":\"\"}\n");
+    let shot = steady_shot(&sway, "HEADLESS-1");
+    check_golden(&format!("motion@{scale}x"), &shot, shot.height);
+  }
+
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", MOTION_MODE, "scale", "1"]);
+  let shell = desktop.run(&sway, "motion");
+  shell.wait_for(FIRST_FRAME);
+  let idle = steady_shot(&sway, "HEADLESS-1");
+  assert!(!osd_shows(&idle), "no OSD at startup");
+
+  let changed = Instant::now();
+  desktop
+    .server
+    .pactl(&["set-sink-volume", "@DEFAULT_SINK@", "60%"]);
+  wait_for_shot(&sway, "HEADLESS-1", "the OSD", osd_shows);
+  wait_for_shot(&sway, "HEADLESS-1", "the OSD to hide", |shot| {
+    !osd_shows(shot)
+  });
+  let hidden = changed.elapsed();
+  assert!(
+    hidden >= Duration::from_millis(1500),
+    "hid after {hidden:?}"
+  );
+  eprintln!("the OSD was gone {hidden:?} after the volume changed");
+  assert!(
+    steady_shot(&sway, "HEADLESS-1").rgba == idle.rgba,
+    "all gone"
+  );
+
+  assert_eq!(
+    ipc_call_with(&sway, "motion", "run", &["sleep", "2"]),
+    "{\"ok\":\"\"}\n"
+  );
+  wait_for_shot(&sway, "HEADLESS-1", "the spinner", |shot| {
+    shot.rgba != idle.rgba
+  });
+  let one = sway.screenshot("HEADLESS-1");
+  std::thread::sleep(Duration::from_millis(150));
+  assert!(sway.screenshot("HEADLESS-1").rgba != one.rgba, "it turns");
+  assert!(
+    steady_shot(&sway, "HEADLESS-1").rgba == idle.rgba,
+    "it stopped once the program ended"
+  );
+
+  // Inside the toast: 8 in from the right edge, 36 down.
+  let inside = (1680 - 8 - 340 + 6, 36 + 6);
+  desktop.notify("Bye", 1500);
+  wait_for_shot(&sway, "HEADLESS-1", "the toast", |shot| {
+    rgb(shot, inside.0, inside.1) == OSD_CARD
+  });
+  wait_for_shot(&sway, "HEADLESS-1", "the toast to go", |shot| {
+    shot.rgba == idle.rgba
+  });
+
+  // Asleep: no wakeups for a minute.
+  shell.wait_until_quiet();
+  let wakeups = shell.wakeups_for(Duration::from_secs(60));
   assert!(wakeups.is_empty(), "woke while idle: {wakeups:?}");
 }
