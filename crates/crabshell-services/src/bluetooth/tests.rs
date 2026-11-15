@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -371,6 +371,39 @@ fn a_device_connects_and_disconnects_while_its_call_is_out() {
     devices.get_untracked().len() == 2
   });
   assert_eq!(state(), BluetoothDeviceState::Disconnected);
+}
+
+#[test]
+fn an_effect_that_connects_sends_one_call() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let bluez = fake_bluez(&mut shell, &bus);
+  bluez.on("Connect", |call| reply(call, &()));
+  let bluetooth = shell.cx.bluetooth();
+  let devices = bluetooth.devices();
+  wait_for(&mut shell, "the devices", || {
+    devices.get_untracked().len() == 2
+  });
+  let wanted = shell.cx.signal(false);
+  let runs = Rc::new(Cell::new(0));
+  let counted = Rc::clone(&runs);
+  let auto = bluetooth.clone();
+  // The connect shows at once, but the effect reads none of it.
+  shell.cx.effect(move || {
+    counted.set(counted.get() + 1);
+    if wanted.get() {
+      auto.connect(HEADSET);
+    }
+  });
+  shell.run_until(Instant::now() + Duration::from_millis(50));
+  wanted.set(true);
+  // The loop flushes after it wakes, so the effect runs at the end of this.
+  shell.run_until(Instant::now() + Duration::from_millis(10));
+  shell.run_until(Instant::now() + Duration::from_millis(500));
+  let calls = bluez.calls.borrow();
+  let connects = calls.iter().filter(|call| call.starts_with("Connect"));
+  assert_eq!(connects.count(), 1, "{calls:?}");
+  assert_eq!(runs.get(), 2, "once at first and once for `wanted`");
 }
 
 #[test]

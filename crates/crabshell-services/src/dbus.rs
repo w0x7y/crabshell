@@ -9,7 +9,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::time::Duration;
 
-use crabshell_reactive::Signal;
+use crabshell_reactive::{Signal, untrack};
 use zbus::export::futures_core::Stream;
 use zbus::message::Type as Kind;
 use zbus::{Connection, Message, MessageStream, OwnedVariant};
@@ -137,9 +137,11 @@ pub(crate) fn text(props: &Props, name: &str) -> String {
 }
 
 /// Sets `signal` to `value` unless it already holds it, so nothing that
-/// reads it runs for nothing. A disposed signal is left alone.
+/// reads it runs for nothing. A disposed signal is left alone. The read is
+/// untracked, so an effect that calls a service, which shows the change at
+/// once, doesn't run again for it.
 pub(crate) fn set_changed<T: PartialEq + 'static>(signal: Signal<T>, value: T) {
-  if signal.try_with(|old| *old != value) == Some(true) {
+  if untrack(|| signal.try_with(|old| *old != value)) == Some(true) {
     signal.try_set(value);
   }
 }
