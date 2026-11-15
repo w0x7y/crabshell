@@ -1,24 +1,24 @@
 //! Quantizing: an image's main colors by median cut.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crabshell_ui::Color;
 
-use super::{fixture, write_png};
+use super::{Removed, fixture, write_png};
 use crate::quantize_colors;
 
 const DARK_RED: [u8; 4] = [200, 0, 0, 255];
 const BLUE: [u8; 4] = [0, 0, 255, 255];
 
 /// A `width` pixels wide PNG of `pixels`, straight RGBA, in the temp dir.
-fn png(name: &str, width: u32, pixels: &[[u8; 4]]) -> PathBuf {
+fn png(name: &str, width: u32, pixels: &[[u8; 4]]) -> Removed {
   let path = std::env::temp_dir().join(format!(
     "crabshell-colors-{}-{name}.png",
     std::process::id()
   ));
   let height = pixels.len() as u32 / width;
   write_png(&path, pixels.as_flattened(), width, height);
-  path
+  Removed(path)
 }
 
 fn colors(path: &Path, depth: u8, size: u32) -> Vec<Color> {
@@ -111,13 +111,13 @@ fn shrinking_keeps_big_areas_and_averages_fine_detail() {
 }
 
 /// An SVG file in the temp dir.
-fn svg(name: &str, text: &str) -> PathBuf {
+fn svg(name: &str, text: &str) -> Removed {
   let path = std::env::temp_dir().join(format!(
     "crabshell-colors-{}-{name}.svg",
     std::process::id()
   ));
   std::fs::write(&path, text).expect("write the SVG");
-  path
+  Removed(path)
 }
 
 #[test]

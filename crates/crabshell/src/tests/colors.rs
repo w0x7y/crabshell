@@ -9,7 +9,7 @@ use calloop::EventLoop;
 use crabshell_reactive::Runtime;
 use crabshell_ui::{Color, Cx, IntoProp};
 
-use super::capture_logs;
+use super::{Removed, capture_logs};
 use crate::colors::{self, Handle, Work};
 
 const RED: Color = Color::rgb(255, 0, 0);
@@ -58,7 +58,7 @@ impl Turns {
 }
 
 /// A PNG of red and blue, three red pixels to one blue, in the temp dir.
-fn red_and_blue(name: &str) -> PathBuf {
+fn red_and_blue(name: &str) -> Removed {
   let path = std::env::temp_dir().join(format!(
     "crabshell-quantize-{}-{name}.png",
     std::process::id()
@@ -70,7 +70,7 @@ fn red_and_blue(name: &str) -> PathBuf {
   writer
     .write_image_data(&[255, 0, 0, 0, 0, 255, 255, 0, 0, 255, 0, 0])
     .expect("the pixels");
-  path
+  Removed(path)
 }
 
 /// Work that answers `slow` with green once `release` sends, `fast` with
@@ -118,7 +118,8 @@ fn ended(done: &mpsc::Receiver<PathBuf>, path: &str) {
 fn the_colors_fill_once_the_image_is_quantized() {
   let mut turns = Turns::new();
   let cx = Cx::new(turns.runtime.new_owner());
-  let path = red_and_blue("fill");
+  let file = red_and_blue("fill");
+  let path = file.to_path_buf();
   let found = colors::follow(&cx, turns.handle(), path.into_prop(), colors::quantizer(1));
   assert!(found.get_untracked().is_empty());
   turns.until("the colors", || !found.get_untracked().is_empty());
@@ -130,7 +131,8 @@ fn the_colors_fill_once_the_image_is_quantized() {
 fn nothing_wakes_once_the_colors_are_in() {
   let mut turns = Turns::new();
   let cx = Cx::new(turns.runtime.new_owner());
-  let path = red_and_blue("idle");
+  let file = red_and_blue("idle");
+  let path = file.to_path_buf();
   let found = colors::follow(&cx, turns.handle(), path.into_prop(), colors::quantizer(1));
   turns.until("the colors", || !found.get_untracked().is_empty());
   let waited = turns.turn(Duration::from_millis(500));
@@ -145,7 +147,8 @@ fn nothing_wakes_once_the_colors_are_in() {
 fn a_failure_is_logged_with_the_path_and_empties_the_list() {
   let mut turns = Turns::new();
   let cx = Cx::new(turns.runtime.new_owner());
-  let path = cx.signal(red_and_blue("failure"));
+  let file = red_and_blue("failure");
+  let path = cx.signal(file.to_path_buf());
   let found = colors::follow(
     &cx,
     turns.handle(),
@@ -330,8 +333,8 @@ fn the_same_file_again_starts_nothing_until_it_changes() {
   // Rewritten, it is.
   std::thread::sleep(Duration::from_millis(20));
   let rewritten = red_and_blue("same");
-  assert_eq!(rewritten, file);
-  path.set(file);
+  assert_eq!(*rewritten, *file);
+  path.set(file.to_path_buf());
   turns.runtime.flush();
   turns.until("a second job", || *jobs.lock().unwrap() == 2);
   cx.owner().dispose();

@@ -322,3 +322,23 @@ fn capture_logs(f: impl FnOnce()) -> String {
   let bytes = logs.0.lock().expect("log buffer lock").clone();
   String::from_utf8(bytes).expect("log output is UTF-8")
 }
+
+/// A test's file or directory, removed when the test ends, a panic
+/// included, so test runs leave nothing in the temp dir.
+struct Removed(std::path::PathBuf);
+
+impl std::ops::Deref for Removed {
+  type Target = std::path::PathBuf;
+
+  fn deref(&self) -> &std::path::PathBuf {
+    &self.0
+  }
+}
+
+impl Drop for Removed {
+  fn drop(&mut self) {
+    if std::fs::remove_dir_all(&self.0).is_err() {
+      let _ = std::fs::remove_file(&self.0);
+    }
+  }
+}

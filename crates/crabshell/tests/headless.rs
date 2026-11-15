@@ -1659,8 +1659,28 @@ fn cx_global_shortcut_without_hyprland_stays_false_logs_once_and_frees_everythin
   assert_eq!(runtime.node_count(), before, "everything it made is freed");
 }
 
+/// A test's file or directory, removed when the test ends, a panic
+/// included, so test runs leave nothing in the temp dir.
+struct Removed(std::path::PathBuf);
+
+impl std::ops::Deref for Removed {
+  type Target = std::path::PathBuf;
+
+  fn deref(&self) -> &std::path::PathBuf {
+    &self.0
+  }
+}
+
+impl Drop for Removed {
+  fn drop(&mut self) {
+    if std::fs::remove_dir_all(&self.0).is_err() {
+      let _ = std::fs::remove_file(&self.0);
+    }
+  }
+}
+
 /// A 4 by 4 PNG of one color, in the temp dir.
-fn one_color_png(name: &str, [r, g, b]: [u8; 3]) -> PathBuf {
+fn one_color_png(name: &str, [r, g, b]: [u8; 3]) -> Removed {
   let path = std::env::temp_dir().join(format!("crabshell-{}-{name}.png", std::process::id()));
   let file = std::fs::File::create(&path).expect("create the PNG");
   let mut encoder = png::Encoder::new(file, 4, 4);
@@ -1669,7 +1689,7 @@ fn one_color_png(name: &str, [r, g, b]: [u8; 3]) -> PathBuf {
   writer
     .write_image_data(&[r, g, b].repeat(16))
     .expect("the pixels");
-  path
+  Removed(path)
 }
 
 #[test]
@@ -1677,10 +1697,11 @@ fn one_color_png(name: &str, [r, g, b]: [u8; 3]) -> PathBuf {
 fn cx_quantize_colors_follows_its_path_then_sleeps_and_ends_with_its_context() {
   let sway = Sway::start();
   let runtime = Runtime::current();
-  let (red, blue) = (
+  let files = (
     one_color_png("quantize-red", [255, 0, 0]),
     one_color_png("quantize-blue", [0, 0, 255]),
   );
+  let (red, blue) = (files.0.to_path_buf(), files.1.to_path_buf());
   type Kept = Option<(Cx, Signal<PathBuf>, ReadSignal<Vec<Color>>, usize)>;
   let kept: std::rc::Rc<std::cell::RefCell<Kept>> = Default::default();
   let hold = std::rc::Rc::clone(&kept);

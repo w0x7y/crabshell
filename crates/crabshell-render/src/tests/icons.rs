@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use crabshell_ui::{Icon, IconPixels, IconSource, Row};
 
-use super::{Scene, capture_logs, fixture};
+use super::{Removed, Scene, capture_logs, fixture};
 use crate::Renderer;
 use crate::icons::Icons;
 
@@ -149,12 +149,12 @@ fn drawing_drops_icons_no_recent_draw_used() {
 }
 
 /// A fresh scratch directory for one test's files.
-fn scratch(test: &str) -> std::path::PathBuf {
+fn scratch(test: &str) -> Removed {
   let directory =
     std::env::temp_dir().join(format!("crabshell-render-{}-{test}", std::process::id()));
   let _ = std::fs::remove_dir_all(&directory);
   std::fs::create_dir_all(&directory).expect("create a scratch directory");
-  directory
+  Removed(directory)
 }
 
 /// Rasterizes the icon `source` makes, on another thread, at 16 pixels.
@@ -396,7 +396,8 @@ fn halving_rounds_to_the_nearest_value() {
       [255, 255, 255, alpha]
     })
     .collect();
-  let path = scratch("rounding").join("checkerboard.png");
+  let directory = scratch("rounding");
+  let path = directory.join("checkerboard.png");
   write_rgba(&path, side, side, &rgba);
   let mut icons = Icons::with_themes(crate::theme::Themes::new(Vec::new()));
   let pixmap = icons.get(&file(&path), 16, 16, 1).expect("drawn").clone();
