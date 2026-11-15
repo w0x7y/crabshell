@@ -19,7 +19,7 @@ use taffy::{
   LengthPercentage, Line, Overflow,
 };
 
-use crate::geometry::{Point, Rect};
+use crate::geometry::{Affine, Point, Rect, through};
 use crate::style::Font;
 use crate::text::TextSystem;
 use crate::text_input::DEFAULT_WIDTH;
@@ -45,6 +45,14 @@ impl Tree {
   /// the size the compositor shrank it to.
   pub(crate) fn layout(&mut self, text: &mut TextSystem) {
     let root = self.root;
+    // Only a transform changed: nothing moves in the layout, so taffy
+    // isn't asked again.
+    if self.needs_place && !self.needs_layout {
+      self.place(root, Point::default(), &mut Vec::new(), text.font_system());
+      self.needs_place = false;
+      self.pointer_after_layout();
+      return;
+    }
     self.sync(root, Parent::Flex, Font::DEFAULT, text);
 
     let fonts = text.font_system();
@@ -84,8 +92,9 @@ impl Tree {
       return;
     }
 
-    self.place(root, Point::default(), fonts);
+    self.place(root, Point::default(), &mut Vec::new(), fonts);
     self.needs_layout = false;
+    self.needs_place = false;
     self.pointer_after_layout();
   }
 
@@ -166,8 +175,16 @@ impl Tree {
 
   /// The third pass: turns taffy's layout of `id`, relative to its
   /// parent's corner `origin`, into window coordinates, and records damage.
-  /// Returns the bounds of `id` and its descendants.
-  fn place(&mut self, id: NodeId, origin: Point, fonts: &mut FontSystem) -> Rect {
+  /// `chain` holds the transforms of the ancestors, outermost first.
+  /// Returns the bounds of `id` and its descendants, in its parent's
+  /// coordinates.
+  fn place(
+    &mut self,
+    id: NodeId,
+    origin: Point,
+    chain: &mut Vec<Affine>,
+    fonts: &mut FontSystem,
+  ) -> Rect {
     let Ok(&layout) = self.taffy.layout(id) else {
       return Rect::default();
     };
@@ -212,11 +229,35 @@ impl Tree {
         scroll.most = most;
       }
     }
+    let Some(node) = self.node_mut(id) else {
+      return rect;
+    };
+    let transform = node.shown_style().transform(rect);
+    node.transform = transform;
+    chain.extend(transform);
     let mut children = Rect::default();
     for child in self.taffy.children(id).unwrap_or_default() {
-      children = children.union(self.place(child, origin, fonts));
+      children = children.union(self.place(child, origin, chain, fonts));
     }
+    let bounds = self.finish_place(id, rect, content, children, chain, fonts);
+    if transform.is_some() {
+      chain.pop();
+    }
+    bounds
+  }
 
+  /// The rest of [`place`](Self::place), once the children are placed:
+  /// what node `id` paints, its bounds, and the damage. `chain` ends with
+  /// the node's own transform, if it has one.
+  fn finish_place(
+    &mut self,
+    id: NodeId,
+    rect: Rect,
+    content: Rect,
+    children: Rect,
+    chain: &[Affine],
+    fonts: &mut FontSystem,
+  ) -> Rect {
     let Some(node) = self.taffy.get_node_context_mut(id) else {
       return rect.union(children);
     };
@@ -251,14 +292,15 @@ impl Tree {
     // Repaint what the node drew where it was and draws where it is
     // now. A node that draws nothing itself, like a spacer, adds no
     // damage; its children report their own.
+    let window_painted = through(chain, painted);
     let drawn = if node.draws() {
-      painted
+      window_painted
     } else {
       Rect::default()
     };
     match node.rect {
       None => add_damage(&mut self.damage, drawn),
-      Some(_) if node.painted != painted || node.changed => {
+      Some(_) if node.window_painted != window_painted || node.changed => {
         add_damage(&mut self.damage, node.drawn);
         add_damage(&mut self.damage, drawn);
       }
@@ -271,18 +313,29 @@ impl Tree {
     } else {
       children
     };
-    let bounds = painted.union(children);
+    let inside = painted.union(children);
+    let window_bounds = through(chain, inside);
     // A clip that came, went or changed shape shows or hides parts of
     // children that themselves didn't change.
-    if (clips || node.clips) && node.rect.is_some() && (node.changed || node.bounds != bounds) {
-      add_damage(&mut self.damage, node.bounds);
-      add_damage(&mut self.damage, bounds);
+    if (clips || node.clips)
+      && node.rect.is_some()
+      && (node.changed || node.window_bounds != window_bounds)
+    {
+      add_damage(&mut self.damage, node.window_bounds);
+      add_damage(&mut self.damage, window_bounds);
     }
+    let bounds = match node.transform {
+      Some(transform) => through(&[transform], inside),
+      None => inside,
+    };
     node.clips = clips;
     node.rect = Some(rect);
     node.content = content;
     node.painted = painted;
     node.bounds = bounds;
+    node.inner_bounds = inside;
+    node.window_bounds = window_bounds;
+    node.window_painted = window_painted;
     node.changed = false;
     bounds
   }

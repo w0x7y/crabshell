@@ -16,7 +16,7 @@ use crate::cx::Cx;
 use crate::geometry::{Point, Rect};
 use crate::keyboard::KeyHandler;
 use crate::scroll::PIXELS_PER_NOTCH;
-use crate::tree::{ButtonNode, Change, NodeId, NodeKind, Tree, borrow};
+use crate::tree::{ButtonNode, Change, Node, NodeId, NodeKind, Tree, borrow};
 use crate::window::Window;
 
 /// Logical pixels of touchpad scrolling per scroll step.
@@ -184,11 +184,13 @@ impl Window {
 }
 
 impl Tree {
-  /// The deepest button under `point` in `id`'s subtree, with the nodes on
-  /// the way down to it, itself included, pushed onto `path`. Later
-  /// children are drawn on top, so they are tried first.
+  /// The deepest button under `point`, in the coordinates of `id`'s
+  /// parent, in `id`'s subtree, with the nodes on the way down to it,
+  /// itself included, pushed onto `path`. Later children are drawn on
+  /// top, so they are tried first.
   fn hit(&self, id: NodeId, point: Point, path: &mut Vec<NodeId>) -> Option<NodeId> {
     let node = self.node(id)?;
+    let point = local(node, point)?;
     let rect = node.rect.filter(|rect| rect.contains(point))?;
     let style = node.effective_style();
     // A clip hides its children under its border too.
@@ -312,7 +314,10 @@ impl Tree {
   /// Changes a button's hover or pressed state, noting when that needs a
   /// layout.
   fn set_button_state(&mut self, id: NodeId, f: impl FnOnce(&mut ButtonNode)) {
-    if self.update_button_style(id, f) == Change::Layout {
+    if matches!(
+      self.update_button_style(id, f),
+      Change::Layout | Change::Place
+    ) {
       self.pointer.caused_layout = true;
     }
   }
@@ -381,7 +386,11 @@ impl Tree {
   /// A press on field `id` focuses it and puts the caret under the
   /// pointer. Anything else is left alone.
   fn press_field(&mut self, id: NodeId) {
-    let Some(position) = self.pointer.position else {
+    let Some(position) = self
+      .pointer
+      .position
+      .and_then(|at| self.local_point(id, at))
+    else {
       return;
     };
     let Some(NodeKind::Input(input)) = self.node(id).map(|node| &node.kind) else {
@@ -437,6 +446,7 @@ impl Tree {
   /// ancestors' clips let the pointer reach.
   fn scroll_view_at(&self, id: NodeId, point: Point) -> Option<NodeId> {
     let node = self.node(id)?;
+    let point = local(node, point)?;
     if !node.rect.is_some_and(|rect| rect.contains(point)) {
       return None;
     }
@@ -446,6 +456,21 @@ impl Tree {
       .rev()
       .find_map(|child| self.scroll_view_at(child, point))
       .or_else(|| matches!(node.kind, NodeKind::Scroll(_)).then_some(id))
+  }
+
+  /// `point`, in window coordinates, in the coordinates node `id`'s
+  /// rectangle is in, through the transforms of the node and its
+  /// ancestors. `None` if one of them
+  /// squashes it flat.
+  fn local_point(&self, id: NodeId, point: Point) -> Option<Point> {
+    let mut path = vec![id];
+    while let Some(parent) = path.last().and_then(|&id| self.taffy.parent(id)) {
+      path.push(parent);
+    }
+    path
+      .iter()
+      .rev()
+      .try_fold(point, |point, &id| local(self.node(id)?, point))
   }
 
   /// A click on button `id`, as from the keyboard.
@@ -464,6 +489,16 @@ impl Tree {
       handlers: button.handlers,
       action,
     })
+  }
+}
+
+/// `point`, in the coordinates of `node`'s parent, in the node's own:
+/// moved back through its transform. `None` for a transform that squashes
+/// it flat, as a scale of 0 does, which nothing can point at.
+fn local(node: &Node, point: Point) -> Option<Point> {
+  match node.transform {
+    Some(transform) => Some(transform.invert()?.map(point)),
+    None => Some(point),
   }
 }
 

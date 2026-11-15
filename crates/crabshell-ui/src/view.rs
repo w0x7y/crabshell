@@ -6,7 +6,7 @@ use std::path::Path;
 use cosmic_text::{Buffer, LayoutRun};
 use taffy::TraversePartialTree;
 
-use crate::geometry::{Point, Rect, Size};
+use crate::geometry::{Affine, Point, Rect, Size};
 use crate::screencopy::CaptureFrame;
 use crate::style::{Color, Style};
 use crate::text::TextNode;
@@ -72,9 +72,26 @@ impl<'a> NodeView<'a> {
 
   /// The area the node and everything inside it painted at the last
   /// layout: its rectangle, text and icons that overflow it, and its
-  /// descendants' bounds. Nothing outside it needs drawing for this node.
+  /// descendants' bounds, moved by its [`transform`](Self::transform) into
+  /// its parent's coordinates. Nothing outside it needs drawing for this
+  /// node.
   pub fn bounds(&self) -> Rect {
     self.node.bounds
+  }
+
+  /// [`bounds`](Self::bounds) before the node's own transform, in its own
+  /// coordinates: what a layer drawn for the transform must hold. The
+  /// same as `bounds` when it has none.
+  pub fn inner_bounds(&self) -> Rect {
+    self.node.inner_bounds
+  }
+
+  /// How the node's style moves it and everything inside it where it is
+  /// drawn, from its own coordinates, which its rectangle and its
+  /// children's are in, into its parent's. `None` when it doesn't. The
+  /// whole subtree is drawn as one layer through it.
+  pub fn transform(&self) -> Option<Affine> {
+    self.node.transform
   }
 
   /// The style in effect, with a button's hover and pressed styles laid

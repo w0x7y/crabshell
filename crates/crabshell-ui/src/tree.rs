@@ -20,7 +20,7 @@ use taffy::TaffyTree;
 use crate::animation::{self, Transition};
 use crate::cx::{Anchor, Cx};
 use crate::floating::FloatingState;
-use crate::geometry::{Rect, Size};
+use crate::geometry::{Affine, Rect, Size};
 use crate::input::{Handlers, Pointer};
 use crate::keyboard::Keyboard;
 use crate::keyed::KeyedSlot;
@@ -47,6 +47,9 @@ pub(crate) struct Tree {
   /// The size the compositor gave the window.
   pub(crate) size: Size,
   pub(crate) needs_layout: bool,
+  /// A transform changed, so where things are drawn is worked out again,
+  /// without laying anything out.
+  pub(crate) needs_place: bool,
   /// Areas to repaint, gathered since the renderer last took them.
   pub(crate) damage: Vec<Rect>,
   pub(crate) pointer: Pointer,
@@ -102,13 +105,25 @@ pub(crate) struct Node {
   pub(crate) content: Rect,
   /// What the node draws: `rect`, and text or an icon that overflows it.
   pub(crate) painted: Rect,
-  /// `painted` together with every descendant's.
+  /// `painted` together with every descendant's, moved by the node's own
+  /// transform into its parent's coordinates.
   pub(crate) bounds: Rect,
-  /// What the node drew itself at the last layout: `painted` if it has a
-  /// background, a border, text or an icon, and nothing otherwise. Moving
-  /// or resizing it repaints only this, since its children report their
-  /// own; a spacer that grows repaints nothing.
+  /// `painted` together with every descendant's, in the node's own
+  /// coordinates, before its transform: what a transformed layer holds.
+  pub(crate) inner_bounds: Rect,
+  /// `bounds` in window coordinates, through every transform around it.
+  pub(crate) window_bounds: Rect,
+  /// `painted` in window coordinates.
+  pub(crate) window_painted: Rect,
+  /// What the node drew itself at the last layout, in window coordinates:
+  /// `window_painted` if it has a background, a border, text or an icon,
+  /// and nothing otherwise. Moving or resizing it repaints only this,
+  /// since its children report their own; a spacer that grows repaints
+  /// nothing.
   pub(crate) drawn: Rect,
+  /// Its style's transform at the last layout, from its own coordinates
+  /// into its parent's.
+  pub(crate) transform: Option<Affine>,
   /// Whether its style clipped its children at the last layout.
   pub(crate) clips: bool,
   /// A style change fading in, and the count of fades started, which
@@ -253,6 +268,9 @@ pub(crate) struct Fade {
 pub(crate) enum Change {
   None,
   Paint,
+  /// A paint change that moves where the node is drawn: its old area is
+  /// repainted now, and its new one once it is placed again.
+  Place,
   Layout,
 }
 
@@ -277,7 +295,11 @@ impl Node {
       content: Rect::default(),
       painted: Rect::default(),
       bounds: Rect::default(),
+      inner_bounds: Rect::default(),
+      window_bounds: Rect::default(),
+      window_painted: Rect::default(),
       drawn: Rect::default(),
+      transform: None,
       clips: false,
       fade: None,
       fades: 0,
@@ -392,6 +414,7 @@ impl Tree {
       surface: Surface::default(),
       size: Size::default(),
       needs_layout: true,
+      needs_place: false,
       damage: Vec::new(),
       pointer: Pointer::default(),
       keyboard: Keyboard::default(),
@@ -815,7 +838,7 @@ impl Tree {
     if let Some(node) = self.taffy.get_node_context(id)
       && node.rect.is_some()
     {
-      add_damage(&mut self.damage, node.bounds);
+      add_damage(&mut self.damage, node.window_bounds);
     }
     let mut removed = Vec::new();
     let mut pending = vec![id];
@@ -922,10 +945,12 @@ impl Tree {
       }
       // A shadow reaches past the box, so the area painted is worked
       // out again, to cover a fade's start as well as its end.
-      if before.shadow == after.shadow {
-        Change::Paint
-      } else {
+      if before.shadow != after.shadow {
         Change::Layout
+      } else if !before.same_transform(&after) {
+        Change::Place
+      } else {
+        Change::Paint
       }
     });
     if let Some((generation, transition)) = fade {
@@ -965,6 +990,11 @@ impl Tree {
             return Change::None;
           }
           mine = true;
+          // A fading transform moves through areas neither end covers.
+          let moves = node
+            .fade
+            .as_ref()
+            .is_some_and(|fade| !fade.from.same_transform(&node.effective_style()));
           if ended {
             node.fade = None;
           } else if waiting {
@@ -973,7 +1003,7 @@ impl Tree {
           } else if let Some(fade) = &mut node.fade {
             fade.t = t;
           }
-          Change::Paint
+          if moves { Change::Place } else { Change::Paint }
         });
         mine && !ended
       }),
@@ -1042,18 +1072,19 @@ impl Tree {
   pub(crate) fn invalidate(&mut self, id: NodeId, change: Change) {
     match change {
       Change::None => {}
-      Change::Paint => {
+      Change::Paint | Change::Place => {
         // A node that was never laid out is painted after its first
         // layout anyway. Its bounds cover the descendants, which
         // inherit its color and opacity.
         if let Some(node) = self.taffy.get_node_context_mut(id)
           && node.rect.is_some()
         {
-          add_damage(&mut self.damage, node.bounds);
+          add_damage(&mut self.damage, node.window_bounds);
           // It may draw now, as when a background was added, so a
           // later move repaints where it was.
-          node.drawn = node.painted;
+          node.drawn = node.window_painted;
         }
+        self.needs_place |= change == Change::Place;
       }
       Change::Layout => {
         if let Some(node) = self.node_mut(id) {

@@ -613,7 +613,8 @@ impl Window {
 
   /// Whether something changed that needs [`layout`](Self::layout).
   pub fn needs_layout(&self) -> bool {
-    self.tree.borrow().needs_layout
+    let tree = self.tree.borrow();
+    tree.needs_layout || tree.needs_place
   }
 
   /// Lays the window out at its size, measuring text with `text`, and

@@ -90,7 +90,7 @@ pub use animation::{
 };
 pub use cx::Cx;
 pub use floating::{FloatingConfig, FloatingWindow, WindowRequest};
-pub use geometry::{Point, Rect, Size};
+pub use geometry::{Affine, Point, Rect, Size};
 pub use input::{CursorShape, PointerButton, ScrollDelta};
 pub use keyboard::{Clipboard, Key, KeyEvent, Modifiers};
 pub use lock::{Lock, SessionLock};

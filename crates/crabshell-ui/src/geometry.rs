@@ -111,3 +111,109 @@ impl Rect {
     }
   }
 }
+
+impl Rect {
+  /// This rectangle grown by `by` on every side. An empty one stays as
+  /// it is.
+  pub(crate) fn outset(&self, by: f32) -> Rect {
+    if self.is_empty() {
+      return *self;
+    }
+    Rect::new(
+      self.x - by,
+      self.y - by,
+      self.width + 2.0 * by,
+      self.height + 2.0 * by,
+    )
+  }
+}
+
+/// A 2D affine transform, in the order tiny-skia's `Transform::from_row`
+/// takes: a point `(x, y)` goes to `(sx·x + kx·y + tx, ky·x + sy·y + ty)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Affine {
+  /// How far x moves along x.
+  pub sx: f32,
+  /// How far x moves along y.
+  pub ky: f32,
+  /// How far y moves along x.
+  pub kx: f32,
+  /// How far y moves along y.
+  pub sy: f32,
+  /// Added to x.
+  pub tx: f32,
+  /// Added to y.
+  pub ty: f32,
+}
+
+impl Affine {
+  /// Where `point` goes.
+  pub(crate) fn map(&self, point: Point) -> Point {
+    Point::new(
+      self.sx * point.x + self.kx * point.y + self.tx,
+      self.ky * point.x + self.sy * point.y + self.ty,
+    )
+  }
+
+  /// The smallest rectangle covering where `rect` goes, or an empty one
+  /// if that isn't made of finite numbers.
+  pub(crate) fn map_rect(&self, rect: Rect) -> Rect {
+    let corners = [
+      Point::new(rect.x, rect.y),
+      Point::new(rect.right(), rect.y),
+      Point::new(rect.x, rect.bottom()),
+      Point::new(rect.right(), rect.bottom()),
+    ]
+    .map(|corner| self.map(corner));
+    let (mut left, mut top) = (f32::INFINITY, f32::INFINITY);
+    let (mut right, mut bottom) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for corner in corners {
+      left = left.min(corner.x);
+      top = top.min(corner.y);
+      right = right.max(corner.x);
+      bottom = bottom.max(corner.y);
+    }
+    let mapped = Rect::new(left, top, right - left, bottom - top);
+    if [mapped.x, mapped.y, mapped.width, mapped.height]
+      .iter()
+      .all(|n| n.is_finite())
+    {
+      mapped
+    } else {
+      Rect::default()
+    }
+  }
+
+  /// The transform that undoes this one, or `None` when it squashes the
+  /// plane flat, as a scale of 0 does.
+  pub(crate) fn invert(&self) -> Option<Affine> {
+    let det = self.sx * self.sy - self.kx * self.ky;
+    if det == 0.0 || !det.is_finite() {
+      return None;
+    }
+    let (sx, ky, kx, sy) = (self.sy / det, -self.ky / det, -self.kx / det, self.sx / det);
+    Some(Affine {
+      sx,
+      ky,
+      kx,
+      sy,
+      tx: -(sx * self.tx + kx * self.ty),
+      ty: -(ky * self.tx + sy * self.ty),
+    })
+  }
+}
+
+/// Where `rect`, in the innermost space of `chain`, lands in the window:
+/// through each transform from the innermost out, grown by a logical
+/// pixel before each, since a transformed layer is filtered bilinearly
+/// and bleeds up to half a pixel past its content.
+pub(crate) fn through(chain: &[Affine], rect: Rect) -> Rect {
+  chain.iter().rev().fold(rect, |rect, transform| {
+    // A line, empty itself, would cover an area once turned.
+    if rect.is_empty() {
+      rect
+    } else {
+      transform.map_rect(rect.outset(1.0))
+    }
+  })
+}

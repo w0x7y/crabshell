@@ -2,7 +2,7 @@
 //! `const fn`s, so a theme is a set of constants.
 
 use crate::animation::{Animate, Transition};
-use crate::geometry::Rect;
+use crate::geometry::{Affine, Point, Rect};
 
 /// An sRGB color with straight (not premultiplied) alpha.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -345,6 +345,11 @@ pub struct Padding {
 /// `font`, `padding`, `clip`, `width` and `height` change the layout; the
 /// other fields only change how the widget is painted.
 ///
+/// `translate`, `scale`, `rotate` and `origin` move the widget and
+/// everything inside it where it is drawn and where the pointer finds it,
+/// without moving anything else: the layout, and popups anchored to the
+/// widget, keep its box where it was laid out.
+///
 /// ```
 /// use crabshell_ui::{Color, Font, Style};
 ///
@@ -383,9 +388,21 @@ pub struct Style {
   pub width: Option<f32>,
   /// The height in logical pixels, instead of what the content needs.
   pub height: Option<f32>,
+  /// How far the widget is moved, right and down, in logical pixels,
+  /// after it is scaled and turned.
+  pub translate: Option<Point>,
+  /// How many times its size it is drawn, around `origin`. 0 draws
+  /// nothing, and a negative scale also turns it upside down.
+  pub scale: Option<f32>,
+  /// How many degrees it is turned clockwise, around `origin`.
+  pub rotate: Option<f32>,
+  /// The point it is scaled and turned around, as fractions of its box:
+  /// `(0, 0)` is the top-left corner, and the default `(0.5, 0.5)` the
+  /// middle.
+  pub origin: Option<Point>,
   /// How a change to the paint fields fades in: background, gradient,
-  /// shadow, color, border, radius and opacity. Other fields change at
-  /// once.
+  /// shadow, color, border, radius, opacity and the transform. Other
+  /// fields change at once.
   pub transition: Option<Transition>,
 }
 
@@ -405,6 +422,10 @@ impl Style {
       clip: None,
       width: None,
       height: None,
+      translate: None,
+      scale: None,
+      rotate: None,
+      origin: None,
       transition: None,
     }
   }
@@ -578,10 +599,57 @@ impl Style {
     }
   }
 
+  /// Moves the widget and everything inside it `x` logical pixels right
+  /// and `y` down where it is drawn, after it is scaled and turned. The
+  /// layout doesn't move.
+  ///
+  /// ```
+  /// use crabshell_ui::Style;
+  ///
+  /// const HIDDEN: Style = Style::new().translate(0.0, -40.0);
+  /// ```
+  pub const fn translate(self, x: f32, y: f32) -> Style {
+    Style {
+      translate: Some(Point::new(x, y)),
+      ..self
+    }
+  }
+
+  /// Draws the widget and everything inside it `scale` times its size,
+  /// around its [`origin`](Self::origin), without changing the layout.
+  /// 0 draws nothing and is never under the pointer; a negative scale
+  /// also turns it upside down. A number that isn't finite is ignored.
+  pub const fn scale(self, scale: f32) -> Style {
+    Style {
+      scale: Some(scale),
+      ..self
+    }
+  }
+
+  /// Turns the widget and everything inside it `degrees` clockwise,
+  /// around its [`origin`](Self::origin), without changing the layout. A
+  /// number that isn't finite is ignored.
+  pub const fn rotate(self, degrees: f32) -> Style {
+    Style {
+      rotate: Some(degrees),
+      ..self
+    }
+  }
+
+  /// Sets the point the widget is scaled and turned around, as fractions
+  /// of its box: `(0.0, 0.0)` is the top-left corner, `(1.0, 1.0)` the
+  /// bottom-right. The default is the middle, `(0.5, 0.5)`.
+  pub const fn origin(self, x: f32, y: f32) -> Style {
+    Style {
+      origin: Some(Point::new(x, y)),
+      ..self
+    }
+  }
+
   /// Sets how a change to the paint fields fades in, as when a hover
-  /// style takes over: background, gradient, shadow, color, border, radius
-  /// and opacity move
-  /// over `transition`. The style being changed to says how.
+  /// style takes over: background, gradient, shadow, color, border,
+  /// radius, opacity, translate, scale, rotate and origin move over
+  /// `transition`. The style being changed to says how.
   pub const fn transition(self, transition: Transition) -> Style {
     Style {
       transition: Some(transition),
@@ -606,6 +674,10 @@ impl Style {
       clip: or(over.clip, self.clip),
       width: or(over.width, self.width),
       height: or(over.height, self.height),
+      translate: or(over.translate, self.translate),
+      scale: or(over.scale, self.scale),
+      rotate: or(over.rotate, self.rotate),
+      origin: or(over.origin, self.origin),
       transition: or(over.transition, self.transition),
     }
   }
@@ -624,6 +696,52 @@ impl Style {
       && self.height == other.height
       && self.clips() == other.clips()
   }
+
+  /// Whether the two styles move the widget the same way where it is
+  /// drawn.
+  pub(crate) fn same_transform(&self, other: &Style) -> bool {
+    self.translate == other.translate
+      && self.scale == other.scale
+      && self.rotate == other.rotate
+      && self.origin == other.origin
+  }
+
+  /// Where this style moves a widget laid out at `rect`, from its own
+  /// coordinates into its parent's, or `None` when it doesn't. It is
+  /// scaled and turned around its origin, then translated. A number that
+  /// isn't finite counts as unset.
+  pub(crate) fn transform(&self, rect: Rect) -> Option<Affine> {
+    let finite = |value: f32, default: f32| if value.is_finite() { value } else { default };
+    let translate = self.translate.unwrap_or_default();
+    let (x, y) = (finite(translate.x, 0.0), finite(translate.y, 0.0));
+    let scale = finite(self.scale.unwrap_or(1.0), 1.0);
+    let degrees = finite(self.rotate.unwrap_or(0.0), 0.0).rem_euclid(360.0);
+    if x == 0.0 && y == 0.0 && scale == 1.0 && degrees == 0.0 {
+      return None;
+    }
+    // Quarter turns are exact, so a chevron turned over stays crisp.
+    let (sin, cos) = match degrees {
+      90.0 => (1.0, 0.0),
+      180.0 => (0.0, -1.0),
+      270.0 => (-1.0, 0.0),
+      _ => degrees.to_radians().sin_cos(),
+    };
+    let origin = self.origin.unwrap_or(Point::new(0.5, 0.5));
+    let ox = rect.x + finite(origin.x, 0.5) * rect.width;
+    let oy = rect.y + finite(origin.y, 0.5) * rect.height;
+    // A point p goes to origin + turn(scale(p - origin)) + translate.
+    let (sx, ky, kx, sy) = (cos * scale, sin * scale, -sin * scale, cos * scale);
+    // One too large for f32 maps every area to an empty one, so it is
+    // drawn nowhere and never hit.
+    Some(Affine {
+      sx,
+      ky,
+      kx,
+      sy,
+      tx: ox + x - (sx * ox + kx * oy),
+      ty: oy + y - (ky * ox + sy * oy),
+    })
+  }
 }
 
 /// `Option::or`, which isn't a `const fn` on stable Rust.
@@ -640,7 +758,8 @@ impl Style {
   /// a color from or to its transparent self, a border from or to 0 wide.
   /// A text color only one sets changes at once, as the other comes
   /// from an ancestor. Gradients of different shapes or numbers of colors
-  /// change at once.
+  /// change at once. An unset translate is 0, scale 1, rotate 0 and
+  /// origin the middle.
   pub(crate) fn lerp(&self, to: &Style, t: f32) -> Style {
     let color = |from: Option<Color>, to: Option<Color>| match (from, to) {
       (Some(from), Some(to)) => Some(from.lerp(&to, t)),
@@ -672,6 +791,10 @@ impl Style {
       (None, None) => None,
       (from, to) => Some(from.unwrap_or(none).lerp(&to.unwrap_or(none), t)),
     };
+    let point = |from: Option<Point>, to: Option<Point>, none: Point| match (from, to) {
+      (None, None) => None,
+      (from, to) => Some(from.unwrap_or(none).lerp(&to.unwrap_or(none), t)),
+    };
     let gradient = match (self.gradient, to.gradient) {
       (Some(from), Some(end)) => from.lerp(&end, t).or(to.gradient),
       (None, Some(end)) => end.clear().lerp(&end, t),
@@ -695,6 +818,10 @@ impl Style {
       border,
       radius: number(self.radius, to.radius, 0.0),
       opacity: number(self.opacity, to.opacity, 1.0),
+      translate: point(self.translate, to.translate, Point::default()),
+      scale: number(self.scale, to.scale, 1.0),
+      rotate: number(self.rotate, to.rotate, 0.0),
+      origin: point(self.origin, to.origin, Point::new(0.5, 0.5)),
       ..*to
     }
   }
