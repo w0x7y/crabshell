@@ -599,8 +599,15 @@ impl Daemon for BluetoothService {
         let Some(state) = state.as_mut() else {
           return;
         };
-        // It can come before the answer, and ends the call either way.
-        if interface == DEVICE && changed.contains_key("Connected") {
+        // Reaching where a call was headed ends it, as that can come before
+        // the answer. A change the other way waits for the answer.
+        let reached = match dbus::get::<bool>(&changed, "Connected") {
+          Some(true) => Some(BluetoothDeviceState::Connecting),
+          Some(false) => Some(BluetoothDeviceState::Disconnecting),
+          None => None,
+        };
+        let headed = state.calls.get(&path).map(|(call, _)| *call);
+        if interface == DEVICE && reached.is_some() && headed == reached {
           state.calls.remove(&path);
         }
         let props = state

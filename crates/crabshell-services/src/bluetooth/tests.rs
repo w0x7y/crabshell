@@ -374,6 +374,52 @@ fn a_device_connects_and_disconnects_while_its_call_is_out() {
 }
 
 #[test]
+fn a_change_the_other_way_leaves_the_call_out() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let bluez = fake_bluez(&mut shell, &bus);
+  for member in ["Connect", "Disconnect"] {
+    bluez.on(member, |call| reply(call, &()));
+  }
+  let bluetooth = shell.cx.bluetooth();
+  let devices = bluetooth.devices();
+  wait_for(&mut shell, "the devices", || {
+    devices.get_untracked().len() == 2
+  });
+  let state = || devices.get_untracked()[0].state;
+  let connected = |shell: &mut Harness, connected: bool| {
+    let changed = [("Connected", Variant::from(connected))];
+    bluez.set(shell, HEADSET, DEVICE, &changed);
+    shell.run_until(Instant::now() + Duration::from_millis(100));
+  };
+
+  // The connect lands while the disconnect after it is out.
+  bluez.hold();
+  bluetooth.connect(HEADSET);
+  bluetooth.disconnect(HEADSET);
+  wait_for(&mut shell, "both calls", || bluez.held() == 2);
+  connected(&mut shell, true);
+  assert_eq!(state(), BluetoothDeviceState::Disconnecting);
+  connected(&mut shell, false);
+  assert_eq!(state(), BluetoothDeviceState::Disconnected);
+  bluez.release(&mut shell);
+
+  // And the other way round.
+  connected(&mut shell, true);
+  bluez.hold();
+  bluetooth.disconnect(HEADSET);
+  bluetooth.connect(HEADSET);
+  wait_for(&mut shell, "both calls", || bluez.held() == 2);
+  connected(&mut shell, false);
+  assert_eq!(state(), BluetoothDeviceState::Connecting);
+  // The connect's answer ends it, even with no change to where it went.
+  bluez.release(&mut shell);
+  wait_for(&mut shell, "the answers", || {
+    state() == BluetoothDeviceState::Disconnected
+  });
+}
+
+#[test]
 fn an_effect_that_connects_sends_one_call() {
   let bus = PrivateBus::start();
   let mut shell = Harness::new(online(&bus));
