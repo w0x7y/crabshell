@@ -25,9 +25,9 @@ pub struct OutputInfo {
   /// The output's whole scale, from `wl_output.scale`: 2 for a scale of
   /// 1.5. See [`fractional_scale`](Self::fractional_scale).
   pub scale: i32,
-  /// The scale windows on it draw at, such as 1.5: the mode's width over
-  /// the logical width, to the nearest 120th, as `wp_fractional_scale_v1`
-  /// tells windows their scale. Where windows can't draw at fractional
+  /// The scale windows on it draw at, such as 1.5: the 120th, as
+  /// `wp_fractional_scale_v1` tells windows their scale, that turns the
+  /// mode into the logical size. Where windows can't draw at fractional
   /// scales, because the compositor lacks that protocol or
   /// `wp_viewporter`, it is the whole [`scale`](Self::scale).
   pub fractional_scale: f64,
@@ -78,7 +78,7 @@ pub(crate) fn describe(info: &output::OutputInfo, fractional: bool) -> Option<Ou
     mode,
     scale: info.scale_factor,
     fractional_scale: fractional
-      .then(|| fractional_scale(mode, transform, width))
+      .then(|| fractional_scale(mode, transform, (width, height)))
       .flatten()
       .unwrap_or(whole),
     x,
@@ -120,16 +120,39 @@ pub(crate) fn logical_size(
   shown(mode, transform).map_or((0, 0), |(width, height)| (width / scale, height / scale))
 }
 
-/// The scale a window `width` logical pixels across the output draws at:
-/// the mode's width, turned, over `width`, to the nearest 120th, as
-/// `wp_fractional_scale_v1` gives scales. `None` without a mode or a
-/// width, or outside the 1/120 to 8 windows take.
-pub(crate) fn fractional_scale(mode: Option<Mode>, transform: Turn, width: u32) -> Option<f64> {
-  let (pixels, _) = shown(mode, transform)?;
-  let scale_120 = (u64::from(pixels) * 120 + u64::from(width) / 2).checked_div(u64::from(width))?;
+/// The scale windows on an output `width` by `height` logical pixels draw
+/// at, in the 120ths `wp_fractional_scale_v1` gives scales in. The
+/// compositor cut or rounded the mode, turned, over its scale into that
+/// size, so its scale is the 120th that gives both sides back, nearest the
+/// mode's width over `width`; with none, that estimate. `None` without a
+/// mode or a size, or outside the 1/120 to 8 windows take.
+pub(crate) fn fractional_scale(
+  mode: Option<Mode>,
+  transform: Turn,
+  (width, height): (u32, u32),
+) -> Option<f64> {
+  let (across, down) = shown(mode, transform)?;
+  let (across, down) = (u64::from(across) * 120, u64::from(down) * 120);
+  let (width, height) = (u64::from(width), u64::from(height));
+  let estimate = (across + width / 2).checked_div(width)?;
+  // `half` 0 cuts, as wlroots does; half of `k` rounds.
+  let gives = |k: u64, half: u64| (across + half) / k == width && (down + half) / k == height;
+  let fits = (1..=960).filter(|&k| gives(k, 0) || gives(k, k / 2));
+  let scale_120 = fits
+    .min_by_key(|k| k.abs_diff(estimate))
+    .unwrap_or(estimate);
   (1..=960)
     .contains(&scale_120)
     .then(|| scale_120 as f64 / 120.0)
+}
+
+/// Puts `info` in `known`'s place, and gives it back if it differs: Sway
+/// sends `done`s that change nothing, which the listener needn't hear.
+pub(crate) fn replace(known: &mut OutputInfo, info: OutputInfo) -> Option<OutputInfo> {
+  (*known != info).then(|| {
+    *known = info.clone();
+    info
+  })
 }
 
 /// The mode's size as it shows, turned.

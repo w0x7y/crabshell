@@ -5,7 +5,9 @@ use crabshell_render::Turn;
 use smithay_client_toolkit::output;
 use smithay_client_toolkit::reexports::client::protocol::wl_output::Transform;
 
-use crate::outputs::{Mode, current_mode, fractional_scale, logical_size, turn};
+use crate::outputs::{
+  Mode, OutputInfo, current_mode, fractional_scale, logical_size, replace, turn,
+};
 
 fn mode(dimensions: (i32, i32), refresh_rate: i32, current: bool) -> output::Mode {
   output::Mode {
@@ -78,27 +80,64 @@ fn the_logical_size_is_xdg_outputs_or_the_mode_over_the_whole_scale() {
 }
 
 #[test]
-fn the_fractional_scale_is_the_mode_over_the_logical_width_in_120ths() {
-  let mode = mode_of(1920, 1080);
-  assert_eq!(fractional_scale(mode, UPRIGHT, 1280), Some(1.5));
-  assert_eq!(fractional_scale(mode, UPRIGHT, 1536), Some(1.25));
+fn the_fractional_scale_is_the_one_that_gives_back_the_logical_size() {
+  let at = |width, height, logical| fractional_scale(mode_of(width, height), UPRIGHT, logical);
+  assert_eq!(at(1920, 1080, (1280, 720)), Some(1.5));
+  assert_eq!(at(1920, 1080, (1536, 864)), Some(1.25));
+  assert_eq!(at(1920, 1080, (960, 540)), Some(2.0));
   // wlroots cuts 1920 / 1.75 down to 1097 logical pixels; another
-  // compositor may round 1366 / 1.5 up to 911.
-  assert_eq!(fractional_scale(mode, UPRIGHT, 1097), Some(1.75));
-  assert_eq!(
-    fractional_scale(mode_of(1366, 768), UPRIGHT, 911),
-    Some(1.5)
-  );
-  assert_eq!(fractional_scale(mode, UPRIGHT, 960), Some(2.0));
+  // compositor may round 1366 / 1.5 up to 911, or 1366 / 3.1 up to 441.
+  assert_eq!(at(1920, 1080, (1097, 617)), Some(1.75));
+  assert_eq!(at(1366, 768, (911, 512)), Some(1.5));
+  assert_eq!(at(1366, 768, (441, 248)), Some(3.1));
+  // On a small logical size the cut moves the mode over it past the
+  // next 120th, so the height decides.
+  assert_eq!(at(1280, 800, (426, 266)), Some(3.0));
+  assert_eq!(at(1366, 768, (455, 256)), Some(3.0));
+  assert_eq!(at(1080, 2340, (392, 850)), Some(2.75));
+  assert_eq!(at(720, 1440, (378, 757)), Some(1.9));
+  assert_eq!(at(720, 1440, (342, 685)), Some(2.1));
+  assert_eq!(at(720, 1440, (293, 587)), Some(2.45));
+  assert_eq!(at(720, 1440, (261, 523)), Some(2.75));
   // Turned a quarter, the logical width is the mode's height.
   assert_eq!(
-    fractional_scale(mode_of(1280, 720), SIDEWAYS, 480),
+    fractional_scale(mode_of(1280, 720), SIDEWAYS, (480, 853)),
     Some(1.5)
   );
   // Nothing to work from, or a scale no window would take.
-  assert_eq!(fractional_scale(None, UPRIGHT, 1280), None);
-  assert_eq!(fractional_scale(mode, UPRIGHT, 0), None);
-  assert_eq!(fractional_scale(mode, UPRIGHT, 1), None);
+  assert_eq!(fractional_scale(None, UPRIGHT, (1280, 720)), None);
+  assert_eq!(at(1920, 1080, (0, 0)), None);
+  assert_eq!(at(1920, 1080, (1, 1)), None);
+}
+
+#[test]
+fn only_what_differs_is_told_as_a_change() {
+  let mut known = OutputInfo {
+    name: String::from("DP-1"),
+    description: String::new(),
+    make: String::new(),
+    model: String::new(),
+    mode: mode_of(1920, 1080),
+    scale: 1,
+    fractional_scale: 1.0,
+    x: 0,
+    y: 0,
+    width: 1920,
+    height: 1080,
+    width_mm: 0,
+    height_mm: 0,
+    transform: UPRIGHT,
+  };
+  // A `done` that says what was said before changes nothing.
+  let same = known.clone();
+  assert_eq!(replace(&mut known, same), None);
+  let scaled = OutputInfo {
+    scale: 2,
+    fractional_scale: 1.5,
+    ..known.clone()
+  };
+  assert_eq!(replace(&mut known, scaled.clone()), Some(scaled.clone()));
+  assert_eq!(known, scaled);
 }
 
 #[test]

@@ -32,6 +32,7 @@ use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
 use crate::events::Event;
 use crate::keyboard::SeatKeyboard;
+use crate::outputs::replace;
 use crate::platform::{Platform, SeatPointer};
 use crate::pointer::{self, Cursor};
 use crate::scale::Scale;
@@ -202,8 +203,7 @@ impl OutputHandler for Platform {
     self.windowsets.output_changed(&output);
     match self.known.iter_mut().find(|(known, _)| *known == output) {
       Some((_, known)) => {
-        if *known != info {
-          *known = info.clone();
+        if let Some(info) = replace(known, info) {
           self.notify(Event::OutputChanged(info));
         }
       }
