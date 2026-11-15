@@ -427,6 +427,30 @@ fn a_panicking_close_handler_is_logged_and_taken_away_and_the_rest_run_on() {
 }
 
 #[test]
+fn what_a_close_handler_reads_never_reruns_the_effect_that_closed() {
+  let mut shell = Harness::new(offline());
+  let notifications = shell.cx.notifications();
+  let server = service(&notifications);
+  server.notify(0, sample("hello"));
+  let theme = shell.cx.signal(0);
+  notifications.on_closed(move |_, _| {
+    theme.get();
+  });
+  let runs = Rc::new(Cell::new(0));
+  let counted = Rc::clone(&runs);
+  let closer = notifications.clone();
+  shell.cx.effect(move || {
+    counted.set(counted.get() + 1);
+    closer.clear();
+  });
+  shell.run_until(Instant::now() + Duration::from_millis(10));
+  assert_eq!(ids(notifications.list()), [0u32; 0]);
+  theme.set(1);
+  shell.run_until(Instant::now() + Duration::from_millis(10));
+  assert_eq!(runs.get(), 1);
+}
+
+#[test]
 fn a_close_handler_goes_with_its_context() {
   let shell = Harness::new(offline());
   let notifications = shell.cx.notifications();

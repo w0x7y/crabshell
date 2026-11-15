@@ -24,7 +24,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use calloop::RegistrationToken;
 use calloop::timer::TimeoutAction;
-use crabshell_reactive::{Owner, ReadSignal, Signal};
+use crabshell_reactive::{Owner, ReadSignal, Signal, untrack};
 use crabshell_ui::{Cx, IconSource};
 use zbus::export::futures_core::Stream;
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
@@ -493,8 +493,10 @@ impl Service {
   }
 
   /// Hands each of `closed` to the config's handlers, with nothing
-  /// borrowed, since a handler may call the service. A handler that
-  /// panics is logged with where `on_closed` was called, and taken away.
+  /// borrowed, since a handler may call the service, and untracked, so
+  /// what one reads never reruns an effect that closed a notification. A
+  /// handler that panics is logged with where `on_closed` was called, and
+  /// taken away.
   fn deliver(&self, closed: &[Notification], reason: CloseReason) {
     let listeners = match self.state.borrow().as_ref() {
       Some(state) if !closed.is_empty() => state.listeners.clone(),
@@ -506,7 +508,8 @@ impl Service {
         if !self.listening(*id) {
           continue;
         }
-        if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| handler(gone, reason))) {
+        let run = AssertUnwindSafe(|| untrack(|| handler(gone, reason)));
+        if let Err(payload) = panic::catch_unwind(run) {
           let message = panic_message(payload.as_ref());
           tracing::error!("notifications on_closed (called at {at}) panicked: {message}");
           drop(self.unlisten(*id));
