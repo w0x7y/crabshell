@@ -390,19 +390,33 @@ where
 
 /// The whole of `path` as UTF-8, up to [`MAX_FILE`].
 fn read_text(path: &Path) -> Result<String, FileError> {
-  // Checked before the open, which on a pipe waits for a writer.
-  // shortcut: a pipe swapped in between the two still blocks the open;
-  // open with O_NONBLOCK if that ever matters.
+  // Checked before the open, so a device or a pipe is never opened.
   if !std::fs::metadata(path)?.is_file() {
     return Err(FileError::new(FileErrorKind::NotAFile, "it isn't a file"));
   }
-  let file = std::fs::File::open(path)?;
+  let file = open_file(path)?;
   let mut bytes = Vec::new();
   file.take(MAX_FILE + 1).read_to_end(&mut bytes)?;
   if bytes.len() as u64 > MAX_FILE {
     return Err(FileError::new(FileErrorKind::Other, "it is over 16 MiB"));
   }
   String::from_utf8(bytes).map_err(|_| FileError::new(FileErrorKind::Other, "it isn't UTF-8"))
+}
+
+/// `path` opened to read, if it is a regular file. The open doesn't wait,
+/// as it would for a writer on a pipe put there since a check.
+fn open_file(path: &Path) -> Result<std::fs::File, FileError> {
+  use rustix::fs::{Mode, OFlags};
+
+  let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC;
+  let fd = rustix::fs::open(path, flags, Mode::empty()).map_err(std::io::Error::from)?;
+  let file = std::fs::File::from(fd);
+  if !file.metadata()?.is_file() {
+    return Err(FileError::new(FileErrorKind::NotAFile, "it isn't a file"));
+  }
+  // A regular file's reads never wait anyway; this says so.
+  rustix::fs::fcntl_setfl(&file, OFlags::empty()).map_err(std::io::Error::from)?;
+  Ok(file)
 }
 
 /// Replaces the file at `path` with `bytes` through a new file beside it,

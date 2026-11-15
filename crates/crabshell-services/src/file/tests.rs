@@ -1,6 +1,7 @@
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use crabshell_reactive::Runtime;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -101,6 +102,40 @@ fn a_read_error_says_why_and_is_cleared_by_a_read_or_a_write() {
   assert_eq!(view.error().get_untracked(), None, "a write that worked");
 }
 
+/// A pipe at `path` that a writer opens after 2 s, so a read that waits
+/// for one fails its test rather than hanging it. The writer doesn't wait
+/// itself, so with no reader waiting it finds none and goes.
+fn late_pipe(path: &Path) {
+  let made = std::process::Command::new("mkfifo")
+    .arg(path)
+    .status()
+    .unwrap();
+  assert!(made.success());
+  let path = path.to_owned();
+  std::thread::spawn(move || {
+    std::thread::sleep(Duration::from_secs(2));
+    let flags = rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::NONBLOCK;
+    let _ = rustix::fs::open(&path, flags, rustix::fs::Mode::empty());
+  });
+}
+
+#[test]
+fn opening_a_pipe_never_waits_for_a_writer() {
+  let dir = Dir::new();
+  let pipe = dir.join("pipe");
+  late_pipe(&pipe);
+  let started = Instant::now();
+  let opened = super::open_file(&pipe);
+  assert!(
+    started.elapsed() < Duration::from_secs(1),
+    "the open waited"
+  );
+  assert_eq!(
+    opened.err().map(|error| error.kind),
+    Some(FileErrorKind::NotAFile)
+  );
+}
+
 #[test]
 fn each_kind_of_read_error_is_told_apart_and_a_pipe_never_blocks() {
   let dir = Dir::new();
@@ -110,15 +145,15 @@ fn each_kind_of_read_error_is_told_apart_and_a_pipe_never_blocks() {
     kind(&shell.cx.file_view(dir.join("sub"))),
     Some(FileErrorKind::NotAFile)
   );
-  let made = std::process::Command::new("mkfifo")
-    .arg(dir.join("pipe"))
-    .status()
-    .unwrap();
-  assert!(made.success());
-  // Opening a pipe with no writer would wait for one.
+  late_pipe(&dir.join("pipe"));
+  let started = Instant::now();
   assert_eq!(
     kind(&shell.cx.file_view(dir.join("pipe"))),
     Some(FileErrorKind::NotAFile)
+  );
+  assert!(
+    started.elapsed() < Duration::from_secs(1),
+    "the read waited"
   );
   std::fs::write(dir.join("binary"), b"\xff").unwrap();
   let binary = shell.cx.file_view(dir.join("binary"));
