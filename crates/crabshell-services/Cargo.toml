@@ -21,7 +21,8 @@ libpulse-binding.workspace = true
 # Authenticating a lock screen's user, through the system's libpam.
 nonstick.workspace = true
 # pidfd_open and kill, to follow, stop and reap the programs a config runs,
-# and opening a file without waiting on a pipe.
+# opening a file without waiting on a pipe, and telling a socket client that
+# stopped sending from one that hung up.
 rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true

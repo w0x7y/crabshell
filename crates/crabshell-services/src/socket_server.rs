@@ -146,6 +146,12 @@ impl SocketServer {
   /// context too, so code outside it reads it with `try_get`. A client
   /// that connects while nothing handles it is closed at once.
   ///
+  /// A client that only stops sending, as `printf cmd | socat -
+  /// UNIX-CONNECT:path` does, has its last line passed on, and the
+  /// connection stays open for the reply until the config closes it, a
+  /// write fails or 5 s pass, as the shell's own IPC socket waits. One
+  /// that hangs up ends the connection at once.
+  ///
   /// It runs on the main thread. If it panics, that is logged with the
   /// server's path and where `on_connection` was called, that connection
   /// is closed, and it isn't called again; the server and its other

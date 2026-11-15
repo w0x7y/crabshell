@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 
 use crabshell_reactive::Runtime;
 
-use super::MAX_CONNECTIONS;
-use crate::ServicesExt;
+use super::{MAX_CONNECTIONS, SocketServer};
 use crate::testing::{Harness, capture_logs, offline};
+use crate::{ServicesExt, Socket};
 
 /// A short temporary directory, since socket paths are capped at 108
 /// bytes. It goes on drop.
@@ -130,8 +130,10 @@ fn the_server_goes_with_its_context_or_close_and_takes_only_its_own_file() {
     .on_connection(|_, _| {});
   let mut peer = client(&dir.join("t"));
   run(&mut shell, 50);
+  let mut waiting = client(&dir.join("t"));
   server.close();
   assert!(hung_up(&mut peer));
+  assert!(hung_up(&mut waiting), "one not taken yet is turned away");
   assert!(
     UnixStream::connect(dir.join("t")).is_err(),
     "no longer listening"
@@ -253,4 +255,154 @@ fn an_open_server_with_a_quiet_connection_wakes_nothing() {
   let _peer = client(&dir.join("s"));
   run(&mut shell, 50);
   assert_eq!(run(&mut shell, 1000), 1, "only the run's own deadline");
+}
+
+/// A server at `path` that keeps each connection's socket in the list.
+fn keeping(shell: &Harness, path: &Path) -> (SocketServer, Rc<RefCell<Vec<Socket>>>) {
+  let held = Rc::new(RefCell::new(Vec::new()));
+  let kept = Rc::clone(&held);
+  let server = shell
+    .cx
+    .socket_server(path)
+    .on_connection(move |_, socket| kept.borrow_mut().push(socket));
+  (server, held)
+}
+
+#[test]
+fn a_client_that_only_stops_sending_still_gets_its_reply() {
+  let dir = Dir::new();
+  let mut shell = Harness::new(offline());
+  let _server = shell
+    .cx
+    .socket_server(dir.join("s"))
+    .on_connection(|_, socket| {
+      let replier = socket.clone();
+      let _ = socket.on_line(move |line| {
+        replier.write(format!("got {line}\n"));
+        replier.close();
+      });
+    });
+  // As `printf cmd | socat - UNIX-CONNECT:s` does.
+  let mut peer = client(&dir.join("s"));
+  peer.write_all(b"cmd").unwrap();
+  peer.shutdown(std::net::Shutdown::Write).unwrap();
+  run(&mut shell, 50);
+  let mut reply = String::new();
+  peer.read_to_string(&mut reply).unwrap();
+  assert_eq!(reply, "got cmd\n");
+}
+
+#[test]
+fn a_client_that_stops_sending_is_closed_after_a_while_without_a_reply() {
+  let dir = Dir::new();
+  let mut shell = Harness::new(offline());
+  let (_server, held) = keeping(&shell, &dir.join("s"));
+  let mut peer = client(&dir.join("s"));
+  peer.shutdown(std::net::Shutdown::Write).unwrap();
+  run(&mut shell, 50);
+  let socket = held.borrow()[0].clone();
+  assert_eq!(socket.connected().try_get(), Some(true), "open for a reply");
+  assert!(run(&mut shell, 200) <= 1, "nothing spins meanwhile");
+  run(&mut shell, 200);
+  assert_eq!(
+    socket.connected().try_get(),
+    None,
+    "closed, its context gone"
+  );
+  assert!(hung_up(&mut peer));
+}
+
+#[test]
+fn a_client_that_hangs_up_ends_its_connection_at_once() {
+  let dir = Dir::new();
+  let mut shell = Harness::new(offline());
+  let (_server, held) = keeping(&shell, &dir.join("s"));
+  drop(client(&dir.join("s")));
+  run(&mut shell, 50);
+  assert_eq!(held.borrow()[0].connected().try_get(), None);
+
+  let peer = client(&dir.join("s"));
+  peer.shutdown(std::net::Shutdown::Write).unwrap();
+  run(&mut shell, 50);
+  drop(peer);
+  let socket = held.borrow()[1].clone();
+  socket.write("too late\n");
+  run(&mut shell, 50);
+  assert_eq!(socket.connected().try_get(), None, "the write failed");
+}
+
+#[test]
+fn a_server_and_its_connections_leave_no_nodes_behind() {
+  let dir = Dir::new();
+  let mut shell = Harness::new(offline());
+  let nodes = Runtime::current().node_count();
+  let child = shell.cx.child();
+  let _server = child
+    .socket_server(dir.join("s"))
+    .on_connection(|cx, socket| {
+      let count = cx.signal(0);
+      let _ = socket.on_line(move |_| count.set(count.get_untracked() + 1));
+    });
+  let peers = [client(&dir.join("s")), client(&dir.join("s"))];
+  run(&mut shell, 50);
+  assert!(Runtime::current().node_count() > nodes);
+  child.owner().dispose();
+  run(&mut shell, 50);
+  assert_eq!(Runtime::current().node_count(), nodes);
+  drop(peers);
+}
+
+#[test]
+fn a_back_off_stops_accepting_for_a_second() {
+  let dir = Dir::new();
+  let mut shell = Harness::new(offline());
+  let (server, held) = keeping(&shell, &dir.join("s"));
+  // An accept that fails and leaves the client waiting, as with no file
+  // descriptors left, can't be made here without starving the tests
+  // beside this one, so this starts the back-off it leads to.
+  server.inner.back_off();
+  let _peer = client(&dir.join("s"));
+  assert!(run(&mut shell, 500) <= 1, "nothing spins meanwhile");
+  assert!(held.borrow().is_empty(), "not taken during the back-off");
+  run(&mut shell, 700);
+  assert_eq!(held.borrow().len(), 1, "taken once it is over");
+}
+
+#[test]
+fn a_handler_may_close_its_server_and_open_another_at_the_same_path() {
+  let dir = Dir::new();
+  let mut shell = Harness::new(offline());
+  let calls = Rc::new(Cell::new(0));
+  let server = Rc::new(RefCell::new(None::<SocketServer>));
+  let newer = Rc::new(RefCell::new(None::<SocketServer>));
+  let (counted, held, opened) = (Rc::clone(&calls), Rc::clone(&server), Rc::clone(&newer));
+  let (path, root) = (dir.join("s"), shell.cx.clone());
+  let again = path.clone();
+  let first = shell
+    .cx
+    .socket_server(&path)
+    .on_connection(move |_, socket| {
+      counted.set(counted.get() + 1);
+      socket.write("hi\n");
+      held.borrow().clone().unwrap().close();
+      let next = root
+        .socket_server(&again)
+        .on_connection(|_, socket| socket.write("new\n"));
+      *opened.borrow_mut() = Some(next);
+    });
+  *server.borrow_mut() = Some(first);
+  let (mut a, mut b) = (client(&path), client(&path));
+  run(&mut shell, 100);
+  assert_eq!(calls.get(), 1);
+  let mut hi = String::new();
+  let _ = a.read_to_string(&mut hi);
+  assert_eq!(hi, "hi\n");
+  assert!(hung_up(&mut b), "b waited on the old listener");
+  let mut c = client(&path);
+  run(&mut shell, 100);
+  let mut new = [0; 4];
+  c.read_exact(&mut new).unwrap();
+  assert_eq!(&new, b"new\n");
+  server.borrow_mut().take();
+  newer.borrow_mut().take();
 }

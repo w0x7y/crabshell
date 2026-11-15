@@ -12,7 +12,7 @@ use std::panic::{self, AssertUnwindSafe, Location};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Once;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use calloop::timer::TimeoutAction;
 use calloop::{Interest, RegistrationToken};
@@ -25,6 +25,14 @@ use crate::lines::{Lines, panic_message};
 /// The most bytes left to write before the socket is closed, so a program
 /// that reads nothing can't grow the shell without end.
 pub(crate) const MAX_OUTBOX: usize = 4 * 1024 * 1024;
+
+/// How long a server's connection stays open for a reply once its client
+/// stopped sending, as the shell's own IPC socket waits.
+const HALF_OPEN: Duration = if cfg!(test) {
+  Duration::from_millis(300)
+} else {
+  Duration::from_secs(5)
+};
 
 /// What `cx.socket` needs from the shell: the loop.
 pub(crate) struct Sockets(pub(crate) Rc<Shared>);
@@ -83,6 +91,9 @@ struct Connection {
   outbox: Vec<u8>,
   /// Why writing failed, after which only reading goes on.
   write_failed: Option<String>,
+  /// A server's client stopped sending but may read a reply: reading is
+  /// over, and this timer closes the connection after [`HALF_OPEN`].
+  half_open: Option<RegistrationToken>,
 }
 
 /// `cx.socket(path)`.
@@ -258,6 +269,7 @@ impl Inner {
       writer: None,
       outbox: Vec::new(),
       write_failed: None,
+      half_open: None,
     });
     drop(state);
     self.connected.try_set(true);
@@ -272,6 +284,13 @@ impl Inner {
       return;
     };
     let closed = match connection.stream.read(&mut chunk) {
+      // As `printf cmd | socat - UNIX-CONNECT:path` does: the client
+      // stopped sending and waits for the reply.
+      Ok(0) if self.served.is_some() && !hung_up(&connection.stream) => {
+        drop(state);
+        self.half_close();
+        return self.deliver(true);
+      }
       Ok(0) => Some(String::from("the other end closed it")),
       Ok(read) => {
         state.lines.append(&chunk[..read]);
@@ -289,6 +308,36 @@ impl Inner {
       self.drop_connection(why);
     }
     self.deliver(closed.is_some());
+  }
+
+  /// Stops reading a server's connection whose client stopped sending,
+  /// and keeps it open for the reply until the config closes it, a write
+  /// fails or [`HALF_OPEN`] passes.
+  fn half_close(self: &Rc<Self>) {
+    let Some(event_loop) = self.shared.as_ref().and_then(|shared| shared.event_loop()) else {
+      return;
+    };
+    let mut state = self.state.borrow_mut();
+    let Some(connection) = state.connection.as_mut() else {
+      return;
+    };
+    // At its end it would be readable for good.
+    event_loop.remove(connection.reader);
+    let inner = Rc::clone(self);
+    let expire = move || {
+      // Gone with this call, so the close doesn't remove it again.
+      if let Some(connection) = inner.state.borrow_mut().connection.as_mut() {
+        connection.half_open = None;
+      }
+      inner.drop_connection("the client got no reply in time");
+      TimeoutAction::Drop
+    };
+    connection.half_open = event_loop.insert_timer(Instant::now() + HALF_OPEN, Box::new(expire));
+    let unbounded = connection.half_open.is_none();
+    drop(state);
+    if unbounded {
+      self.drop_connection("the client stopped sending");
+    }
   }
 
   /// Passes on what waits at the loop's next turn, as a marker set outside
@@ -385,6 +434,10 @@ impl Inner {
           tracing::info!(%path, %error, "the socket takes no more writes");
           connection.write_failed = Some(error.to_string());
           connection.outbox = Vec::new();
+          // Unless reading is over too, as for a half-open connection.
+          if connection.half_open.is_some() {
+            broken = Some(error.to_string());
+          }
           break;
         }
       }
@@ -442,8 +495,11 @@ impl Inner {
       self.shared.as_ref().and_then(|shared| shared.event_loop()),
     ) {
       event_loop.remove(connection.reader);
-      if let Some(writer) = connection.writer {
-        event_loop.remove(writer);
+      for token in [connection.writer, connection.half_open]
+        .into_iter()
+        .flatten()
+      {
+        event_loop.remove(token);
       }
       // A server's connection never connects again, so its context goes,
       // on the next turn: a handler that closed it may still use it.
@@ -459,4 +515,14 @@ impl Inner {
       self.connected.try_set(false);
     }
   }
+}
+
+/// Whether the other end of `stream` is gone both ways, rather than only
+/// done sending. Asked at once, without waiting.
+fn hung_up(stream: &UnixStream) -> bool {
+  use rustix::event::{PollFd, PollFlags, Timespec};
+
+  let mut fds = [PollFd::new(stream, PollFlags::empty())];
+  let now = Timespec::default();
+  rustix::event::poll(&mut fds, Some(&now)).is_err() || fds[0].revents().contains(PollFlags::HUP)
 }
