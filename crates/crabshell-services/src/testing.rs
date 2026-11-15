@@ -252,6 +252,14 @@ impl Drop for PrivateBus {
     let _ = self.daemon.kill();
     let _ = self.daemon.wait();
     let _ = std::fs::remove_file(&self.config);
+    // Killed, dbus-daemon can't remove its socket in /tmp, so it is removed here.
+    if let Some(socket) = self
+      .address
+      .strip_prefix("unix:path=")
+      .and_then(|rest| rest.split(',').next())
+    {
+      let _ = std::fs::remove_file(socket);
+    }
   }
 }
 
