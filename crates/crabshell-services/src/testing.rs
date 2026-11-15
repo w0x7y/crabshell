@@ -117,6 +117,7 @@ pub(crate) fn offline() -> Config {
     desktop_entries: Default::default(),
     // Never polkit's own, which would ask PAM.
     polkit_helper: PathBuf::from("/nonexistent/crabshell-polkit-helper"),
+    polkit_socket: PathBuf::from("/nonexistent/crabshell-polkit-socket"),
     pam: Arc::new(FakePam::default()),
   }
 }

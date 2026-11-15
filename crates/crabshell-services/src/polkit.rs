@@ -43,6 +43,10 @@ const AGENT_PATH: &str = "/org/crabshell/PolkitAgent";
 /// `/usr/libexec` gets no dialogs; look in both if one turns up.
 pub(crate) const HELPER: &str = "/usr/lib/polkit-1/polkit-agent-helper-1";
 
+/// Where polkit 127 and later listen for agents, and systemd starts the
+/// helper as root for each connection, so `HELPER` needn't be setuid.
+pub(crate) const HELPER_SOCKET: &str = "/run/polkit/agent-helper.socket";
+
 const FAILED: &str = "org.freedesktop.PolicyKit1.Error.Failed";
 const CANCELLED: &str = "org.freedesktop.PolicyKit1.Error.Cancelled";
 const ACCESS_DENIED: &str = "org.freedesktop.DBus.Error.AccessDenied";
@@ -437,8 +441,9 @@ impl Service {
       shown.state = AuthState::Waiting;
       shown.info.clear();
       shown.errors.clear();
-      let program = &self.shared.config.polkit_helper;
-      let mut helper = Helper::start(program, &shown.identities[0], run)?;
+      let config = &self.shared.config;
+      let user = &shown.identities[0];
+      let mut helper = Helper::start(&config.polkit_helper, &config.polkit_socket, user, run)?;
       if let Err(error) = helper.send(current.begin.cookie.as_bytes()) {
         helper.stop(&self.shared, true);
         return Err(error);

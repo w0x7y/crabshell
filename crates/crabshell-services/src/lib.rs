@@ -644,6 +644,8 @@ struct Config {
   /// polkit's setuid helper, which checks answers with PAM. Tests give a
   /// script of their own.
   polkit_helper: PathBuf,
+  /// polkit's socket for its helper, tried before `polkit_helper`.
+  polkit_socket: PathBuf,
 }
 
 impl Config {
@@ -680,6 +682,7 @@ impl Config {
       desktop_entries: desktop_entries::Sources::system(),
       pam: Arc::new(pam::LibPam),
       polkit_helper: PathBuf::from(polkit::HELPER),
+      polkit_socket: PathBuf::from(polkit::HELPER_SOCKET),
     }
   }
 }

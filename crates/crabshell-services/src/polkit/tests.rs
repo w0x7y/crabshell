@@ -698,3 +698,62 @@ fn an_answer_with_a_nul_never_reaches_the_helper() {
     Some(AuthState::Asking { .. })
   ));
 }
+
+#[test]
+fn polkits_socket_is_used_when_something_listens_there() {
+  use std::io::{BufRead, BufReader, Write};
+
+  let dir = TempDir::new();
+  let socket = dir.path().join("agent-helper.socket");
+  let listener = std::os::unix::net::UnixListener::bind(&socket).expect("the fake socket");
+  // polkit's socket-started helper: the user and cookie, then PAM.
+  let helper = std::thread::spawn(move || {
+    let (stream, _) = listener.accept().expect("the agent connects");
+    let mut lines = BufReader::new(stream.try_clone().expect("its copy")).lines();
+    let mut line = || lines.next().map(|line| line.expect("a line"));
+    let (user, cookie) = (line(), line());
+    let mut out = &stream;
+    out
+      .write_all(b"PAM_PROMPT_ECHO_OFF Password: \n")
+      .expect("the prompt");
+    let answer = line();
+    out.write_all(b"SUCCESS\n").expect("the result");
+    (user, cookie, answer, line())
+  });
+  let mut polkit = Polkit::with(PASSWORD, |config| Config {
+    polkit_socket: socket,
+    ..config
+  });
+  let (agent, name) = polkit.agent();
+  let answer = polkit.begin(&name, "cookie-1", &[0]);
+  polkit.wait_state(&agent, asking);
+  agent.respond("hunter2");
+  assert_eq!(polkit.answered(&answer), Ok(()));
+  // Before the join, which would wait for good if the socket went unused.
+  assert!(polkit.runs().is_empty(), "the spawned helper never ran");
+  let (user, cookie, answer, after) = helper.join().expect("the fake helper");
+  assert_eq!(user.as_deref(), Some("root"));
+  assert_eq!(cookie.as_deref(), Some("cookie-1"));
+  assert_eq!(answer.as_deref(), Some("hunter2"));
+  assert_eq!(after, None, "the agent hung up");
+}
+
+#[test]
+fn a_socket_nothing_listens_on_falls_back_to_the_spawned_helper() {
+  let dir = TempDir::new();
+  let socket = dir.path().join("agent-helper.socket");
+  drop(std::os::unix::net::UnixListener::bind(&socket).expect("the fake socket"));
+  let mut polkit = Polkit::with(PASSWORD, |config| Config {
+    polkit_socket: socket,
+    ..config
+  });
+  let (agent, name) = polkit.agent();
+  let logs = capture_logs(|| {
+    let answer = polkit.begin(&name, "cookie-1", &[0]);
+    polkit.wait_state(&agent, asking);
+    agent.respond("hunter2");
+    assert_eq!(polkit.answered(&answer), Ok(()));
+  });
+  assert!(logs.contains("spawning it instead"), "{logs}");
+  assert_eq!(polkit.runs(), ["root cookie-1"]);
+}

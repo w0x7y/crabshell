@@ -1,11 +1,15 @@
-//! polkit's setuid helper, which checks a user's answers with PAM: it
-//! takes the user's name as its argument and the request's cookie as its
-//! first line of input, prints PAM's prompts and messages a line each,
-//! reads an answer line for each prompt, and ends with `SUCCESS` or
-//! `FAILURE`. On success it has already told polkit itself.
+//! polkit's helper, which checks a user's answers with PAM, as root. From
+//! polkit 127 systemd starts it for each connection to polkit's socket,
+//! which reads the user's name as its first line; before, it is a setuid
+//! program that takes the name as its argument. Either way the request's
+//! cookie comes next as a line, then it prints PAM's prompts and messages
+//! a line each, reads an answer line for each prompt, and ends with
+//! `SUCCESS` or `FAILURE`. On success it has already told polkit itself.
 
-use std::io::{self, ErrorKind, PipeReader, PipeWriter, Read, Write};
+use std::fs::File;
+use std::io::{self, ErrorKind, Read, Write};
 use std::os::fd::{AsFd, OwnedFd};
+use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Child, Command};
 use std::rc::Rc;
@@ -65,9 +69,10 @@ pub(super) fn parse(line: &str) -> Line {
 
 /// One run of the helper.
 pub(super) struct Helper {
-  child: Child,
-  stdin: PipeWriter,
-  stdout: PipeReader,
+  /// The setuid helper, or `None` when systemd started it on the socket.
+  child: Option<Child>,
+  stdin: File,
+  stdout: File,
   /// The loop's watch on `stdout`.
   pub(super) token: Option<RegistrationToken>,
   lines: Lines,
@@ -76,25 +81,35 @@ pub(super) struct Helper {
 }
 
 impl Helper {
-  /// Starts `program` for `user`, with its input and output through
-  /// non-blocking pipes and its errors in the shell's log.
-  pub(super) fn start(program: &Path, user: &str, run: u64) -> io::Result<Helper> {
-    let (stdout, child_out) = std::io::pipe()?;
-    let (child_in, stdin) = std::io::pipe()?;
+  /// Starts a run for `user` through polkit's `socket`, or, when nothing
+  /// listens there, by spawning `program`, with its errors in the shell's
+  /// log. Either way its input and output are non-blocking.
+  pub(super) fn start(program: &Path, socket: &Path, user: &str, run: u64) -> io::Result<Helper> {
+    let (child, stdin, stdout) = match connect(socket, user) {
+      Some(stream) => {
+        let stdout = stream.try_clone()?;
+        (None, OwnedFd::from(stream), OwnedFd::from(stdout))
+      }
+      None => {
+        let (stdout, child_out) = std::io::pipe()?;
+        let (child_in, stdin) = std::io::pipe()?;
+        let mut command = Command::new(program);
+        spawn::untune(&mut command);
+        // The command holds the helper's ends, which close with it.
+        let child = command
+          .arg(user)
+          .stdin(child_in)
+          .stdout(child_out)
+          .spawn()?;
+        (Some(child), OwnedFd::from(stdin), OwnedFd::from(stdout))
+      }
+    };
     rustix::io::ioctl_fionbio(&stdout, true)?;
     rustix::io::ioctl_fionbio(&stdin, true)?;
-    let mut command = Command::new(program);
-    spawn::untune(&mut command);
-    // The command holds the helper's ends, which close with it.
-    let child = command
-      .arg(user)
-      .stdin(child_in)
-      .stdout(child_out)
-      .spawn()?;
     Ok(Helper {
       child,
-      stdin,
-      stdout,
+      stdin: File::from(stdin),
+      stdout: File::from(stdout),
       token: None,
       lines: Lines::default(),
       run,
@@ -129,20 +144,42 @@ impl Helper {
   }
 
   /// Stops reading it and closes its input, so a helper still running
-  /// reads the end and exits. `kill` also sends it `SIGKILL`. It is
-  /// reaped once it is gone.
+  /// reads the end and exits. `kill` also sends a spawned one `SIGKILL`;
+  /// it is reaped once it is gone.
   pub(super) fn stop(self, shared: &Rc<Shared>, kill: bool) {
-    let Helper {
-      mut child, token, ..
-    } = self;
+    let Helper { child, token, .. } = self;
     if let (Some(token), Some(event_loop)) = (token, shared.event_loop()) {
       event_loop.remove(token);
     }
+    let Some(mut child) = child else {
+      return;
+    };
     if kill && let Err(error) = child.kill() {
       tracing::debug!(%error, "couldn't stop polkit's helper; it may have ended");
     }
     spawn::reap(shared, child, String::from("polkit's helper"));
   }
+}
+
+/// A connection to polkit's helper on `socket`, told `user`. `None` when
+/// there is no socket, or, logged, when it can't be used.
+fn connect(socket: &Path, user: &str) -> Option<UnixStream> {
+  let mut stream = match UnixStream::connect(socket) {
+    Ok(stream) => stream,
+    Err(error) if error.kind() == ErrorKind::NotFound => return None,
+    Err(error) => {
+      let socket = socket.display();
+      tracing::warn!(%error, %socket, "couldn't reach polkit's helper; spawning it instead");
+      return None;
+    }
+  };
+  let told = stream
+    .write_all(user.as_bytes())
+    .and_then(|()| stream.write_all(b"\n"));
+  told
+    .inspect_err(|error| tracing::warn!(%error, "couldn't tell polkit's helper the user"))
+    .ok()
+    .map(|()| stream)
 }
 
 #[cfg(test)]
