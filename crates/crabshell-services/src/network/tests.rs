@@ -11,7 +11,9 @@ use super::{
   NetworkKind, NetworkState, SavedConnection, WIRED, WIRELESS, WifiMode, WifiNetwork, WifiSecurity,
 };
 use crate::dbus::OBJECT_MANAGER;
-use crate::testing::{FakeService, Harness, PrivateBus, capture_logs, offline, reply};
+use crate::testing::{
+  FakeService, Harness, PrivateBus, capture_logs, capture_logs_from, offline, reply,
+};
 use crate::{Config, ServicesExt};
 
 /// Where NetworkManager's object manager is.
@@ -1158,8 +1160,16 @@ fn dock_shown() -> SavedConnection {
 }
 
 /// Has `nm` list, read, find, delete and clear the saved connections in
-/// `saved`, as NetworkManager's settings service does.
+/// `saved`, as NetworkManager's settings service does, and hand out
+/// each one's Wi-Fi password, [`SECRET`], as it does to whoever may ask.
 fn serve_saved(nm: &FakeService, saved: &Saved) {
+  nm.on("GetSecrets", |call| {
+    let secrets = settings(vec![(
+      "802-11-wireless-security",
+      vec![("psk", Variant::from(SECRET))],
+    )]);
+    reply(call, &secrets)
+  });
   let listed = Rc::clone(saved);
   nm.on("ListConnections", move |call| {
     let paths = listed.borrow().keys().cloned().collect::<Vec<_>>();
@@ -1226,19 +1236,27 @@ fn saved_connections_are_read_on_the_first_ask_without_secrets() {
   assert_eq!(calls_to(&nm, "ListConnections"), 0, "not asked yet");
 
   let list = network.saved_connections();
-  wait_for(&mut shell, "the saved connections", || {
-    list.get_untracked().len() == 3
+  let logs = capture_logs_from(tracing::Level::TRACE, || {
+    wait_for(&mut shell, "the saved connections", || {
+      list.get_untracked().len() == 3
+    });
+    let again = shell.cx.network().saved_connections();
+    shell.run_until(Instant::now() + Duration::from_millis(100));
+    assert_eq!(again.get_untracked().len(), 3);
   });
   assert_eq!(
     list.get_untracked(),
     [home_shown(), vpn_shown(), dock_shown()],
     "in NetworkManager's numbering"
   );
-  let again = shell.cx.network().saved_connections();
-  shell.run_until(Instant::now() + Duration::from_millis(100));
-  assert_eq!(again.get_untracked().len(), 3);
   assert_eq!(calls_to(&nm, "ListConnections"), 1, "read once");
+  assert!(!logs.contains(SECRET), "{logs}");
+  assert!(!format!("{:?}", list.get_untracked()).contains(SECRET));
+  assert_eq!(calls_to(&nm, "GetSecrets"), 0, "secrets never asked for");
 }
+
+/// The Wi-Fi password NetworkManager keeps for each saved connection.
+const SECRET: &str = "hunter22-saved";
 
 #[test]
 fn saved_connections_follow_networkmanager() {
