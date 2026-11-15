@@ -388,6 +388,19 @@ fn an_owner_says_whether_it_was_disposed() {
 }
 
 #[test]
+fn an_owner_is_named_by_itself_or_its_nearest_named_ancestor() {
+  let rt = Runtime::current();
+  let bar = rt.new_owner().named("bar[DP-1]");
+  let row = bar.child();
+  assert_eq!(rt.new_owner().name(), None, "nothing named");
+  assert_eq!(row.name().as_deref(), Some("bar[DP-1]"));
+  let clock = row.child().named("bar[DP-1]/Clock");
+  assert_eq!(clock.name().as_deref(), Some("bar[DP-1]/Clock"));
+  bar.dispose();
+  assert_eq!(clock.name(), None, "disposed");
+}
+
+#[test]
 fn disposing_a_child_leaves_the_parent_alone() {
   let rt = Runtime::current();
   let before = rt.node_count();

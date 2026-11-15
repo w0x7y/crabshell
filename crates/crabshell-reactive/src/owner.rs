@@ -93,6 +93,13 @@ impl Owner {
     runtime::dispose(self.id);
   }
 
+  /// The owner's debug name, or its nearest named ancestor's, for log
+  /// lines about code that runs outside any node, such as a timer's.
+  /// `None` once disposed, or when nothing above it is named.
+  pub fn name(&self) -> Option<String> {
+    runtime::nearest_name(self.id)
+  }
+
   /// Gives the owner a debug name, such as a widget path. Log lines about
   /// its unnamed nodes mention it.
   pub fn named(self, name: impl Into<String>) -> Self {

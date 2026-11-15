@@ -452,6 +452,21 @@ pub(crate) fn set_name(id: NodeId, name: String) {
   });
 }
 
+/// The debug name of `id` or of its nearest named ancestor.
+pub(crate) fn nearest_name(id: NodeId) -> Option<String> {
+  try_graph(|g| {
+    let mut at = Some(id);
+    while let Some(node) = at.and_then(|id| g.nodes.get(id)) {
+      if let Some(name) = &node.name {
+        return Some(name.clone());
+      }
+      at = node.owner;
+    }
+    None
+  })
+  .flatten()
+}
+
 /// Whether `id` is gone, or the runtime with it.
 pub(crate) fn is_disposed(id: NodeId) -> bool {
   try_graph(|g| !g.nodes.contains_key(id)).unwrap_or(true)
