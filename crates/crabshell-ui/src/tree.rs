@@ -947,7 +947,8 @@ impl Tree {
       // out again, to cover a fade's start as well as its end.
       if before.shadow != after.shadow {
         Change::Layout
-      } else if !before.same_transform(&after) {
+      // Against what showed: a fade cut short leaves it partway.
+      } else if !shown.same_transform(&after) {
         Change::Place
       } else {
         Change::Paint

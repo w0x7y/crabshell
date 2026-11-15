@@ -400,3 +400,37 @@ fn a_fading_hover_transform_settles_under_a_still_pointer() {
     );
   }
 }
+
+#[test]
+fn a_fade_cut_short_places_the_widget_where_its_new_style_says() {
+  let mut h = Harness::new();
+  let style = h.cx.signal(
+    BOX
+      .rotate(0.0)
+      .width(40.0)
+      .height(4.0)
+      .transition(Transition::new(100).easing(Easing::Linear)),
+  );
+  let window = one_box(&mut h, move || style.get());
+  style.update(|style| *style = style.rotate(90.0));
+  h.frame(&window);
+  let start = Instant::now();
+  advance_animations(start);
+  advance_animations(start + Duration::from_millis(50));
+  h.frame(&window);
+  assert_eq!(shown(&window, &[0, 0]).rotate, Some(45.0));
+  // The same turn, a new color and no fade: it jumps to 90 degrees.
+  style.update(|style| {
+    *style = Style {
+      transition: None,
+      ..style.background(Color::rgb(9, 9, 9))
+    }
+  });
+  h.frame(&window);
+  let turned = Rect::new(27.0, -9.0, 6.0, 42.0);
+  assert!(
+    close(bounds(&window, &[0, 0]), turned),
+    "{:?}",
+    bounds(&window, &[0, 0])
+  );
+}
