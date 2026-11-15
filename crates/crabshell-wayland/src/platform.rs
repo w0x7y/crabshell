@@ -13,7 +13,7 @@ use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::reexports::client::globals::{GlobalList, registry_queue_init};
 use smithay_client_toolkit::reexports::client::protocol::wl_surface::WlSurface;
 use smithay_client_toolkit::reexports::client::protocol::{
-  wl_output::WlOutput, wl_pointer::WlPointer, wl_seat::WlSeat,
+  wl_output::WlOutput, wl_pointer::WlPointer, wl_seat::WlSeat, wl_touch::WlTouch,
 };
 use smithay_client_toolkit::reexports::client::{Connection, Proxy, QueueHandle};
 use smithay_client_toolkit::registry::RegistryState;
@@ -290,6 +290,13 @@ impl SeatPointer {
   }
 }
 
+/// A seat's touchscreen.
+pub(crate) struct SeatTouch {
+  pub(crate) seat: WlSeat,
+  pub(crate) touch: WlTouch,
+  pub(crate) state: crate::pointer::Touch,
+}
+
 /// Everything the event loop's callbacks reach: the compositor's globals,
 /// outputs, pointers and windows, and the renderer and text system they
 /// draw with.
@@ -313,6 +320,7 @@ pub struct Platform {
   listener: Option<Listener<Platform>>,
   pub(crate) windows: Windows<Surface, WlOutput>,
   pub(crate) pointers: Vec<SeatPointer>,
+  pub(crate) touches: Vec<SeatTouch>,
   pub(crate) keyboards: Vec<SeatKeyboard>,
   /// Present when the compositor offers a clipboard.
   pub(crate) data_devices_manager: Option<DataDeviceManagerState>,
@@ -440,6 +448,7 @@ impl Platform {
       listener: None,
       windows: Windows::new(),
       pointers: Vec::new(),
+      touches: Vec::new(),
       keyboards: Vec::new(),
       text_inputs_manager,
       effects,

@@ -1,4 +1,4 @@
-//! Turning `wl_pointer` events into calls on a window:
+//! Turning `wl_pointer` and `wl_touch` events into calls on a window:
 //! hit testing, hover, pressed state, drags and scrolling all live in
 //! `crabshell-ui`.
 
@@ -159,6 +159,73 @@ pub(crate) fn shape(cursor: CursorShape, version: u32) -> Shape {
     CursorShape::DndAsk => Shape::ContextMenu,
     CursorShape::AllResize if version >= 2 => Shape::AllResize,
     CursorShape::AllResize => Shape::Move,
+  }
+}
+
+/// A seat's touchscreen, as one pointer: the first finger down is
+/// followed until it lifts, and other fingers are ignored meanwhile.
+#[derive(Debug, Default)]
+pub(crate) struct Touch {
+  /// The finger followed, and the window it went down on.
+  active: Option<(i32, WindowId)>,
+}
+
+impl Touch {
+  /// A finger went down on `window`: a motion there and a left press,
+  /// unless another finger is down.
+  pub(crate) fn down(
+    &mut self,
+    id: i32,
+    window: WindowId,
+    (x, y): (f64, f64),
+    time: u32,
+  ) -> Vec<Input> {
+    let Some(at) = point(x, y).filter(|_| self.active.is_none()) else {
+      return Vec::new();
+    };
+    self.active = Some((id, window));
+    vec![
+      Input::Motion(at),
+      Input::Button(PointerButton::Left, true, time),
+    ]
+  }
+
+  /// The followed finger moved.
+  pub(crate) fn motion(&mut self, id: i32, (x, y): (f64, f64)) -> Vec<Input> {
+    match point(x, y) {
+      Some(at) if self.follows(id) => vec![Input::Motion(at)],
+      _ => Vec::new(),
+    }
+  }
+
+  /// A finger lifted; the followed one releases and leaves, so a tap is a
+  /// click.
+  pub(crate) fn up(&mut self, id: i32, time: u32) -> Vec<Input> {
+    if !self.follows(id) {
+      return Vec::new();
+    }
+    self.active = None;
+    vec![
+      Input::Button(PointerButton::Left, false, time),
+      Input::Leave,
+    ]
+  }
+
+  /// The compositor took the touch over: it leaves without a click.
+  pub(crate) fn cancel(&mut self) -> Vec<Input> {
+    match self.active.take() {
+      Some(_) => vec![Input::Leave],
+      None => Vec::new(),
+    }
+  }
+
+  /// The window the followed finger went down on.
+  pub(crate) fn window(&self) -> Option<WindowId> {
+    self.active.map(|(_, window)| window)
+  }
+
+  fn follows(&self, id: i32) -> bool {
+    self.active.is_some_and(|(active, _)| active == id)
   }
 }
 

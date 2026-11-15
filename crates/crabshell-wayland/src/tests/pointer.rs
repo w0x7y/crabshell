@@ -16,7 +16,7 @@ use smithay_client_toolkit::seat::pointer::{
   BTN_TASK, PointerEventKind,
 };
 
-use crate::pointer::{Input, apply, inputs, shape};
+use crate::pointer::{Input, Touch, apply, inputs, shape};
 use crate::windows::WindowId;
 
 fn press(button: u32) -> PointerEventKind {
@@ -200,6 +200,43 @@ fn every_cursor_shape_has_one_and_version_1_falls_back() {
   assert_eq!(shape(CursorShape::AllResize, 1), Shape::Move);
 }
 
+#[test]
+fn one_finger_is_a_pointer_that_taps_and_drags() {
+  let mut touch = Touch::default();
+  let window = WindowId(4);
+  assert_eq!(touch.window(), None);
+  assert_eq!(
+    touch.down(1, window, (10.0, 5.0), 100),
+    [
+      Input::Motion(Point::new(10.0, 5.0)),
+      Input::Button(PointerButton::Left, true, 100),
+    ]
+  );
+  assert_eq!(touch.window(), Some(window));
+  // A second finger is ignored, down, moving and up.
+  assert_eq!(touch.down(2, WindowId(5), (50.0, 5.0), 110), []);
+  assert_eq!(touch.motion(2, (60.0, 5.0)), []);
+  assert_eq!(touch.up(2, 120), []);
+  assert_eq!(
+    touch.motion(1, (30.0, 6.0)),
+    [Input::Motion(Point::new(30.0, 6.0))]
+  );
+  assert_eq!(touch.motion(1, (f64::NAN, 6.0)), []);
+  assert_eq!(
+    touch.up(1, 200),
+    [Input::Button(PointerButton::Left, false, 200), Input::Leave]
+  );
+  assert_eq!(touch.window(), None);
+  // A down at a point that isn't a number starts nothing.
+  assert_eq!(touch.down(3, window, (f64::INFINITY, 0.0), 300), []);
+  assert_eq!(touch.window(), None);
+  // A cancel leaves, with no release, so nothing clicks.
+  touch.down(4, window, (1.0, 1.0), 400);
+  assert_eq!(touch.cancel(), [Input::Leave]);
+  assert_eq!(touch.cancel(), []);
+  assert_eq!(touch.up(4, 500), []);
+}
+
 /// A 200 by 30 window with one 20-pixel button at the left that logs its
 /// clicks and scroll steps.
 fn window(log: &Rc<RefCell<Vec<String>>>) -> Window {
@@ -314,6 +351,26 @@ fn scrolling_reaches_the_button_and_a_lift_drops_the_partial_step() {
   assert_eq!(*log.borrow(), ["scroll -1"]);
   send(&window, &[vertical(ten)], over);
   assert_eq!(*log.borrow(), ["scroll -1", "scroll 1"]);
+}
+
+#[test]
+fn a_tap_clicks_and_a_cancelled_touch_doesnt() {
+  let log = Rc::new(RefCell::new(Vec::new()));
+  let window = window(&log);
+  let mut touch = Touch::default();
+  let id = WindowId(0);
+  let tap = [touch.down(1, id, (10.0, 15.0), 100), touch.up(1, 150)];
+  for input in tap.concat() {
+    apply(&window, input);
+  }
+  assert_eq!(*log.borrow(), ["click"]);
+  // The tap left: nothing is hovered once the finger lifts.
+  assert_eq!(window.cursor(), CursorShape::Default);
+  let cancelled = [touch.down(2, id, (10.0, 15.0), 300), touch.cancel()];
+  for input in cancelled.concat() {
+    apply(&window, input);
+  }
+  assert_eq!(*log.borrow(), ["click"]);
 }
 
 #[test]

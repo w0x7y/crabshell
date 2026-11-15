@@ -1,9 +1,10 @@
 //! Pointer input: hit testing, hover and pressed state, drags, long
 //! presses, double clicks, scrolling and calling button handlers.
 //!
-//! The platform turns `wl_pointer` events into calls on [`Window`]. Handlers
-//! run after the window's tree is released, inside `catch_unwind`, so a
-//! panicking handler is logged and disabled and the bar keeps running.
+//! The platform turns `wl_pointer` and `wl_touch` events into calls on
+//! [`Window`]. Handlers run after the window's tree is released, inside
+//! `catch_unwind`, so a panicking handler is logged and disabled and the bar
+//! keeps running.
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -374,8 +375,8 @@ impl Window {
     self.cursor()
   }
 
-  /// The pointer left the window. A drag ends with its `End`, and a held
-  /// button never clicks.
+  /// The pointer left the window, or a touch was cancelled. A drag ends
+  /// with its `End`, and a held button never clicks.
   pub fn pointer_leave(&self) {
     let calls = borrow(&self.tree).leave();
     run_all(calls);

@@ -11,12 +11,14 @@ use smithay_client_toolkit::reexports::client::protocol::{
   wl_pointer::WlPointer,
   wl_seat::WlSeat,
   wl_surface::WlSurface,
+  wl_touch::WlTouch,
 };
 use smithay_client_toolkit::reexports::client::{
   Connection, Dispatch, Proxy, QueueHandle, delegate_noop,
 };
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
+use smithay_client_toolkit::seat::touch::TouchHandler;
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::shell::wlr_layer::{
   LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
@@ -33,11 +35,11 @@ use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 use crate::events::Event;
 use crate::keyboard::SeatKeyboard;
 use crate::outputs::replace;
-use crate::platform::{Platform, SeatPointer};
-use crate::pointer::{self, Cursor};
+use crate::platform::{Platform, SeatPointer, SeatTouch};
+use crate::pointer::{self, Cursor, Input, Touch};
 use crate::scale::Scale;
 use crate::surface::{Role, Surface};
-use crate::windows::Entry;
+use crate::windows::{Entry, WindowId};
 
 /// A window the platform holds, with its real surface and output.
 type Held = Entry<Surface, WlOutput>;
@@ -251,6 +253,7 @@ impl SeatHandler for Platform {
     match capability {
       Capability::Pointer => self.add_pointer(qh, seat),
       Capability::Keyboard => self.add_keyboard(qh, seat),
+      Capability::Touch => self.add_touch(qh, seat),
       _ => {}
     }
   }
@@ -265,6 +268,7 @@ impl SeatHandler for Platform {
     match capability {
       Capability::Pointer => self.drop_pointers(&seat),
       Capability::Keyboard => self.drop_keyboards(&seat),
+      Capability::Touch => self.drop_touches(&seat),
       _ => {}
     }
   }
@@ -272,6 +276,7 @@ impl SeatHandler for Platform {
   fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: WlSeat) {
     self.drop_pointers(&seat);
     self.drop_keyboards(&seat);
+    self.drop_touches(&seat);
     self.drop_text_input(&seat);
     self.drop_data_device(&seat);
   }
@@ -330,6 +335,44 @@ impl Platform {
     }
   }
 
+  fn add_touch(&mut self, qh: &QueueHandle<Self>, seat: WlSeat) {
+    if self.touches.iter().any(|ours| ours.seat == seat) {
+      return;
+    }
+    match self.seats.get_touch(qh, &seat) {
+      Ok(touch) => self.touches.push(SeatTouch {
+        seat,
+        touch,
+        state: Touch::default(),
+      }),
+      Err(error) => tracing::warn!(%error, "couldn't get the seat's touchscreen"),
+    }
+  }
+
+  /// Lets go of a seat's touchscreen, ending a touch held on a window.
+  fn drop_touches(&mut self, seat: &WlSeat) {
+    while let Some(index) = self.touches.iter().position(|ours| ours.seat == *seat) {
+      let mut ours = self.touches.remove(index);
+      if let Some(window) = ours.state.window() {
+        let inputs = ours.state.cancel();
+        self.touch_inputs(window, inputs);
+      }
+      // `release` came in version 3; older ones just stop being used.
+      if ours.touch.version() >= 3 {
+        ours.touch.release();
+      }
+    }
+  }
+
+  /// Hands a touch's inputs to `window`, if it is still held.
+  fn touch_inputs(&mut self, window: WindowId, inputs: Vec<Input>) {
+    if let Some(entry) = self.windows.get(window) {
+      for input in inputs {
+        pointer::apply(&entry.window, input);
+      }
+    }
+  }
+
   fn drop_keyboards(&mut self, seat: &WlSeat) {
     while let Some(index) = self.keyboards.iter().position(|ours| ours.seat == *seat) {
       self.drop_keyboard(index);
@@ -378,6 +421,94 @@ impl PointerHandler for Platform {
       if let Some(cursor) = cursor {
         ours.show(cursor);
       }
+    }
+  }
+}
+
+/// One finger at a time acts as the pointer, so a tap clicks and a
+/// moving finger drags. A touch has no cursor to set.
+impl TouchHandler for Platform {
+  fn down(
+    &mut self,
+    _: &Connection,
+    _: &QueueHandle<Self>,
+    touch: &WlTouch,
+    serial: u32,
+    time: u32,
+    surface: WlSurface,
+    id: i32,
+    position: (f64, f64),
+  ) {
+    let Some(window) = self.by_surface(&surface).map(|entry| entry.id) else {
+      return;
+    };
+    let Some(ours) = self.touches.iter_mut().find(|ours| ours.touch == *touch) else {
+      return;
+    };
+    let inputs = ours.state.down(id, window, position, time);
+    if !inputs.is_empty() {
+      // A popup opened by a tap grabs with the down's serial.
+      self.last_button = Some((ours.seat.clone(), serial));
+      self.button_held = true;
+    }
+    self.touch_inputs(window, inputs);
+  }
+
+  fn up(
+    &mut self,
+    _: &Connection,
+    _: &QueueHandle<Self>,
+    touch: &WlTouch,
+    serial: u32,
+    time: u32,
+    id: i32,
+  ) {
+    let Some(ours) = self.touches.iter_mut().find(|ours| ours.touch == *touch) else {
+      return;
+    };
+    let window = ours.state.window();
+    let inputs = ours.state.up(id, time);
+    if !inputs.is_empty() {
+      self.last_button = Some((ours.seat.clone(), serial));
+      self.button_held = false;
+    }
+    if let Some(window) = window {
+      self.touch_inputs(window, inputs);
+    }
+  }
+
+  fn motion(
+    &mut self,
+    _: &Connection,
+    _: &QueueHandle<Self>,
+    touch: &WlTouch,
+    _: u32,
+    id: i32,
+    position: (f64, f64),
+  ) {
+    let Some(ours) = self.touches.iter_mut().find(|ours| ours.touch == *touch) else {
+      return;
+    };
+    let window = ours.state.window();
+    let inputs = ours.state.motion(id, position);
+    if let Some(window) = window {
+      self.touch_inputs(window, inputs);
+    }
+  }
+
+  fn shape(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlTouch, _: i32, _: f64, _: f64) {}
+
+  fn orientation(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlTouch, _: i32, _: f64) {}
+
+  fn cancel(&mut self, _: &Connection, _: &QueueHandle<Self>, touch: &WlTouch) {
+    let Some(ours) = self.touches.iter_mut().find(|ours| ours.touch == *touch) else {
+      return;
+    };
+    let window = ours.state.window();
+    let inputs = ours.state.cancel();
+    if let Some(window) = window {
+      self.button_held = false;
+      self.touch_inputs(window, inputs);
     }
   }
 }
