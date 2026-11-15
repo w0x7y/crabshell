@@ -283,16 +283,18 @@ impl Tree {
   /// the border, and repaints where its handle was and is when it moves,
   /// comes or goes. `chain` ends with the node's own transform.
   fn place_bar(&mut self, id: NodeId, rect: Rect, chain: &[Affine]) {
-    let Some(node) = self.taffy.get_node_context_mut(id) else {
+    // Most nodes aren't scroll views, so nothing else is read for them.
+    let Some(Node {
+      kind: NodeKind::Scroll(scroll),
+      style,
+      ..
+    }) = self.taffy.get_node_context_mut(id)
+    else {
       return;
     };
-    let border = node
-      .effective_style()
-      .border
-      .map_or(0.0, |border| border.width.max(0.0));
-    let NodeKind::Scroll(scroll) = &mut node.kind else {
-      return;
-    };
+    // A scroll view's style is the style in effect: only a button's
+    // differs.
+    let border = style.border.map_or(0.0, |border| border.width.max(0.0));
     let handle = scroll
       .bar
       .filter(|_| scroll.most > 0.0)
