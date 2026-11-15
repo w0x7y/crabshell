@@ -289,9 +289,7 @@ impl Tree {
 
   /// Scrolls the innermost scroll view under the pointer that `wheel`
   /// can still move, at `time`. A wheel's notch moves it at once, within
-  /// its content. A touchpad moves it past an end with resistance, and
-  /// its `stop` lets the view go: back from past an end, or on at the
-  /// speed it moved.
+  /// its content. A touchpad moves it past an end with resistance.
   pub(crate) fn scroll_view(&mut self, wheel: Wheel, time: u32) {
     let finger = wheel.source == ScrollSource::Finger;
     if let Some((id, pixels)) = self.wheel_target(wheel, finger) {
@@ -320,12 +318,6 @@ impl Tree {
           signal.try_set(offset);
         }
       }
-    }
-    if finger
-      && (wheel.x.stop || wheel.y.stop)
-      && let Some(id) = self.pointer.gesture.take()
-    {
-      self.release_view(id, Some(time));
     }
   }
 

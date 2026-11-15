@@ -1121,6 +1121,15 @@ impl Tree {
     if wheel.y.stop {
       self.pointer.pixels = 0.0;
     }
+    // The fingers lifted: the view the gesture moved goes back from past
+    // an end or on at its speed, even when a button that scrolled under
+    // the pointer took this last event.
+    if wheel.source == ScrollSource::Finger
+      && (wheel.x.stop || wheel.y.stop)
+      && let Some(id) = self.pointer.gesture.take()
+    {
+      self.release_view(id, Some(time));
+    }
     calls
   }
 

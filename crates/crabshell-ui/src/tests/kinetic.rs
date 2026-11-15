@@ -557,3 +557,32 @@ fn a_button_carrying_drag_data_drags_it_instead_of_the_view() {
   window.pointer_button_at(PointerButton::Left, false, 200);
   assert_eq!((offset.get(), dropped.get()), (0.0, vec![7]));
 }
+
+#[test]
+fn a_button_that_takes_the_touchpad_stop_still_lets_the_gesture_go() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0);
+  let wheels = Counter::default();
+  let w = wheels.clone();
+  // 60 pixels in a 50-pixel view: it scrolls 10, then past the end.
+  let content = Column::new()
+    .child(Icon::new("x").size(40))
+    .child(Button::new(Icon::new("x").size(20)).on_wheel(move |_, _| w.hit()));
+  let view = ScrollView::new(content)
+    .offset(offset)
+    .style(Style::new().width(20.0).height(50.0));
+  let row = Row::new().align(Align::Start).child(view);
+  let window = h.window(h.panel().child(row), 100.0, 100.0);
+  window.pointer_motion(Point::new(10.0, 35.0));
+  window.pointer_scroll_at(pixels(30.0), 0);
+  h.frame(&window);
+  assert_eq!(offset.get(), 10.0);
+  let button = || rect_at(&window, &[0, 0, 0, 1]).y;
+  assert!(button() < 35.0 - 10.0, "past the end, under the pointer");
+  // The content moved the button under the still pointer, so it takes
+  // the stop; the view still springs back.
+  window.pointer_scroll_at(lift(), 300);
+  assert_eq!(wheels.get(), 1);
+  run_clock(&mut h, &window, Instant::now());
+  assert_eq!(button(), 30.0);
+}
