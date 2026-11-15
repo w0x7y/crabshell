@@ -210,7 +210,11 @@ impl Tree {
   }
 
   /// Moves the focus to `id`. It shows once the window has the keyboard.
+  /// A hidden node, or one inside a hidden widget, is refused.
   pub(crate) fn focus(&mut self, id: Option<NodeId>) {
+    if id.is_some_and(|id| !self.shown(id)) {
+      return;
+    }
     let old = std::mem::replace(&mut self.keyboard.focused, id);
     if old != id {
       // What an input method was composing there is dropped with it.

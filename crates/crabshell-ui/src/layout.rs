@@ -56,6 +56,9 @@ impl Tree {
       self.needs_place = false;
       return;
     }
+    for shown in std::mem::take(&mut self.shown_since_layout) {
+      self.focus_shown_field(shown);
+    }
     self.sync(root, Parent::Flex, Font::DEFAULT, text);
 
     let fonts = text.font_system();

@@ -273,6 +273,9 @@ pub(crate) struct InputNode {
   pub(crate) password: bool,
   /// The field has the keyboard, so it shows its caret.
   pub(crate) focused: bool,
+  /// The last value of its `focus` binding, which it takes the focus by
+  /// whenever it is shown.
+  pub(crate) wants_focus: bool,
   /// How far the text is scrolled left to keep the caret in view.
   pub(crate) scroll: f32,
   /// Where the caret and the selection are, from the last layout, in
@@ -300,6 +303,7 @@ impl InputNode {
       placeholder: String::new(),
       password: false,
       focused: false,
+      wants_focus: false,
       scroll: 0.0,
       caret: Rect::default(),
       selection: Vec::new(),

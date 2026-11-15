@@ -319,3 +319,68 @@ fn a_panicking_visible_binding_is_logged_with_its_path_and_the_rest_runs_on() {
   };
   assert_eq!(text.content(), "still fine");
 }
+
+#[test]
+fn a_hidden_field_takes_the_focus_only_once_shown() {
+  let mut h = Harness::new();
+  let open = h.cx.signal(false);
+  let text = h.cx.signal(String::new());
+  let column = Column::new()
+    .visible(move || open.get())
+    .child(TextInput::new(text).focus(true));
+  let window = h.window(h.panel().child(column), 200.0, 60.0);
+  window.keyboard_enter();
+  assert_eq!(
+    window.focused(),
+    None,
+    "a hidden field can't take the focus"
+  );
+  assert!(window.field().is_none(), "nor reach an input method");
+
+  // Each time it shows, its `focus`, still true, takes the focus.
+  for _ in 0..2 {
+    open.set(true);
+    h.frame(&window);
+    assert_eq!(
+      window.focused().as_deref(),
+      Some("PanelWindow[DP-1]/Column/TextInput[0]")
+    );
+    open.set(false);
+    h.frame(&window);
+    assert_eq!(window.focused(), None);
+  }
+}
+
+#[test]
+fn a_field_whose_focus_turned_false_while_hidden_stays_unfocused_when_shown() {
+  let mut h = Harness::new();
+  let open = h.cx.signal(false);
+  let wants = h.cx.signal(true);
+  let text = h.cx.signal(String::new());
+  let column = Column::new()
+    .visible(move || open.get())
+    .child(TextInput::new(text).focus(move || wants.get()));
+  let window = h.window(h.panel().child(column), 200.0, 60.0);
+  wants.set(false);
+  open.set(true);
+  h.frame(&window);
+  assert_eq!(window.focused(), None);
+}
+
+#[test]
+fn a_field_still_hidden_inside_what_shows_leaves_the_focus_to_the_next() {
+  let mut h = Harness::new();
+  let open = h.cx.signal(false);
+  let (first, second) = (h.cx.signal(String::new()), h.cx.signal(String::new()));
+  let column = Column::new()
+    .visible(move || open.get())
+    .child(TextInput::new(first).focus(true).visible(false))
+    .child(TextInput::new(second).focus(true));
+  let window = h.window(h.panel().child(column), 200.0, 60.0);
+  open.set(true);
+  h.frame(&window);
+  assert_eq!(
+    window.focused().as_deref(),
+    Some("PanelWindow[DP-1]/Column/TextInput[1]")
+  );
+}

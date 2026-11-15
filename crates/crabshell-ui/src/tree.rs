@@ -67,6 +67,9 @@ pub(crate) struct Tree {
   /// Rectangles the last layout moved, for the window to write to their
   /// widgets' `geometry` signals once the tree is released.
   pub(crate) geometry: Vec<(Signal<Rect>, Rect)>,
+  /// Widgets shown again since the last layout, which gives the focus to
+  /// a field in them that asks for it.
+  pub(crate) shown_since_layout: Vec<NodeId>,
 }
 
 /// What only a popup's tree has.
@@ -446,6 +449,7 @@ impl Tree {
       floating: None,
       captures: Vec::new(),
       geometry: Vec::new(),
+      shown_since_layout: Vec::new(),
     }
   }
 
@@ -455,6 +459,39 @@ impl Tree {
 
   pub(crate) fn node_mut(&mut self, id: NodeId) -> Option<&mut Node> {
     self.taffy.get_node_context_mut(id)
+  }
+
+  /// Whether node `id` and every node above it are shown.
+  pub(crate) fn shown(&self, id: NodeId) -> bool {
+    let mut at = Some(id);
+    while let Some(current) = at {
+      if self.node(current).is_some_and(|node| !node.visible) {
+        return false;
+      }
+      at = self.taffy.parent(current);
+    }
+    true
+  }
+
+  /// Gives the focus to the first field in Tab order under `id`, just
+  /// shown, whose `focus` is still true, as it asked while hidden.
+  pub(crate) fn focus_shown_field(&mut self, id: NodeId) {
+    let mut pending = vec![id];
+    while let Some(next) = pending.pop() {
+      let Some(node) = self.node(next) else {
+        continue;
+      };
+      if !node.visible {
+        continue;
+      }
+      if matches!(&node.kind, NodeKind::Input(input) if input.wants_focus) {
+        self.focus(Some(next));
+        return;
+      }
+      let mut children = self.taffy.children(next).unwrap_or_default();
+      children.reverse();
+      pending.extend(children);
+    }
   }
 
   /// `id`'s shown children in the order they are drawn, and so found by
@@ -759,6 +796,9 @@ impl Tree {
           });
         });
         self.bind_opt(id, props.focus, "focus", |tree, id, value| {
+          if let Some(NodeKind::Input(input)) = tree.node_mut(id).map(|node| &mut node.kind) {
+            input.wants_focus = value;
+          }
           if value {
             tree.focus(Some(id));
           }
@@ -1215,7 +1255,12 @@ fn set_style(tree: &mut Tree, id: NodeId, style: Style) {
 /// the keyboard focus and the pointer at once; the next layout frees its
 /// space and repaints where it was.
 fn set_visible(tree: &mut Tree, id: NodeId, visible: bool) {
-  if tree.update(id, |node| replace(&mut node.visible, visible)) == Change::None || visible {
+  if tree.update(id, |node| replace(&mut node.visible, visible)) == Change::None {
+    return;
+  }
+  if visible {
+    // Once the flush is over, so the fields' `focus` bindings have run.
+    tree.shown_since_layout.push(id);
     return;
   }
   let mut hidden = Vec::new();
