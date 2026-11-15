@@ -257,6 +257,7 @@ fn a_held_button_drags_past_the_threshold_and_ends_on_release() {
       start: Point::new(5.0, 5.0),
       position: Point::new(16.0, 5.0),
       size,
+      dropped: false,
     }
   );
   // Out of the button and the window, it still moves and stays hovered.
@@ -272,6 +273,7 @@ fn a_held_button_drags_past_the_threshold_and_ends_on_release() {
       start: Point::new(5.0, 5.0),
       position: Point::new(280.0, -40.0),
       size,
+      dropped: false,
     }
   );
   // Back over it, the release ends the drag and doesn't click.

@@ -38,6 +38,16 @@ impl<T: Clone + 'static> Prop<T> {
   }
 }
 
+impl<T: 'static> Prop<T> {
+  /// The property with `f` applied to each value it takes.
+  pub(crate) fn map<U>(self, f: impl Fn(T) -> U + 'static) -> Prop<U> {
+    Prop(match self.0 {
+      PropKind::Value(value) => PropKind::Value(f(value)),
+      PropKind::Binding(mut compute) => PropKind::Binding(Box::new(move || f(compute()))),
+    })
+  }
+}
+
 pub(crate) enum PropKind<T> {
   Value(T),
   Binding(Box<dyn FnMut() -> T>),
@@ -74,6 +84,14 @@ impl<T> IntoProp<T> for Prop<T> {
   }
 }
 
+/// Any `Option` passes as a plain value, as `None` or `Some(value)`. It
+/// can sit beside the closure impl for the same reason the ones below do.
+impl<T> IntoProp<Option<T>> for Option<T> {
+  fn into_prop(self) -> Prop<Option<T>> {
+    Prop(PropKind::Value(self))
+  }
+}
+
 /// Lets each listed type be passed as a plain value.
 macro_rules! value_props {
     ($($ty:ty),* $(,)?) => {
@@ -100,10 +118,8 @@ value_props!(
   Layer,
   Margins,
   KeyboardFocus,
-  Option<Region>,
   PathBuf,
   Fit,
-  Option<usize>,
   (u32, u32),
   Adjust,
   IconSource,

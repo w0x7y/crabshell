@@ -13,7 +13,7 @@ use crabshell_reactive::{Memo, Signal};
 
 use crate::cx::Cx;
 use crate::geometry::{Point, Rect};
-use crate::input::{CursorShape, Drag, Handler, Handlers, Wheel};
+use crate::input::{CursorShape, Drag, DragValue, DropTarget, Handler, Handlers, Wheel};
 use crate::keyboard::KeyEvent;
 use crate::keyed::{self, KeyedList, KeyedMount};
 use crate::prop::{IntoProp, Prop};
@@ -170,6 +170,8 @@ pub(crate) struct ButtonProps {
   pub(crate) enabled: Option<Prop<bool>>,
   pub(crate) focus: Option<Prop<bool>>,
   pub(crate) cursor: Option<Prop<CursorShape>>,
+  pub(crate) drag_data: Option<Prop<Option<DragValue>>>,
+  pub(crate) drop_hovered: Option<Signal<bool>>,
   pub(crate) handlers: Handlers,
 }
 
@@ -831,6 +833,8 @@ impl Button {
         enabled: None,
         focus: None,
         cursor: None,
+        drag_data: None,
+        drop_hovered: None,
         handlers: Handlers::default(),
       },
       common: Common::default(),
@@ -1008,6 +1012,49 @@ impl Button {
   /// may take it away again.
   pub fn focus(mut self, focus: impl IntoProp<bool>) -> Button {
     self.button.focus = Some(focus.into_prop());
+    self
+  }
+
+  /// Makes a drag of this button carry `data`, which a button whose
+  /// [`on_drop`](Self::on_drop) takes a `T` is given when the drag is
+  /// released over it. `None` carries nothing. A closure is read as it
+  /// changes, and a drop gets the value it holds at the release. A button
+  /// with data drags as one with [`on_drag`](Self::on_drag) does, and its
+  /// `on_drag` still runs, so it can follow the pointer with a translate;
+  /// its `End` says whether it was dropped. A drag carries data only
+  /// within its window.
+  pub fn drag_data<T: Clone + 'static>(mut self, data: impl IntoProp<Option<T>>) -> Button {
+    let data = data
+      .into_prop()
+      .map(|data| data.map(|value| Rc::new(value) as DragValue));
+    self.button.drag_data = Some(data);
+    self
+  }
+
+  /// Runs `handler` with a copy of the [`drag_data`](Self::drag_data) of a
+  /// drag released over this button, or over anything inside it, when
+  /// that data is a `T`. Data of any other type passes over it, as if it
+  /// weren't there. The deepest button under the pointer that takes it is
+  /// the one dropped on, and the dragged button never takes its own.
+  pub fn on_drop<T: Clone + 'static>(mut self, handler: impl Fn(&Cx, T) + 'static) -> Button {
+    let take = move |cx: &Cx, value: &dyn std::any::Any| {
+      if let Some(value) = value.downcast_ref::<T>() {
+        handler(cx, value.clone());
+      }
+    };
+    self.button.handlers.drop = Some(DropTarget {
+      accepts: std::any::TypeId::of::<T>(),
+      handler: Rc::new(Handler::new(take)),
+    });
+    self
+  }
+
+  /// Shares whether a drop is waiting: the button writes `hovered` true
+  /// while a drag whose data its [`on_drop`](Self::on_drop) would take is
+  /// over it, as Qt's `DropArea.containsDrag`, and false when the drag
+  /// leaves, ends, or either button goes, is hidden or is turned off.
+  pub fn drop_hovered(mut self, hovered: Signal<bool>) -> Button {
+    self.button.drop_hovered = Some(hovered);
     self
   }
 

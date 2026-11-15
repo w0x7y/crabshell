@@ -7,6 +7,7 @@
 
 mod animation;
 mod displaced;
+mod drop;
 mod edit;
 mod floating;
 mod flow;

@@ -21,7 +21,7 @@ use crate::animation::{self, Transition};
 use crate::cx::{Anchor, Cx};
 use crate::floating::FloatingState;
 use crate::geometry::{Affine, Point, Rect, Size};
-use crate::input::{CursorShape, Handlers, Pointer};
+use crate::input::{CursorShape, DragValue, Handlers, Pointer};
 use crate::keyboard::Keyboard;
 use crate::keyed::KeyedSlot;
 use crate::prop::{IntoProp, Prop, PropKind};
@@ -233,6 +233,11 @@ pub(crate) struct ButtonNode {
   /// Written with where the pointer is while it is over the button or
   /// dragging it.
   pub(crate) position_signal: Option<Signal<Option<Point>>>,
+  /// What a drag of it carries, kept in the reactive runtime as the
+  /// handlers are.
+  pub(crate) drag_data: Option<Signal<Option<DragValue>>>,
+  /// Written while a drag it would take a drop from is over it.
+  pub(crate) drop_hovered: Option<Signal<bool>>,
   /// Off, the pointer passes through it and Tab skips it.
   pub(crate) enabled: bool,
   /// The cursor over it.
@@ -723,6 +728,11 @@ impl Tree {
         handlers: cx.signal(std::mem::take(&mut props.handlers)),
         hover_signal: props.hovered,
         position_signal: props.position,
+        drag_data: props
+          .drag_data
+          .take()
+          .map(|data| drag_data_signal(&cx, &path, data)),
+        drop_hovered: props.drop_hovered,
         enabled: true,
         cursor: CursorShape::Pointer,
         long_press: None,
@@ -1388,6 +1398,24 @@ fn set_visible(tree: &mut Tree, id: NodeId, visible: bool) {
     tree.focus(None);
   }
   tree.pointer_hide(&hidden);
+}
+
+/// The signal holding what a drag of a button carries: `data` itself, or
+/// what its binding last gave, from an effect that never touches the tree.
+fn drag_data_signal(
+  cx: &Cx,
+  path: &str,
+  data: Prop<Option<DragValue>>,
+) -> Signal<Option<DragValue>> {
+  match data.0 {
+    PropKind::Value(value) => cx.signal(value),
+    PropKind::Binding(mut compute) => {
+      let signal = cx.signal(None);
+      cx.effect(move || signal.set(compute()))
+        .named(format!("{path}.drag_data"));
+      signal
+    }
+  }
 }
 
 /// Where an icon of `size` logical pixels is drawn in its node's `content`
