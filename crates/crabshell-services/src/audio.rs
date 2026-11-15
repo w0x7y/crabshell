@@ -396,6 +396,8 @@ pub(crate) enum Event {
   Peaks(u64),
   /// The peak meter with this id changed its state.
   MeterState(u64),
+  /// A closing peak meter's stream changed its state.
+  Closing,
 }
 
 impl AudioService {
@@ -467,6 +469,7 @@ impl AudioService {
     // From here on, dropping `pulse` stops libpulse's thread.
     let pulse = Pulse {
       meters: Vec::new(),
+      closing: Vec::new(),
       intro: None,
       context: None,
       mainloop,
@@ -550,6 +553,7 @@ impl AudioService {
       }
       Event::Peaks(id) => pulse.read_peaks(id),
       Event::MeterState(id) => pulse.on_meter_state(id),
+      Event::Closing => pulse.on_closing(),
     }
   }
 
@@ -611,6 +615,8 @@ struct Pulse {
   // Declared before `mainloop`, so they drop before it, the streams
   // before their context.
   meters: Vec<peaks::Meter>,
+  /// Streams of meters closed before the server made them, waiting to be.
+  closing: Vec<peaks::Recording>,
   intro: Option<Introspector>,
   context: Option<Context>,
   mainloop: Mainloop,
@@ -1114,7 +1120,7 @@ impl Pulse {
   /// outage.
   fn disconnect(&mut self) -> bool {
     let lock = Locked::new(&mut self.mainloop);
-    peaks::close_all(&mut self.meters);
+    peaks::close_all(&mut self.meters, &mut self.closing);
     self.intro = None;
     if let Some(mut context) = self.context.take() {
       // Cleared first: disconnecting calls the state callback.

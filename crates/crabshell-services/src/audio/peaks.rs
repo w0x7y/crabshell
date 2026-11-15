@@ -197,27 +197,44 @@ pub(super) struct Meter {
   source: Source,
   /// `None` once the server ended it, or if it didn't open. Either way it
   /// isn't tried again until its source changes.
-  stream: Option<Stream>,
+  stream: Option<Recording>,
   /// While quiet, its peaks are 0 and what it reads is dropped.
   quiet: bool,
 }
 
-impl Meter {
-  /// Closes the stream, under the mainloop's lock or with libpulse's
-  /// thread stopped.
-  fn stop(&mut self) {
-    if let Some(mut stream) = self.stream.take() {
-      // Cleared first: libpulse calls them again as the stream ends.
-      stream.set_read_callback(None);
-      stream.set_state_callback(None);
-    }
+/// A record stream whose callbacks are cleared before it drops: libpulse
+/// calls them again as a stream ends, and from its context while the
+/// server is still making one. Dropped under the mainloop's lock, or with
+/// libpulse's thread stopped.
+pub(super) struct Recording(Stream);
+
+impl Drop for Recording {
+  fn drop(&mut self) {
+    self.0.set_read_callback(None);
+    self.0.set_state_callback(None);
   }
 }
 
-impl Drop for Meter {
-  fn drop(&mut self) {
-    self.stop();
+/// Ends `recording`, under the mainloop's lock. Dropping one disconnects
+/// it, but libpulse refuses that while the server is still making it, and
+/// the server would then record with nothing reading. So that one waits
+/// in `closing` until the server answers.
+fn end(
+  mut recording: Recording,
+  closing: &mut Vec<Recording>,
+  sender: &Arc<Sender<Message>>,
+  generation: u32,
+) {
+  if recording.0.get_state() != State::Creating {
+    return;
   }
+  recording.0.set_read_callback(None);
+  let sender = Arc::clone(sender);
+  let on_state = on_pa_thread(move || {
+    let _ = sender.send((generation, Event::Closing));
+  });
+  recording.0.set_state_callback(Some(Box::new(on_state)));
+  closing.push(recording);
 }
 
 impl Pulse {
@@ -229,7 +246,8 @@ impl Pulse {
       .map(|meter| (meter.id, meter.peaks, self.nodes.source_of(&meter.target)))
       .collect();
     let _lock = Locked::new(&mut self.mainloop);
-    self.meters.retain(|meter| {
+    let (closing, sender, generation) = (&mut self.closing, &self.sender, self.generation);
+    self.meters.retain_mut(|meter| {
       let same = |(id, _, found): &(u64, _, Option<(Source, bool)>)| {
         *id == meter.id
           && found
@@ -238,6 +256,9 @@ impl Pulse {
       };
       let kept = next.iter().any(same);
       if !kept {
+        if let Some(recording) = meter.stream.take() {
+          end(recording, closing, sender, generation);
+        }
         set_changed(meter.peaks, Vec::new());
       }
       kept
@@ -283,7 +304,7 @@ impl Pulse {
       return;
     };
     let channels = usize::from(meter.source.map.len());
-    let Some(stream) = meter.stream.as_mut() else {
+    let Some(Recording(stream)) = meter.stream.as_mut() else {
       return;
     };
     let mut peaks = None;
@@ -310,19 +331,31 @@ impl Pulse {
     let Some(meter) = self.meters.iter_mut().find(|meter| meter.id == id) else {
       return;
     };
-    let state = meter.stream.as_ref().map(Stream::get_state);
+    let state = meter
+      .stream
+      .as_ref()
+      .map(|recording| recording.0.get_state());
     if matches!(state, Some(State::Failed | State::Terminated)) {
       let source = &meter.source.name;
       tracing::info!(source, "the audio server ended a peak meter");
-      meter.stop();
+      meter.stream = None;
       set_changed(meter.peaks, Vec::new());
     }
   }
+
+  /// Ends each closing stream the server has now made or refused.
+  pub(super) fn on_closing(&mut self) {
+    let _lock = Locked::new(&mut self.mainloop);
+    let made = |recording: &Recording| recording.0.get_state() != State::Creating;
+    self.closing.retain(|recording| !made(recording));
+  }
 }
 
-/// Closes every meter as the connection goes, under the mainloop's lock.
-/// Each opens again once the next connection's lists have its source.
-pub(super) fn close_all(meters: &mut Vec<Meter>) {
+/// Closes every meter as the connection goes, under the mainloop's lock;
+/// the context's streams go with it. Each meter opens again once the next
+/// connection's lists have its source.
+pub(super) fn close_all(meters: &mut Vec<Meter>, closing: &mut Vec<Recording>) {
+  closing.clear();
   for meter in meters.drain(..) {
     set_changed(meter.peaks, Vec::new());
   }
@@ -336,7 +369,7 @@ fn open(
   id: u64,
   sender: &Arc<Sender<Message>>,
   generation: u32,
-) -> Option<Stream> {
+) -> Option<Recording> {
   let spec = Spec {
     format: Format::FLOAT32NE,
     rate: RATE,
@@ -381,7 +414,7 @@ fn open(
     let _ = state.send((generation, Event::MeterState(id)));
   });
   stream.set_state_callback(Some(Box::new(on_state)));
-  Some(stream)
+  Some(Recording(stream))
 }
 
 /// Raises each channel's peak to the loudest sample of the frames of

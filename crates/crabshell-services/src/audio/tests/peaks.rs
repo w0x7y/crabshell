@@ -32,6 +32,13 @@ fn open(shell: &Harness) -> usize {
   pulse.as_ref().map_or(0, |pulse| pulse.meters.len())
 }
 
+/// How many streams of closed meters wait for the server.
+fn closing(shell: &Harness) -> usize {
+  let service = shell.service();
+  let pulse = service.pulse.borrow();
+  pulse.as_ref().map_or(0, |pulse| pulse.closing.len())
+}
+
 fn sink(name: &str) -> Option<PeakTarget> {
   Some(PeakTarget::Sink(name.to_owned()))
 }
@@ -241,14 +248,22 @@ fn a_meter_records_again_after_a_reconnect() {
     .cx
     .audio()
     .peaks(PeakTarget::Sink("speakers".to_owned()));
+  // The fake never makes a stream, so a closed meter's waits.
+  let closed = shell.cx.child();
+  closed
+    .audio()
+    .peaks(PeakTarget::Sink("speakers".to_owned()));
   Runtime::current().flush();
   shell.send(Event::Sinks(vec![node_info(
     3, "speakers", &[NORM; 2], false,
   )]));
-  assert_eq!(recorded(&mut client).len(), 1);
+  assert_eq!(recorded(&mut client).len(), 2);
+  closed.owner().dispose();
+  assert_eq!(closing(&shell), 1);
   // The server hangs up, and the service tries again in 50 ms.
   drop(client);
   shell.run_until(|shell| open(shell) == 0);
+  assert_eq!(closing(&shell), 0, "gone with the connection");
   assert_eq!(peaks.get_untracked(), Vec::<f32>::new());
   let mut client = connect(&mut shell, &fake);
   shell.send(Event::Sinks(vec![node_info(

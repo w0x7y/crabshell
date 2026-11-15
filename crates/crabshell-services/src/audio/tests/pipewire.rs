@@ -416,3 +416,44 @@ fn a_source_meter_records_with_nothing_else_recording() {
   let woke = shell.run_for(Duration::from_secs(1));
   assert!((10..=60).contains(&woke), "{woke} wakeups");
 }
+
+#[test]
+#[ignore = "needs pipewire; run by hand"]
+fn a_meter_gone_before_the_server_made_its_stream_leaves_nothing_recording() {
+  let _one = one_at_a_time();
+  let server = PrivateServer::start("meter-early");
+  let mut shell = Harness::new(&server.address());
+  let audio = shell.cx.audio();
+  let (sinks, streams) = (audio.sinks(), audio.streams());
+  shell.run_until(|_| sinks.get_untracked().len() == 2);
+  // The sink is idle and nothing links the source yet, so the server
+  // makes neither stream.
+  let cx = shell.cx.child();
+  cx.audio().peaks(test_sink());
+  cx.audio()
+    .peaks(PeakTarget::Source("test-source".to_owned()));
+  shell.run_for(Duration::from_millis(500));
+  cx.owner().dispose();
+  shell.run_for(Duration::from_millis(100));
+  // Now the sink plays and everything is linked, so they could start.
+  let tone = server.play_square(0.5, 0.25);
+  shell.run_until(|_| {
+    server.link();
+    streams
+      .get_untracked()
+      .first()
+      .is_some_and(|s| s.sink == "test-sink")
+  });
+  let recordings = || server.pactl(&["list", "source-outputs", "short"]);
+  shell.run_until(|_| {
+    server.link();
+    recordings().is_empty()
+  });
+  shell.run_for(Duration::from_millis(500));
+  let switches = libpulse_switches();
+  // One wakeup: the one that ends the run.
+  assert_eq!(shell.run_for(Duration::from_secs(2)), 1);
+  assert_eq!(libpulse_switches(), switches, "libpulse's thread slept");
+  assert_eq!(recordings(), "");
+  stop(tone);
+}
