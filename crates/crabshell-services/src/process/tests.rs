@@ -506,3 +506,44 @@ fn the_end_shows_while_a_program_it_started_keeps_printing() {
     started.elapsed()
   );
 }
+
+#[test]
+fn on_line_set_after_the_program_printed_gets_the_whole_line() {
+  let mut shell = Harness::new(offline());
+  let lines = Rc::new(RefCell::new(Vec::new()));
+  let process = shell
+    .cx
+    .process(|| sh("printf 'par'; sleep 0.3; printf 'tial\\n'"));
+  let out = process.stdout();
+  run_until(&mut shell, "par", move || out.get_untracked() == "par");
+  let kept = Rc::clone(&lines);
+  let process = process.on_line(move |line| kept.borrow_mut().push(line.to_owned()));
+  finish(&mut shell, &process);
+  assert_eq!(*lines.borrow(), ["partial"]);
+}
+
+#[test]
+fn a_handler_that_sets_another_marker_has_the_rest_split_at_it() {
+  let mut shell = Harness::new(offline());
+  let pieces = Rc::new(RefCell::new(Vec::new()));
+  let process = Rc::new(RefCell::new(None::<Process>));
+  let (kept, held) = (Rc::clone(&pieces), Rc::clone(&process));
+  let started = shell
+    .cx
+    .process(|| sh("printf 'HEADER\\nr1;r2\\nr3;rest'"))
+    .on_line(move |line| {
+      kept.borrow_mut().push(format!("line {line}"));
+      let kept = Rc::clone(&kept);
+      let process = held.borrow().clone().unwrap();
+      let _ = process.on_split(";", move |piece| {
+        kept.borrow_mut().push(format!("piece {piece}"))
+      });
+    });
+  *process.borrow_mut() = Some(started.clone());
+  finish(&mut shell, &started);
+  assert_eq!(
+    *pieces.borrow(),
+    ["line HEADER", "piece r1", "piece r2\nr3", "piece rest"]
+  );
+  process.borrow_mut().take();
+}

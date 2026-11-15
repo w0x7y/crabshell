@@ -139,7 +139,7 @@ impl Helper {
     match self.stdout.read(&mut chunk) {
       Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => None,
       Ok(read @ 1..) => Some((self.lines.push(&chunk[..read], &"polkit's helper"), false)),
-      _ => Some((self.lines.finish().into_iter().collect(), true)),
+      _ => Some((self.lines.finish(&"polkit's helper"), true)),
     }
   }
 

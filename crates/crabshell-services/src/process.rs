@@ -141,9 +141,10 @@ struct State {
   on_line: Option<OnLine>,
   /// Which method set `on_line` and where, for the log if it panics.
   at: Option<(&'static str, &'static Location<'static>)>,
-  /// Where `on_line` splits, for the next run's lines. Only read once a
-  /// handler set it.
-  marker: String,
+  /// What the run printed on its standard output and wasn't passed on
+  /// yet. Split at a newline until a handler says otherwise, so one set
+  /// late still gets the start of its first line.
+  lines: Lines,
 }
 
 /// What a config does with each line.
@@ -159,7 +160,6 @@ struct Run {
   stdin: Option<PipeWriter>,
   outbox: Vec<u8>,
   writer: Option<RegistrationToken>,
-  lines: Lines,
 }
 
 /// One of a program's outputs, read as it comes.
@@ -296,8 +296,11 @@ impl Process {
   /// Like [`on_line`](Self::on_line), with lines that end at `marker`
   /// instead of `\n`, such as `"\0"` for `find -print0`, as Quickshell's
   /// `SplitParser`. An empty `marker` passes on each read as it comes, up
-  /// to 64 KiB, keeping a character the read cut off for the next. It
-  /// replaces `on_line`, and what waits is split at the new marker.
+  /// to 64 KiB, keeping a character the read cut off for the next.
+  ///
+  /// It replaces `on_line`, and everything not passed on yet is split at
+  /// the new marker: set from a handler, from the line after the one it
+  /// was given; set elsewhere, on the loop's next turn.
   #[track_caller]
   pub fn on_split(self, marker: &str, on_split: impl Fn(&str) + 'static) -> Process {
     self.handle("on_split", marker, Rc::new(on_split))
@@ -308,11 +311,12 @@ impl Process {
     let mut state = self.inner.state.borrow_mut();
     state.on_line = Some(handler);
     state.at = Some((name, Location::caller()));
-    marker.clone_into(&mut state.marker);
-    if let Some(run) = state.run.as_mut() {
-      run.lines.set_marker(marker);
-    }
+    state.lines.set_marker(marker);
+    let waiting = state.lines.waiting();
     drop(state);
+    if waiting {
+      self.inner.deliver_later();
+    }
     self
   }
 
@@ -453,8 +457,8 @@ impl Inner {
       stdin,
       outbox: input,
       writer: None,
-      lines: Lines::new(&self.state.borrow().marker),
     };
+    self.state.borrow_mut().lines.reset();
     for (which, stream) in [(Which::Out, out), (Which::Err, err)] {
       let Ok(fd) = stream.as_fd().try_clone_to_owned() else {
         continue;
@@ -482,7 +486,8 @@ impl Inner {
   fn on_output(&self, which: Which) {
     let mut chunk = [0; 64 * 1024];
     let mut state = self.state.borrow_mut();
-    let Some(run) = state.run.as_mut() else {
+    let State { run, lines, .. } = &mut *state;
+    let Some(run) = run.as_mut() else {
       return;
     };
     let Some((stream, _)) = run.output(which).stream.as_mut() else {
@@ -495,7 +500,10 @@ impl Inner {
       }
       Err(_) => 0,
     };
-    let (text, lines) = run.take(which, &chunk[..read]);
+    let text = run.take(which, &chunk[..read]);
+    if which == Which::Out {
+      lines.append(&chunk[..read]);
+    }
     let program = run.program.clone();
     if read == 0 {
       // It closed this output; its exit is still to come.
@@ -506,7 +514,7 @@ impl Inner {
     }
     drop(state);
     self.show(which, text);
-    self.deliver(lines, &program);
+    self.deliver(false, &program);
   }
 
   /// The program ended: reads what is left of its outputs, then shows how
@@ -544,16 +552,17 @@ impl Inner {
           break;
         };
         budget = budget.saturating_sub(read);
-        let (text, lines) = run.take(which, &chunk[..read]);
+        let text = run.take(which, &chunk[..read]);
+        if which == Which::Out {
+          self.state.borrow_mut().lines.append(&chunk[..read]);
+        }
         self.show(which, text);
-        self.deliver(lines, &run.program);
+        self.deliver(false, &run.program);
       }
-      let (text, lines) = run.take(which, &[]);
+      let text = run.take(which, &[]);
       self.show(which, text);
-      self.deliver(lines, &run.program);
     }
-    let last = run.lines.finish();
-    self.deliver(last.into_iter().collect(), &run.program);
+    self.deliver(true, &run.program);
     self.remove_sources(&mut run);
     set(self.status, status);
     set(self.running, false);
@@ -571,24 +580,48 @@ impl Inner {
     signal.try_update(|all| all.push_str(&text));
   }
 
-  /// Calls `on_line` with each line, with nothing borrowed.
-  fn deliver(&self, lines: Vec<String>, program: &str) {
-    if lines.is_empty() {
-      return;
-    }
-    let (on_line, at) = {
-      let state = self.state.borrow();
-      (state.on_line.clone(), state.at)
-    };
-    let Some(on_line) = on_line else {
+  /// Passes on what waits at the loop's next turn, as a marker set outside
+  /// a handler asks.
+  fn deliver_later(self: &Rc<Self>) {
+    let Some(event_loop) = self.event_loop() else {
       return;
     };
-    for line in lines {
-      // Not once the context went, or `on_line` was replaced.
-      let current = self.state.borrow().on_line.clone();
-      if !current.is_some_and(|now| Rc::ptr_eq(&now, &on_line)) {
-        return;
+    let inner = Rc::clone(self);
+    let later = move || {
+      let program = inner
+        .state
+        .borrow()
+        .run
+        .as_ref()
+        .map(|run| run.program.clone());
+      if let Some(program) = program {
+        inner.deliver(false, &program);
       }
+      TimeoutAction::Drop
+    };
+    event_loop.insert_timer(Instant::now(), Box::new(later));
+  }
+
+  /// Passes each whole line waiting to the handler set at the time, one at
+  /// a time with nothing borrowed, so one that sets another marker has the
+  /// rest split at it. Once the program is `done`, what is left goes last.
+  fn deliver(&self, done: bool, program: &str) {
+    loop {
+      let (line, on_line, at) = {
+        let mut state = self.state.borrow_mut();
+        let line = match state.lines.next(&program) {
+          Some(line) => line,
+          None if done => match state.lines.rest() {
+            Some(line) => line,
+            None => return,
+          },
+          None => return,
+        };
+        (line, state.on_line.clone(), state.at)
+      };
+      let Some(on_line) = on_line else {
+        continue;
+      };
       if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| on_line(&line))) {
         let (name, at) = at.map_or(("on_line", String::new()), |(name, at)| {
           (name, format!(" (called at {at})"))
@@ -604,7 +637,6 @@ impl Inner {
         {
           state.on_line = None;
         }
-        return;
       }
     }
   }
@@ -718,6 +750,8 @@ impl Inner {
     let Some(mut run) = run else {
       return;
     };
+    // Its lines aren't passed on after it.
+    self.state.borrow_mut().lines.reset();
     terminate(&run.child);
     self.remove_sources(&mut run);
     if let Some(shared) = &self.processes {
@@ -817,15 +851,9 @@ impl Run {
     }
   }
 
-  /// `bytes` read from one output: the text to add to its signal, and for
-  /// standard output the whole lines it completes. Empty `bytes` means
-  /// the output ended, which lets a cut-off character go.
-  fn take(&mut self, which: Which, bytes: &[u8]) -> (String, Vec<String>) {
-    let lines = if which == Which::Out && !bytes.is_empty() {
-      self.lines.push(bytes, &self.program)
-    } else {
-      Vec::new()
-    };
+  /// `bytes` read from one output: the text to add to its signal. Empty
+  /// `bytes` means the output ended, which lets a cut-off character go.
+  fn take(&mut self, which: Which, bytes: &[u8]) -> String {
     let program = self.program.clone();
     let output = self.output(which);
     output.partial.extend_from_slice(bytes);
@@ -850,7 +878,7 @@ impl Run {
       text.truncate(end);
     }
     output.kept += text.len();
-    (text, lines)
+    text
   }
 }
 

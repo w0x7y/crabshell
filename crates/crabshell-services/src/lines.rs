@@ -10,12 +10,16 @@ use std::fmt::Display;
 /// marker, is dropped.
 pub(crate) const MAX_LINE: usize = 1024 * 1024;
 
-/// Bytes after the last marker, waiting for the rest of their line.
+/// What was read and not passed on yet. Lines are taken one at a time,
+/// so a marker set between two splits everything after the first.
 pub(crate) struct Lines {
   /// What ends a line. Empty passes on each read as it comes.
   marker: Vec<u8>,
   inbox: Vec<u8>,
-  /// How much of `inbox` is known to start no marker.
+  /// Where the line being read starts in `inbox`: what is before it was
+  /// passed on, and goes at the next append.
+  start: usize,
+  /// How far into `inbox` no marker starts, from `start` on.
   scanned: usize,
   /// Dropping the rest of a line longer than [`MAX_LINE`].
   skipping: bool,
@@ -33,6 +37,7 @@ impl Lines {
     Lines {
       marker: marker.as_bytes().to_vec(),
       inbox: Vec::new(),
+      start: 0,
       scanned: 0,
       skipping: false,
     }
@@ -41,68 +46,100 @@ impl Lines {
   /// Splits at `marker` from now on, what waits included.
   pub(crate) fn set_marker(&mut self, marker: &str) {
     self.marker = marker.as_bytes().to_vec();
-    self.scanned = 0;
+    self.scanned = self.start;
   }
 
   /// Drops what waits, for a new stream, and keeps the marker.
   pub(crate) fn reset(&mut self) {
     self.inbox = Vec::new();
+    self.start = 0;
     self.scanned = 0;
     self.skipping = false;
   }
 
-  /// The whole lines `bytes` completes, without their marker, decoded as
-  /// UTF-8 with bad bytes replaced. The rest waits. A line over
-  /// [`MAX_LINE`] is dropped and logged as coming from `from`. With an
-  /// empty marker, the text `bytes` holds, keeping a character it cuts
-  /// off for the next read.
-  pub(crate) fn push(&mut self, bytes: &[u8], from: &dyn Display) -> Vec<String> {
-    self.inbox.extend_from_slice(bytes);
-    if self.marker.is_empty() {
-      let text = decode(&mut self.inbox);
-      return if text.is_empty() { vec![] } else { vec![text] };
-    }
-    let width = self.marker.len();
-    let mut lines = Vec::new();
-    let (mut start, mut at) = (0, self.scanned);
-    while let Some(found) = find(&self.inbox[at..], &self.marker) {
-      let end = at + found;
-      if std::mem::take(&mut self.skipping) {
-        // The end of a line dropped and logged already.
-      } else if end - start > MAX_LINE {
-        tracing::warn!(%from, "a line over 1 MiB was dropped");
-      } else {
-        lines.push(String::from_utf8_lossy(&self.inbox[start..end]).into_owned());
-      }
-      start = end + width;
-      at = start;
-    }
-    self.inbox.drain(..start);
-    if start > 0 {
+  /// Whether anything waits to be passed on.
+  pub(crate) fn waiting(&self) -> bool {
+    self.start < self.inbox.len()
+  }
+
+  /// Adds what was read, for [`next`](Self::next).
+  pub(crate) fn append(&mut self, bytes: &[u8]) {
+    if self.start > 0 {
+      self.inbox.drain(..self.start);
+      self.scanned -= self.start;
+      self.start = 0;
       // A long line's room isn't kept.
       self.inbox.shrink_to(64 * 1024);
     }
-    // A marker the read cut off may start in its last bytes.
-    self.scanned = self.inbox.len().saturating_sub(width - 1);
-    if self.inbox.len() > MAX_LINE && !self.skipping {
+    self.inbox.extend_from_slice(bytes);
+  }
+
+  /// The next whole line, without its marker, decoded as UTF-8 with bad
+  /// bytes replaced. A line over [`MAX_LINE`] is dropped and logged as
+  /// coming from `from`. With an empty marker, all the text waiting,
+  /// keeping a character a read cut off.
+  pub(crate) fn next(&mut self, from: &dyn Display) -> Option<String> {
+    if self.marker.is_empty() {
+      self.inbox.drain(..self.start);
+      (self.start, self.scanned) = (0, 0);
+      let text = decode(&mut self.inbox);
+      return (!text.is_empty()).then_some(text);
+    }
+    let width = self.marker.len();
+    while let Some(found) = find(&self.inbox[self.scanned..], &self.marker) {
+      let end = self.scanned + found;
+      let line = &self.inbox[self.start..end];
+      let text = if std::mem::take(&mut self.skipping) {
+        // The end of a line dropped and logged already.
+        None
+      } else if line.len() > MAX_LINE {
+        tracing::warn!(%from, "a line over 1 MiB was dropped");
+        None
+      } else {
+        Some(String::from_utf8_lossy(line).into_owned())
+      };
+      self.start = end + width;
+      self.scanned = self.start;
+      if text.is_some() {
+        return text;
+      }
+    }
+    // A marker a read cut off may start in the last bytes, so only what
+    // is before them surely belongs to the line.
+    let known = self.inbox.len().saturating_sub(width - 1).max(self.start);
+    self.scanned = known;
+    if known - self.start > MAX_LINE && !self.skipping {
       tracing::warn!(%from, "a line over 1 MiB was dropped");
       self.skipping = true;
     }
     if self.skipping {
-      // Only what may start a marker is kept.
-      self.inbox.drain(..self.scanned);
-      self.inbox.shrink_to(64 * 1024);
-      self.scanned = 0;
+      self.start = known;
     }
-    lines
+    None
   }
 
-  /// What is left once the sender is done, as a last line, if anything.
-  pub(crate) fn finish(&mut self) -> Option<String> {
-    let rest = std::mem::take(&mut self.inbox);
-    let skipped = std::mem::take(&mut self.skipping);
-    self.scanned = 0;
-    (!rest.is_empty() && !skipped).then(|| String::from_utf8_lossy(&rest).into_owned())
+  /// What is left once the sender is done and every whole line was taken,
+  /// as a last line, if anything. It empties what waits.
+  pub(crate) fn rest(&mut self) -> Option<String> {
+    let rest = &self.inbox[self.start..];
+    let text =
+      (!rest.is_empty() && !self.skipping).then(|| String::from_utf8_lossy(rest).into_owned());
+    self.reset();
+    text
+  }
+
+  /// Adds `bytes` and takes every whole line they complete.
+  pub(crate) fn push(&mut self, bytes: &[u8], from: &dyn Display) -> Vec<String> {
+    self.append(bytes);
+    std::iter::from_fn(|| self.next(from)).collect()
+  }
+
+  /// Every whole line still waiting and then the rest, once the sender is
+  /// done.
+  pub(crate) fn finish(&mut self, from: &dyn Display) -> Vec<String> {
+    let mut lines: Vec<String> = std::iter::from_fn(|| self.next(from)).collect();
+    lines.extend(self.rest());
+    lines
   }
 }
 

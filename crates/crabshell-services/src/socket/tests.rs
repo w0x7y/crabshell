@@ -383,3 +383,48 @@ fn lines_after_on_line_closes_the_socket_are_dropped() {
   run(&mut shell, 50);
   assert_eq!(*lines.borrow(), ["bye"]);
 }
+
+#[test]
+fn a_handler_that_sets_another_marker_has_the_rest_split_at_it() {
+  let server = Server::new();
+  let mut shell = Harness::new(offline());
+  let pieces = Rc::new(RefCell::new(Vec::new()));
+  let socket = Rc::new(RefCell::new(None::<Socket>));
+  let (kept, held) = (Rc::clone(&pieces), Rc::clone(&socket));
+  let opened = shell.cx.socket(server.path()).on_line(move |line| {
+    kept.borrow_mut().push(format!("line {line}"));
+    let kept = Rc::clone(&kept);
+    let socket = held.borrow().clone().unwrap();
+    let _ = socket.on_split(";", move |piece| {
+      kept.borrow_mut().push(format!("piece {piece}"))
+    });
+  });
+  *socket.borrow_mut() = Some(opened);
+  let mut peer = server.accept();
+  peer.write_all(b"HEADER\nr1;r2\nr3;").unwrap();
+  run(&mut shell, 100);
+  assert_eq!(
+    *pieces.borrow(),
+    ["line HEADER", "piece r1", "piece r2\nr3"]
+  );
+  socket.borrow_mut().take();
+}
+
+#[test]
+fn a_marker_set_outside_a_handler_splits_what_waits_on_the_next_turn() {
+  let server = Server::new();
+  let mut shell = Harness::new(offline());
+  let (socket, lines) = open(&shell, server.path());
+  let peer = server.accept();
+  (&peer).write_all(b"a;b").unwrap();
+  run(&mut shell, 50);
+  assert!(lines.borrow().is_empty(), "no newline yet");
+  let kept = Rc::clone(&lines);
+  let _socket = socket.on_split(";", move |piece| kept.borrow_mut().push(piece.to_owned()));
+  assert!(lines.borrow().is_empty(), "not inside the call");
+  run(&mut shell, 50);
+  assert_eq!(*lines.borrow(), ["a"]);
+  drop(peer);
+  run(&mut shell, 50);
+  assert_eq!(*lines.borrow(), ["a", "b"]);
+}

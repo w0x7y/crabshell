@@ -68,10 +68,9 @@ struct State {
   on_line: Option<OnLine>,
   /// Which method set `on_line` and where, for the log if it panics.
   at: Option<(&'static str, &'static Location<'static>)>,
+  /// What was read and not passed on yet. Emptied by a close or a connect,
+  /// so lines read before one aren't passed on after it.
   lines: Lines,
-  /// Counts connects and closes the config asked for, so lines read
-  /// before one aren't passed on after it.
-  serial: u64,
 }
 
 struct Connection {
@@ -168,8 +167,11 @@ impl Socket {
   /// Like [`on_line`](Self::on_line), with lines that end at `marker`
   /// instead of `\n`, such as `"\0"` or `"\r\n"`, as Quickshell's
   /// `SplitParser`. An empty `marker` passes on each read as it comes, up
-  /// to 64 KiB, keeping a character the read cut off for the next. It
-  /// replaces `on_line`, and what waits is split at the new marker.
+  /// to 64 KiB, keeping a character the read cut off for the next.
+  ///
+  /// It replaces `on_line`, and everything not passed on yet is split at
+  /// the new marker: set from a handler, from the line after the one it
+  /// was given; set elsewhere, on the loop's next turn.
   #[track_caller]
   pub fn on_split(self, marker: &str, on_split: impl Fn(&str) + 'static) -> Socket {
     self.handle("on_split", marker, Rc::new(on_split))
@@ -181,7 +183,11 @@ impl Socket {
     state.on_line = Some(handler);
     state.at = Some((name, Location::caller()));
     state.lines.set_marker(marker);
+    let waiting = state.lines.waiting();
     drop(state);
+    if waiting {
+      self.inner.deliver_later();
+    }
     self
   }
 
@@ -246,7 +252,6 @@ impl Inner {
       .ok_or_else(|| std::io::Error::other("the loop refused it"))?;
     let mut state = self.state.borrow_mut();
     state.lines.reset();
-    state.serial += 1;
     state.connection = Some(Connection {
       stream,
       reader,
@@ -266,47 +271,61 @@ impl Inner {
     let Some(connection) = state.connection.as_mut() else {
       return;
     };
-    let (lines, closed) = match connection.stream.read(&mut chunk) {
-      Ok(0) => {
-        let last = state.lines.finish();
-        (
-          last.into_iter().collect(),
-          Some(String::from("the other end closed it")),
-        )
+    let closed = match connection.stream.read(&mut chunk) {
+      Ok(0) => Some(String::from("the other end closed it")),
+      Ok(read) => {
+        state.lines.append(&chunk[..read]);
+        None
       }
-      Ok(read) => (state.lines.push(&chunk[..read], &self.path.display()), None),
       Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
         return;
       }
       // As a reset from a peer that closed with input unread: the end.
-      Err(error) => {
-        let last = state.lines.finish();
-        (last.into_iter().collect(), Some(error.to_string()))
-      }
+      Err(error) => Some(error.to_string()),
     };
-    let serial = state.serial;
     drop(state);
-    // Closed first, so `on_line` may reconnect.
-    if let Some(why) = closed {
-      self.drop_connection(&why);
+    // Closed first, so a handler may reconnect.
+    if let Some(why) = &closed {
+      self.drop_connection(why);
     }
-    self.deliver(lines, serial);
+    self.deliver(closed.is_some());
   }
 
-  /// Calls `on_line` with each line, with nothing borrowed, until the
-  /// config closes or reconnects the socket.
-  fn deliver(&self, lines: Vec<String>, serial: u64) {
-    let (on_line, at) = {
-      let state = self.state.borrow();
-      (state.on_line.clone(), state.at)
-    };
-    let Some(on_line) = on_line else {
+  /// Passes on what waits at the loop's next turn, as a marker set outside
+  /// a handler asks.
+  fn deliver_later(self: &Rc<Self>) {
+    let Some(event_loop) = self.shared.as_ref().and_then(|shared| shared.event_loop()) else {
       return;
     };
-    for line in lines {
-      if self.state.borrow().serial != serial {
-        return;
-      }
+    let inner = Rc::clone(self);
+    let later = move || {
+      inner.deliver(false);
+      TimeoutAction::Drop
+    };
+    event_loop.insert_timer(Instant::now(), Box::new(later));
+  }
+
+  /// Passes each whole line waiting to the handler set at the time, one at
+  /// a time with nothing borrowed, so one that sets another marker has the
+  /// rest split at it. When the other end is `done`, what is left goes
+  /// last. A close or a reconnect empties what waits, which ends it.
+  fn deliver(&self, done: bool) {
+    loop {
+      let (line, on_line, at) = {
+        let mut state = self.state.borrow_mut();
+        let line = match state.lines.next(&self.path.display()) {
+          Some(line) => line,
+          None if done => match state.lines.rest() {
+            Some(line) => line,
+            None => return,
+          },
+          None => return,
+        };
+        (line, state.on_line.clone(), state.at)
+      };
+      let Some(on_line) = on_line else {
+        continue;
+      };
       if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| on_line(&line))) {
         let path = self.path.display();
         let (name, at) = at.map_or(("on_line", String::new()), |(name, at)| {
@@ -323,7 +342,6 @@ impl Inner {
         {
           state.on_line = None;
         }
-        return;
       }
     }
   }
@@ -414,9 +432,8 @@ impl Inner {
   fn end(&self, asked: bool) {
     let connection = {
       let mut state = self.state.borrow_mut();
-      state.lines.reset();
       if asked {
-        state.serial += 1;
+        state.lines.reset();
       }
       state.connection.take()
     };
