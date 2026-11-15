@@ -40,7 +40,7 @@ use crate::global_shortcuts::GlobalShortcuts;
 use crate::idle::Idle;
 use crate::keyboard::SeatKeyboard;
 use crate::lock::Locks;
-use crate::outputs::OutputInfo;
+use crate::outputs::{self, OutputInfo};
 use crate::pointer::Cursor;
 use crate::scale::Scale;
 use crate::screencopy::Captures;
@@ -526,8 +526,8 @@ impl Platform {
     self.known.iter().map(|(_, info)| info)
   }
 
-  /// Calls `listener` whenever an output is added or removed, or the
-  /// compositor closes a window. Outputs already announced aren't
+  /// Calls `listener` whenever an output is added, changes or is removed,
+  /// or the compositor closes a window. Outputs already announced aren't
   /// repeated; read them from [`outputs`](Self::outputs). It replaces any
   /// listener set before. If it panics, the panic is logged and the
   /// listener kept.
@@ -845,6 +845,12 @@ impl Platform {
   /// Tells the listener about `event`.
   pub(crate) fn notify(&mut self, event: Event) {
     events::notify(self, listener_slot, &event);
+  }
+
+  /// What sctk knows about `output`, or `None` if it has no name.
+  pub(crate) fn describe(&self, output: &WlOutput) -> Option<OutputInfo> {
+    let info = self.outputs.info(output)?;
+    outputs::describe(&info, self.fractional.is_some())
   }
 }
 

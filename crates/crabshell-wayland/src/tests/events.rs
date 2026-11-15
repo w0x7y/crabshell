@@ -67,7 +67,18 @@ fn with_no_listener_nothing_happens() {
 fn output(name: &str) -> crate::OutputInfo {
   crate::OutputInfo {
     name: name.to_owned(),
+    description: String::new(),
+    make: String::new(),
+    model: String::new(),
     mode: None,
     scale: 1,
+    fractional_scale: 1.0,
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    width_mm: 0,
+    height_mm: 0,
+    transform: crabshell_render::Turn::default(),
   }
 }

@@ -25,7 +25,8 @@ use crabshell_ui::{
 use crabshell_ui::{CaptureFrame, CaptureSource, FloatingWindow, ScreencopyView, Transition};
 use crabshell_ui::{Layer, Lock, SessionLock};
 use crabshell_wayland::{
-  Event, EventLoop, LockId, Platform, Toplevel, WindowId, Windowset, WindowsetProjection,
+  Event, EventLoop, LockId, OutputInfo, Platform, Toplevel, WindowId, Windowset,
+  WindowsetProjection,
 };
 use sway::{
   AppWindow, Image, InputMethod, Sway, VirtualKeyboard, VirtualPointer, keys, run_until, settle,
@@ -297,6 +298,8 @@ struct Shell {
   event_loop: EventLoop,
   built: Rc<RefCell<Vec<(String, WindowId)>>>,
   removed: Rc<RefCell<Vec<String>>>,
+  /// Each output change the listener heard, in order.
+  changed: Rc<RefCell<Vec<OutputInfo>>>,
 }
 
 impl Shell {
@@ -330,7 +333,9 @@ impl Shell {
     let mut event_loop = sway.connect();
     let built = Rc::new(RefCell::new(Vec::new()));
     let removed = Rc::new(RefCell::new(Vec::new()));
+    let changed = Rc::new(RefCell::new(Vec::new()));
     let (on_built, on_removed) = (Rc::clone(&built), Rc::clone(&removed));
+    let on_changed = Rc::clone(&changed);
     event_loop
       .platform()
       .on_event(move |platform: &mut Platform, event| match event {
@@ -338,6 +343,7 @@ impl Shell {
           let id = platform.add_window(bar(&cx, &output.name, knobs));
           on_built.borrow_mut().push((output.name.clone(), id));
         }
+        Event::OutputChanged(output) => on_changed.borrow_mut().push(output.clone()),
         Event::OutputRemoved(output) => {
           on_removed.borrow_mut().push(output.name.clone());
         }
@@ -349,6 +355,7 @@ impl Shell {
       event_loop,
       built,
       removed,
+      changed,
     }
   }
 
@@ -568,6 +575,109 @@ fn unplugging_an_output_drops_its_windows_and_their_nodes() {
   });
   shell.runtime.flush();
   assert_eq!(shell.runtime.node_count(), nodes);
+  assert_eq!(*shell.removed.borrow(), ["HEADLESS-2"]);
+}
+
+/// What the platform knows of `name`, if it is announced.
+fn output_named(platform: &Platform, name: &str) -> Option<OutputInfo> {
+  platform
+    .outputs()
+    .find(|output| output.name == name)
+    .cloned()
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn outputs_tell_their_place_size_scale_and_turn_and_each_change() {
+  let sway = Sway::start();
+  sway.msg(&[
+    "output",
+    "HEADLESS-1",
+    "mode",
+    "1920x1080",
+    "position",
+    "0",
+    "0",
+    "scale",
+    "1",
+  ]);
+  let mut shell = Shell::new(&sway);
+  let first = shell.wait_for_bar("HEADLESS-1");
+  let one = output_named(shell.event_loop.platform(), "HEADLESS-1").expect("announced");
+  assert_eq!(one.description, "Headless output 1", "{one:?}");
+  // What wlroots says for an output with no EDID.
+  assert_eq!(
+    (one.make.as_str(), one.model.as_str()),
+    ("Unknown", "Unknown")
+  );
+  assert_eq!((one.x, one.y, one.width, one.height), (0, 0, 1920, 1080));
+  assert_eq!((one.scale, one.fractional_scale), (1, 1.0));
+  // A virtual output has no physical size.
+  assert_eq!((one.width_mm, one.height_mm), (0, 0));
+  assert_eq!(one.transform, crabshell_render::Turn::default());
+
+  // A new scale is told as a change, and it is the scale the bar draws
+  // at, past the whole one wl_output gives.
+  sway.msg(&["output", "HEADLESS-1", "scale", "1.5"]);
+  run_until(&mut shell.event_loop, "HEADLESS-1 at 1.5", |platform| {
+    let drawn = platform.window_info(first).map(|info| info.scale);
+    let told = output_named(platform, "HEADLESS-1").map(|output| output.fractional_scale);
+    drawn == Some(1.5) && told == Some(1.5)
+  });
+  let one = output_named(shell.event_loop.platform(), "HEADLESS-1").expect("announced");
+  assert_eq!((one.scale, one.width, one.height), (2, 1280, 720));
+  assert_eq!(
+    shell.changed.borrow().last(),
+    Some(&one),
+    "the change was told"
+  );
+
+  // Another, beside it and turned a quarter: its sides swap, and its
+  // scale comes from the mode's height.
+  sway.msg(&["create_output"]);
+  let second = shell.wait_for_bar("HEADLESS-2");
+  sway.msg(&[
+    "output",
+    "HEADLESS-2",
+    "mode",
+    "1280x720",
+    "position",
+    "1280",
+    "100",
+    "scale",
+    "1.5",
+    "transform",
+    "90",
+  ]);
+  run_until(&mut shell.event_loop, "HEADLESS-2 turned", |platform| {
+    let drawn = platform.window_info(second).map(|info| info.scale);
+    // Sway turns 90 clockwise, which wl_output calls 270.
+    let told = output_named(platform, "HEADLESS-2");
+    drawn == Some(1.5) && told.is_some_and(|output| output.transform.quarters == 3)
+  });
+  let two = output_named(shell.event_loop.platform(), "HEADLESS-2").expect("announced");
+  assert_eq!((two.x, two.y, two.width, two.height), (1280, 100, 480, 853));
+  assert_eq!(
+    two.mode.map(|mode| (mode.width, mode.height)),
+    Some((1280, 720))
+  );
+  assert_eq!((two.scale, two.fractional_scale), (2, 1.5));
+  assert!(!two.transform.flipped);
+  // Each change told says something new.
+  let changed = shell.changed.borrow().clone();
+  for (name, told) in [("HEADLESS-1", &one), ("HEADLESS-2", &two)] {
+    let of: Vec<&OutputInfo> = changed
+      .iter()
+      .filter(|output| output.name == name)
+      .collect();
+    assert_eq!(of.last(), Some(&told), "{name}'s last change");
+    assert!(of.windows(2).all(|pair| pair[0] != pair[1]), "{of:#?}");
+  }
+
+  sway.msg(&["output", "HEADLESS-2", "unplug"]);
+  run_until(&mut shell.event_loop, "HEADLESS-2 to go", |platform| {
+    output_named(platform, "HEADLESS-2").is_none()
+  });
   assert_eq!(*shell.removed.borrow(), ["HEADLESS-2"]);
 }
 

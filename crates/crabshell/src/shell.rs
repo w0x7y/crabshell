@@ -209,6 +209,7 @@ impl Shell {
             .collect();
           per_output::removed(&state, &mut Shown(platform), &output.name, &announced);
         }
+        Event::OutputChanged(_) => {}
         Event::WindowClosed(window) => {
           per_output::closed(&state, &mut Shown(platform), *window);
         }

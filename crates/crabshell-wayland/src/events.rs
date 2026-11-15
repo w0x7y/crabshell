@@ -8,10 +8,14 @@ use crate::outputs::OutputInfo;
 use crate::windows::WindowId;
 
 /// Something the platform's listener hears about.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Event {
   /// An output was announced. Windows can be built for it now.
   OutputAdded(OutputInfo),
+  /// An output announced before told something new about itself, such as
+  /// a scale, mode, place or transform; this is what it says now. Its
+  /// windows hear of a new size or scale on their own.
+  OutputChanged(OutputInfo),
   /// An output went away. Its windows were dropped first, with their
   /// owners.
   OutputRemoved(OutputInfo),

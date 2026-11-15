@@ -32,7 +32,6 @@ use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
 use crate::events::Event;
 use crate::keyboard::SeatKeyboard;
-use crate::outputs::describe;
 use crate::platform::{Platform, SeatPointer};
 use crate::pointer::{self, Cursor};
 use crate::scale::Scale;
@@ -180,7 +179,7 @@ impl OutputHandler for Platform {
   }
 
   fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, output: WlOutput) {
-    let Some(info) = self.outputs.info(&output).as_ref().and_then(describe) else {
+    let Some(info) = self.describe(&output) else {
       tracing::warn!("an output without a name can't hold windows; it needs wl_output version 4");
       return;
     };
@@ -192,17 +191,22 @@ impl OutputHandler for Platform {
     self.notify(Event::OutputAdded(info));
   }
 
-  /// A new mode or scale. A mode change reaches the windows as a
-  /// configure, and a scale change as a preferred scale, so this only
-  /// keeps the information current.
+  /// A new mode, scale, place or anything else. A mode change reaches
+  /// the windows as a configure, and a scale change as a preferred scale,
+  /// so this keeps the information current and tells the listener.
   fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, output: WlOutput) {
-    let Some(info) = self.outputs.info(&output).as_ref().and_then(describe) else {
+    let Some(info) = self.describe(&output) else {
       return;
     };
     self.foreign.output_changed(&output);
     self.windowsets.output_changed(&output);
     match self.known.iter_mut().find(|(known, _)| *known == output) {
-      Some((_, known)) => *known = info,
+      Some((_, known)) => {
+        if *known != info {
+          *known = info.clone();
+          self.notify(Event::OutputChanged(info));
+        }
+      }
       // It has a name only now.
       None => {
         self.known.push((output.clone(), info.clone()));

@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use crabshell_render::{PixelFormat, Turn};
 use crabshell_ui::{CaptureRequest, CaptureSource};
-use smithay_client_toolkit::reexports::client::protocol::wl_output::{Transform, WlOutput};
+use smithay_client_toolkit::reexports::client::protocol::wl_output::WlOutput;
 use smithay_client_toolkit::reexports::client::protocol::wl_shm;
 use smithay_client_toolkit::reexports::client::{
   Connection, Dispatch, QueueHandle, WEnum, delegate_noop,
@@ -32,6 +32,7 @@ use wayland_protocols::ext::image_copy_capture::v1::client::{
 };
 
 use crate::ext_toplevels::ExtToplevels;
+use crate::outputs::turn;
 use crate::platform::Platform;
 use crate::windows::WindowId;
 
@@ -433,21 +434,6 @@ fn cover(size: crabshell_ui::Size, scale: f32) -> (u32, u32) {
     (size.width * scale).ceil() as u32,
     (size.height * scale).ceil() as u32,
   )
-}
-
-/// A `wl_output.transform` as render takes it.
-fn turn(transform: Transform) -> Turn {
-  let (quarters, flipped) = match transform {
-    Transform::_90 => (1, false),
-    Transform::_180 => (2, false),
-    Transform::_270 => (3, false),
-    Transform::Flipped => (0, true),
-    Transform::Flipped90 => (1, true),
-    Transform::Flipped180 => (2, true),
-    Transform::Flipped270 => (3, true),
-    _ => (0, false),
-  };
-  Turn { quarters, flipped }
 }
 
 delegate_noop!(Platform: ExtImageCopyCaptureManagerV1);
