@@ -108,7 +108,9 @@ pub mod prelude {
     Edge, Fit, FloatingWindow, Font, Gradient, GradientShape, Icon, IconPixels, IconSource, Image,
     Justify, Key, KeyEvent, KeyboardFocus, Layer, ListView, Margins, Menu, MenuEntry, MenuToggle,
     Modifiers, Output, Padding, PanelWindow, PopupWindow, Region, Row, ScreencopyView, ScrollView,
-    SessionLock, Shadow, Size, Spacer, Stack, Style, Text, TextInput, Transition, Widget,
+    SessionLock, Shadow, Size, Spacer, Stack, Style, Text, TextInput, Timer, Transition, Widget,
   };
   pub use crabshell_wayland::{OutputInfo, Toplevel, Windowset, WindowsetProjection};
+  /// For [`cx.after`](Cx::after) and [`cx.interval`](Cx::interval).
+  pub use std::time::Duration;
 }

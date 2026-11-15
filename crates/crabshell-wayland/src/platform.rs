@@ -3,7 +3,7 @@
 use std::time::{Duration, Instant};
 
 use calloop::timer::{TimeoutAction, Timer};
-use calloop::{LoopHandle, LoopSignal};
+use calloop::{LoopHandle, LoopSignal, RegistrationToken};
 use crabshell_reactive::Runtime;
 use crabshell_render::{BufferAge, Canvas, DamageHistory, PixelFormat, PixelRect, Renderer};
 use crabshell_ui::{CursorShape, TextSystem, Window};
@@ -358,6 +358,9 @@ pub struct Platform {
   pub(crate) button_held: bool,
   /// Whether the animation timer is in the loop.
   ticking: bool,
+  /// The one calloop timer for the config's timers and the deadline it is
+  /// armed at, in the loop only while one of them runs.
+  timers: Option<(RegistrationToken, Instant)>,
   pub(crate) renderer: Renderer,
   /// The icon theme set, for snapshots' renderers.
   icon_theme: Option<String>,
@@ -465,6 +468,7 @@ impl Platform {
       last_button: None,
       button_held: false,
       ticking: false,
+      timers: None,
       renderer: Renderer::new(),
       icon_theme: None,
       text: TextSystem::new(),
@@ -502,6 +506,46 @@ impl Platform {
     match ticked {
       Ok(_) => self.ticking = true,
       Err(error) => tracing::warn!(%error, "couldn't start the animation timer"),
+    }
+  }
+
+  /// Arms the one calloop timer at the earliest running timer's deadline,
+  /// moves it when that changes, and takes it out of the loop when no
+  /// timer runs. Called after the flush, which may start or stop timers.
+  fn arm_timers(&mut self) {
+    let next = crabshell_ui::next_timer();
+    if self.timers.map(|(_, deadline)| deadline) == next {
+      return;
+    }
+    if let Some((token, _)) = self.timers.take() {
+      self.handle.remove(token);
+    }
+    let Some(deadline) = next else {
+      return;
+    };
+    let armed = self.handle.insert_source(
+      Timer::from_deadline(deadline),
+      |_, _, platform: &mut Platform| {
+        crabshell_ui::fire_timers(Instant::now());
+        // Kept while one runs, so an interval stays one source; the flush
+        // after this may still move it.
+        match crabshell_ui::next_timer() {
+          Some(next) => {
+            if let Some((_, deadline)) = &mut platform.timers {
+              *deadline = next;
+            }
+            TimeoutAction::ToInstant(next)
+          }
+          None => {
+            platform.timers = None;
+            TimeoutAction::Drop
+          }
+        }
+      },
+    );
+    match armed {
+      Ok(token) => self.timers = Some((token, deadline)),
+      Err(error) => tracing::warn!(%error, "couldn't start the timer"),
     }
   }
 
@@ -767,6 +811,7 @@ impl Platform {
     self.paced_captures(&drawn);
     self.sync_text_inputs();
     self.tick_animations();
+    self.arm_timers();
     self.commit_windowsets();
     if let Err(error) = self.connection.flush() {
       tracing::warn!(%error, "couldn't flush the Wayland connection");

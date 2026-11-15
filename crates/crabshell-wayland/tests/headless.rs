@@ -3841,3 +3841,108 @@ fn a_popup_from_a_lock_surface_is_logged_once_and_never_shown() {
     logs.text()
   );
 }
+
+/// Runs one dispatch of `time` and checks nothing woke it: it waited the
+/// whole time, in one iteration.
+fn sleeps_through(event_loop: &mut EventLoop, time: Duration) {
+  let iterations = event_loop.platform().stats().iterations;
+  let started = Instant::now();
+  event_loop
+    .dispatch(Some(time))
+    .expect("the connection works");
+  let waited = started.elapsed();
+  assert!(
+    waited >= time - Duration::from_millis(50),
+    "woken after {waited:?}"
+  );
+  assert_eq!(event_loop.platform().stats().iterations, iterations + 1);
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn timers_wake_the_loop_only_while_one_runs() {
+  let sway = Sway::start();
+  let mut event_loop = sway.connect();
+  let cx = Cx::new(Runtime::current().new_owner());
+  settle(&mut event_loop);
+  let fires = Rc::new(std::cell::Cell::new(0_u32));
+  let count = |fires: &Rc<std::cell::Cell<u32>>| {
+    let fires = Rc::clone(fires);
+    move || fires.set(fires.get() + 1)
+  };
+  // Timers made outside the loop are armed at its next turn, as `run`'s
+  // first one does for the root closure's.
+  let arm = |event_loop: &mut EventLoop| {
+    event_loop
+      .dispatch(Some(Duration::ZERO))
+      .expect("the connection works");
+  };
+
+  // A one-shot wakes the loop once, at its time, then nothing does.
+  let started = Instant::now();
+  cx.after(Duration::from_millis(300), count(&fires));
+  arm(&mut event_loop);
+  event_loop
+    .dispatch(Some(Duration::from_secs(3)))
+    .expect("the connection works");
+  let woke = started.elapsed();
+  assert_eq!(fires.get(), 1);
+  assert!(
+    woke >= Duration::from_millis(290) && woke < Duration::from_secs(1),
+    "fired after {woke:?}"
+  );
+  sleeps_through(&mut event_loop, Duration::from_secs(2));
+
+  // An interval of 100 ms wakes it about ten times a second, once a fire.
+  fires.set(0);
+  let ticking = cx.interval(Duration::from_millis(100), count(&fires));
+  arm(&mut event_loop);
+  let iterations = event_loop.platform().stats().iterations;
+  let started = Instant::now();
+  while started.elapsed() < Duration::from_secs(1) {
+    event_loop
+      .dispatch(Some(Duration::from_secs(5)))
+      .expect("the connection works");
+  }
+  let woke = event_loop.platform().stats().iterations - iterations;
+  assert!(
+    (8..=11).contains(&fires.get()),
+    "{} fires in a second",
+    fires.get()
+  );
+  assert!(
+    woke <= u64::from(fires.get()) + 2,
+    "{woke} wakeups for {} fires",
+    fires.get()
+  );
+
+  // Stopped, it wakes nothing.
+  ticking.stop();
+  arm(&mut event_loop);
+  sleeps_through(&mut event_loop, Duration::from_secs(2));
+
+  // Nor does one whose context is gone.
+  let child = cx.child();
+  child.interval(Duration::from_millis(50), count(&fires));
+  child.owner().dispose();
+  let before = fires.get();
+  arm(&mut event_loop);
+  sleeps_through(&mut event_loop, Duration::from_secs(2));
+  assert_eq!(fires.get(), before);
+
+  // When the earliest stops, the loop sleeps until the next one instead.
+  fires.set(0);
+  let early = cx.interval(Duration::from_millis(100), count(&fires));
+  let started = Instant::now();
+  cx.after(Duration::from_millis(1500), count(&fires));
+  arm(&mut event_loop);
+  early.stop();
+  arm(&mut event_loop);
+  event_loop
+    .dispatch(Some(Duration::from_secs(3)))
+    .expect("the connection works");
+  let woke = started.elapsed();
+  assert_eq!(fires.get(), 1, "only the later one fired");
+  assert!(woke >= Duration::from_millis(1450), "woken after {woke:?}");
+  sleeps_through(&mut event_loop, Duration::from_secs(1));
+}

@@ -74,6 +74,7 @@ use std::ops::Range;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::rc::Rc;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -1046,6 +1047,46 @@ fn a_panic_after_a_nested_per_output_doesnt_end_the_shell() {
     "the panic is logged with the path of the per_output call: {logs}"
   );
   assert_eq!(shell.platform().windows().count(), 0);
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_panicking_timer_is_logged_with_its_place_and_the_shell_runs_on() {
+  let sway = Sway::start();
+  let logs = Logs::default();
+  let _guard = logs.install();
+  let fine = Rc::new(std::cell::Cell::new(0_u32));
+  let counted = Rc::clone(&fine);
+  let mut shell = Shell::new(sway.connect(), move |cx| {
+    let counted = Rc::clone(&counted);
+    cx.per_output(move |cx: &Cx, output: &Output| {
+      cx.interval(Duration::from_millis(50), || panic!("the timer fails"));
+      let counted = Rc::clone(&counted);
+      cx.interval(Duration::from_millis(50), move || {
+        counted.set(counted.get() + 1)
+      });
+      counter::bar(cx, output)
+    })
+  })
+  .expect("the root closure runs");
+  let result = panic::catch_unwind(AssertUnwindSafe(|| {
+    run_until(&mut shell, "the other timer's fifth fire", |_| {
+      fine.get() >= 5
+    });
+  }));
+  assert!(result.is_ok(), "a panic escaped Shell::dispatch");
+  let logs = logs.text();
+  assert!(
+    logs.contains("timer cx.interval at crates/crabshell/tests/headless.rs:")
+      && logs.contains("in per_output[HEADLESS-1] (called at ")
+      && logs.contains("panicked and stops: the timer fails"),
+    "the panic is logged with the call site and the context: {logs}"
+  );
+  assert_eq!(logs.matches("the timer fails").count(), 1, "it stopped");
+  assert!(
+    shown_on(shell.platform(), "HEADLESS-1").is_some(),
+    "the bar is still up"
+  );
 }
 
 #[test]
