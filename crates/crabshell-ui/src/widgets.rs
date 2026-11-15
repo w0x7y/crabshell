@@ -13,7 +13,7 @@ use crabshell_reactive::{Memo, Signal};
 
 use crate::cx::Cx;
 use crate::geometry::Rect;
-use crate::input::{Handler, Handlers, Wheel};
+use crate::input::{CursorShape, Handler, Handlers, Wheel};
 use crate::keyboard::KeyEvent;
 use crate::keyed::{self, KeyedList, KeyedMount};
 use crate::prop::{IntoProp, Prop};
@@ -166,6 +166,7 @@ pub(crate) struct ButtonProps {
   pub(crate) pressed_style: Option<Prop<Style>>,
   pub(crate) focus_style: Option<Prop<Style>>,
   pub(crate) hovered: Option<Signal<bool>>,
+  pub(crate) cursor: Option<Prop<CursorShape>>,
   pub(crate) handlers: Handlers,
 }
 
@@ -792,6 +793,7 @@ impl Button {
         pressed_style: None,
         focus_style: None,
         hovered: None,
+        cursor: None,
         handlers: Handlers::default(),
       },
       common: Common::default(),
@@ -897,6 +899,12 @@ impl Button {
   /// is down and right. With `on_scroll` too, both run.
   pub fn on_wheel(mut self, handler: impl Fn(&Cx, Wheel) + 'static) -> Button {
     self.button.handlers.wheel = Some(Rc::new(Handler::new(handler)));
+    self
+  }
+
+  /// Sets the cursor shown over the button, instead of the pointing hand.
+  pub fn cursor(mut self, cursor: impl IntoProp<CursorShape>) -> Button {
+    self.button.cursor = Some(cursor.into_prop());
     self
   }
 

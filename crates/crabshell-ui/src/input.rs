@@ -117,15 +117,85 @@ pub struct Wheel {
   pub y: WheelAxis,
 }
 
-/// The cursor the platform should show.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The cursor the platform should show: every shape of
+/// `wp_cursor_shape_device_v1`, named as in CSS.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum CursorShape {
   /// The default arrow.
+  #[default]
   Default,
+  /// A context menu is available.
+  ContextMenu,
+  /// Help is available.
+  Help,
   /// A pointing hand, over a button.
   Pointer,
+  /// Busy, but still taking input.
+  Progress,
+  /// Busy; wait.
+  Wait,
+  /// A cell or cells can be picked.
+  Cell,
+  /// A crosshair.
+  Crosshair,
   /// An I-beam, over a text field.
   Text,
+  /// An I-beam for vertical text.
+  VerticalText,
+  /// Dropping makes an alias.
+  Alias,
+  /// Dropping copies.
+  Copy,
+  /// Something moves.
+  Move,
+  /// Can't be dropped here.
+  NoDrop,
+  /// Not allowed.
+  NotAllowed,
+  /// Can be grabbed.
+  Grab,
+  /// Being grabbed.
+  Grabbing,
+  /// Resizing the east edge.
+  EResize,
+  /// Resizing the north edge.
+  NResize,
+  /// Resizing the north-east corner.
+  NeResize,
+  /// Resizing the north-west corner.
+  NwResize,
+  /// Resizing the south edge.
+  SResize,
+  /// Resizing the south-east corner.
+  SeResize,
+  /// Resizing the south-west corner.
+  SwResize,
+  /// Resizing the west edge.
+  WResize,
+  /// Resizing east and west.
+  EwResize,
+  /// Resizing north and south.
+  NsResize,
+  /// Resizing north-east and south-west.
+  NeswResize,
+  /// Resizing north-west and south-east.
+  NwseResize,
+  /// A column can be resized sideways.
+  ColResize,
+  /// A row can be resized up and down.
+  RowResize,
+  /// Scrolls in any direction.
+  AllScroll,
+  /// Zooms in.
+  ZoomIn,
+  /// Zooms out.
+  ZoomOut,
+  /// Dropping asks which action to take. Needs version 2 of the
+  /// protocol; on version 1 a context menu cursor shows.
+  DndAsk,
+  /// Moves or resizes in any direction. Needs version 2 of the protocol;
+  /// on version 1 the move cursor shows.
+  AllResize,
 }
 
 /// A pointer button held on a button, until it comes up.
@@ -319,8 +389,8 @@ impl Tree {
       .map(|node| &node.kind)
     {
       Some(NodeKind::Input(_)) => CursorShape::Text,
-      Some(_) => CursorShape::Pointer,
-      None => CursorShape::Default,
+      Some(NodeKind::Button(button)) => button.cursor,
+      _ => CursorShape::Default,
     }
   }
 

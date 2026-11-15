@@ -21,7 +21,7 @@ use crate::animation::{self, Transition};
 use crate::cx::{Anchor, Cx};
 use crate::floating::FloatingState;
 use crate::geometry::{Affine, Rect, Size};
-use crate::input::{Handlers, Pointer};
+use crate::input::{CursorShape, Handlers, Pointer};
 use crate::keyboard::Keyboard;
 use crate::keyed::KeyedSlot;
 use crate::prop::{IntoProp, Prop, PropKind};
@@ -221,6 +221,8 @@ pub(crate) struct ButtonNode {
   pub(crate) handlers: Signal<Handlers>,
   /// Written while the pointer is over the button or inside it.
   pub(crate) hover_signal: Option<Signal<bool>>,
+  /// The cursor over it.
+  pub(crate) cursor: CursorShape,
   pub(crate) hovered: bool,
   pub(crate) pressed: bool,
   /// Focused while its window has the keyboard.
@@ -701,6 +703,7 @@ impl Tree {
         focus_style: Style::new(),
         handlers: cx.signal(std::mem::take(&mut props.handlers)),
         hover_signal: props.hovered,
+        cursor: CursorShape::Pointer,
         hovered: false,
         pressed: false,
         focused: false,
@@ -868,6 +871,11 @@ impl Tree {
         );
         self.bind_opt(id, props.focus_style, "focus_style", |tree, id, value| {
           tree.update_button_style(id, |button| button.focus_style = value);
+        });
+        self.bind_opt(id, props.cursor, "cursor", |tree, id, value| {
+          if let Some(NodeKind::Button(button)) = tree.node_mut(id).map(|node| &mut node.kind) {
+            button.cursor = value;
+          }
         });
       }
       ElementKind::Stack | ElementKind::Spacer => {}

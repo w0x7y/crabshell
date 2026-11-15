@@ -118,8 +118,8 @@ pub use window::{
 /// What a bar's code needs, in one `use`.
 pub mod prelude {
   pub use crate::{
-    Align, Button, Color, Column, Cx, Edge, Font, Grid, Icon, IconSource, Justify, Layer, Menu,
-    Output, PanelWindow, PopupWindow, Rect, Row, ScrollSource, Size, Spacer, Stack, Style, Text,
-    TextSystem, Timer, Wheel, WheelAxis, Widget, Window,
+    Align, Button, Color, Column, CursorShape, Cx, Edge, Font, Grid, Icon, IconSource, Justify,
+    Layer, Menu, Output, PanelWindow, PopupWindow, Rect, Row, ScrollSource, Size, Spacer, Stack,
+    Style, Text, TextSystem, Timer, Wheel, WheelAxis, Widget, Window,
   };
 }

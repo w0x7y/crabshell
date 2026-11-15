@@ -1,11 +1,13 @@
-//! Pointer input added in Phase 15: both scroll axes and side buttons.
+//! Pointer input added in Phase 15: both scroll axes, side buttons and
+//! cursors.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use super::{Counter, Harness, lift, wheel};
+use super::{Counter, Harness, lift, rect_at, wheel};
 use crate::{
-  Align, Button, Icon, Point, PointerButton, Row, ScrollSource, Stack, Wheel, WheelAxis, Window,
+  Align, Button, CursorShape, Icon, Point, PointerButton, Row, ScrollSource, Stack, TextInput,
+  Wheel, WheelAxis, Window,
 };
 
 type Log = Rc<RefCell<Vec<String>>>;
@@ -95,4 +97,32 @@ fn the_side_buttons_run_back_and_forward() {
   window.pointer_motion(Point::new(100.0, 5.0));
   window.pointer_button(PointerButton::Back, false);
   assert_eq!(*log.borrow(), ["back", "forward"]);
+}
+
+#[test]
+fn a_button_sets_its_cursor_and_a_field_keeps_the_i_beam() {
+  let mut h = Harness::new();
+  let shape = h.cx.signal(CursorShape::Grab);
+  let row = Row::new()
+    .align(Align::Start)
+    .child(Button::new(square()).cursor(move || shape.get()))
+    .child(Button::new(square()))
+    .child(TextInput::new(h.cx.signal(String::new())));
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+  assert_eq!(
+    window.pointer_motion(Point::new(5.0, 5.0)),
+    CursorShape::Grab
+  );
+  shape.set(CursorShape::NsResize);
+  h.frame(&window);
+  assert_eq!(window.cursor(), CursorShape::NsResize);
+  assert_eq!(
+    window.pointer_motion(Point::new(25.0, 5.0)),
+    CursorShape::Pointer
+  );
+  let field = rect_at(&window, &[0, 2]);
+  assert_eq!(
+    window.pointer_motion(Point::new(field.x + 5.0, 5.0)),
+    CursorShape::Text
+  );
 }

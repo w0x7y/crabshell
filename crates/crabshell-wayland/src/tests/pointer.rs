@@ -10,12 +10,13 @@ use crabshell_ui::{
   ScrollSource, Size, TextSystem, Wheel, WheelAxis, Window,
 };
 use smithay_client_toolkit::reexports::client::protocol::wl_pointer::AxisSource;
+use smithay_client_toolkit::reexports::protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape;
 use smithay_client_toolkit::seat::pointer::{
   AxisScroll, BTN_BACK, BTN_EXTRA, BTN_FORWARD, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, BTN_SIDE,
   BTN_TASK, PointerEventKind,
 };
 
-use crate::pointer::{Input, apply, inputs};
+use crate::pointer::{Input, apply, inputs, shape};
 use crate::windows::WindowId;
 
 fn press(button: u32) -> PointerEventKind {
@@ -186,6 +187,17 @@ fn wheels_touchpads_and_the_end_of_a_gesture() {
     ..AxisScroll::default()
   };
   assert_eq!(inputs(&vertical(not_a_number), at), []);
+}
+
+#[test]
+fn every_cursor_shape_has_one_and_version_1_falls_back() {
+  assert_eq!(shape(CursorShape::Default, 1), Shape::Default);
+  assert_eq!(shape(CursorShape::Grabbing, 1), Shape::Grabbing);
+  assert_eq!(shape(CursorShape::ZoomOut, 1), Shape::ZoomOut);
+  assert_eq!(shape(CursorShape::DndAsk, 2), Shape::DndAsk);
+  assert_eq!(shape(CursorShape::AllResize, 2), Shape::AllResize);
+  assert_eq!(shape(CursorShape::DndAsk, 1), Shape::ContextMenu);
+  assert_eq!(shape(CursorShape::AllResize, 1), Shape::Move);
 }
 
 /// A 200 by 30 window with one 20-pixel button at the left that logs its

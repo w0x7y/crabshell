@@ -23,9 +23,7 @@ use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::LayerShell;
 use smithay_client_toolkit::shm::Shm;
 use smithay_client_toolkit::shm::slot::SlotPool;
-use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::{
-  Shape, WpCursorShapeDeviceV1,
-};
+use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::WpCursorShapeDeviceV1;
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1;
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1::WpFractionalScaleV1;
 use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
@@ -287,14 +285,7 @@ impl SeatPointer {
     if let Some((serial, shape)) = self.cursor.update(wanted)
       && let Some(shapes) = &self.shapes
     {
-      shapes.set_shape(
-        serial,
-        match shape {
-          CursorShape::Default => Shape::Default,
-          CursorShape::Pointer => Shape::Pointer,
-          CursorShape::Text => Shape::Text,
-        },
-      );
+      shapes.set_shape(serial, crate::pointer::shape(shape, shapes.version()));
     }
   }
 }
@@ -800,14 +791,15 @@ impl Platform {
       if entry.window.needs_layout() {
         entry.window.layout(text);
         surface.fit(&entry.window);
-        // A layout can move a button out from under a still
-        // pointer, or under it.
-        for pointer in pointers
-          .iter_mut()
-          .filter(|pointer| pointer.cursor.focus() == Some(entry.id))
-        {
-          pointer.show(entry.window.cursor());
-        }
+      }
+      // A layout can move a button out from under a still pointer, or
+      // under it, and a binding can change a button's cursor or turn it
+      // off. Only a change is sent.
+      for pointer in pointers
+        .iter_mut()
+        .filter(|pointer| pointer.cursor.focus() == Some(entry.id))
+      {
+        pointer.show(entry.window.cursor());
       }
       // A new size, from a configure or a popup's layout, cuts the masks
       // again, as a new scale does the visible one; the frame drawn at

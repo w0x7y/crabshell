@@ -4,6 +4,7 @@
 
 use crabshell_ui::{CursorShape, Point, PointerButton, ScrollSource, Wheel, WheelAxis, Window};
 use smithay_client_toolkit::reexports::client::protocol::wl_pointer::AxisSource;
+use smithay_client_toolkit::reexports::protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape;
 use smithay_client_toolkit::seat::pointer::{
   AxisScroll, BTN_BACK, BTN_EXTRA, BTN_FORWARD, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, BTN_SIDE,
   PointerEventKind,
@@ -114,6 +115,51 @@ pub(crate) fn apply(window: &Window, input: Input) -> CursorShape {
     Input::Scroll(wheel) => window.pointer_scroll(wheel),
   }
   window.cursor()
+}
+
+/// The shape to send for `cursor` to a shape device of `version`. The
+/// two shapes version 2 added fall back to the nearest of version 1.
+pub(crate) fn shape(cursor: CursorShape, version: u32) -> Shape {
+  match cursor {
+    CursorShape::Default => Shape::Default,
+    CursorShape::ContextMenu => Shape::ContextMenu,
+    CursorShape::Help => Shape::Help,
+    CursorShape::Pointer => Shape::Pointer,
+    CursorShape::Progress => Shape::Progress,
+    CursorShape::Wait => Shape::Wait,
+    CursorShape::Cell => Shape::Cell,
+    CursorShape::Crosshair => Shape::Crosshair,
+    CursorShape::Text => Shape::Text,
+    CursorShape::VerticalText => Shape::VerticalText,
+    CursorShape::Alias => Shape::Alias,
+    CursorShape::Copy => Shape::Copy,
+    CursorShape::Move => Shape::Move,
+    CursorShape::NoDrop => Shape::NoDrop,
+    CursorShape::NotAllowed => Shape::NotAllowed,
+    CursorShape::Grab => Shape::Grab,
+    CursorShape::Grabbing => Shape::Grabbing,
+    CursorShape::EResize => Shape::EResize,
+    CursorShape::NResize => Shape::NResize,
+    CursorShape::NeResize => Shape::NeResize,
+    CursorShape::NwResize => Shape::NwResize,
+    CursorShape::SResize => Shape::SResize,
+    CursorShape::SeResize => Shape::SeResize,
+    CursorShape::SwResize => Shape::SwResize,
+    CursorShape::WResize => Shape::WResize,
+    CursorShape::EwResize => Shape::EwResize,
+    CursorShape::NsResize => Shape::NsResize,
+    CursorShape::NeswResize => Shape::NeswResize,
+    CursorShape::NwseResize => Shape::NwseResize,
+    CursorShape::ColResize => Shape::ColResize,
+    CursorShape::RowResize => Shape::RowResize,
+    CursorShape::AllScroll => Shape::AllScroll,
+    CursorShape::ZoomIn => Shape::ZoomIn,
+    CursorShape::ZoomOut => Shape::ZoomOut,
+    CursorShape::DndAsk if version >= 2 => Shape::DndAsk,
+    CursorShape::DndAsk => Shape::ContextMenu,
+    CursorShape::AllResize if version >= 2 => Shape::AllResize,
+    CursorShape::AllResize => Shape::Move,
+  }
 }
 
 /// A pointer's cursor: the window it is over and the shape last set there,
