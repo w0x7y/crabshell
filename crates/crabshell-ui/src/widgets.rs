@@ -13,7 +13,7 @@ use crabshell_reactive::{Memo, Signal};
 
 use crate::cx::Cx;
 use crate::geometry::Rect;
-use crate::input::{Handler, Handlers};
+use crate::input::{Handler, Handlers, Wheel};
 use crate::keyboard::KeyEvent;
 use crate::keyed::{self, KeyedList, KeyedMount};
 use crate::prop::{IntoProp, Prop};
@@ -868,12 +868,35 @@ impl Button {
     self
   }
 
+  /// Runs `handler` when the mouse's back side button is pressed and
+  /// released over this button.
+  pub fn on_back(mut self, handler: impl Fn(&Cx) + 'static) -> Button {
+    self.button.handlers.back = Some(Rc::new(Handler::new(handler)));
+    self
+  }
+
+  /// Runs `handler` when the mouse's forward side button is pressed and
+  /// released over this button.
+  pub fn on_forward(mut self, handler: impl Fn(&Cx) + 'static) -> Button {
+    self.button.handlers.forward = Some(Rc::new(Handler::new(handler)));
+    self
+  }
+
   /// Runs `handler` with whole scroll steps while the pointer is over this
   /// button: positive for up, negative for down. A mouse wheel gives one
   /// step per notch; touchpad scrolling gives one step per 15 logical
-  /// pixels.
+  /// pixels. Sideways scrolling gives none.
   pub fn on_scroll(mut self, handler: impl Fn(&Cx, i32) + 'static) -> Button {
     self.button.handlers.scroll = Some(Rc::new(Handler::new(handler)));
+    self
+  }
+
+  /// Runs `handler` with every scroll event while the pointer is over
+  /// this button, on both axes: a wheel's notches, a touchpad's pixels,
+  /// where it came from, and the `stop` when the fingers lift. Positive
+  /// is down and right. With `on_scroll` too, both run.
+  pub fn on_wheel(mut self, handler: impl Fn(&Cx, Wheel) + 'static) -> Button {
+    self.button.handlers.wheel = Some(Rc::new(Handler::new(handler)));
     self
   }
 

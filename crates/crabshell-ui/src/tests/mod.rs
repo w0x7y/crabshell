@@ -19,6 +19,7 @@ mod layout;
 mod lock;
 mod menu;
 mod placement;
+mod pointer;
 mod popup;
 mod region;
 mod screencopy;
@@ -39,7 +40,9 @@ use std::sync::{Arc, Mutex};
 
 use crabshell_reactive::Runtime;
 
-use crate::{Cx, NodeView, Output, PanelWindow, Rect, Size, TextSystem, Window};
+use crate::{
+  Cx, NodeView, Output, PanelWindow, Rect, ScrollSource, Size, TextSystem, Wheel, WheelAxis, Window,
+};
 
 /// A runtime, a root context and a text system, with helpers to build and
 /// lay out windows the way the platform does.
@@ -79,6 +82,47 @@ impl Harness {
     if window.needs_layout() {
       window.layout(&mut self.text);
     }
+  }
+}
+
+/// A mouse wheel turned by `value120` 120ths of a notch, down when
+/// positive.
+fn wheel(value120: i32) -> Wheel {
+  Wheel {
+    source: ScrollSource::Wheel,
+    x: WheelAxis::default(),
+    y: WheelAxis {
+      pixels: value120 as f32 / 8.0,
+      notches: value120 as f32 / 120.0,
+      stop: false,
+    },
+  }
+}
+
+/// Fingers on a touchpad scrolling `pixels` down.
+fn pixels(pixels: f32) -> Wheel {
+  Wheel {
+    source: ScrollSource::Finger,
+    x: WheelAxis::default(),
+    y: WheelAxis {
+      pixels,
+      ..WheelAxis::default()
+    },
+  }
+}
+
+/// The fingers lifting off a touchpad.
+fn lift() -> Wheel {
+  Wheel {
+    source: ScrollSource::Finger,
+    x: WheelAxis {
+      stop: true,
+      ..WheelAxis::default()
+    },
+    y: WheelAxis {
+      stop: true,
+      ..WheelAxis::default()
+    },
   }
 }
 

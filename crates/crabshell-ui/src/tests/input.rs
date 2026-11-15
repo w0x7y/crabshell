@@ -6,10 +6,9 @@ use std::rc::Rc;
 
 use crabshell_reactive::Signal;
 
-use super::{Counter, Harness, capture_logs, rect_at};
+use super::{Counter, Harness, capture_logs, lift, pixels, rect_at, wheel};
 use crate::{
-  Align, Button, Color, CursorShape, Icon, Point, PointerButton, Rect, Row, ScrollDelta, Style,
-  Text, Window,
+  Align, Button, Color, CursorShape, Icon, Point, PointerButton, Rect, Row, Style, Text, Window,
 };
 
 const NORMAL: Style = Style::new().background(Color::rgb(1, 1, 1));
@@ -251,30 +250,30 @@ fn scrolling_sums_into_whole_steps_up_positive() {
   );
   window.pointer_motion(center(&window, &[0, 0]));
 
-  window.pointer_scroll(ScrollDelta::Wheel(120));
-  window.pointer_scroll(ScrollDelta::Wheel(-240));
+  window.pointer_scroll(wheel(120));
+  window.pointer_scroll(wheel(-240));
   // A high-resolution wheel: two half notches make one step.
-  window.pointer_scroll(ScrollDelta::Wheel(60));
+  window.pointer_scroll(wheel(60));
   assert_eq!(*steps.borrow(), [-1, 2]);
-  window.pointer_scroll(ScrollDelta::Wheel(60));
+  window.pointer_scroll(wheel(60));
   assert_eq!(*steps.borrow(), [-1, 2, -1]);
 
   // Touchpad: one step per 15 pixels, the rest kept for later.
   steps.borrow_mut().clear();
-  window.pointer_scroll(ScrollDelta::Pixels(10.0));
-  window.pointer_scroll(ScrollDelta::Pixels(10.0));
+  window.pointer_scroll(pixels(10.0));
+  window.pointer_scroll(pixels(10.0));
   assert_eq!(*steps.borrow(), [-1]);
-  window.pointer_scroll(ScrollDelta::Pixels(-40.0));
+  window.pointer_scroll(pixels(-40.0));
   assert_eq!(*steps.borrow(), [-1, 2]);
 
   // Partial scrolling is forgotten when the pointer moves to another button.
   steps.borrow_mut().clear();
-  window.pointer_scroll(ScrollDelta::Wheel(60));
+  window.pointer_scroll(wheel(60));
   window.pointer_motion(center(&window, &[0, 1]));
   window.pointer_motion(center(&window, &[0, 0]));
-  window.pointer_scroll(ScrollDelta::Wheel(60));
+  window.pointer_scroll(wheel(60));
   assert!(steps.borrow().is_empty());
-  window.pointer_scroll(ScrollDelta::Pixels(f32::NAN));
+  window.pointer_scroll(pixels(f32::NAN));
   assert!(steps.borrow().is_empty());
 }
 
@@ -289,17 +288,17 @@ fn a_touchpad_scroll_that_ends_forgets_its_partial_step() {
     Button::new(square()),
   );
   window.pointer_motion(center(&window, &[0, 0]));
-  window.pointer_scroll(ScrollDelta::Pixels(10.0));
+  window.pointer_scroll(pixels(10.0));
   // The fingers lift: the 10 pixels don't carry into the next gesture.
-  window.pointer_scroll_end();
-  window.pointer_scroll(ScrollDelta::Pixels(10.0));
+  window.pointer_scroll(lift());
+  window.pointer_scroll(pixels(10.0));
   assert!(steps.borrow().is_empty());
-  window.pointer_scroll(ScrollDelta::Pixels(5.0));
+  window.pointer_scroll(pixels(5.0));
   assert_eq!(*steps.borrow(), [-1]);
   // A wheel's partial notch isn't part of a gesture and stays.
-  window.pointer_scroll(ScrollDelta::Wheel(60));
-  window.pointer_scroll_end();
-  window.pointer_scroll(ScrollDelta::Wheel(60));
+  window.pointer_scroll(wheel(60));
+  window.pointer_scroll(lift());
+  window.pointer_scroll(wheel(60));
   assert_eq!(*steps.borrow(), [-1, -1]);
 }
 

@@ -91,7 +91,7 @@ pub use animation::{
 pub use cx::Cx;
 pub use floating::{FloatingConfig, FloatingWindow, WindowRequest};
 pub use geometry::{Affine, Point, Rect, Size};
-pub use input::{CursorShape, PointerButton, ScrollDelta};
+pub use input::{CursorShape, PointerButton, ScrollSource, Wheel, WheelAxis};
 pub use keyboard::{Clipboard, Key, KeyEvent, Modifiers};
 pub use lock::{Lock, SessionLock};
 pub use menu::{Menu, MenuEntry, MenuToggle};
@@ -119,7 +119,7 @@ pub use window::{
 pub mod prelude {
   pub use crate::{
     Align, Button, Color, Column, Cx, Edge, Font, Grid, Icon, IconSource, Justify, Layer, Menu,
-    Output, PanelWindow, PopupWindow, Rect, Row, Size, Spacer, Stack, Style, Text, TextSystem,
-    Timer, Widget, Window,
+    Output, PanelWindow, PopupWindow, Rect, Row, ScrollSource, Size, Spacer, Stack, Style, Text,
+    TextSystem, Timer, Wheel, WheelAxis, Widget, Window,
   };
 }

@@ -10,7 +10,7 @@ use crabshell_reactive::Runtime;
 use crabshell_ui::Color;
 use crabshell_ui::{
   Content, Cx, IconPixels, IconSource, NodeView, Output, PanelWindow, Point, PointerButton, Rect,
-  ScrollDelta, Size, Style, TextSystem, Window,
+  ScrollSource, Size, Style, TextSystem, Wheel, WheelAxis, Window,
 };
 use zbus::export::futures_core::Stream;
 use zbus::message::Type as Kind;
@@ -1570,7 +1570,15 @@ fn the_tray_shows_each_item_and_passes_its_clicks_on() {
   let at = buttons[0].0;
   press(&window, at, PointerButton::Left);
   press(&window, at, PointerButton::Middle);
-  window.pointer_scroll(ScrollDelta::Wheel(-120));
+  window.pointer_scroll(Wheel {
+    source: ScrollSource::Wheel,
+    x: WheelAxis::default(),
+    y: WheelAxis {
+      pixels: -15.0,
+      notches: -1.0,
+      stop: false,
+    },
+  });
   let calls = || app.calls()[1..].to_vec();
   wait_for(&mut shell, "three calls", || calls().len() == 3);
   assert_eq!(

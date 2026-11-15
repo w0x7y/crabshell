@@ -1,5 +1,5 @@
-//! Pointer input: hit testing, hover and pressed state, and calling button
-//! handlers.
+//! Pointer input: hit testing, hover and pressed state, scrolling and
+//! calling button handlers.
 //!
 //! The platform turns `wl_pointer` events into calls on [`Window`]. Handlers
 //! run after the window's tree is released, inside `catch_unwind`, so a
@@ -40,8 +40,9 @@ impl<F> Handler<F> {
   }
 }
 
-type ClickHandler = Rc<Handler<dyn Fn(&Cx)>>;
+pub(crate) type ClickHandler = Rc<Handler<dyn Fn(&Cx)>>;
 type ScrollHandler = Rc<Handler<dyn Fn(&Cx, i32)>>;
+pub(crate) type WheelHandler = Rc<Handler<dyn Fn(&Cx, Wheel)>>;
 
 /// A button's handlers.
 #[derive(Default)]
@@ -50,7 +51,10 @@ pub(crate) struct Handlers {
   pub(crate) press: Option<ClickHandler>,
   pub(crate) right_click: Option<ClickHandler>,
   pub(crate) middle_click: Option<ClickHandler>,
+  pub(crate) back: Option<ClickHandler>,
+  pub(crate) forward: Option<ClickHandler>,
   pub(crate) scroll: Option<ScrollHandler>,
+  pub(crate) wheel: Option<WheelHandler>,
   pub(crate) key: Option<KeyHandler>,
 }
 
@@ -63,17 +67,54 @@ pub enum PointerButton {
   Right,
   /// The middle button; it runs `on_middle_click`.
   Middle,
+  /// The side button for going back (`BTN_SIDE` or `BTN_BACK`); it runs
+  /// `on_back`.
+  Back,
+  /// The side button for going forward (`BTN_EXTRA` or `BTN_FORWARD`); it
+  /// runs `on_forward`.
+  Forward,
 }
 
-/// One scroll event on the vertical axis, as `wl_pointer` reports it.
-/// Positive values scroll down.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ScrollDelta {
-  /// A mouse wheel, in `axis_value120` units: 120 per notch, less for a
-  /// high-resolution wheel.
-  Wheel(i32),
-  /// Smooth scrolling, such as from a touchpad, in logical pixels.
-  Pixels(f32),
+/// Where scrolling came from, as `wl_pointer.axis_source` says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScrollSource {
+  /// A mouse wheel, which turns in notches. The default.
+  #[default]
+  Wheel,
+  /// Fingers on a touchpad, which scroll by pixels. When they lift, the
+  /// last event has `stop` set: the moment a kinetic scroll takes over.
+  Finger,
+  /// Something else that scrolls by pixels, such as a trackpoint.
+  Continuous,
+  /// A wheel tilted sideways, in notches.
+  WheelTilt,
+}
+
+/// One axis of a [`Wheel`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WheelAxis {
+  /// How far, in logical pixels: positive down or right, as content
+  /// moves under a scroll offset that grows.
+  pub pixels: f32,
+  /// How far in wheel notches, positive down or right:
+  /// `axis_value120` over 120, so a high-resolution wheel gives
+  /// fractions. 0 for a touchpad.
+  pub notches: f32,
+  /// The scroll on this axis ended: the fingers lifted
+  /// (`wl_pointer.axis_stop`).
+  pub stop: bool,
+}
+
+/// One scroll event on both axes, as [`Button::on_wheel`](crate::Button::on_wheel)
+/// gets it and the platform hands it to [`Window::pointer_scroll`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Wheel {
+  /// What scrolled.
+  pub source: ScrollSource,
+  /// Sideways.
+  pub x: WheelAxis,
+  /// Up and down.
+  pub y: WheelAxis,
 }
 
 /// The cursor the platform should show.
@@ -87,6 +128,13 @@ pub enum CursorShape {
   Text,
 }
 
+/// A pointer button held on a button, until it comes up.
+#[derive(Clone, Copy)]
+struct Press {
+  id: NodeId,
+  button: PointerButton,
+}
+
 /// Where the pointer is and what it is doing.
 #[derive(Default)]
 pub(crate) struct Pointer {
@@ -97,7 +145,7 @@ pub(crate) struct Pointer {
   /// hovered one and those around it.
   inside: Vec<(NodeId, Signal<bool>)>,
   /// The button a pointer button went down on, until it comes up.
-  pressed: Option<(NodeId, PointerButton)>,
+  pressed: Option<Press>,
   /// Scrolling that hasn't added up to a whole step yet.
   wheel: i32,
   pixels: f32,
@@ -121,7 +169,10 @@ impl Pointer {
       }
     }
     self.inside = kept;
-    if self.pressed.is_some_and(|(id, _)| removed.contains(&id)) {
+    if self
+      .pressed
+      .is_some_and(|press| removed.contains(&press.id))
+    {
       self.pressed = None;
     }
   }
@@ -131,7 +182,10 @@ impl Tree {
   /// Lets go of hidden nodes as of removed ones, and shows the hovered or
   /// pressed button among them as neither, so it shows again unhovered.
   pub(crate) fn pointer_hide(&mut self, hidden: &[NodeId]) {
-    let held = [self.pointer.hovered, self.pointer.pressed.map(|(id, _)| id)];
+    let held = [
+      self.pointer.hovered,
+      self.pointer.pressed.map(|press| press.id),
+    ];
     self.pointer.forget(hidden);
     for id in held.into_iter().flatten().filter(|id| hidden.contains(id)) {
       self.update_button_style(id, |button| {
@@ -152,31 +206,29 @@ impl Window {
     tree.cursor()
   }
 
-  /// The pointer left the window.
+  /// The pointer left the window. A held button never clicks.
   pub fn pointer_leave(&self) {
-    let mut tree = borrow(&self.tree);
-    tree.pointer.position = None;
-    tree.set_pressed(None);
-    tree.set_hovered(None, &[]);
+    borrow(&self.tree).leave();
   }
 
   /// A pointer button went down or up. Releasing it over the button it
-  /// went down on runs that button's `on_click`, `on_right_click` or
-  /// `on_middle_click`.
+  /// went down on runs that button's `on_click`, `on_right_click`,
+  /// `on_middle_click`, `on_back` or `on_forward`.
   pub fn pointer_button(&self, button: PointerButton, pressed: bool) {
-    let call = borrow(&self.tree).button(button, pressed);
-    if let Some(call) = call {
-      call.run();
-    }
+    let calls = borrow(&self.tree).button(button, pressed);
+    run_all(calls);
   }
 
-  /// The pointer scrolled. Once whole steps add up, the `on_scroll` of the
-  /// button under the pointer runs with them. Without one, the innermost
-  /// scroll view under the pointer scrolls.
-  pub fn pointer_scroll(&self, delta: ScrollDelta) {
-    let scrolled = borrow(&self.tree).scroll(delta);
+  /// The pointer scrolled. A button under the pointer with `on_wheel`
+  /// gets every event, and one with `on_scroll` the whole vertical steps
+  /// as they add up. Without either, the innermost scroll view under the
+  /// pointer scrolls vertically. A vertical `stop` drops a touchpad's
+  /// partial step, so it doesn't carry into the next gesture; a wheel's
+  /// partial notch is kept.
+  pub fn pointer_scroll(&self, wheel: Wheel) {
+    let scrolled = borrow(&self.tree).scroll(wheel);
     match scrolled {
-      Some(Scrolled::Button(call)) => call.run(),
+      Some(Scrolled::Buttons(calls)) => run_all(calls),
       // A signal whose owner is gone just doesn't scroll.
       Some(Scrolled::View(signal, offset)) => {
         signal.try_set(offset);
@@ -185,23 +237,23 @@ impl Window {
     }
   }
 
-  /// A touchpad scroll gesture ended (`wl_pointer.axis_stop`): scrolling
-  /// that hasn't added up to a whole step is dropped, so it doesn't carry
-  /// into the next gesture. A wheel's partial notch is kept.
-  pub fn pointer_scroll_end(&self) {
-    borrow(&self.tree).pointer.pixels = 0.0;
-  }
-
   /// The cursor to show.
   pub fn cursor(&self) -> CursorShape {
     self.tree.borrow().cursor()
   }
 }
 
+/// Runs the handlers an event called for, in order, each isolated.
+fn run_all(calls: Vec<Call>) {
+  for call in calls {
+    call.run();
+  }
+}
+
 impl Tree {
-  /// The deepest button under `point`, in the coordinates of `id`'s
-  /// parent, in `id`'s subtree, with the nodes on the way down to it,
-  /// itself included, pushed onto `path`. Children drawn later are on
+  /// The deepest button or field under `point`, in the coordinates of
+  /// `id`'s parent, in `id`'s subtree, with the nodes on the way down to
+  /// it, itself included, pushed onto `path`. Children drawn later are on
   /// top, so they are tried first.
   fn hit(&self, id: NodeId, point: Point, path: &mut Vec<NodeId>) -> Option<NodeId> {
     let node = self.node(id)?;
@@ -249,6 +301,16 @@ impl Tree {
     self.set_hovered(hit, &path);
   }
 
+  /// The nodes from the root down to `id`, both included.
+  fn path_to(&self, id: NodeId) -> Vec<NodeId> {
+    let mut path = vec![id];
+    while let Some(parent) = path.last().and_then(|&id| self.taffy.parent(id)) {
+      path.push(parent);
+    }
+    path.reverse();
+    path
+  }
+
   fn cursor(&self) -> CursorShape {
     match self
       .pointer
@@ -294,16 +356,25 @@ impl Tree {
     }
   }
 
+  /// The buttons on `path` and what `pick` takes from each.
+  fn path_buttons<T>(
+    &self,
+    path: &[NodeId],
+    pick: impl Fn(&ButtonNode) -> Option<T>,
+  ) -> Vec<(NodeId, T)> {
+    path
+      .iter()
+      .filter_map(|&id| match &self.node(id)?.kind {
+        NodeKind::Button(button) => Some((id, pick(button)?)),
+        _ => None,
+      })
+      .collect()
+  }
+
   /// Writes `false` to the `hovered` signals of the buttons the pointer
   /// left and `true` to those it entered, among the nodes on `path`.
   fn set_inside(&mut self, path: &[NodeId]) {
-    let inside: Vec<(NodeId, Signal<bool>)> = path
-      .iter()
-      .filter_map(|&id| match &self.node(id)?.kind {
-        NodeKind::Button(button) => Some((id, button.hover_signal?)),
-        _ => None,
-      })
-      .collect();
+    let inside = self.path_buttons(path, |button| button.hover_signal);
     // Each signal is written once, and only on a change: `true` while any
     // button sharing it has the pointer inside.
     let holds = |list: &[(NodeId, Signal<bool>)], signal| list.iter().any(|(_, s)| *s == signal);
@@ -321,13 +392,13 @@ impl Tree {
     self.pointer.inside = inside;
   }
 
-  fn set_pressed(&mut self, pressed: Option<(NodeId, PointerButton)>) {
+  fn set_pressed(&mut self, pressed: Option<Press>) {
     let old = std::mem::replace(&mut self.pointer.pressed, pressed);
-    if let Some((old, _)) = old {
-      self.set_button_state(old, |button| button.pressed = false);
+    if let Some(old) = old {
+      self.set_button_state(old.id, |button| button.pressed = false);
     }
-    if let Some((new, _)) = pressed {
-      self.set_button_state(new, |button| button.pressed = true);
+    if let Some(new) = pressed {
+      self.set_button_state(new.id, |button| button.pressed = true);
     }
   }
 
@@ -339,65 +410,96 @@ impl Tree {
     }
   }
 
-  fn button(&mut self, button: PointerButton, pressed: bool) -> Option<Call> {
+  fn button(&mut self, button: PointerButton, pressed: bool) -> Vec<Call> {
     if pressed {
-      if self.pointer.pressed.is_none()
-        && let Some(target) = self.pointer.hovered
-      {
-        self.set_pressed(Some((target, button)));
-        if button == PointerButton::Left {
-          self.press_field(target);
-          return self.call(target, Action::Press);
-        }
-      }
-      return None;
+      self.press(button)
+    } else {
+      self.release(button)
     }
-    let (target, held) = self.pointer.pressed?;
-    if held != button {
-      return None;
+  }
+
+  fn press(&mut self, button: PointerButton) -> Vec<Call> {
+    let (None, Some(id)) = (self.pointer.pressed, self.pointer.hovered) else {
+      return Vec::new();
+    };
+    self.set_pressed(Some(Press { id, button }));
+    if button != PointerButton::Left {
+      return Vec::new();
     }
+    self.press_field(id);
+    self.call(id, Action::Press).into_iter().collect()
+  }
+
+  fn release(&mut self, button: PointerButton) -> Vec<Call> {
+    let Some(press) = self.pointer.pressed.filter(|press| press.button == button) else {
+      return Vec::new();
+    };
     self.set_pressed(None);
-    if self.pointer.hovered != Some(target) {
-      return None;
+    if self.pointer.hovered != Some(press.id) {
+      return Vec::new();
     }
     let action = match button {
       PointerButton::Left => Action::Click,
       PointerButton::Right => Action::RightClick,
       PointerButton::Middle => Action::MiddleClick,
+      PointerButton::Back => Action::Back,
+      PointerButton::Forward => Action::Forward,
     };
-    self.call(target, action)
+    self.call(press.id, action).into_iter().collect()
   }
 
-  fn scroll(&mut self, delta: ScrollDelta) -> Option<Scrolled> {
-    let handled = self.pointer.hovered.filter(|&id| self.scrolls(id));
-    let Some(target) = handled else {
-      return self.scroll_view(delta);
-    };
-    // Steps down, rounded toward zero; the rest waits for more scrolling.
-    let down = match delta {
-      ScrollDelta::Wheel(value120) => {
-        self.pointer.wheel = self.pointer.wheel.saturating_add(value120);
-        let steps = self.pointer.wheel / VALUE120_PER_STEP;
-        self.pointer.wheel -= steps * VALUE120_PER_STEP;
-        steps
-      }
-      ScrollDelta::Pixels(pixels) => {
-        if !pixels.is_finite() {
-          return None;
+  /// The pointer left: a held button lets go without a click, and
+  /// nothing is hovered.
+  pub(crate) fn leave(&mut self) {
+    self.pointer.position = None;
+    self.set_pressed(None);
+    self.set_hovered(None, &[]);
+  }
+
+  fn scroll(&mut self, wheel: Wheel) -> Option<Scrolled> {
+    let wants = |h: &Handlers| h.scroll.is_some() || h.wheel.is_some();
+    let target = self.pointer.hovered.filter(|&id| self.has(id, wants));
+    let scrolled = match target {
+      None => self.scroll_view(wheel),
+      Some(target) => {
+        let mut calls = Vec::new();
+        if self.has(target, |h| h.wheel.is_some()) {
+          calls.extend(self.call(target, Action::Wheel(wheel)));
         }
-        self.pointer.pixels += pixels;
-        let steps = (self.pointer.pixels / PIXELS_PER_STEP).trunc();
-        self.pointer.pixels -= steps * PIXELS_PER_STEP;
-        steps as i32
+        if self.has(target, |h| h.scroll.is_some()) {
+          let down = self.steps(wheel.y);
+          // Handlers count up as positive.
+          if down != 0 {
+            calls.extend(self.call(target, Action::Scroll(down.saturating_neg())));
+          }
+        }
+        Some(Scrolled::Buttons(calls))
       }
     };
-    if down == 0 {
-      return None;
+    if wheel.y.stop {
+      self.pointer.pixels = 0.0;
     }
-    // Handlers count up as positive.
-    self
-      .call(target, Action::Scroll(down.saturating_neg()))
-      .map(Scrolled::Button)
+    scrolled
+  }
+
+  /// The whole steps down that `axis` adds up to, rounded toward zero;
+  /// the rest waits for more scrolling.
+  fn steps(&mut self, axis: WheelAxis) -> i32 {
+    if axis.notches != 0.0 && axis.notches.is_finite() {
+      // `as` saturates a value too large.
+      let value120 = (axis.notches * VALUE120_PER_STEP as f32).round() as i32;
+      self.pointer.wheel = self.pointer.wheel.saturating_add(value120);
+      let steps = self.pointer.wheel / VALUE120_PER_STEP;
+      self.pointer.wheel -= steps * VALUE120_PER_STEP;
+      steps
+    } else if axis.pixels.is_finite() {
+      self.pointer.pixels += axis.pixels;
+      let steps = (self.pointer.pixels / PIXELS_PER_STEP).trunc();
+      self.pointer.pixels -= steps * PIXELS_PER_STEP;
+      steps as i32
+    } else {
+      0
+    }
   }
 
   /// A press on field `id` focuses it and puts the caret under the
@@ -421,28 +523,25 @@ impl Tree {
     });
   }
 
-  /// Whether button `id` has an `on_scroll`.
-  fn scrolls(&self, id: NodeId) -> bool {
+  /// Whether button `id` has the handlers `f` looks for.
+  fn has(&self, id: NodeId, f: impl FnOnce(&Handlers) -> bool) -> bool {
     let Some(NodeKind::Button(button)) = self.node(id).map(|node| &node.kind) else {
       return false;
     };
-    untrack(|| {
-      button
-        .handlers
-        .try_with(|handlers| handlers.scroll.is_some())
-    })
-    .unwrap_or(false)
+    untrack(|| button.handlers.try_with(f)).unwrap_or(false)
   }
 
-  /// Scrolls the innermost scroll view under the pointer by `delta`, as
-  /// far as its content goes.
-  fn scroll_view(&mut self, delta: ScrollDelta) -> Option<Scrolled> {
+  /// Scrolls the innermost scroll view under the pointer vertically by
+  /// `wheel`, as far as its content goes.
+  fn scroll_view(&mut self, wheel: Wheel) -> Option<Scrolled> {
     let position = self.pointer.position?;
     let id = self.scroll_view_at(self.root, position)?;
-    let pixels = match delta {
-      ScrollDelta::Wheel(value120) => value120 as f32 / VALUE120_PER_STEP as f32 * PIXELS_PER_NOTCH,
-      ScrollDelta::Pixels(pixels) if pixels.is_finite() => pixels,
-      ScrollDelta::Pixels(_) => return None,
+    let pixels = match wheel.y {
+      WheelAxis { notches, .. } if notches != 0.0 && notches.is_finite() => {
+        notches * PIXELS_PER_NOTCH
+      }
+      WheelAxis { pixels, .. } if pixels != 0.0 && pixels.is_finite() => pixels,
+      _ => return None,
     };
     let NodeKind::Scroll(scroll) = &self.node(id)?.kind else {
       return None;
@@ -481,16 +580,11 @@ impl Tree {
 
   /// `point`, in window coordinates, in the coordinates node `id`'s
   /// rectangle is in, through the transforms of the node and its
-  /// ancestors. `None` if one of them
-  /// squashes it flat.
+  /// ancestors. `None` if one of them squashes it flat.
   fn local_point(&self, id: NodeId, point: Point) -> Option<Point> {
-    let mut path = vec![id];
-    while let Some(parent) = path.last().and_then(|&id| self.taffy.parent(id)) {
-      path.push(parent);
-    }
-    path
+    self
+      .path_to(id)
       .iter()
-      .rev()
       .try_fold(point, |point, &id| local(self.node(id)?, point))
   }
 
@@ -540,8 +634,8 @@ fn local(node: &Node, point: Point) -> Option<Point> {
 
 /// What a scroll does, once the tree is released.
 enum Scrolled {
-  /// Runs a button's `on_scroll`.
-  Button(Call),
+  /// Runs a button's `on_wheel` and `on_scroll`.
+  Buttons(Vec<Call>),
   /// Writes a scroll view's offset.
   View(Signal<f32>, f32),
 }
@@ -552,7 +646,10 @@ enum Action {
   Press,
   RightClick,
   MiddleClick,
+  Back,
+  Forward,
   Scroll(i32),
+  Wheel(Wheel),
 }
 
 /// A handler to run once the tree is released.
@@ -563,42 +660,49 @@ pub(crate) struct Call {
   action: Action,
 }
 
+/// A handler picked for a [`Call`], with what it gets.
+enum Picked {
+  Plain(ClickHandler, &'static str),
+  Scroll(ScrollHandler, i32),
+  Wheel(WheelHandler, Wheel),
+}
+
 impl Call {
   pub(crate) fn run(self) {
     // Reading the handlers doesn't make anything depend on them.
-    let handlers = untrack(|| {
-      self.handlers.try_with(|handlers| match self.action {
-        Action::Click => handlers.click.clone().map(Either::Click),
-        Action::Press => handlers.press.clone().map(Either::Click),
-        Action::RightClick => handlers.right_click.clone().map(Either::Click),
-        Action::MiddleClick => handlers.middle_click.clone().map(Either::Click),
-        Action::Scroll(_) => handlers.scroll.clone().map(Either::Scroll),
+    let picked = untrack(|| {
+      self.handlers.try_with(|h| {
+        let plain = |handler: &Option<ClickHandler>, name| {
+          handler.clone().map(|handler| Picked::Plain(handler, name))
+        };
+        match self.action {
+          Action::Click => plain(&h.click, "on_click"),
+          Action::Press => plain(&h.press, "on_press"),
+          Action::RightClick => plain(&h.right_click, "on_right_click"),
+          Action::MiddleClick => plain(&h.middle_click, "on_middle_click"),
+          Action::Back => plain(&h.back, "on_back"),
+          Action::Forward => plain(&h.forward, "on_forward"),
+          Action::Scroll(steps) => h.scroll.clone().map(|f| Picked::Scroll(f, steps)),
+          Action::Wheel(wheel) => h.wheel.clone().map(|f| Picked::Wheel(f, wheel)),
+        }
       })
     });
-    let Some(Some(handler)) = handlers else {
+    let Some(Some(picked)) = picked else {
       return;
     };
-    match (handler, self.action) {
-      (Either::Click(handler), action) => {
-        let name = match action {
-          Action::RightClick => "on_right_click",
-          Action::Press => "on_press",
-          Action::MiddleClick => "on_middle_click",
-          _ => "on_click",
-        };
-        run_isolated(&self.path, name, handler, |f| f(&self.cx));
+    let (path, cx) = (&self.path, &self.cx);
+    match picked {
+      Picked::Plain(handler, name) => {
+        run_isolated(path, name, handler, |f| f(cx));
       }
-      (Either::Scroll(handler), Action::Scroll(steps)) => {
-        run_isolated(&self.path, "on_scroll", handler, |f| f(&self.cx, steps));
+      Picked::Scroll(handler, steps) => {
+        run_isolated(path, "on_scroll", handler, |f| f(cx, steps));
       }
-      (Either::Scroll(_), _) => {}
+      Picked::Wheel(handler, wheel) => {
+        run_isolated(path, "on_wheel", handler, |f| f(cx, wheel));
+      }
     }
   }
-}
-
-enum Either {
-  Click(ClickHandler),
-  Scroll(ScrollHandler),
 }
 
 /// Calls `handler` through `call` unless it was disabled, and disables it if

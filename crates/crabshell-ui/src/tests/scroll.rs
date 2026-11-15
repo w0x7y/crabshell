@@ -1,10 +1,9 @@
 //! Scroll views and lists: offsets, clamping, the wheel and building only
 //! the rows in view.
 
-use super::{Counter, Harness, node_at, paths, rect_at};
+use super::{Counter, Harness, node_at, paths, pixels, rect_at, wheel};
 use crate::{
-  Align, Button, Column, Icon, ListView, Point, Rect, Row, ScrollDelta, ScrollView, Style, Text,
-  Window,
+  Align, Button, Column, Icon, ListView, Point, Rect, Row, ScrollView, Style, Text, Window,
 };
 
 /// A 50-pixel-tall scroll view of ten 20-pixel icons in a column.
@@ -51,21 +50,21 @@ fn the_wheel_and_touchpad_scroll_the_view_under_the_pointer() {
   let mut h = Harness::new();
   let offset = h.cx.signal(0.0);
   let window = ten_icons(&mut h, offset);
-  window.pointer_scroll(ScrollDelta::Wheel(120));
+  window.pointer_scroll(wheel(120));
   assert_eq!(offset.get(), 0.0, "nothing under the pointer yet");
   window.pointer_motion(Point::new(10.0, 10.0));
-  window.pointer_scroll(ScrollDelta::Wheel(120));
+  window.pointer_scroll(wheel(120));
   assert_eq!(offset.get(), 48.0);
   h.frame(&window);
   assert_eq!(first_icon(&window).y, -48.0);
-  window.pointer_scroll(ScrollDelta::Pixels(-8.0));
+  window.pointer_scroll(pixels(-8.0));
   assert_eq!(offset.get(), 40.0);
   // Scrolling stops at the end instead of running past it.
   h.frame(&window);
-  window.pointer_scroll(ScrollDelta::Wheel(120 * 10));
+  window.pointer_scroll(wheel(120 * 10));
   assert_eq!(offset.get(), 150.0);
   h.frame(&window);
-  window.pointer_scroll(ScrollDelta::Pixels(f32::NAN));
+  window.pointer_scroll(pixels(f32::NAN));
   assert_eq!(offset.get(), 150.0);
 }
 
@@ -84,10 +83,10 @@ fn a_button_with_on_scroll_takes_the_wheel_and_one_without_lets_it_through() {
     .style(Style::new().height(50.0));
   let window = h.window(h.panel().child(scroll), 100.0, 100.0);
   window.pointer_motion(Point::new(10.0, 10.0));
-  window.pointer_scroll(ScrollDelta::Wheel(120));
+  window.pointer_scroll(wheel(120));
   assert_eq!((steps.get(), offset.get()), (1, 0.0));
   window.pointer_motion(Point::new(10.0, 30.0));
-  window.pointer_scroll(ScrollDelta::Wheel(120));
+  window.pointer_scroll(wheel(120));
   assert_eq!((steps.get(), offset.get()), (1, 48.0));
 }
 
@@ -247,12 +246,12 @@ fn scrolls_before_the_next_layout_add_up() {
   let offset = h.cx.signal(0.0);
   let window = ten_icons(&mut h, offset);
   window.pointer_motion(Point::new(10.0, 10.0));
-  window.pointer_scroll(ScrollDelta::Wheel(120));
-  window.pointer_scroll(ScrollDelta::Wheel(120));
+  window.pointer_scroll(wheel(120));
+  window.pointer_scroll(wheel(120));
   assert_eq!(offset.get(), 96.0);
   // A config's own write counts too.
   offset.set(10.0);
-  window.pointer_scroll(ScrollDelta::Pixels(5.0));
+  window.pointer_scroll(pixels(5.0));
   assert_eq!(offset.get(), 15.0);
 }
 
@@ -264,7 +263,7 @@ fn scrolling_with_an_offset_whose_owner_is_gone_does_nothing() {
   let window = ten_icons(&mut h, offset);
   gone.owner().dispose();
   window.pointer_motion(Point::new(10.0, 10.0));
-  window.pointer_scroll(ScrollDelta::Wheel(120));
+  window.pointer_scroll(wheel(120));
   h.frame(&window);
 }
 
@@ -285,7 +284,7 @@ fn the_wheel_scrolls_a_list_and_current_allows_for_its_padding() {
   .style(Style::new().padding(10, 0));
   let window = h.window(h.panel().child(list), 100.0, 200.0);
   window.pointer_motion(Point::new(10.0, 50.0));
-  window.pointer_scroll(ScrollDelta::Wheel(120));
+  window.pointer_scroll(wheel(120));
   assert_eq!(offset.get(), 48.0);
   // 80 pixels show inside the padding: row 7 ends at 160.
   offset.set(0.0);

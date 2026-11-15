@@ -7,17 +7,20 @@ use std::rc::Rc;
 use crabshell_reactive::Runtime;
 use crabshell_ui::{
   Align, Button, CursorShape, Cx, Icon, Output, PanelWindow, Point, PointerButton, Row,
-  ScrollDelta, Size, TextSystem, Window,
+  ScrollSource, Size, TextSystem, Wheel, WheelAxis, Window,
 };
+use smithay_client_toolkit::reexports::client::protocol::wl_pointer::AxisSource;
 use smithay_client_toolkit::seat::pointer::{
-  AxisScroll, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, BTN_SIDE, PointerEventKind,
+  AxisScroll, BTN_BACK, BTN_EXTRA, BTN_FORWARD, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, BTN_SIDE,
+  BTN_TASK, PointerEventKind,
 };
 
 use crate::pointer::{Input, apply, inputs};
+use crate::windows::WindowId;
 
 fn press(button: u32) -> PointerEventKind {
   PointerEventKind::Press {
-    time: 0,
+    time: 7,
     button,
     serial: 1,
   }
@@ -25,7 +28,7 @@ fn press(button: u32) -> PointerEventKind {
 
 fn release(button: u32) -> PointerEventKind {
   PointerEventKind::Release {
-    time: 0,
+    time: 9,
     button,
     serial: 2,
   }
@@ -38,6 +41,19 @@ fn vertical(axis: AxisScroll) -> PointerEventKind {
     vertical: axis,
     source: None,
   }
+}
+
+/// What a mouse wheel turned on the vertical axis gives.
+fn notches(pixels: f32, notches: f32) -> Input {
+  Input::Scroll(Wheel {
+    source: ScrollSource::Wheel,
+    x: WheelAxis::default(),
+    y: WheelAxis {
+      pixels,
+      notches,
+      stop: false,
+    },
+  })
 }
 
 #[test]
@@ -62,8 +78,20 @@ fn positions_buttons_and_leaving() {
     inputs(&press(BTN_MIDDLE), at),
     [Input::Button(PointerButton::Middle, true)]
   );
-  // Back and forward buttons do nothing.
-  assert_eq!(inputs(&press(BTN_SIDE), at), []);
+  // Both names Linux has for each side button.
+  for back in [BTN_SIDE, BTN_BACK] {
+    assert_eq!(
+      inputs(&press(back), at),
+      [Input::Button(PointerButton::Back, true)]
+    );
+  }
+  for forward in [BTN_EXTRA, BTN_FORWARD] {
+    assert_eq!(
+      inputs(&release(forward), at),
+      [Input::Button(PointerButton::Forward, false)]
+    );
+  }
+  assert_eq!(inputs(&press(BTN_TASK), at), []);
   // A position that isn't a number is dropped.
   assert_eq!(
     inputs(&PointerEventKind::Motion { time: 0 }, (f64::NAN, 1.0)),
@@ -80,60 +108,79 @@ fn wheels_touchpads_and_the_end_of_a_gesture() {
     value120: 120,
     ..AxisScroll::default()
   };
-  assert_eq!(
-    inputs(&vertical(wheel), at),
-    [Input::Scroll(ScrollDelta::Wheel(120))]
-  );
+  assert_eq!(inputs(&vertical(wheel), at), [notches(15.0, 1.0)]);
   // A high-resolution wheel moves a quarter notch.
   let fine_wheel = AxisScroll {
     absolute: 3.75,
     value120: 30,
     ..AxisScroll::default()
   };
-  assert_eq!(
-    inputs(&vertical(fine_wheel), at),
-    [Input::Scroll(ScrollDelta::Wheel(30))]
-  );
+  assert_eq!(inputs(&vertical(fine_wheel), at), [notches(3.75, 0.25)]);
   // A compositor too old for axis_value120 sends whole notches.
   let old_wheel = AxisScroll {
     absolute: -15.0,
     discrete: -2,
     ..AxisScroll::default()
   };
-  assert_eq!(
-    inputs(&vertical(old_wheel), at),
-    [Input::Scroll(ScrollDelta::Wheel(-240))]
-  );
-  let touchpad = AxisScroll {
-    absolute: 3.5,
-    ..AxisScroll::default()
+  assert_eq!(inputs(&vertical(old_wheel), at), [notches(-15.0, -2.0)]);
+  // Fingers, said so, then lifting with the last pixels.
+  let fingers = |vertical, horizontal| PointerEventKind::Axis {
+    time: 0,
+    horizontal,
+    vertical,
+    source: Some(AxisSource::Finger),
   };
-  assert_eq!(
-    inputs(&vertical(touchpad), at),
-    [Input::Scroll(ScrollDelta::Pixels(3.5))]
-  );
-  let lift = AxisScroll {
-    stop: true,
-    ..AxisScroll::default()
-  };
-  assert_eq!(inputs(&vertical(lift), at), [Input::ScrollEnd]);
   let last_and_lift = AxisScroll {
     absolute: 1.0,
     stop: true,
     ..AxisScroll::default()
   };
+  let sideways = AxisScroll {
+    absolute: -4.5,
+    stop: true,
+    ..AxisScroll::default()
+  };
   assert_eq!(
-    inputs(&vertical(last_and_lift), at),
-    [Input::Scroll(ScrollDelta::Pixels(1.0)), Input::ScrollEnd]
+    inputs(&fingers(last_and_lift, sideways), at),
+    [Input::Scroll(Wheel {
+      source: ScrollSource::Finger,
+      x: WheelAxis {
+        pixels: -4.5,
+        notches: 0.0,
+        stop: true,
+      },
+      y: WheelAxis {
+        pixels: 1.0,
+        notches: 0.0,
+        stop: true,
+      },
+    })]
   );
-  // Horizontal scrolling has no handler.
-  let sideways = PointerEventKind::Axis {
+  // Pixels with no source count as continuous.
+  let touchpad = AxisScroll {
+    absolute: 3.5,
+    ..AxisScroll::default()
+  };
+  let Input::Scroll(scrolled) = inputs(&vertical(touchpad), at)[0] else {
+    panic!("scrolling");
+  };
+  assert_eq!(scrolled.source, ScrollSource::Continuous);
+  // A tilted wheel scrolls sideways.
+  let tilt = PointerEventKind::Axis {
     time: 0,
     horizontal: wheel,
     vertical: AxisScroll::default(),
-    source: None,
+    source: Some(AxisSource::WheelTilt),
   };
-  assert_eq!(inputs(&sideways, at), []);
+  let Input::Scroll(tilted) = inputs(&tilt, at)[0] else {
+    panic!("scrolling");
+  };
+  assert_eq!(
+    (tilted.source, tilted.x.notches),
+    (ScrollSource::WheelTilt, 1.0)
+  );
+  // Nothing, and numbers that aren't, make no input.
+  assert_eq!(inputs(&vertical(AxisScroll::default()), at), []);
   let not_a_number = AxisScroll {
     absolute: f64::NAN,
     ..AxisScroll::default()
@@ -149,9 +196,12 @@ fn window(log: &Rc<RefCell<Vec<String>>>) -> Window {
   let clicks = Rc::clone(log);
   let right_clicks = Rc::clone(log);
   let scrolls = Rc::clone(log);
+  let (backs, forwards) = (Rc::clone(log), Rc::clone(log));
   let button = Button::new(Icon::new("x").size(20))
     .on_click(move |_| clicks.borrow_mut().push(String::from("click")))
     .on_right_click(move |_| right_clicks.borrow_mut().push(String::from("right")))
+    .on_back(move |_| backs.borrow_mut().push(String::from("back")))
+    .on_forward(move |_| forwards.borrow_mut().push(String::from("forward")))
     .on_scroll(move |_, steps| scrolls.borrow_mut().push(format!("scroll {steps}")));
   let panel = PanelWindow::new(&Output::new("HEADLESS-1"))
     .child(Row::new().align(Align::Start).child(button));
@@ -185,7 +235,9 @@ fn a_click_reaches_the_button_under_the_pointer() {
   );
   send(&window, &[press(BTN_LEFT), release(BTN_LEFT)], over);
   send(&window, &[press(BTN_RIGHT), release(BTN_RIGHT)], over);
-  assert_eq!(*log.borrow(), ["click", "right"]);
+  send(&window, &[press(BTN_SIDE), release(BTN_SIDE)], over);
+  send(&window, &[press(BTN_EXTRA), release(BTN_EXTRA)], over);
+  assert_eq!(*log.borrow(), ["click", "right", "back", "forward"]);
   // Away from the button: the default cursor, and clicks go nowhere.
   let away = (150.0, 15.0);
   assert_eq!(
@@ -193,7 +245,7 @@ fn a_click_reaches_the_button_under_the_pointer() {
     Some(CursorShape::Default)
   );
   send(&window, &[press(BTN_LEFT), release(BTN_LEFT)], away);
-  assert_eq!(log.borrow().len(), 2);
+  assert_eq!(log.borrow().len(), 4);
 }
 
 #[test]
@@ -255,7 +307,6 @@ fn scrolling_reaches_the_button_and_a_lift_drops_the_partial_step() {
 #[test]
 fn a_layout_that_moves_the_button_away_changes_the_cursor() {
   use crate::pointer::Cursor;
-  use crate::windows::WindowId;
 
   let runtime = Runtime::current();
   let cx = Cx::new(runtime.new_owner());
@@ -291,7 +342,6 @@ fn a_layout_that_moves_the_button_away_changes_the_cursor() {
 #[test]
 fn a_cursor_is_sent_only_over_a_window_and_again_after_each_enter() {
   use crate::pointer::Cursor;
-  use crate::windows::WindowId;
 
   let mut cursor = Cursor::default();
   assert_eq!(cursor.update(CursorShape::Pointer), None, "over no window");
