@@ -91,8 +91,10 @@ pub(crate) fn requests(sent: &Shown, wanted: &Shown, version: u32) -> Vec<Reques
 }
 
 /// `region` cut to a surface `size` logical pixels big, in the pixels of
-/// its buffer at `scale`, which is what the protocol takes: each rectangle
-/// grown out to the whole pixels it touches, so all that shows is covered.
+/// its buffer at `scale`, which is what the protocol takes. Each rectangle
+/// is grown by a logical pixel each way, then out to whole buffer pixels
+/// and cut to the buffer: curves are cut at whole pixels, and the soft
+/// edges drawn along them reach past, so all that shows is covered.
 /// `None` when nothing is left, which Hyprland reads as all of it.
 pub(crate) fn buffer_rects(
   region: &Region,
@@ -113,9 +115,9 @@ pub(crate) fn buffer_rects(
     .rects(size.0, size.1)
     .into_iter()
     .map(|[x, y, rect_width, rect_height]| {
-      let (left, top) = (down(x), down(y));
-      let right = up(i64::from(x) + i64::from(rect_width), width);
-      let bottom = up(i64::from(y) + i64::from(rect_height), height);
+      let (left, top) = (down((x - 1).max(0)), down((y - 1).max(0)));
+      let right = up(i64::from(x) + i64::from(rect_width) + 1, width);
+      let bottom = up(i64::from(y) + i64::from(rect_height) + 1, height);
       // Within a buffer of at most 16384 pixels a side.
       [left, top, right - left, bottom - top].map(|value| value as i32)
     })

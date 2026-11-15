@@ -7,16 +7,18 @@ use crate::scale::Scale;
 
 #[test]
 fn a_visible_mask_is_sent_in_buffer_pixels_grown_out_at_every_scale() {
+  // Grown by a logical pixel to 9 to 111 across, and cut to the buffer.
   let mask = Region::rect(10, 0, 100, 30);
   for (scale, rect) in [
-    (Scale::Integer(1), [10, 0, 100, 30]),
-    // 12.5 to 137.5 across and 37.5 down, grown out to whole pixels.
-    (Scale::Fractional(150), [12, 0, 126, 38]),
-    (Scale::Fractional(180), [15, 0, 150, 45]),
-    // 17.5 to 192.5, and 52.5 down in a buffer 53 tall.
-    (Scale::Fractional(210), [17, 0, 176, 53]),
-    (Scale::Fractional(240), [20, 0, 200, 60]),
-    (Scale::Integer(2), [20, 0, 200, 60]),
+    (Scale::Integer(1), [9, 0, 102, 30]),
+    // 11.25 to 138.75 across, grown out to whole pixels, in a buffer 38
+    // tall.
+    (Scale::Fractional(150), [11, 0, 128, 38]),
+    (Scale::Fractional(180), [13, 0, 154, 45]),
+    // 15.75 to 194.25, in a buffer 53 tall.
+    (Scale::Fractional(210), [15, 0, 180, 53]),
+    (Scale::Fractional(240), [18, 0, 204, 60]),
+    (Scale::Integer(2), [18, 0, 204, 60]),
   ] {
     assert_eq!(
       buffer_rects(&mask, (200, 30), scale),
@@ -39,6 +41,37 @@ fn a_visible_mask_is_cut_to_the_buffer_and_nothing_left_is_none() {
   assert_eq!(buffer_rects(&Region::empty(), (200, 30), scale), None);
   let outside = Region::rect(300, 0, 10, 10);
   assert_eq!(buffer_rects(&outside, (200, 30), scale), None);
+}
+
+#[test]
+fn a_visible_mask_covers_every_pixel_a_rounded_shape_touches() {
+  // A bar's rounded background, whose soft edge the renderer draws past
+  // the whole pixels the region's curve is cut at.
+  let (width, height, radius) = (100_u32, 30_u32, 12.0_f32);
+  let mask = Region::rect(0, 0, width, height).radius(radius);
+  let inside = |x: f32, y: f32| {
+    let nearest_x = x.clamp(radius, width as f32 - radius);
+    let nearest_y = y.clamp(radius, height as f32 - radius);
+    (x - nearest_x).powi(2) + (y - nearest_y).powi(2) <= radius * radius
+  };
+  for scale in [Scale::Integer(1), Scale::Fractional(150), Scale::Integer(2)] {
+    let rects = buffer_rects(&mask, (width, height), scale).expect("a region");
+    let (buffer_width, buffer_height) = scale.buffer_size(width, height).expect("a buffer");
+    for (px, py) in (0..buffer_height).flat_map(|py| (0..buffer_width).map(move |px| (px, py))) {
+      // Any part of the pixel in the shape, on an 8 by 8 grid within it.
+      let samples = (0..8).flat_map(|i| (0..8).map(move |j| (i, j)));
+      let touched = samples.into_iter().any(|(i, j)| {
+        let at =
+          |pixel: u32, step: i32| (pixel as f32 + (step as f32 + 0.5) / 8.0) / scale.factor();
+        inside(at(px, i), at(py, j))
+      });
+      let (px, py) = (px as i32, py as i32);
+      let covered = rects
+        .iter()
+        .any(|&[x, y, w, h]| (x..x + w).contains(&px) && (y..y + h).contains(&py));
+      assert!(!touched || covered, "pixel {px},{py} at {scale:?}");
+    }
+  }
 }
 
 #[test]
