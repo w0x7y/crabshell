@@ -265,6 +265,66 @@ impl Transition {
   }
 }
 
+/// The spring a [`Cx::spring`] value follows its target on, as Qt's
+/// `SpringAnimation`. Time is in seconds and distance in the value's own
+/// units. The target pulls the value with `stiffness` times the distance,
+/// per second squared, and friction slows it as `damping` says, as a
+/// ratio: 1 comes to rest as fast as it can without passing the target,
+/// less overshoots and bounces, more creeps in. The default, 700 and 0.9,
+/// is Material 3's default spatial spring; its expressive one is 380 and
+/// 0.8.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spring {
+  /// How hard the target pulls, per second squared: higher is faster.
+  pub stiffness: f32,
+  /// The damping ratio: 1 never passes the target, less bounces.
+  pub damping: f32,
+}
+
+impl Spring {
+  /// A spring of `stiffness` and `damping` ratio.
+  pub const fn new(stiffness: f32, damping: f32) -> Spring {
+    Spring { stiffness, damping }
+  }
+
+  /// Whether it can move anything: a stiffness above 0, a damping of 0
+  /// or more, both finite.
+  fn is_valid(self) -> bool {
+    self.stiffness.is_finite()
+      && self.stiffness > 0.0
+      && self.damping.is_finite()
+      && self.damping >= 0.0
+  }
+
+  /// Moves the value `x`, with speed `v`, toward `goal` over `seconds`,
+  /// in implicit Euler steps of at most a millisecond, which stay stable
+  /// whatever the spring and the step.
+  fn advance(self, x: &mut f64, v: &mut f64, goal: f64, seconds: f64) {
+    let k = f64::from(self.stiffness);
+    let c = 2.0 * f64::from(self.damping) * k.sqrt();
+    let steps = (seconds * 1000.0).ceil().max(1.0);
+    let dt = seconds / steps;
+    for _ in 0..steps as u32 {
+      *v = (*v - dt * k * (*x - goal)) / (1.0 + dt * c + dt * dt * k);
+      *x += dt * *v;
+    }
+  }
+}
+
+impl Default for Spring {
+  fn default() -> Spring {
+    Spring::new(700.0, 0.9)
+  }
+}
+
+/// The most time one tick moves a spring: a frame that comes late moves
+/// it this far and no more, so a stall can't cost a long run of steps.
+const SPRING_MAX_STEP: f64 = 0.25;
+
+/// The distance from its target a spring counts as at rest within, and the
+/// speed per second below which it counts as still.
+const SPRING_REST: (f64, f64) = (0.001, 0.01);
+
 /// A value an animation can move between two of: `lerp` gives the value
 /// `t` of the way from `self` to `to`, where `t` may stray a little past 0
 /// or 1 for an easing that overshoots.
@@ -675,6 +735,99 @@ impl Cx {
           }
           let begun = *started.get_or_insert(now);
           value.try_set(now.saturating_duration_since(begun))
+        }),
+      );
+    });
+    value.read_only()
+  }
+
+  /// A value that follows `target` on `spring`, as Qt's
+  /// `SpringAnimation`: a new target while it moves keeps its speed, so a
+  /// value chasing a moving target never stops dead. It starts at
+  /// `target`'s first value and comes to rest exactly on the target, when
+  /// the clock stops. A target that isn't finite, or a spring that isn't
+  /// valid (see [`Spring`]), jumps there at once. A panic in `target` is
+  /// logged with this call's place, and the value stops where it is.
+  ///
+  /// ```
+  /// use crabshell_ui::{Cx, Spring};
+  ///
+  /// fn indicator(cx: &Cx) {
+  ///     let hovered = cx.signal(0_usize);
+  ///     let x = cx.spring(move || hovered.get() as f32 * 40.0, Spring::new(380.0, 0.8));
+  ///     // Read `x.get()` in a binding, such as a style's padding.
+  /// }
+  /// ```
+  #[track_caller]
+  pub fn spring(
+    &self,
+    mut target: impl FnMut() -> f32 + 'static,
+    spring: Spring,
+  ) -> ReadSignal<f32> {
+    let label: Rc<str> = format!("cx.spring at {}", std::panic::Location::caller()).into();
+    let first = untrack(&mut target);
+    let value = self.signal(first);
+    let mut last = first;
+    // Where the step on the clock heads, and whether there is one. A goal
+    // that isn't finite stops it.
+    let goal = Rc::new(Cell::new(first));
+    let ticking = Rc::new(Cell::new(false));
+    let mut broken = false;
+    self.effect(move || {
+      if broken {
+        return;
+      }
+      let Some(to) = guarded(&label, &mut target) else {
+        broken = true;
+        goal.set(f32::NAN);
+        return;
+      };
+      if to == last {
+        return;
+      }
+      last = to;
+      goal.set(to);
+      if !to.is_finite() || !spring.is_valid() {
+        value.try_set(to);
+        return;
+      }
+      if ticking.get() {
+        return;
+      }
+      let Some(from) = untrack(|| value.try_get()) else {
+        return;
+      };
+      ticking.set(true);
+      let (goal, ticking) = (Rc::clone(&goal), Rc::clone(&ticking));
+      let (mut x, mut v) = (f64::from(from), 0.0);
+      let mut previous = start_time();
+      start(
+        Rc::clone(&label),
+        Box::new(move |now| {
+          let to = f64::from(goal.get());
+          if !to.is_finite() {
+            ticking.set(false);
+            return false;
+          }
+          let seconds = previous.map_or(0.0, |previous| {
+            now
+              .saturating_duration_since(previous)
+              .as_secs_f64()
+              .min(SPRING_MAX_STEP)
+          });
+          previous = Some(now);
+          spring.advance(&mut x, &mut v, to, seconds);
+          let (near, slow) = SPRING_REST;
+          // A value that started out not finite lands at once.
+          let rest = !(x.is_finite() && v.is_finite()) || ((x - to).abs() < near && v.abs() < slow);
+          if rest {
+            x = to;
+          }
+          let kept = value.try_set(x as f32);
+          if rest || !kept {
+            ticking.set(false);
+          }
+          kept && !rest
         }),
       );
     });

@@ -85,7 +85,9 @@ mod window;
 #[cfg(test)]
 mod tests;
 
-pub use animation::{Animate, Animation, Easing, Transition, advance_animations, animating};
+pub use animation::{
+  Animate, Animation, Easing, Spring, Transition, advance_animations, animating,
+};
 pub use cx::Cx;
 pub use floating::{FloatingConfig, FloatingWindow, WindowRequest};
 pub use geometry::{Point, Rect, Size};

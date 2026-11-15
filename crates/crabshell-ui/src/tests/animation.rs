@@ -3,7 +3,7 @@
 use std::time::{Duration, Instant};
 
 use super::{Harness, capture_logs};
-use crate::{Animate, Color, Easing, Transition, advance_animations, animating};
+use crate::{Animate, Color, Easing, Spring, Transition, advance_animations, animating};
 
 fn close(a: f32, b: f32) -> bool {
   (a - b).abs() < 0.002
@@ -686,6 +686,7 @@ fn everything_goes_with_its_owner() {
   let slide = child.animation(move || target.get(), LINEAR);
   let spin = child.cycle(|| true, LINEAR);
   let elapsed = child.frames(|| true);
+  let follow = child.spring(move || target.get() * 10.0, Spring::default());
   h.runtime.flush();
   target.set(1.0);
   h.runtime.flush();
@@ -694,7 +695,171 @@ fn everything_goes_with_its_owner() {
   assert_eq!(h.runtime.node_count(), before + 1, "only `target` is left");
   assert!(!tick(Instant::now(), 10), "nothing runs");
   assert!(slide.value().try_get().is_none() && spin.try_get().is_none());
-  assert!(elapsed.try_get().is_none());
+  assert!(elapsed.try_get().is_none() && follow.try_get().is_none());
+}
+
+/// Ticks the clock once a 60 Hz frame from `start` until it stops or
+/// `ms` have passed, giving the values seen and when it stopped.
+fn run_for(
+  start: Instant,
+  ms: u64,
+  value: crabshell_reactive::ReadSignal<f32>,
+) -> (Vec<f32>, Option<u64>) {
+  let mut seen = Vec::new();
+  for frame in 0..=ms / 16 {
+    let still = tick(start, frame * 16);
+    seen.push(value.get());
+    if !still {
+      return (seen, Some(frame * 16));
+    }
+  }
+  (seen, None)
+}
+
+#[test]
+fn a_spring_reaches_its_target_settles_and_stops_the_clock() {
+  let h = Harness::new();
+  let target = h.cx.signal(0.0_f32);
+  let x = h.cx.spring(move || target.get(), Spring::default());
+  h.runtime.flush();
+  assert!(!animating());
+  target.set(100.0);
+  h.runtime.flush();
+  assert!(animating());
+  let (seen, stopped) = run_for(Instant::now(), 3000, x);
+  let stopped = stopped.expect("it settles");
+  assert!(
+    stopped < 1500,
+    "a default spring settles within 1.5 s: {stopped}"
+  );
+  assert!(seen[5] > 30.0, "and moves briskly: {seen:?}");
+  assert!(seen.iter().all(|v| *v <= 100.5), "barely past: {seen:?}");
+  assert_eq!(x.get(), 100.0, "it snaps there");
+  assert!(!animating());
+}
+
+#[test]
+fn a_spring_with_little_damping_overshoots() {
+  let h = Harness::new();
+  let target = h.cx.signal(0.0_f32);
+  let x = h.cx.spring(move || target.get(), Spring::new(300.0, 0.3));
+  h.runtime.flush();
+  target.set(100.0);
+  h.runtime.flush();
+  let (seen, stopped) = run_for(Instant::now(), 10_000, x);
+  let highest = seen.iter().copied().fold(f32::MIN, f32::max);
+  // A damping ratio of 0.3 overshoots by e^(-0.3π/√(1-0.09)), about 37%.
+  assert!((highest - 137.0).abs() < 3.0, "{highest}");
+  assert!(stopped.is_some(), "it still settles");
+  assert_eq!(x.get(), 100.0);
+}
+
+#[test]
+fn a_new_target_keeps_the_springs_velocity() {
+  let h = Harness::new();
+  let target = h.cx.signal(0.0_f32);
+  let x = h.cx.spring(move || target.get(), Spring::new(100.0, 1.0));
+  h.runtime.flush();
+  target.set(100.0);
+  h.runtime.flush();
+  let start = Instant::now();
+  run_for(start, 64, x);
+  let before = x.get();
+  // Sent back to 0 while moving up, it carries on up for a moment.
+  target.set(0.0);
+  h.runtime.flush();
+  tick(start, 80);
+  assert!(x.get() > before, "{} after {before}", x.get());
+  let (_, stopped) = run_for(start + Duration::from_millis(96), 3000, x);
+  assert!(stopped.is_some());
+  assert_eq!(x.get(), 0.0);
+}
+
+#[test]
+fn a_spring_survives_a_huge_gap_between_ticks() {
+  let h = Harness::new();
+  let target = h.cx.signal(0.0_f32);
+  // Stiff enough that a plain Euler step of a millisecond flies apart.
+  let x = h
+    .cx
+    .spring(move || target.get(), Spring::new(10_000_000.0, 0.1));
+  h.runtime.flush();
+  target.set(100.0);
+  h.runtime.flush();
+  let start = Instant::now();
+  tick(start, 0);
+  tick(start, 3_600_000);
+  assert!(
+    x.get().is_finite() && (-100.0..=300.0).contains(&x.get()),
+    "{}",
+    x.get()
+  );
+  let (_, stopped) = run_for(start + Duration::from_secs(3601), 30_000, x);
+  assert!(stopped.is_some(), "and still settles");
+}
+
+#[test]
+fn a_target_or_spring_that_isnt_finite_jumps_and_stops() {
+  let h = Harness::new();
+  let target = h.cx.signal(0.0_f32);
+  let x = h.cx.spring(move || target.get(), Spring::default());
+  let stiff = h
+    .cx
+    .spring(move || target.get(), Spring::new(f32::NAN, 0.9));
+  h.runtime.flush();
+  target.set(10.0);
+  h.runtime.flush();
+  assert_eq!(stiff.get(), 10.0, "a broken spring jumps");
+  let start = Instant::now();
+  tick(start, 0);
+  tick(start, 16);
+  target.set(f32::INFINITY);
+  h.runtime.flush();
+  assert_eq!(x.get(), f32::INFINITY, "at once");
+  assert!(!tick(start, 32), "and nothing moves");
+  assert_eq!(x.get(), f32::INFINITY);
+
+  target.set(5.0);
+  h.runtime.flush();
+  assert!(animating(), "a finite target moves again");
+  let (_, stopped) = run_for(start + Duration::from_millis(48), 1000, x);
+  assert!(
+    stopped.is_some(),
+    "landing at once from where it can't move"
+  );
+  assert_eq!(x.get(), 5.0);
+}
+
+#[test]
+fn a_panicking_spring_target_is_logged_and_stops_where_it_is() {
+  let h = Harness::new();
+  let target = h.cx.signal(0.0_f32);
+  let x = h.cx.spring(
+    move || {
+      let to = target.get();
+      assert!(to < 50.0, "spring failure");
+      to
+    },
+    Spring::default(),
+  );
+  h.runtime.flush();
+  target.set(10.0);
+  h.runtime.flush();
+  let start = Instant::now();
+  run_for(start, 48, x);
+  let logs = capture_logs(|| {
+    target.set(100.0);
+    h.runtime.flush();
+  });
+  assert!(logs.contains("animation cx.spring at "), "{logs}");
+  assert!(logs.contains("tests/animation.rs"), "{logs}");
+  assert!(
+    logs.contains("panicked and stops: spring failure"),
+    "{logs}"
+  );
+  let held = x.get();
+  assert!(!tick(start, 64), "stopped");
+  assert_eq!(x.get(), held);
 }
 
 mod fades {
