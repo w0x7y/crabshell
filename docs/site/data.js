@@ -206,7 +206,7 @@ const PHASES = [
       ["yes", "exit check: the lock example on headless sway"],
       ["yes", "checked by hand: the lock screen against the real pam"],
       ["yes", "checked by hand: the polkit agent against polkit 128"],
-      ["no", "checked by hand against a real greetd"],
+      ["yes", "checked against a real greetd, in a container"],
     ],
   },
   {

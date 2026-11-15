@@ -523,8 +523,8 @@ fn only_the_latest_messages_are_kept() {
 /// greetd itself and a real PAM. greetd runs this as its greeter, with
 /// `GREETD_SOCK` set, and it logs `CRABSHELL_REAL_GREETD_USER` in, once
 /// with a wrong password and then with `CRABSHELL_REAL_GREETD_PASSWORD`,
-/// then starts `sh -c "$CRABSHELL_REAL_GREETD_SESSION"` as their session,
-/// which greetd runs once this exits. Never on a real desktop: the wrong
+/// then starts `CRABSHELL_REAL_GREETD_SESSION`, a shell line, as their
+/// session, which greetd runs once this exits. Never on a real desktop: the wrong
 /// answer counts toward `pam_faillock`. It is for a throwaway container.
 #[test]
 #[ignore = "needs a throwaway system whose greetd runs this as its greeter"]
@@ -566,7 +566,7 @@ fn the_real_greetd_logs_in_and_starts_the_session() {
   wait("authentication", |state| {
     *state == GreetState::Authenticated
   });
-  let command = vec![String::from("sh"), String::from("-c"), session];
-  greetd.start_session(command, Vec::new());
+  // greetd runs the joined command with sh, so the line goes as it is.
+  greetd.start_session(vec![session], Vec::new());
   wait("start", |state| *state == GreetState::Started);
 }

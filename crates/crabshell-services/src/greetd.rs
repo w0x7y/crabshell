@@ -120,7 +120,9 @@ impl Greetd {
 
   /// Starts the authenticated session with `command`, such as
   /// `["sway"]`, and `env` lines such as `XDG_SESSION_TYPE=wayland`
-  /// added to what PAM sets. It starts once the greeter exits. Unless the
+  /// added to what PAM sets. greetd joins `command` with spaces and runs
+  /// the line with sh(1), so an entry holding spaces or shell characters
+  /// needs quotes of its own, and one entry may be a whole shell line. It starts once the greeter exits. Unless the
   /// state is [`Authenticated`](GreetState::Authenticated), nothing is
   /// sent and that is logged.
   pub fn start_session(&self, command: Vec<String>, env: Vec<String>) {
