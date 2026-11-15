@@ -3475,11 +3475,15 @@ fn the_motion_windows_draw_only_while_they_move() {
     rested.rgba == resting.rgba,
     "the spinner rests where it began"
   );
+  // Asleep: one dispatch sleeps the whole time.
   let before = shell.platform().stats().iterations;
+  let started = Instant::now();
   shell
-    .dispatch(Some(Duration::from_secs(1)))
+    .dispatch(Some(Duration::from_secs(2)))
     .expect("the connection works");
-  assert_eq!(shell.platform().stats().iterations, before + 1, "asleep");
+  let slept = started.elapsed();
+  assert!(slept >= Duration::from_millis(1900), "woke after {slept:?}");
+  assert_eq!(shell.platform().stats().iterations, before + 1);
 
   // A change shows the OSD; a second one 1 s later keeps it 1.5 s more.
   let changed = Instant::now();
