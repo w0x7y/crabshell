@@ -98,9 +98,9 @@ pub mod prelude {
     HyprlandToplevel, HyprlandWorkspace, IntoCommand, LoopStatus, Mpris, Network, NetworkDevice,
     NetworkKind, NetworkState, Notification, Notifications, Pam, PamError, PamMessage, PamResult,
     PamState, PerformanceDegradation, PlaybackStatus, Player, PolkitAgent, PowerDevice,
-    PowerProfile, PowerProfiles, Precision, Process, ServicesExt, Sink, Socket, Sway, SwayEvent,
-    SwayEventKind, SwayOutput, Timeout, Tray, TrayCategory, TrayHost, TrayItem, TrayMenu,
-    TrayStatus, UPower, Urgency, WifiMode, WifiNetwork, WifiSecurity, Workspace,
+    PowerProfile, PowerProfiles, Precision, Process, SavedConnection, ServicesExt, Sink, Socket,
+    Sway, SwayEvent, SwayEventKind, SwayOutput, Timeout, Tray, TrayCategory, TrayHost, TrayItem,
+    TrayMenu, TrayStatus, UPower, Urgency, WifiMode, WifiNetwork, WifiSecurity, Workspace,
   };
   pub use crabshell_ui::{
     Adjust, Align, Anchors, Animate, Border, Button, CaptureSource, Color, Column, Cx, Easing,

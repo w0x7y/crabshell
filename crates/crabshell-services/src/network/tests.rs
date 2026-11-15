@@ -1,13 +1,14 @@
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use zbus::{ObjectPath, OwnedObjectPath, OwnedVariant, Variant};
 
+use super::saved::{SAVED, SETTINGS, SETTINGS_PATH};
 use super::{
   ACCESS_POINT, ACTIVE, ConnectionFailReason, Connectivity, DEVICE, NM, NM_PATH, NetworkDevice,
-  NetworkKind, NetworkState, WIRED, WIRELESS, WifiMode, WifiNetwork, WifiSecurity,
+  NetworkKind, NetworkState, SavedConnection, WIRED, WIRELESS, WifiMode, WifiNetwork, WifiSecurity,
 };
 use crate::dbus::OBJECT_MANAGER;
 use crate::testing::{FakeService, Harness, PrivateBus, capture_logs, offline, reply};
@@ -89,6 +90,16 @@ const WPA2: (u32, u32, u32) = (1, 0, 0x188);
 /// cable, an unmanaged bridge, and five access points in range, the way
 /// it exports them, with objects of its own beside them.
 fn fake_nm(shell: &mut Harness, bus: &PrivateBus) -> FakeService {
+  fake_nm_with(shell, bus, |_| {})
+}
+
+/// [`fake_nm`], with `ready` run on it before it takes its name, as
+/// NetworkManager has everything ready by then.
+fn fake_nm_with(
+  shell: &mut Harness,
+  bus: &PrivateBus,
+  ready: impl FnOnce(&FakeService),
+) -> FakeService {
   let nm = FakeService::start(shell, bus, NM);
   nm.add(
     NM_PATH,
@@ -132,6 +143,7 @@ fn fake_nm(shell: &mut Harness, bus: &PrivateBus) -> FakeService {
   nm.add(HIDDEN, ACCESS_POINT, &access_point(&[0; 6], 90, WPA2));
   // Latin-1, as an old router may name itself, and WEP.
   nm.add(CAFE, ACCESS_POINT, &access_point(b"caf\xe9", 55, (1, 0, 0)));
+  ready(&nm);
   nm.own(shell);
   nm
 }
@@ -818,10 +830,12 @@ fn at_most_64_devices_connections_and_512_access_points_are_kept() {
 fn an_idle_networkmanager_wakes_nothing_and_none_at_all_is_quiet() {
   let bus = PrivateBus::start();
   let mut shell = Harness::new(online(&bus));
-  let _nm = fake_nm(&mut shell, &bus);
-  let networks = shell.cx.network().wifi_networks();
+  let nm = fake_nm(&mut shell, &bus);
+  let _saved = saved(&nm);
+  let network = shell.cx.network();
+  let (networks, list) = (network.wifi_networks(), network.saved_connections());
   wait_for(&mut shell, "the networks", || {
-    networks.get_untracked().len() == 3
+    networks.get_untracked().len() == 3 && list.get_untracked().len() == 3
   });
   shell.run_until(Instant::now() + Duration::from_millis(200));
   assert_eq!(shell.run_until(Instant::now() + Duration::from_secs(2)), 1);
@@ -829,14 +843,17 @@ fn an_idle_networkmanager_wakes_nothing_and_none_at_all_is_quiet() {
   // A system bus with no NetworkManager on it.
   let quiet = PrivateBus::start();
   let mut shell = Harness::new(online(&quiet));
-  let devices = shell.cx.network().devices();
+  let network = shell.cx.network();
+  let (devices, list) = (network.devices(), network.saved_connections());
   shell.run_until(Instant::now() + Duration::from_millis(300));
   assert_eq!(devices.get_untracked(), []);
+  assert_eq!(list.get_untracked(), []);
   assert_eq!(shell.run_until(Instant::now() + Duration::from_secs(2)), 1);
 
   let mut shell = Harness::new(offline());
   let logs = capture_logs(|| {
     let network = shell.cx.network();
+    assert_eq!(network.saved_connections().get_untracked(), []);
     network.disconnect(WLAN);
     assert_eq!(
       shell.run_until(Instant::now() + Duration::from_millis(200)),
@@ -1013,4 +1030,354 @@ fn a_failure_shows_until_the_next_try() {
     wlan().fail_reason == Some(ConnectionFailReason::WifiNetworkLost)
   });
   assert_eq!(devices.get_untracked()[1].fail_reason, None, "only its own");
+}
+
+/// The saved connections a fake NetworkManager lists and reads: each
+/// one's settings, by path.
+type Saved = Rc<RefCell<BTreeMap<String, HashMap<String, crate::dbus::Props>>>>;
+
+const HOME_SAVED: &str = "/org/freedesktop/NetworkManager/Settings/1";
+const VPN_SAVED: &str = "/org/freedesktop/NetworkManager/Settings/2";
+/// One whose path sorts before the others as text, but after them by
+/// number.
+const DOCK_SAVED: &str = "/org/freedesktop/NetworkManager/Settings/10";
+const HOME_UUID: &str = "6b9c1f0e-2a4d-4c55-9a43-1f3e5d8b7c21";
+const VPN_UUID: &str = "0d7f4b62-9e1a-4f0c-8b3d-5a6c7e8f9012";
+const DOCK_UUID: &str = "c3a1e5f7-1b2d-4e6f-a8c0-9d1e2f3a4b5c";
+
+/// Settings as NetworkManager sends them, by group.
+fn settings(groups: Vec<(&str, Props)>) -> HashMap<String, crate::dbus::Props> {
+  let group = |props: Props| {
+    let owned = props.into_iter().map(|(name, value)| {
+      let value = value.try_to_owned().expect("an owned value");
+      (name.to_owned(), value)
+    });
+    owned.collect()
+  };
+  groups
+    .into_iter()
+    .map(|(name, props)| (name.to_owned(), group(props)))
+    .collect()
+}
+
+/// A saved connection's `connection` group.
+fn about(id: &str, uuid: &str, kind: &str) -> (&'static str, Props) {
+  let props = vec![
+    ("id", Variant::from(id.to_owned())),
+    ("uuid", Variant::from(uuid.to_owned())),
+    ("type", Variant::from(kind.to_owned())),
+  ];
+  ("connection", props)
+}
+
+/// The home Wi-Fi network, saved with its password, which
+/// NetworkManager never hands out in settings, and its addresses.
+fn home_saved() -> HashMap<String, crate::dbus::Props> {
+  let address = HashMap::from([
+    ("address", Variant::from("192.168.1.5")),
+    ("prefix", Variant::from(24u32)),
+  ]);
+  settings(vec![
+    about("home", HOME_UUID, "802-11-wireless"),
+    (
+      "802-11-wireless",
+      vec![
+        ("ssid", Variant::from(b"home".to_vec())),
+        ("mode", Variant::from("infrastructure")),
+        ("hidden", Variant::from(false)),
+      ],
+    ),
+    (
+      "802-11-wireless-security",
+      vec![("key-mgmt", Variant::from("wpa-psk"))],
+    ),
+    (
+      "ipv4",
+      vec![
+        ("method", Variant::from("manual")),
+        ("address-data", Variant::from(vec![address])),
+        ("route-metric", Variant::from(-1i64)),
+      ],
+    ),
+  ])
+}
+
+fn vpn_saved() -> HashMap<String, crate::dbus::Props> {
+  let data = HashMap::from([("gateway", "vpn.example.org")]);
+  settings(vec![
+    about("work", VPN_UUID, "vpn"),
+    ("vpn", vec![("data", Variant::from(data))]),
+  ])
+}
+
+fn dock_saved() -> HashMap<String, crate::dbus::Props> {
+  settings(vec![about("dock", DOCK_UUID, "802-3-ethernet")])
+}
+
+/// What `home_saved` shows as.
+fn home_shown() -> SavedConnection {
+  SavedConnection {
+    uuid: HOME_UUID.into(),
+    id: "home".into(),
+    kind: "802-11-wireless".into(),
+    settings: serde_json::json!({
+      "connection": { "id": "home", "uuid": HOME_UUID, "type": "802-11-wireless" },
+      "802-11-wireless": { "ssid": [104, 111, 109, 101], "mode": "infrastructure", "hidden": false },
+      "802-11-wireless-security": { "key-mgmt": "wpa-psk" },
+      "ipv4": {
+        "method": "manual",
+        "address-data": [{ "address": "192.168.1.5", "prefix": 24 }],
+        "route-metric": -1,
+      },
+    }),
+  }
+}
+
+fn vpn_shown() -> SavedConnection {
+  SavedConnection {
+    uuid: VPN_UUID.into(),
+    id: "work".into(),
+    kind: "vpn".into(),
+    settings: serde_json::json!({
+      "connection": { "id": "work", "uuid": VPN_UUID, "type": "vpn" },
+      "vpn": { "data": { "gateway": "vpn.example.org" } },
+    }),
+  }
+}
+
+fn dock_shown() -> SavedConnection {
+  SavedConnection {
+    uuid: DOCK_UUID.into(),
+    id: "dock".into(),
+    kind: "802-3-ethernet".into(),
+    settings: serde_json::json!({
+      "connection": { "id": "dock", "uuid": DOCK_UUID, "type": "802-3-ethernet" },
+    }),
+  }
+}
+
+/// Has `nm` list and read the saved connections in `saved`, as
+/// NetworkManager's settings service does.
+fn serve_saved(nm: &FakeService, saved: &Saved) {
+  let listed = Rc::clone(saved);
+  nm.on("ListConnections", move |call| {
+    let paths = listed.borrow().keys().cloned().collect::<Vec<_>>();
+    let paths = paths.into_iter().map(ObjectPath::try_from);
+    reply(call, &paths.collect::<Result<Vec<_>, _>>().ok()?)
+  });
+  let read = Rc::clone(saved);
+  nm.on("GetSettings", move |call| {
+    let path = call.header().path()?.to_string();
+    reply(call, read.borrow().get(&path)?)
+  });
+}
+
+/// The three saved connections, served by `nm`.
+fn saved(nm: &FakeService) -> Saved {
+  let saved = Rc::new(RefCell::new(BTreeMap::from([
+    (HOME_SAVED.to_owned(), home_saved()),
+    (VPN_SAVED.to_owned(), vpn_saved()),
+    (DOCK_SAVED.to_owned(), dock_saved()),
+  ])));
+  serve_saved(nm, &saved);
+  saved
+}
+
+/// How many calls `nm` got to `member`.
+fn calls_to(nm: &FakeService, member: &str) -> usize {
+  let calls = nm.calls.borrow();
+  calls
+    .iter()
+    .filter(|call| call.split(' ').next() == Some(member))
+    .count()
+}
+
+#[test]
+fn saved_connections_are_read_on_the_first_ask_without_secrets() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let nm = fake_nm(&mut shell, &bus);
+  let _saved = saved(&nm);
+  let network = shell.cx.network();
+  let devices = network.devices();
+  wait_for(&mut shell, "the devices", || {
+    !devices.get_untracked().is_empty()
+  });
+  shell.run_until(Instant::now() + Duration::from_millis(100));
+  assert_eq!(calls_to(&nm, "ListConnections"), 0, "not asked yet");
+
+  let list = network.saved_connections();
+  wait_for(&mut shell, "the saved connections", || {
+    list.get_untracked().len() == 3
+  });
+  assert_eq!(
+    list.get_untracked(),
+    [home_shown(), vpn_shown(), dock_shown()],
+    "in NetworkManager's numbering"
+  );
+  let again = shell.cx.network().saved_connections();
+  shell.run_until(Instant::now() + Duration::from_millis(100));
+  assert_eq!(again.get_untracked().len(), 3);
+  assert_eq!(calls_to(&nm, "ListConnections"), 1, "read once");
+}
+
+#[test]
+fn saved_connections_follow_networkmanager() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let nm = fake_nm(&mut shell, &bus);
+  let saved = saved(&nm);
+  let list = shell.cx.network().saved_connections();
+  wait_for(&mut shell, "the saved connections", || {
+    list.get_untracked().len() == 3
+  });
+
+  saved
+    .borrow_mut()
+    .insert(HOME_SAVED.to_owned(), home_saved_renamed());
+  nm.emit(&mut shell, HOME_SAVED, SAVED, "Updated", ());
+  wait_for(&mut shell, "the new name", || {
+    list.get_untracked()[0].id == "home 5G"
+  });
+
+  let attic = "/org/freedesktop/NetworkManager/Settings/11";
+  let attic_saved = settings(vec![about("attic", "a77c", "802-11-wireless")]);
+  saved.borrow_mut().insert(attic.to_owned(), attic_saved);
+  let path = ObjectPath::try_from(attic).expect("a path");
+  nm.emit(
+    &mut shell,
+    SETTINGS_PATH,
+    SETTINGS,
+    "NewConnection",
+    (path,),
+  );
+  wait_for(&mut shell, "the attic", || list.get_untracked().len() == 4);
+  assert_eq!(list.get_untracked()[3].id, "attic");
+
+  saved.borrow_mut().remove(VPN_SAVED);
+  let path = ObjectPath::try_from(VPN_SAVED).expect("a path");
+  let removed = "ConnectionRemoved";
+  nm.emit(&mut shell, SETTINGS_PATH, SETTINGS, removed, (path,));
+  wait_for(&mut shell, "no VPN", || list.get_untracked().len() == 3);
+  assert!(
+    list
+      .get_untracked()
+      .iter()
+      .all(|saved| saved.uuid != VPN_UUID)
+  );
+
+  nm.leave(&mut shell);
+  wait_for(&mut shell, "nothing", || list.get_untracked().is_empty());
+  let _again = fake_nm_with(&mut shell, &bus, |nm| drop(self::saved(nm)));
+  wait_for(&mut shell, "everything again", || {
+    list.get_untracked() == [home_shown(), vpn_shown(), dock_shown()]
+  });
+}
+
+/// `home_saved`, renamed.
+fn home_saved_renamed() -> HashMap<String, crate::dbus::Props> {
+  let mut home = home_saved();
+  let id = Variant::from("home 5G").try_to_owned().expect("owned");
+  home
+    .get_mut("connection")
+    .expect("a connection group")
+    .insert("id".to_owned(), id);
+  home
+}
+
+#[test]
+fn at_most_256_saved_connections_are_read_the_first_by_number() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let nm = fake_nm(&mut shell, &bus);
+  let saved = (1..=260).map(|n| {
+    let about = about(&format!("c{n}"), &format!("uuid-{n}"), "vpn");
+    (format!("{SETTINGS_PATH}/{n}"), settings(vec![about]))
+  });
+  let saved = Rc::new(RefCell::new(saved.collect::<BTreeMap<_, _>>()));
+  serve_saved(&nm, &saved);
+  let list = shell.cx.network().saved_connections();
+  wait_for(&mut shell, "the saved connections", || {
+    !list.get_untracked().is_empty()
+  });
+  let list = list.get_untracked();
+  assert_eq!(list.len(), 256);
+  assert_eq!(list[9].id, "c10");
+  assert_eq!(list[255].id, "c256");
+  assert_eq!(calls_to(&nm, "GetSettings"), 256);
+}
+
+#[test]
+fn settings_past_1_mib_and_replies_past_64_kib_are_left_out() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let nm = fake_nm(&mut shell, &bus);
+  // Each with a certificate of 60,000 bytes inside, as 802.1X may keep,
+  // and the third's too big.
+  let saved = (1..=21).map(|n| {
+    let size = if n == 3 { 70_000 } else { 60_000 };
+    let cert = ("ca-cert", Variant::from(vec![b'x'; size]));
+    let about = about(&format!("c{n}"), &format!("uuid-{n}"), "802-11-wireless");
+    let groups = vec![about, ("802-1x", vec![cert])];
+    (format!("{SETTINGS_PATH}/{n}"), settings(groups))
+  });
+  let saved = Rc::new(RefCell::new(saved.collect::<BTreeMap<_, _>>()));
+  serve_saved(&nm, &saved);
+  let list = shell.cx.network().saved_connections();
+  let logs = capture_logs(|| {
+    wait_for(&mut shell, "the saved connections", || {
+      !list.get_untracked().is_empty()
+    });
+  });
+  let list = list.get_untracked();
+  assert_eq!(list.len(), 20, "the big one left out");
+  assert_eq!(list[2].id, "c4");
+  // 17 replies of 60,148 bytes fit in 1 MiB, and an 18th doesn't.
+  let kept = list.iter().take_while(|saved| !saved.settings.is_null());
+  assert_eq!(kept.count(), 17, "{logs}");
+  assert_eq!(list[16].settings["802-1x"]["ca-cert"][59_999], 120);
+  assert!(list[17..].iter().all(|saved| saved.settings.is_null()));
+  assert_eq!(list[19].uuid, "uuid-21", "still listed");
+  assert!(logs.contains("too big"), "{logs}");
+  assert!(logs.contains("past 1 MiB"), "{logs}");
+}
+
+#[test]
+fn dbus_values_read_as_plain_json() {
+  use super::saved::json;
+  use serde_json::json;
+
+  let nested = Variant::Variant(Box::new(Variant::from(7u32)));
+  let path = Variant::from(ObjectPath::try_from("/a/b").expect("a path"));
+  let signature = Variant::from(zbus::Signature::try_from("a{sv}").expect("a signature"));
+  let numbers = HashMap::from([(1u32, "one")]);
+  let structure = Variant::from((1u8, "two", vec![3i16]));
+  let values = [
+    (Variant::from(1.5f64), json!(1.5)),
+    (Variant::from(f64::NAN), json!(null)),
+    (Variant::from(u64::MAX), json!(u64::MAX)),
+    (Variant::from(i16::MIN), json!(i16::MIN)),
+    (nested, json!(7)),
+    (path, json!("/a/b")),
+    (signature, json!("a{sv}")),
+    (Variant::from(numbers), json!({ "1": "one" })),
+    (structure, json!([1, "two", [3]])),
+  ];
+  for (value, expected) in values {
+    assert_eq!(json(&value), expected, "{value:?}");
+  }
+}
+
+#[test]
+fn saved_connections_ask_the_bus_only_for_their_own_signals() {
+  use crate::dbus::Daemon;
+
+  let rules = super::saved::SavedConnections::rules();
+  assert_eq!(
+    rules,
+    [
+      format!("type='signal',sender='{NM}',path='{SETTINGS_PATH}',interface='{SETTINGS}'"),
+      format!("type='signal',sender='{NM}',interface='{SAVED}',member='Updated'"),
+    ]
+  );
 }

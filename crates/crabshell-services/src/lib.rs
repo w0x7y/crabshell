@@ -68,8 +68,8 @@ pub use greetd::{GreetMessage, GreetState, Greetd};
 pub use hyprland::{Hyprland, HyprlandEvent, HyprlandMonitor, HyprlandToplevel, HyprlandWorkspace};
 pub use mpris::{LoopStatus, Mpris, PlaybackStatus, Player};
 pub use network::{
-  ConnectionFailReason, Connectivity, Network, NetworkDevice, NetworkKind, NetworkState, WifiMode,
-  WifiNetwork, WifiSecurity,
+  ConnectionFailReason, Connectivity, Network, NetworkDevice, NetworkKind, NetworkState,
+  SavedConnection, WifiMode, WifiNetwork, WifiSecurity,
 };
 pub use notifications::{CloseReason, Notification, Notifications, Timeout, Urgency};
 pub use pam::{Pam, PamError, PamMessage, PamResult, PamState};

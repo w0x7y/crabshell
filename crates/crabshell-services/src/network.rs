@@ -1,6 +1,7 @@
-//! Network devices and Wi-Fi networks from NetworkManager, on the system
-//! bus.
+//! Network devices, Wi-Fi networks and saved connections from
+//! NetworkManager, on the system bus.
 
+mod saved;
 #[cfg(test)]
 mod tests;
 
@@ -14,6 +15,9 @@ use std::sync::Once;
 use crabshell_reactive::{ReadSignal, Signal};
 use crabshell_ui::Cx;
 use zbus::{Array, Connection, Message, ObjectPath, OwnedObjectPath, Variant};
+
+pub use saved::SavedConnection;
+use saved::SavedConnections;
 
 use crate::Shared;
 use crate::dbus::{self, CALL_TIMEOUT, Daemon, OBJECT_MANAGER, PROPERTIES, Props, set_changed};
@@ -258,6 +262,7 @@ pub struct Network {
   connectivity: ReadSignal<Connectivity>,
   devices: ReadSignal<Vec<NetworkDevice>>,
   wifi_networks: ReadSignal<Vec<WifiNetwork>>,
+  saved_connections: ReadSignal<Vec<SavedConnection>>,
 }
 
 impl Network {
@@ -387,6 +392,21 @@ impl Network {
     self.call(device, DEVICE, "Disconnect", ());
   }
 
+  /// The connections NetworkManager saved, in its numbering, at most
+  /// 256. NetworkManager is asked for them on the first call and
+  /// followed from then on, so a config that never lists them reads
+  /// none. Empty while it isn't running.
+  pub fn saved_connections(&self) -> ReadSignal<Vec<SavedConnection>> {
+    let saved = self.service.as_ref().and_then(|service| {
+      let state = service.state.borrow();
+      Some(Rc::clone(&state.as_ref()?.saved))
+    });
+    if let Some(saved) = saved {
+      saved.follow();
+    }
+    self.saved_connections
+  }
+
   /// Calls `method` on NetworkManager's object at `path`, and logs a
   /// refusal, without the body.
   fn call<B>(&self, path: &str, interface: &'static str, method: &'static str, body: B)
@@ -427,6 +447,7 @@ pub(crate) fn network(cx: &Cx) -> Network {
       connectivity: cx.signal(Connectivity::Unknown).read_only(),
       devices: cx.signal(Vec::new()).read_only(),
       wifi_networks: cx.signal(Vec::new()).read_only(),
+      saved_connections: cx.signal(Vec::new()).read_only(),
     };
   };
   service.start()
@@ -443,6 +464,8 @@ struct State {
   connectivity: Signal<Connectivity>,
   devices: Signal<Vec<NetworkDevice>>,
   wifi_networks: Signal<Vec<WifiNetwork>>,
+  /// The saved connections, followed apart once a config lists them.
+  saved: Rc<SavedConnections>,
   /// NetworkManager's objects that this service reads, by path.
   objects: BTreeMap<String, Object>,
   /// The bus, while NetworkManager runs, for the methods.
@@ -459,6 +482,7 @@ impl State {
       connectivity: self.connectivity.read_only(),
       devices: self.devices.read_only(),
       wifi_networks: self.wifi_networks.read_only(),
+      saved_connections: self.saved.list.read_only(),
     }
   }
 }
@@ -711,6 +735,7 @@ impl NetworkService {
       connectivity: root.signal(Connectivity::Unknown),
       devices: root.signal(Vec::new()),
       wifi_networks: root.signal(Vec::new()),
+      saved: SavedConnections::new(Rc::clone(&self.shared)),
       objects: BTreeMap::new(),
       connection: None,
       generation: 0,
