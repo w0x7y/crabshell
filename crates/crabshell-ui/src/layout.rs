@@ -54,6 +54,8 @@ impl Tree {
     if self.needs_place && !self.needs_layout {
       self.place(root, Point::default(), &mut Vec::new(), text.font_system());
       self.needs_place = false;
+      // A drag holds the hover, but what it would drop on may have moved.
+      self.drop_after_place();
       return;
     }
     for shown in std::mem::take(&mut self.shown_since_layout) {

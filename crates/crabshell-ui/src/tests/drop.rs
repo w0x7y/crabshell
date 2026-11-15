@@ -381,3 +381,47 @@ fn a_target_whose_on_drop_panicked_reports_no_drop_and_takes_no_more() {
   let end = *drags.borrow().last().expect("the second drag ended");
   assert_eq!((end.phase, end.dropped), (DragPhase::End, false));
 }
+
+#[test]
+fn a_target_sliding_out_from_under_a_still_pointer_lets_go() {
+  use std::time::{Duration, Instant};
+
+  use crate::{Transition, advance_animations, animating};
+
+  let mut h = Harness::new();
+  let items = h.cx.signal(vec![1, 2]);
+  let over: Vec<Signal<bool>> = (0..3).map(|_| h.cx.signal(false)).collect();
+  let drops = Drops::default();
+  let (targets, kept) = (over.clone(), Rc::clone(&drops));
+  let row = Row::new()
+    .align(Align::Start)
+    .child(Button::new(square()).drag_data(Some(7u32)))
+    .child(square())
+    .children_keyed(
+      move || items.get(),
+      |n| *n,
+      move |_cx, n| target(&kept, targets[n.get_untracked() as usize]),
+    )
+    .displaced(Transition::new(100));
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+  // Target 2 is at 60 to 80.
+  drag_to(&window, Point::new(65.0, 5.0));
+  assert!(over[2].get_untracked());
+
+  // 2 moves to 40 to 60, starting from where it is drawn.
+  items.set(vec![2]);
+  h.frame(&window);
+  assert!(
+    over[2].get_untracked(),
+    "it is still drawn under the pointer"
+  );
+  let start = Instant::now();
+  for ms in [0, 50, 100] {
+    advance_animations(start + Duration::from_millis(ms));
+    h.frame(&window);
+  }
+  assert!(!animating());
+  assert!(!over[2].get_untracked(), "it slid away from the pointer");
+  window.pointer_button(PointerButton::Left, false);
+  assert!(drops.borrow().is_empty());
+}

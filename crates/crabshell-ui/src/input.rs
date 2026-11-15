@@ -598,6 +598,14 @@ impl Tree {
     self.pointer.set_drop_over(over);
   }
 
+  /// Finds what a drag would drop on again after a pass that only moved
+  /// where things are drawn, as a slide does under a still pointer.
+  pub(crate) fn drop_after_place(&mut self) {
+    if self.pointer.pressed.is_some_and(|press| press.dragging) {
+      self.update_drop();
+    }
+  }
+
   /// Whether button `id` drags: it has `on_drag` or `drag_data`.
   fn drags(&self, id: NodeId) -> bool {
     let carries = matches!(
