@@ -749,3 +749,60 @@ fn a_panicking_enabled_or_cursor_binding_is_logged_and_the_button_still_clicks()
     "{logs}"
   );
 }
+
+#[test]
+fn every_new_handler_and_the_focus_binding_is_logged_when_it_panics() {
+  let mut h = Harness::new();
+  let clicks = Counter::default();
+  let counted = clicks.clone();
+  let row = Row::new()
+    .align(Align::Start)
+    .child(Button::new(square()).on_release(|_| panic!("release failure")))
+    .child(Button::new(square()).on_double_click(|_| panic!("double failure")))
+    .child(Button::new(square()).on_back(|_| panic!("back failure")))
+    .child(Button::new(square()).on_forward(|_| panic!("forward failure")))
+    .child(Button::new(square()).on_wheel(|_, _| panic!("wheel failure")))
+    .child(Button::new(square()).focus(|| -> bool { panic!("focus failure") }))
+    .child(Button::new(square()).on_click(move |_| counted.hit()));
+  let logs = capture_logs(|| {
+    let window = h.window(h.panel().child(row), 200.0, 30.0);
+    window.pointer_motion(Point::new(5.0, 5.0));
+    click_at(&window, 0);
+    window.pointer_motion(Point::new(25.0, 5.0));
+    click_at(&window, 1000);
+    click_at(&window, 1200);
+    window.pointer_motion(Point::new(45.0, 5.0));
+    window.pointer_button(PointerButton::Back, true);
+    window.pointer_button(PointerButton::Back, false);
+    window.pointer_motion(Point::new(65.0, 5.0));
+    window.pointer_button(PointerButton::Forward, true);
+    window.pointer_button(PointerButton::Forward, false);
+    window.pointer_motion(Point::new(85.0, 5.0));
+    window.pointer_scroll(wheel(120));
+    window.pointer_motion(Point::new(125.0, 5.0));
+    click_at(&window, 5000);
+  });
+  for (n, name) in [
+    (0, "on_release"),
+    (1, "on_double_click"),
+    (2, "on_back"),
+    (3, "on_forward"),
+    (4, "on_wheel"),
+  ] {
+    assert!(
+      logs.contains(&format!(
+        "handler PanelWindow[DP-1]/Row/Button[{n}].{name} panicked and is disabled"
+      )),
+      "{logs}"
+    );
+  }
+  assert!(
+    logs.contains("effect PanelWindow[DP-1]/Row/Button[5].focus panicked and is disabled"),
+    "{logs}"
+  );
+  assert_eq!(
+    clicks.get(),
+    1,
+    "the shell runs on and the last button clicks"
+  );
+}

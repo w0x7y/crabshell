@@ -819,6 +819,8 @@ impl Button {
   /// it, or the button goes. Unlike `hover_style`, which only the deepest
   /// button under the pointer shows, an outer button stays hovered while
   /// the pointer is over one inside it, so it can show controls on hover.
+  /// A drag of this button or one inside it keeps it hovered until the
+  /// release.
   pub fn hovered(mut self, hovered: Signal<bool>) -> Button {
     self.button.hovered = Some(hovered);
     self
@@ -950,8 +952,10 @@ impl Button {
 
   /// Shares where the pointer is: the button writes `position`, in its
   /// own coordinates with (0, 0) at its top-left, while the pointer is
-  /// over it or anything inside it or dragging it, and `None` when it
-  /// leaves. It is written only on a change.
+  /// over it or anything inside it, and `None` when it leaves. While a
+  /// button inside it, or this one, is dragged, it follows the pointer
+  /// wherever it goes, even outside the button. It is written only on a
+  /// change.
   pub fn pointer_position(mut self, position: Signal<Option<Point>>) -> Button {
     self.button.position = Some(position);
     self
