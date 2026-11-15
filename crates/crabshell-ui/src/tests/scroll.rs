@@ -531,3 +531,46 @@ fn dragging_the_bar_scrolls_and_a_press_beside_it_pages() {
   window.pointer_button_at(PointerButton::Left, false, 250);
   assert_eq!(clicks.get(), 1);
 }
+
+#[test]
+fn a_button_drawn_over_a_view_keeps_its_press_from_the_bar_and_a_drag() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0);
+  let (left, right) = (Counter::default(), Counter::default());
+  let (l, r) = (left.clone(), right.clone());
+  let corner = |align| Style::new().align_self(Align::Start).justify_self(align);
+  let overlay = crate::Stack::new()
+    .child(
+      ScrollView::new(Icon::new("x").size(400))
+        .offset(offset)
+        .scroll_bar(Style::new())
+        .style(Style::new().width(40.0).height(100.0)),
+    )
+    .child(
+      Button::new(Icon::new("x").size(10))
+        .style(corner(Align::Start))
+        .on_click(move |_| l.hit()),
+    )
+    .child(
+      Button::new(Icon::new("x").size(10))
+        .style(corner(Align::End))
+        .on_click(move |_| r.hit()),
+    );
+  let row = Row::new().align(Align::Start).child(overlay);
+  let window = h.window(h.panel().child(row), 100.0, 200.0);
+  // The close button in the corner sits in the bar's track, below the
+  // handle once the view is scrolled.
+  offset.set(300.0);
+  h.frame(&window);
+  window.pointer_motion(Point::new(37.0, 5.0));
+  window.pointer_button_at(PointerButton::Left, true, 0);
+  window.pointer_button_at(PointerButton::Left, false, 50);
+  assert_eq!((right.get(), offset.get()), (1, 300.0), "no page");
+  // A move past the threshold on the other button doesn't drag the view.
+  window.pointer_motion_at(Point::new(5.0, 5.0), 100);
+  window.pointer_button_at(PointerButton::Left, true, 100);
+  window.pointer_motion_at(Point::new(5.0, 40.0), 200);
+  window.pointer_motion_at(Point::new(5.0, 5.0), 300);
+  window.pointer_button_at(PointerButton::Left, false, 400);
+  assert_eq!((left.get(), offset.get()), (1, 300.0), "no drag");
+}

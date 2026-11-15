@@ -503,7 +503,8 @@ impl Tree {
   /// A left press at `at`: the scroll views under it stop where they
   /// are, and unless it is on a button that drags, a move may drag one.
   pub(crate) fn press_views(&mut self, at: Point, drags: bool) {
-    let views = self.scroll_views_at(at);
+    let mut views = self.scroll_views_at(at);
+    views.retain(|&id| self.press_reaches(id));
     for &id in &views {
       self.update_scroll(id, |scroll| {
         scroll.halt();
@@ -599,6 +600,9 @@ impl Tree {
   /// a bar took it.
   pub(crate) fn press_bar(&mut self, at: Point) -> bool {
     for id in self.scroll_views_at(at) {
+      if !self.press_reaches(id) {
+        continue;
+      }
       let Some(point) = self.local_point(id, at) else {
         continue;
       };
@@ -638,6 +642,15 @@ impl Tree {
       return true;
     }
     false
+  }
+
+  /// Whether a press may go to scroll view `id`: nothing is hovered, or
+  /// what is lies inside the view, not drawn over it from outside.
+  fn press_reaches(&self, id: NodeId) -> bool {
+    self
+      .pointer
+      .hovered
+      .is_none_or(|hovered| self.path_to(hovered).contains(&id))
   }
 
   /// The pointer moved to `at` while dragging a bar's handle: the offset

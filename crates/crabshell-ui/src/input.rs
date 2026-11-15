@@ -294,7 +294,7 @@ struct Press {
 pub(crate) struct Pointer {
   pub(crate) position: Option<Point>,
   /// The button under the pointer.
-  hovered: Option<NodeId>,
+  pub(crate) hovered: Option<NodeId>,
   /// The buttons with a `hovered` signal that the pointer is inside: the
   /// hovered one and those around it.
   inside: Vec<(NodeId, Signal<bool>)>,
@@ -635,7 +635,7 @@ impl Tree {
   }
 
   /// The nodes from the root down to `id`, both included.
-  fn path_to(&self, id: NodeId) -> Vec<NodeId> {
+  pub(crate) fn path_to(&self, id: NodeId) -> Vec<NodeId> {
     let mut path = vec![id];
     while let Some(parent) = path.last().and_then(|&id| self.taffy.parent(id)) {
       path.push(parent);
