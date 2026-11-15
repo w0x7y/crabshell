@@ -395,6 +395,8 @@ pub fn settle(event_loop: &mut EventLoop) {
 pub struct VirtualPointer {
   queue: EventQueue<Helper>,
   pointer: ZwlrVirtualPointerV1,
+  /// Event times count from here, as a real device's do.
+  started: Instant,
 }
 
 pub struct Helper;
@@ -429,18 +431,78 @@ impl VirtualPointer {
     queue
       .roundtrip(&mut Helper)
       .expect("the helper's roundtrip");
-    VirtualPointer { queue, pointer }
+    VirtualPointer {
+      queue,
+      pointer,
+      started: Instant::now(),
+    }
+  }
+
+  /// The left button, and the side buttons for back and forward, as
+  /// `button` takes them.
+  pub const LEFT: u32 = 0x110;
+  pub const SIDE: u32 = 0x113;
+  pub const EXTRA: u32 = 0x114;
+
+  /// Milliseconds since the pointer was made.
+  fn now(&self) -> u32 {
+    self.started.elapsed().as_millis() as u32
+  }
+
+  fn roundtrip(&mut self) {
+    self
+      .queue
+      .roundtrip(&mut Helper)
+      .expect("the helper's roundtrip");
   }
 
   /// Moves to `x`, `y` on a layout `width` by `height` logical pixels:
   /// the outputs' combined logical size.
   pub fn move_to(&mut self, x: u32, y: u32, (width, height): (u32, u32)) {
-    self.pointer.motion_absolute(0, x, y, width, height);
-    self.pointer.frame();
     self
-      .queue
-      .roundtrip(&mut Helper)
-      .expect("the helper's roundtrip");
+      .pointer
+      .motion_absolute(self.now(), x, y, width, height);
+    self.pointer.frame();
+    self.roundtrip();
+  }
+
+  /// Presses `button`, such as [`LEFT`](Self::LEFT), and holds it.
+  #[allow(dead_code, reason = "crabshell's tests don't use it")]
+  pub fn press(&mut self, button: u32) {
+    self.button(button, wl_pointer::ButtonState::Pressed);
+  }
+
+  /// Releases a held `button`.
+  #[allow(dead_code, reason = "crabshell's tests don't use it")]
+  pub fn release(&mut self, button: u32) {
+    self.button(button, wl_pointer::ButtonState::Released);
+  }
+
+  fn button(&mut self, button: u32, state: wl_pointer::ButtonState) {
+    self.pointer.button(self.now(), button, state);
+    self.pointer.frame();
+    self.roundtrip();
+  }
+
+  /// Fingers on a touchpad scroll `x` and `y` logical pixels, right and
+  /// down when positive, and lift when `lift` says.
+  #[allow(dead_code, reason = "crabshell's tests don't use it")]
+  pub fn swipe(&mut self, x: f64, y: f64, lift: bool) {
+    let time = self.now();
+    self.pointer.axis_source(wl_pointer::AxisSource::Finger);
+    for (axis, value) in [
+      (wl_pointer::Axis::HorizontalScroll, x),
+      (wl_pointer::Axis::VerticalScroll, y),
+    ] {
+      if value != 0.0 {
+        self.pointer.axis(time, axis, value);
+      }
+      if lift {
+        self.pointer.axis_stop(time, axis);
+      }
+    }
+    self.pointer.frame();
+    self.roundtrip();
   }
 
   /// Turns a mouse wheel by `notches`, down when positive as Wayland
@@ -452,12 +514,9 @@ impl VirtualPointer {
     // 15 is libinput's length of one notch.
     self
       .pointer
-      .axis_discrete(0, axis, 15.0 * f64::from(notches), notches);
+      .axis_discrete(self.now(), axis, 15.0 * f64::from(notches), notches);
     self.pointer.frame();
-    self
-      .queue
-      .roundtrip(&mut Helper)
-      .expect("the helper's roundtrip");
+    self.roundtrip();
   }
 
   /// Removes the virtual pointer, so the seat has none.
@@ -472,18 +531,14 @@ impl VirtualPointer {
 
   /// Presses and releases the left button.
   pub fn click(&mut self) {
-    const BTN_LEFT: u32 = 0x110;
     for state in [
       wl_pointer::ButtonState::Pressed,
       wl_pointer::ButtonState::Released,
     ] {
-      self.pointer.button(0, BTN_LEFT, state);
+      self.pointer.button(self.now(), Self::LEFT, state);
       self.pointer.frame();
     }
-    self
-      .queue
-      .roundtrip(&mut Helper)
-      .expect("the helper's roundtrip");
+    self.roundtrip();
   }
 }
 

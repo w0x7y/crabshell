@@ -4074,3 +4074,215 @@ fn follow_the_bar(sized: bool) {
     width(platform) == before - 20
   });
 }
+
+/// A bar along the bottom of `output`, 40 pixels tall, with four
+/// 100-pixel buttons 10 apart that write what they get to `log`: one
+/// that drags, one held for a long press, one that double-clicks, and
+/// one for the side buttons and scrolling.
+fn pointer_bar(cx: &Cx, output: &str, log: &Rc<RefCell<Vec<String>>>) -> Window {
+  let note = |name: &'static str| {
+    let log = Rc::clone(log);
+    move |_: &Cx| log.borrow_mut().push(name.to_owned())
+  };
+  let (drags, wheels) = (Rc::clone(log), Rc::clone(log));
+  let size = Style::new()
+    .width(100.0)
+    .height(30.0)
+    .background(Color::hex("#89b4fa"));
+  let panel = PanelWindow::new(&Output::new(output))
+    .anchors(Edge::Bottom | Edge::Left | Edge::Right)
+    .height(40)
+    .style(Style::new().background(Color::hex("#1e1e2e")))
+    .child(
+      Row::new()
+        .gap(10)
+        .align(Align::Start)
+        .child(
+          Button::new(Spacer::new())
+            .style(size)
+            .on_click(note("drag click"))
+            .on_drag(move |_, drag| {
+              let (start, at) = (drag.start, drag.position);
+              drags.borrow_mut().push(format!(
+                "{:?} {},{} {},{}",
+                drag.phase, start.x, start.y, at.x, at.y
+              ));
+            }),
+        )
+        .child(
+          Button::new(Spacer::new())
+            .style(size)
+            .on_click(note("long click"))
+            .on_long_press(note("long")),
+        )
+        .child(
+          Button::new(Spacer::new())
+            .style(size)
+            .on_click(note("click"))
+            .on_double_click(note("double")),
+        )
+        .child(
+          Button::new(Spacer::new())
+            .style(size)
+            .on_back(note("back"))
+            .on_forward(note("forward"))
+            .on_wheel(move |_, wheel| {
+              wheels.borrow_mut().push(format!(
+                "wheel {:?} {} {} {} {}",
+                wheel.source, wheel.x.pixels, wheel.y.pixels, wheel.x.stop, wheel.y.stop
+              ));
+            }),
+        ),
+    );
+  Window::new(cx, panel)
+}
+
+/// The test bar on top and a [`pointer_bar`] below on a 1920×1080 output
+/// at scale 1, with a virtual pointer.
+struct Pointing {
+  shell: Shell,
+  pointer: VirtualPointer,
+  log: Rc<RefCell<Vec<String>>>,
+  /// The middle of each of the bottom bar's buttons, on the output.
+  spots: Vec<(u32, u32)>,
+  _cx: Cx,
+}
+
+fn pointing(sway: &Sway) -> Pointing {
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let mut shell = Shell::new(sway);
+  let pointer = VirtualPointer::new(sway);
+  shell.wait_for_bar("HEADLESS-1");
+  let cx = Cx::new(shell.runtime.new_owner());
+  let log = Rc::new(RefCell::new(Vec::new()));
+  let id = shell
+    .event_loop
+    .platform()
+    .add_window(pointer_bar(&cx, "HEADLESS-1", &log));
+  run_until(
+    &mut shell.event_loop,
+    "the bottom bar's frame",
+    |platform| {
+      platform
+        .window_info(id)
+        .is_some_and(|info| info.commits > 0)
+    },
+  );
+  settle(&mut shell.event_loop);
+  let platform = shell.event_loop.platform();
+  let (_, window) = platform
+    .windows()
+    .find(|(held, _)| *held == id)
+    .expect("the bottom bar is held");
+  let view = window.view();
+  let row = view.root().children().next().expect("the bar has a row");
+  let spots = row
+    .children()
+    .map(|button| {
+      let (x, y) = center(button.rect(), (0.0, 1040.0));
+      (x as u32, y as u32)
+    })
+    .collect();
+  drop(view);
+  Pointing {
+    shell,
+    pointer,
+    log,
+    spots,
+    _cx: cx,
+  }
+}
+
+const OUTPUT: (u32, u32) = (1920, 1080);
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_virtual_pointer_drags_a_button_out_of_the_window_and_back() {
+  let sway = Sway::start();
+  let mut p = pointing(&sway);
+  let (x, y) = p.spots[0];
+  assert_eq!((x, y), (50, 1055));
+  p.pointer.move_to(x, y, OUTPUT);
+  p.pointer.press(VirtualPointer::LEFT);
+  p.pointer.move_to(x + 30, y, OUTPUT);
+  // Far outside the bar: the compositor keeps sending the motion here
+  // while the button is held.
+  p.pointer.move_to(400, 800, OUTPUT);
+  p.pointer.move_to(60, y, OUTPUT);
+  p.pointer.release(VirtualPointer::LEFT);
+  let log = Rc::clone(&p.log);
+  run_until(&mut p.shell.event_loop, "the drag's end", |_| {
+    log.borrow().iter().any(|line| line.starts_with("End"))
+  });
+  settle(&mut p.shell.event_loop);
+  assert_eq!(
+    *log.borrow(),
+    [
+      "Start 50,15 80,15",
+      "Move 50,15 400,-240",
+      "Move 50,15 60,15",
+      "End 50,15 60,15",
+    ]
+  );
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn holding_the_button_runs_the_long_press_and_then_nothing_wakes() {
+  let sway = Sway::start();
+  let mut p = pointing(&sway);
+  let (x, y) = p.spots[1];
+  p.pointer.move_to(x, y, OUTPUT);
+  settle(&mut p.shell.event_loop);
+  p.pointer.press(VirtualPointer::LEFT);
+  let pressed = Instant::now();
+  let log = Rc::clone(&p.log);
+  run_until(&mut p.shell.event_loop, "the long press", |_| {
+    !log.borrow().is_empty()
+  });
+  let held = pressed.elapsed();
+  assert!(held >= Duration::from_millis(790), "after {held:?}");
+  p.pointer.release(VirtualPointer::LEFT);
+  settle(&mut p.shell.event_loop);
+  assert_eq!(*log.borrow(), ["long"], "the release doesn't click");
+  // Its timer isn't left armed: one dispatch sleeps the whole time.
+  sleeps_through(&mut p.shell.event_loop, Duration::from_secs(2));
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_double_click_side_buttons_and_a_sideways_swipe_reach_their_buttons() {
+  let sway = Sway::start();
+  let mut p = pointing(&sway);
+  let (x, y) = p.spots[2];
+  p.pointer.move_to(x, y, OUTPUT);
+  p.pointer.click();
+  p.pointer.click();
+  let log = Rc::clone(&p.log);
+  run_until(&mut p.shell.event_loop, "the double click", |_| {
+    log.borrow().len() == 2
+  });
+  assert_eq!(*log.borrow(), ["click", "double"]);
+  log.borrow_mut().clear();
+
+  let (x, y) = p.spots[3];
+  p.pointer.move_to(x, y, OUTPUT);
+  for button in [VirtualPointer::SIDE, VirtualPointer::EXTRA] {
+    p.pointer.press(button);
+    p.pointer.release(button);
+  }
+  p.pointer.swipe(30.0, 0.0, false);
+  p.pointer.swipe(0.0, 0.0, true);
+  run_until(&mut p.shell.event_loop, "the swipe's end", |_| {
+    log.borrow().len() == 4
+  });
+  assert_eq!(
+    *log.borrow(),
+    [
+      "back",
+      "forward",
+      "wheel Finger 30 0 false false",
+      "wheel Finger 0 0 true true",
+    ]
+  );
+}
