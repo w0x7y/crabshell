@@ -25,6 +25,7 @@ pub(super) const SET_SINK_MUTE: u32 = 39;
 pub(super) const SET_DEFAULT_SINK: u32 = 44;
 pub(super) const SET_DEFAULT_SOURCE: u32 = 45;
 pub(super) const SET_SINK_INPUT_VOLUME: u32 = 37;
+pub(super) const SET_SOURCE_VOLUME: u32 = 38;
 pub(super) const MOVE_SINK_INPUT: u32 = 67;
 pub(super) const SET_SINK_INPUT_MUTE: u32 = 69;
 
@@ -167,14 +168,26 @@ fn after_index(rest: &[u8]) -> (&str, &[u8]) {
   (name, &rest[end + 1..])
 }
 
-/// The sink name and channel volumes a `SET_SINK_VOLUME` asks for.
+/// The sink or source name and channel volumes a `SET_SINK_VOLUME` or
+/// `SET_SOURCE_VOLUME` asks for.
 pub(super) fn volumes_set(rest: &[u8]) -> (String, Vec<u32>) {
   let (name, volume) = after_index(rest);
+  (name.to_owned(), channel_volumes(volume))
+}
+
+/// The stream index and channel volumes a `SET_SINK_INPUT_VOLUME` asks
+/// for.
+pub(super) fn stream_volumes_set(rest: &[u8]) -> (u32, Vec<u32>) {
+  (u32_at(rest, 0), channel_volumes(&rest[5..]))
+}
+
+/// The channel volumes tagged `v` at the start of `volume`.
+fn channel_volumes(volume: &[u8]) -> Vec<u32> {
   assert_eq!(volume[0], b'v', "a channel volume");
   let channels = usize::from(volume[1]);
   let words = volume[2..].chunks(4).take(channels);
   let volumes = words.map(|word| u32::from_be_bytes(word.try_into().expect("4 bytes")));
-  (name.to_owned(), volumes.collect())
+  volumes.collect()
 }
 
 /// The sink name and mute a `SET_SINK_MUTE` asks for.

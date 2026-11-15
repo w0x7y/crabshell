@@ -9,14 +9,17 @@ use std::time::{Duration, Instant};
 use calloop::EventLoop;
 use crabshell_reactive::Runtime;
 use crabshell_ui::Cx;
+use libpulse_binding::channelmap::{Map, Position};
 use libpulse_binding::volume::{ChannelVolumes, Volume};
 
-use super::{AudioService, Event, Info, NodeInfo, SETTLE, Server, StreamInfo, changed, percent};
+use super::{
+  AudioChannel, AudioService, Event, Info, NodeInfo, SETTLE, Server, StreamInfo, changed, percent,
+};
 use crate::{Config, ServicesExt};
 use fake::{
   Client, FakePulse, GET_SERVER_INFO, GET_SINK_INFO, GET_SINK_INFO_LIST, GET_SINK_INPUT_INFO_LIST,
   GET_SOURCE_INFO_LIST, MOVE_SINK_INPUT, SET_DEFAULT_SINK, SET_DEFAULT_SOURCE, SET_SINK_INPUT_MUTE,
-  SET_SINK_INPUT_VOLUME, SET_SINK_MUTE, SET_SINK_VOLUME, SUBSCRIBE,
+  SET_SINK_INPUT_VOLUME, SET_SINK_MUTE, SET_SINK_VOLUME, SET_SOURCE_VOLUME, SUBSCRIBE,
 };
 
 mod fake;
@@ -757,15 +760,7 @@ fn stream_commands_name_their_stream_and_an_unknown_one_sends_nothing() {
   let fake = FakePulse::new("streams");
   let (shell, mut client) = connected(&fake);
   let audio = shell.cx.audio();
-  shell.send(Event::Streams(vec![StreamInfo {
-    index: 7,
-    app_name: "player".to_owned(),
-    title: "a song".to_owned(),
-    icon_name: String::new(),
-    sink: 3,
-    volumes: channels(&[level(50); 2]),
-    muted: false,
-  }]));
+  shell.send(Event::Streams(vec![stream_info(7, 3, &[level(50); 2])]));
   let streams = audio.streams().get_untracked();
   assert_eq!(streams.len(), 1);
   assert_eq!(streams[0].volume_percent, 50);
@@ -783,14 +778,44 @@ fn stream_commands_name_their_stream_and_an_unknown_one_sends_nothing() {
   assert!(moved.contains("headphones"), "{moved}");
 }
 
+/// A channel map with the first `channels` of front left, front right
+/// and the rest.
+fn front(channels: usize) -> Map {
+  use Position::{FrontCenter, FrontLeft, FrontRight, Lfe, RearLeft, RearRight};
+  map(&[FrontLeft, FrontRight, FrontCenter, Lfe, RearLeft, RearRight][..channels])
+}
+
+fn map(positions: &[Position]) -> Map {
+  let mut map = Map::default();
+  map.set_len(u8::try_from(positions.len()).expect("a few channels"));
+  map.get_mut().copy_from_slice(positions);
+  map
+}
+
 fn node_info(index: u32, name: &str, volumes: &[u32], monitor: bool) -> NodeInfo {
   NodeInfo {
     index,
     name: name.to_owned(),
     description: name.to_owned(),
     volumes: channels(volumes),
+    map: front(volumes.len()),
     muted: false,
     monitor,
+    monitor_source: Some(format!("{name}.monitor")),
+  }
+}
+
+/// A stream numbered `index` that plays to the sink numbered `sink`.
+fn stream_info(index: u32, sink: u32, volumes: &[u32]) -> StreamInfo {
+  StreamInfo {
+    index,
+    app_name: "player".to_owned(),
+    title: "a song".to_owned(),
+    icon_name: String::new(),
+    sink,
+    volumes: channels(volumes),
+    map: front(volumes.len()),
+    muted: false,
   }
 }
 
@@ -803,15 +828,7 @@ fn a_stream_names_its_sink_and_a_monitor_can_be_the_default_source() {
   shell.send(Event::Sinks(vec![node_info(
     3, "speakers", &[NORM; 2], false,
   )]));
-  shell.send(Event::Streams(vec![StreamInfo {
-    index: 7,
-    app_name: "player".to_owned(),
-    title: String::new(),
-    icon_name: String::new(),
-    sink: 3,
-    volumes: channels(&[NORM; 2]),
-    muted: false,
-  }]));
+  shell.send(Event::Streams(vec![stream_info(7, 3, &[NORM; 2])]));
   assert_eq!(audio.streams().get_untracked()[0].sink, "speakers");
 
   // Recording what plays: the default source is the sink's monitor,
@@ -838,4 +855,97 @@ fn setting_a_volume_keeps_the_balance() {
   let set = super::at(channels(&[level(80), level(100)]), 50);
   let percents: Vec<u32> = raw(set).into_iter().map(|v| percent(Volume(v))).collect();
   assert_eq!(percents, [40, 60]);
+}
+
+#[test]
+fn pulse_positions_take_quickshell_names() {
+  use AudioChannel as C;
+  let cases = [
+    (Position::Mono, C::Mono),
+    (Position::FrontLeft, C::FrontLeft),
+    (Position::FrontRight, C::FrontRight),
+    (Position::RearCenter, C::RearCenter),
+    (Position::Lfe, C::LowFrequencyEffects),
+    (Position::FrontLeftOfCenter, C::FrontLeftCenter),
+    (Position::FrontRightOfCenter, C::FrontRightCenter),
+    (Position::SideRight, C::SideRight),
+    (Position::Aux0, C::Aux(0)),
+    (Position::Aux31, C::Aux(31)),
+    (Position::TopCenter, C::TopCenter),
+    (Position::TopRearCenter, C::TopRearCenter),
+    (Position::Invalid, C::Unknown),
+  ];
+  for (position, channel) in cases {
+    assert_eq!(super::channel(position), channel, "{position:?}");
+  }
+}
+
+#[test]
+fn nodes_and_streams_show_each_channel() {
+  let _one = one_at_a_time();
+  let fake = FakePulse::new("channels");
+  let (shell, _client) = connected(&fake);
+  let audio = shell.cx.audio();
+  shell.send(Event::Sinks(vec![node_info(
+    3,
+    "speakers",
+    &[level(80), level(40)],
+    false,
+  )]));
+  let sink = &audio.sinks().get_untracked()[0];
+  assert_eq!(sink.volume_percent, 60);
+  assert_eq!(sink.volumes, [80, 40]);
+  assert_eq!(
+    sink.channels,
+    [AudioChannel::FrontLeft, AudioChannel::FrontRight]
+  );
+  // A map shorter than the volumes, as a server could send: the rest
+  // are unknown, so the lists stay the same length.
+  let stream = StreamInfo {
+    map: front(1),
+    ..stream_info(7, 3, &[level(10), level(20), level(30)])
+  };
+  shell.send(Event::Streams(vec![stream]));
+  let stream = &audio.streams().get_untracked()[0];
+  assert_eq!(stream.volumes, [10, 20, 30]);
+  let unknown = AudioChannel::Unknown;
+  assert_eq!(stream.channels, [AudioChannel::FrontLeft, unknown, unknown]);
+}
+
+#[test]
+fn each_channel_is_set_and_a_list_of_another_length_sends_nothing() {
+  let _one = one_at_a_time();
+  let fake = FakePulse::new("set-channels");
+  let (shell, mut client) = connected(&fake);
+  let audio = shell.cx.audio();
+  shell.send(Event::Sinks(vec![node_info(
+    3, "speakers", &[NORM; 2], false,
+  )]));
+  shell.send(Event::Sources(vec![node_info(
+    1,
+    "microphone",
+    &[NORM; 2],
+    false,
+  )]));
+  shell.send(Event::Streams(vec![stream_info(7, 3, &[NORM; 2])]));
+  audio.set_sink_volumes("speakers", &[30, 150]);
+  audio.set_sink_volumes("speakers", &[30]);
+  audio.set_sink_volumes("nowhere", &[30, 30]);
+  audio.set_source_volumes("microphone", &[10, 20]);
+  audio.set_stream_volumes(7, &[40, 60]);
+  audio.set_stream_volumes(7, &[40, 60, 80]);
+  audio.set_stream_volumes(8, &[40, 60]);
+  let sent = client.commands();
+  let numbers: Vec<u32> = sent.iter().map(|(command, _)| *command).collect();
+  assert_eq!(
+    numbers,
+    [SET_SINK_VOLUME, SET_SOURCE_VOLUME, SET_SINK_INPUT_VOLUME]
+  );
+  // Each at most 100%.
+  let expected = ("speakers".to_owned(), vec![level(30), NORM]);
+  assert_eq!(fake::volumes_set(&sent[0].1), expected);
+  let expected = ("microphone".to_owned(), vec![level(10), level(20)]);
+  assert_eq!(fake::volumes_set(&sent[1].1), expected);
+  let expected = (7, vec![level(40), level(60)]);
+  assert_eq!(fake::stream_volumes_set(&sent[2].1), expected);
 }

@@ -17,6 +17,7 @@ use calloop::timer::TimeoutAction;
 use crabshell_reactive::{ReadSignal, Signal};
 use crabshell_ui::Cx;
 use libpulse_binding::callbacks::ListResult;
+use libpulse_binding::channelmap::{Map, Position};
 use libpulse_binding::context::introspect::{
   Introspector, ServerInfo, SinkInfo, SinkInputInfo, SourceInfo,
 };
@@ -78,6 +79,12 @@ pub struct AudioNode {
   pub description: String,
   /// The average of its channels' volumes, as [`Sink`]'s.
   pub volume_percent: u32,
+  /// Each channel's volume, rounded as `volume_percent` is, in the order
+  /// of `channels`.
+  pub volumes: Vec<u32>,
+  /// Where each channel plays, such as [`AudioChannel::FrontLeft`]. As
+  /// long as `volumes`.
+  pub channels: Vec<AudioChannel>,
   /// Whether it is muted.
   pub muted: bool,
 }
@@ -97,8 +104,42 @@ pub struct AudioStream {
   pub sink: String,
   /// The average of its channels' volumes, as [`Sink`]'s.
   pub volume_percent: u32,
+  /// Each channel's volume, as [`AudioNode::volumes`].
+  pub volumes: Vec<u32>,
+  /// Where each channel plays, as [`AudioNode::channels`].
+  pub channels: Vec<AudioChannel>,
   /// Whether it is muted.
   pub muted: bool,
+}
+
+/// Where a channel plays, as PulseAudio's channel map names it, with
+/// Quickshell's names for `PwAudioChannel`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(missing_docs, reason = "each name says where it plays")]
+pub enum AudioChannel {
+  Mono,
+  FrontLeft,
+  FrontRight,
+  FrontCenter,
+  RearCenter,
+  RearLeft,
+  RearRight,
+  LowFrequencyEffects,
+  FrontLeftCenter,
+  FrontRightCenter,
+  SideLeft,
+  SideRight,
+  /// An auxiliary channel, 0 to 31.
+  Aux(u8),
+  TopCenter,
+  TopFrontLeft,
+  TopFrontRight,
+  TopFrontCenter,
+  TopRearLeft,
+  TopRearRight,
+  TopRearCenter,
+  /// A position the server didn't give.
+  Unknown,
 }
 
 /// The audio service, from `cx.audio()`. Cloning it is cheap.
@@ -171,6 +212,15 @@ impl Audio {
     self.command(move |pulse| pulse.set_node_volume(Kind::Sink, &name, percent));
   }
 
+  /// Sets each channel of the sink called `name` to its own percent, at
+  /// most 100, in the order of [`AudioNode::channels`], as a balance
+  /// slider does. A list of another length than the sink's channels is
+  /// logged and not sent.
+  pub fn set_sink_volumes(&self, name: &str, percents: &[u32]) {
+    let (name, percents) = (name.to_owned(), percents.to_vec());
+    self.command(move |pulse| pulse.set_node_volumes(Kind::Sink, &name, &percents));
+  }
+
   /// Mutes the sink called `name`, or unmutes it.
   pub fn set_sink_mute(&self, name: &str, muted: bool) {
     let name = name.to_owned();
@@ -184,6 +234,13 @@ impl Audio {
     self.command(move |pulse| pulse.set_node_volume(Kind::Source, &name, percent));
   }
 
+  /// Sets each channel of the source called `name`, as
+  /// [`set_sink_volumes`](Self::set_sink_volumes) does a sink's.
+  pub fn set_source_volumes(&self, name: &str, percents: &[u32]) {
+    let (name, percents) = (name.to_owned(), percents.to_vec());
+    self.command(move |pulse| pulse.set_node_volumes(Kind::Source, &name, &percents));
+  }
+
   /// Mutes the source called `name`, or unmutes it, as a microphone
   /// button does.
   pub fn set_source_mute(&self, name: &str, muted: bool) {
@@ -195,6 +252,13 @@ impl Audio {
   /// most 100.
   pub fn set_stream_volume(&self, index: u32, percent: u32) {
     self.command(move |pulse| pulse.set_stream_volume(index, percent));
+  }
+
+  /// Sets each channel of the stream numbered `index`, as
+  /// [`set_sink_volumes`](Self::set_sink_volumes) does a sink's.
+  pub fn set_stream_volumes(&self, index: u32, percents: &[u32]) {
+    let percents = percents.to_vec();
+    self.command(move |pulse| pulse.set_stream_volumes(index, &percents));
   }
 
   /// Mutes the stream numbered `index`, or unmutes it.
@@ -552,17 +616,23 @@ pub(crate) struct NodeInfo {
   name: String,
   description: String,
   volumes: ChannelVolumes,
+  map: Map,
   muted: bool,
   /// A sink's monitor: a source, but not one listed.
   monitor: bool,
+  /// The name of a sink's monitor, which a peak meter records.
+  monitor_source: Option<String>,
 }
 
 impl NodeInfo {
   fn node(&self) -> AudioNode {
+    let (volumes, channels) = each_channel(&self.volumes, &self.map);
     AudioNode {
       name: self.name.clone(),
       description: self.description.clone(),
       volume_percent: percent(self.volumes.avg()),
+      volumes,
+      channels,
       muted: self.muted,
     }
   }
@@ -577,6 +647,7 @@ pub(crate) struct StreamInfo {
   icon_name: String,
   sink: u32,
   volumes: ChannelVolumes,
+  map: Map,
   muted: bool,
 }
 
@@ -592,6 +663,7 @@ impl StreamInfo {
       icon_name: property(APPLICATION_ICON_NAME),
       sink: info.sink,
       volumes: info.volume,
+      map: info.channel_map,
       muted: info.mute,
     }
   }
@@ -739,9 +811,14 @@ impl Pulse {
             &info.name,
             &info.description,
             info.volume,
+            info.channel_map,
             info.mute,
           );
-          found.extend(read);
+          let monitor_source = info.monitor_source_name.as_deref().map(str::to_owned);
+          found.extend(read.map(|node| NodeInfo {
+            monitor_source,
+            ..node
+          }));
         }
         ListResult::End => {
           let _ = sender.send((generation, Event::Sinks(std::mem::take(&mut found))));
@@ -764,6 +841,7 @@ impl Pulse {
             &info.name,
             &info.description,
             info.volume,
+            info.channel_map,
             info.mute,
           );
           let monitor = info.monitor_of_sink.is_some();
@@ -813,14 +891,19 @@ impl Pulse {
     let streams = streams
       .iter()
       .take(MAX_NODES)
-      .map(|stream| AudioStream {
-        index: stream.index,
-        app_name: stream.app_name.clone(),
-        title: stream.title.clone(),
-        icon_name: stream.icon_name.clone(),
-        sink: sink_name(stream.sink),
-        volume_percent: percent(stream.volumes.avg()),
-        muted: stream.muted,
+      .map(|stream| {
+        let (volumes, channels) = each_channel(&stream.volumes, &stream.map);
+        AudioStream {
+          index: stream.index,
+          app_name: stream.app_name.clone(),
+          title: stream.title.clone(),
+          icon_name: stream.icon_name.clone(),
+          sink: sink_name(stream.sink),
+          volume_percent: percent(stream.volumes.avg()),
+          volumes,
+          channels,
+          muted: stream.muted,
+        }
       })
       .collect();
     let default = default_source
@@ -864,6 +947,28 @@ impl Pulse {
     });
   }
 
+  fn set_node_volumes(&mut self, kind: Kind, name: &str, percents: &[u32]) {
+    let nodes = match kind {
+      Kind::Sink => &self.nodes.sinks,
+      Kind::Source => &self.nodes.sources,
+    };
+    let Some(node) = nodes.iter().find(|node| node.name == name) else {
+      return tracing::debug!(name, ?kind, "no such node: its volumes stay");
+    };
+    let Some(volumes) = each_at(node.volumes, percents) else {
+      return tracing::warn!(
+        name,
+        ?kind,
+        ?percents,
+        "not one volume per channel: none set"
+      );
+    };
+    self.when_ready(|intro| match kind {
+      Kind::Sink => drop(intro.set_sink_volume_by_name(name, &volumes, None)),
+      Kind::Source => drop(intro.set_source_volume_by_name(name, &volumes, None)),
+    });
+  }
+
   fn set_node_mute(&mut self, kind: Kind, name: &str, muted: bool) {
     self.when_ready(|intro| match kind {
       Kind::Sink => drop(intro.set_sink_mute_by_name(name, muted, None)),
@@ -881,6 +986,17 @@ impl Pulse {
       return tracing::debug!(index, "no such stream: its volume stays");
     };
     let volumes = at(stream.volumes, percent);
+    self.when_ready(|intro| drop(intro.set_sink_input_volume(index, &volumes, None)));
+  }
+
+  fn set_stream_volumes(&mut self, index: u32, percents: &[u32]) {
+    let streams = &self.nodes.streams;
+    let Some(stream) = streams.iter().find(|stream| stream.index == index) else {
+      return tracing::debug!(index, "no such stream: its volumes stay");
+    };
+    let Some(volumes) = each_at(stream.volumes, percents) else {
+      return tracing::warn!(index, ?percents, "not one volume per channel: none set");
+    };
     self.when_ready(|intro| drop(intro.set_sink_input_volume(index, &volumes, None)));
   }
 
@@ -1059,6 +1175,7 @@ fn node(
   name: &Option<std::borrow::Cow<'_, str>>,
   description: &Option<std::borrow::Cow<'_, str>>,
   volumes: ChannelVolumes,
+  map: Map,
   muted: bool,
 ) -> Option<NodeInfo> {
   let name = name.as_deref().filter(|_| volumes.is_valid())?;
@@ -1067,9 +1184,73 @@ fn node(
     name: name.to_owned(),
     description: description.as_deref().unwrap_or(name).to_owned(),
     volumes,
+    map,
     muted,
     monitor: false,
+    monitor_source: None,
   })
+}
+
+/// Each channel's percent and position, at most `PA_CHANNELS_MAX` of
+/// them. A position the map lacks is unknown, so both are as long.
+fn each_channel(volumes: &ChannelVolumes, map: &Map) -> (Vec<u32>, Vec<AudioChannel>) {
+  let max = usize::from(Map::CHANNELS_MAX);
+  let percents: Vec<u32> = volumes
+    .get()
+    .iter()
+    .take(max)
+    .map(|v| percent(*v))
+    .collect();
+  let positions = map.get().iter().map(|&position| channel(position));
+  let positions = positions.chain(std::iter::repeat(AudioChannel::Unknown));
+  let channels = positions.take(percents.len()).collect();
+  (percents, channels)
+}
+
+/// Quickshell's name for a PulseAudio channel position.
+fn channel(position: Position) -> AudioChannel {
+  use AudioChannel as C;
+  // Aux0 to Aux31 are numbered in a row.
+  let aux = position as i32 - Position::Aux0 as i32;
+  match position {
+    Position::Mono => C::Mono,
+    Position::FrontLeft => C::FrontLeft,
+    Position::FrontRight => C::FrontRight,
+    Position::FrontCenter => C::FrontCenter,
+    Position::RearCenter => C::RearCenter,
+    Position::RearLeft => C::RearLeft,
+    Position::RearRight => C::RearRight,
+    Position::Lfe => C::LowFrequencyEffects,
+    Position::FrontLeftOfCenter => C::FrontLeftCenter,
+    Position::FrontRightOfCenter => C::FrontRightCenter,
+    Position::SideLeft => C::SideLeft,
+    Position::SideRight => C::SideRight,
+    Position::TopCenter => C::TopCenter,
+    Position::TopFrontLeft => C::TopFrontLeft,
+    Position::TopFrontRight => C::TopFrontRight,
+    Position::TopFrontCenter => C::TopFrontCenter,
+    Position::TopRearLeft => C::TopRearLeft,
+    Position::TopRearRight => C::TopRearRight,
+    Position::TopRearCenter => C::TopRearCenter,
+    _ => match u8::try_from(aux) {
+      Ok(aux) if aux < 32 => C::Aux(aux),
+      _ => C::Unknown,
+    },
+  }
+}
+
+/// `volumes` with each channel at its own percent, at most 100, or `None`
+/// when `percents` doesn't have one per channel.
+fn each_at(mut volumes: ChannelVolumes, percents: &[u32]) -> Option<ChannelVolumes> {
+  if percents.len() != usize::from(volumes.len()) {
+    return None;
+  }
+  let norm = Volume::NORMAL.0;
+  for (volume, percent) in volumes.get_mut().iter_mut().zip(percents) {
+    // Rounded as pactl sets a percent; at most 100 * norm + 50, which fits.
+    *volume = Volume(((*percent).min(100) * norm + 50) / 100);
+  }
+  Some(volumes)
 }
 
 /// `volumes` moved so their average is `percent`, at most 100, keeping

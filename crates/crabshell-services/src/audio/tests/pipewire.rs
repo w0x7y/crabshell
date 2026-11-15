@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use super::{Harness, libpulse_switches, logs_of, one_at_a_time};
-use crate::ServicesExt;
+use crate::{AudioChannel, ServicesExt};
 
 #[path = "../../../tests/pipewire/mod.rs"]
 mod server;
@@ -195,6 +195,33 @@ fn defaults_volumes_and_mutes_reach_the_server() {
   shell.run_until(|_| source.get_untracked().is_some_and(|s| s.muted));
   let muted = server.pactl(&["get-source-mute", "test-source"]);
   assert_eq!(muted.trim(), "Mute: yes");
+}
+
+#[test]
+#[ignore = "needs pipewire; run by hand"]
+fn each_channel_shows_and_reaches_the_server() {
+  let _one = one_at_a_time();
+  let server = PrivateServer::start("channels");
+  server.pactl(&["set-sink-volume", "test-sink", "80%", "40%"]);
+  let mut shell = Harness::new(&server.address());
+  let audio = shell.cx.audio();
+  let sinks = audio.sinks();
+  let test_sink = move || {
+    let sinks = sinks.get_untracked();
+    sinks.into_iter().find(|s| s.name == "test-sink")
+  };
+  shell.run_until(|_| test_sink().is_some_and(|s| s.volumes == [80, 40]));
+  let sink = test_sink().expect("test-sink");
+  let stereo = [AudioChannel::FrontLeft, AudioChannel::FrontRight];
+  assert_eq!(sink.channels, stereo);
+  assert_eq!(sink.volume_percent, 60);
+  audio.set_sink_volumes("test-sink", &[30, 70]);
+  shell.run_until(|_| test_sink().is_some_and(|s| s.volumes == [30, 70]));
+  let volume = server.volume();
+  assert!(
+    volume.contains(" 30% ") && volume.contains(" 70% "),
+    "{volume}"
+  );
 }
 
 #[test]

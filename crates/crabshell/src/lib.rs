@@ -91,8 +91,8 @@ pub mod prelude {
   pub use crate::{IntoPanels, ShellExt, Toplevels, WindowManager};
   pub use crabshell_reactive::{Effect, Memo, ReadSignal, Signal, untrack};
   pub use crabshell_services::{
-    AudioNode, AudioStream, AuthRequest, AuthState, BatteryState, Bluetooth, BluetoothAdapter,
-    BluetoothAdapterState, BluetoothDevice, BluetoothDeviceState, CloseReason,
+    AudioChannel, AudioNode, AudioStream, AuthRequest, AuthState, BatteryState, Bluetooth,
+    BluetoothAdapter, BluetoothAdapterState, BluetoothDevice, BluetoothDeviceState, CloseReason,
     ConnectionFailReason, Connectivity, DesktopAction, DesktopEntries, DesktopEntry, DeviceKind,
     FileView, GreetMessage, GreetState, Greetd, Hyprland, HyprlandEvent, HyprlandMonitor,
     HyprlandToplevel, HyprlandWorkspace, IntoCommand, LoopStatus, Mpris, Network, NetworkDevice,

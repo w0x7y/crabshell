@@ -57,7 +57,7 @@ use calloop::{Interest, LoopHandle, Mode, PostAction, RegistrationToken};
 use crabshell_reactive::{Owner, ReadSignal, Signal};
 use crabshell_ui::Cx;
 
-pub use audio::{Audio, AudioNode, AudioStream, Sink};
+pub use audio::{Audio, AudioChannel, AudioNode, AudioStream, Sink};
 pub use bluetooth::{
   Bluetooth, BluetoothAdapter, BluetoothAdapterState, BluetoothDevice, BluetoothDeviceState,
 };
