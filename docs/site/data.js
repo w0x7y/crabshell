@@ -236,10 +236,7 @@ const PHASES = [
         "every quickshell 0.3.2 type built, or written down with a reason",
       ],
       ["yes", "seven steps, each reviewed and its fixes in"],
-      [
-        "part",
-        "hyprland's surface opacity and visible mask, not run on hyprland",
-      ],
+      ["yes", "checked by hand on hyprland 0.57.2"],
       ["no", "released on crates.io, as 0.3"],
     ],
   },
