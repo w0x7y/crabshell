@@ -159,6 +159,33 @@ fn a_style_change_to_padding_needs_a_layout() {
 }
 
 #[test]
+fn a_change_to_one_sides_padding_lays_out_and_repaints_both_places() {
+  let mut h = Harness::new();
+  let wide = h.cx.signal(false);
+  let button = Button::new(Icon::new("a").size(10)).style(move || {
+    Style::new()
+      .background(Color::rgb(1, 1, 1))
+      .padding(0, 2)
+      .padding_left(if wide.get() { 8 } else { 2 })
+  });
+  let window = h.window(h.panel().child(Row::new().child(button)), 200.0, 30.0);
+  window.take_damage();
+  assert_eq!(rect_at(&window, &[0, 0, 0]).x, 2.0);
+
+  wide.set(true);
+  h.runtime.flush();
+  assert!(window.needs_layout());
+  window.layout(&mut h.text);
+  assert_eq!(rect_at(&window, &[0, 0]).width, 20.0);
+  assert_eq!(rect_at(&window, &[0, 0, 0]).x, 8.0);
+  let damage = window.take_damage();
+  let reach = damage
+    .iter()
+    .fold(Rect::default(), |all, rect| all.union(*rect));
+  assert_eq!(reach, Rect::new(0.0, 0.0, 20.0, 30.0), "{damage:?}");
+}
+
+#[test]
 fn a_font_change_on_an_ancestor_measures_its_text_again() {
   use crate::Font;
 

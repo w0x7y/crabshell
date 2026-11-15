@@ -321,13 +321,18 @@ impl Shadow {
   }
 }
 
-/// Space between a widget's edge and its content, in logical pixels.
+/// Space between a widget's edge and its content, in logical pixels, on
+/// each side.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Padding {
-  /// Above and below the content.
-  pub vertical: u32,
-  /// Left and right of the content.
-  pub horizontal: u32,
+  /// Above the content.
+  pub top: u32,
+  /// Right of the content.
+  pub right: u32,
+  /// Below the content.
+  pub bottom: u32,
+  /// Left of the content.
+  pub left: u32,
 }
 
 /// How a widget looks. Every field is optional, and an unset field falls back
@@ -449,10 +454,77 @@ impl Style {
   pub const fn padding(self, vertical: u32, horizontal: u32) -> Style {
     Style {
       padding: Some(Padding {
-        vertical,
-        horizontal,
+        top: vertical,
+        right: horizontal,
+        bottom: vertical,
+        left: horizontal,
       }),
       ..self
+    }
+  }
+
+  /// Sets the padding above the content, in logical pixels, keeping the
+  /// other sides this style sets, or 0 where it sets none. As with every
+  /// field, [`merge`](Self::merge) takes the whole padding of the style on
+  /// top, so a hover style built from `Style::new()` sets the rest to 0.
+  ///
+  /// ```
+  /// use crabshell_ui::Style;
+  ///
+  /// const PILL: Style = Style::new().padding(2, 8).padding_left(12);
+  /// ```
+  pub const fn padding_top(self, top: u32) -> Style {
+    let mut padding = self.sides();
+    padding.top = top;
+    Style {
+      padding: Some(padding),
+      ..self
+    }
+  }
+
+  /// Sets the padding right of the content, keeping the other sides, as
+  /// [`padding_top`](Self::padding_top) does.
+  pub const fn padding_right(self, right: u32) -> Style {
+    let mut padding = self.sides();
+    padding.right = right;
+    Style {
+      padding: Some(padding),
+      ..self
+    }
+  }
+
+  /// Sets the padding below the content, keeping the other sides, as
+  /// [`padding_top`](Self::padding_top) does.
+  pub const fn padding_bottom(self, bottom: u32) -> Style {
+    let mut padding = self.sides();
+    padding.bottom = bottom;
+    Style {
+      padding: Some(padding),
+      ..self
+    }
+  }
+
+  /// Sets the padding left of the content, keeping the other sides, as
+  /// [`padding_top`](Self::padding_top) does.
+  pub const fn padding_left(self, left: u32) -> Style {
+    let mut padding = self.sides();
+    padding.left = left;
+    Style {
+      padding: Some(padding),
+      ..self
+    }
+  }
+
+  /// The padding this style sets, or 0 on every side.
+  const fn sides(self) -> Padding {
+    match self.padding {
+      Some(padding) => padding,
+      None => Padding {
+        top: 0,
+        right: 0,
+        bottom: 0,
+        left: 0,
+      },
     }
   }
 

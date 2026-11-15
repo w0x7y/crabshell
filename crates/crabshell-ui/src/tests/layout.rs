@@ -169,6 +169,49 @@ fn the_window_style_padding_insets_its_child() {
 }
 
 #[test]
+fn each_side_of_a_style_pads_by_its_own_amount() {
+  let mut h = Harness::new();
+  let row = Row::new()
+    .style(
+      Style::new()
+        .padding(2, 8)
+        .padding_left(12)
+        .padding_bottom(6),
+    )
+    .child(Icon::new("a").size(10))
+    .child(Spacer::new())
+    .child(Icon::new("b").size(10));
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+  // 30 high less 2 above and 6 below; 12 in on the left, 8 on the right.
+  assert_eq!(rect_at(&window, &[0, 0]), Rect::new(12.0, 2.0, 10.0, 22.0));
+  assert_eq!(rect_at(&window, &[0, 2]), Rect::new(182.0, 2.0, 10.0, 22.0));
+
+  // A button is its child and each side's padding, and centers nothing
+  // past them.
+  let mut h = Harness::new();
+  let button = Button::new(Icon::new("a").size(10))
+    .style(Style::new().padding_top(1).padding_right(3).padding_left(7));
+  let row = Row::new().align(Align::Start).child(button);
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+  assert_eq!(rect_at(&window, &[0, 0]), Rect::new(0.0, 0.0, 20.0, 11.0));
+  assert_eq!(
+    rect_at(&window, &[0, 0, 0]),
+    Rect::new(7.0, 1.0, 10.0, 10.0)
+  );
+}
+
+#[test]
+fn a_rows_own_padding_wins_over_each_side_of_its_style() {
+  let mut h = Harness::new();
+  let row = Row::new()
+    .style(Style::new().padding_top(9).padding_left(9))
+    .padding(4, 8)
+    .child(Icon::new("a").size(10));
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+  assert_eq!(rect_at(&window, &[0, 0]), Rect::new(8.0, 4.0, 10.0, 22.0));
+}
+
+#[test]
 fn text_is_as_wide_as_its_glyphs_and_one_line_high() {
   let mut h = Harness::new();
   let row = Row::new()

@@ -33,8 +33,10 @@ fn builders_set_their_fields_and_nothing_else() {
     WS,
     Style {
       padding: Some(Padding {
-        vertical: 2,
-        horizontal: 8
+        top: 2,
+        right: 8,
+        bottom: 2,
+        left: 8
       }),
       radius: Some(4.0),
       ..Style::new()
@@ -50,6 +52,32 @@ fn builders_set_their_fields_and_nothing_else() {
   );
   assert_eq!(bordered.opacity, Some(0.5));
   assert_eq!(bordered.background, None);
+}
+
+#[test]
+fn each_side_sets_its_own_padding_and_keeps_the_others() {
+  const PILL: Style = Style::new()
+    .padding(2, 8)
+    .padding_left(12)
+    .padding_bottom(5);
+  assert_eq!(
+    PILL.padding,
+    Some(Padding {
+      top: 2,
+      right: 8,
+      bottom: 5,
+      left: 12
+    })
+  );
+  // On a style with no padding, the other sides are 0.
+  const TOP: Style = Style::new().padding_top(3);
+  const RIGHT: Style = Style::new().padding_right(4);
+  let sides = |style: Style| style.padding.map(|p| (p.top, p.right, p.bottom, p.left));
+  assert_eq!(sides(TOP), Some((3, 0, 0, 0)));
+  assert_eq!(sides(RIGHT), Some((0, 4, 0, 0)));
+  // A later `padding` sets every side again.
+  assert_eq!(sides(PILL.padding(1, 1)), Some((1, 1, 1, 1)));
+  assert!(!PILL.same_layout(&PILL.padding_left(13)));
 }
 
 #[test]

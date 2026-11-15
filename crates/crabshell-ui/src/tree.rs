@@ -330,14 +330,25 @@ impl Node {
       || style.border.is_some()
   }
 
-  /// The padding in effect: a row's or column's own wins over its style's.
+  /// The padding in effect: a row's or column's own wins over its style's,
+  /// on both sides of its axis.
   pub(crate) fn padding(&self) -> Padding {
     let style = self.effective_style().padding.unwrap_or_default();
     match &self.kind {
-      NodeKind::Flex(flex) => Padding {
-        vertical: flex.padding_vertical.unwrap_or(style.vertical),
-        horizontal: flex.padding_horizontal.unwrap_or(style.horizontal),
-      },
+      NodeKind::Flex(flex) => {
+        let (top, bottom) = flex
+          .padding_vertical
+          .map_or((style.top, style.bottom), |own| (own, own));
+        let (left, right) = flex
+          .padding_horizontal
+          .map_or((style.left, style.right), |own| (own, own));
+        Padding {
+          top,
+          right,
+          bottom,
+          left,
+        }
+      }
       _ => style,
     }
   }

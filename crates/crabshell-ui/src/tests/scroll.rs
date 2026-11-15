@@ -293,3 +293,25 @@ fn the_wheel_scrolls_a_list_and_current_allows_for_its_padding() {
   h.frame(&window);
   assert_eq!(offset.get(), 80.0);
 }
+
+#[test]
+fn current_allows_for_padding_that_differs_above_and_below() {
+  let mut h = Harness::new();
+  let current = h.cx.signal(None::<usize>);
+  let offset = h.cx.signal(0.0);
+  let list = ListView::new(
+    || (0..100).collect::<Vec<u32>>(),
+    |n| *n,
+    |_, n| Text::new(move || n.get().to_string()),
+  )
+  .row_height(20)
+  .height(100)
+  .current(move || current.get())
+  .offset(offset)
+  .style(Style::new().padding_top(10).padding_bottom(30));
+  let window = h.window(h.panel().child(list), 100.0, 200.0);
+  // 60 pixels show between the paddings: row 7 ends at 160.
+  current.set(Some(7));
+  h.frame(&window);
+  assert_eq!(offset.get(), 100.0);
+}

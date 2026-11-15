@@ -228,9 +228,10 @@ where
     let style = style.clone();
     cx.memo(move || {
       let own = style.as_ref().map(|style| style()).unwrap_or_default();
-      let padding = own.padding.map_or(0.0, |padding| padding.vertical as f32);
+      let padding = own.padding.unwrap_or_default();
       let border = own.border.map_or(0.0, |border| border.width.max(0.0));
-      (height.get() as f32 - 2.0 * (padding + border)).max(0.0)
+      let insets = padding.top as f32 + padding.bottom as f32 + 2.0 * border;
+      (height.get() as f32 - insets).max(0.0)
     })
   };
   let all = cx.signal(Vec::<T>::new());

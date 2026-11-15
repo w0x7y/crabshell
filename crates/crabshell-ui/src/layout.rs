@@ -328,14 +328,13 @@ fn measure(
 /// is the window's, which the root takes.
 fn taffy_style(node: &Node, parent: Parent, size: crate::Size) -> taffy::Style {
   let padding = node.padding();
-  let vertical = LengthPercentage::length(padding.vertical as f32);
-  let horizontal = LengthPercentage::length(padding.horizontal as f32);
+  let side = |pixels: u32| LengthPercentage::length(pixels as f32);
   let mut style = taffy::Style {
     padding: taffy::Rect {
-      left: horizontal,
-      right: horizontal,
-      top: vertical,
-      bottom: vertical,
+      left: side(padding.left),
+      right: side(padding.right),
+      top: side(padding.top),
+      bottom: side(padding.bottom),
     },
     ..taffy::Style::default()
   };
