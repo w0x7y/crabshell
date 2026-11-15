@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use crabshell_reactive::Signal;
 
-use super::{Harness, node_at, pixels, wheel};
+use super::{Harness, node_at, pixels, rect_at, wheel};
 use crate::{
   Content, Icon, ListView, NodeView, Point, Rect, Row, Style, Text, Window, advance_animations,
   animating,
@@ -291,4 +291,131 @@ fn a_key_that_panics_is_logged_with_the_lists_path_and_the_rest_runs() {
   });
   assert!(logs.contains("PanelWindow[DP-1]/Column/ListView"), "{logs}");
   assert!(logs.contains("key failure"), "{logs}");
+}
+
+/// The rectangles of a horizontal list's items built, in order, under a
+/// row that keeps the list its own height.
+fn items_built(window: &Window) -> Vec<Rect> {
+  let view = window.view();
+  node_at(view.root(), &[0, 0, 0, 0])
+    .children()
+    .skip(1)
+    .map(|item| item.rect())
+    .collect()
+}
+
+/// A 100-pixel-wide horizontal list of `count` squares estimated at 20,
+/// item `n` `length(n)` wide.
+fn across(
+  h: &mut Harness,
+  count: u32,
+  length: impl Fn(u32) -> u32 + Copy + 'static,
+  offset: Signal<f32>,
+  tune: impl FnOnce(ListView) -> ListView,
+) -> Window {
+  let list = ListView::new(
+    move || (0..count).collect::<Vec<u32>>(),
+    |n| *n,
+    move |_, n| Icon::new("x").size(length(n.get_untracked())),
+  )
+  .horizontal(true)
+  .row_height(20)
+  .height(100)
+  .offset(offset);
+  let row = Row::new().align(crate::Align::Start).child(tune(list));
+  h.window(h.panel().child(row), 200.0, 200.0)
+}
+
+#[test]
+fn a_horizontal_list_runs_its_items_left_to_right_each_its_own_width() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0);
+  let window = across(&mut h, 100, every_third_tall, offset, |list| list);
+  let xs: Vec<(f32, f32)> = items_built(&window)
+    .iter()
+    .map(|rect| (rect.x, rect.width))
+    .collect();
+  assert_eq!(
+    xs,
+    [
+      (0.0, 40.0),
+      (40.0, 20.0),
+      (60.0, 20.0),
+      (80.0, 40.0),
+      (120.0, 20.0)
+    ]
+  );
+  // The list is 100 wide and as tall as its tallest item.
+  assert_eq!(rect_at(&window, &[0, 0]), Rect::new(0.0, 0.0, 100.0, 40.0));
+  window.pointer_motion(Point::new(10.0, 10.0));
+  window.pointer_scroll(wheel(120));
+  assert_eq!(offset.get(), 48.0, "a turned wheel scrolls it sideways");
+  h.frame(&window);
+  assert_eq!(items_built(&window)[1].x, 40.0 - 48.0);
+}
+
+#[test]
+fn current_in_a_horizontal_list_scrolls_sideways_within_its_padding() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0);
+  let current = h.cx.signal(None);
+  let window = across(
+    &mut h,
+    100,
+    |_| 20,
+    offset,
+    |list| {
+      list
+        .current(move || current.get())
+        .style(Style::new().padding(0, 10))
+    },
+  );
+  // 80 pixels show between the paddings: item 7 ends at 160.
+  current.set(Some(7));
+  h.frame(&window);
+  assert_eq!(offset.get(), 80.0);
+}
+
+#[test]
+fn a_list_turned_sideways_measures_its_items_again() {
+  let mut h = Harness::new();
+  let sideways = h.cx.signal(false);
+  let offset = h.cx.signal(0.0);
+  // Items 40 tall and 20 wide.
+  let list = ListView::new(
+    || (0..10).collect::<Vec<u32>>(),
+    |n| *n,
+    |_, _| crate::Stack::new().style(Style::new().width(20.0).height(40.0)),
+  )
+  .horizontal(move || sideways.get())
+  .row_height(10)
+  .height(100)
+  .offset(offset)
+  .scroll_bar(Style::new());
+  let row = Row::new().align(crate::Align::Start).child(list);
+  let window = h.window(h.panel().child(row), 200.0, 200.0);
+  assert_eq!(items_built(&window)[1].y, 40.0);
+  // Every item measured 40 tall, then the last ones freed.
+  offset.set(1000.0);
+  h.frame(&window);
+  offset.set(0.0);
+  h.frame(&window);
+  sideways.set(true);
+  h.frame(&window);
+  let built = items_built(&window);
+  assert_eq!((built[1].x, built[1].y), (20.0, 0.0));
+  // Those not built again count 10 wide, not 40: 6 of 20 and 4 of 10.
+  let handle = node_at(window.view().root(), &[0, 0, 0]).scroll_bar();
+  assert_eq!(
+    handle.map(|(rect, _)| rect.width),
+    Some(100.0_f32 * 100.0 / 160.0)
+  );
+  // Ten items of 20 scroll at most 100.
+  offset.set(1000.0);
+  h.frame(&window);
+  h.frame(&window);
+  assert_eq!(
+    items_built(&window).last().map(|rect| rect.right()),
+    Some(100.0)
+  );
 }

@@ -187,6 +187,7 @@ struct ListProps {
   scroll_bar: Option<Prop<Option<Style>>>,
   kinetic: Option<Prop<bool>>,
   overshoot: Option<Prop<bool>>,
+  horizontal: Option<Prop<bool>>,
 }
 
 impl ListView {
@@ -218,9 +219,19 @@ impl ListView {
         scroll_bar: None,
         kinetic: None,
         overshoot: None,
+        horizontal: None,
       },
       common: Common::default(),
     }
+  }
+
+  /// Runs the rows left to right in a horizontal scroll view instead.
+  /// [`row_height`](Self::row_height) and [`height`](Self::height) then
+  /// mean each row's width and the list's, and each row is as tall as the
+  /// list. Turning it measures every row again.
+  pub fn horizontal(mut self, horizontal: impl IntoProp<bool>) -> ListView {
+    self.props.horizontal = Some(horizontal.into_prop());
+    self
   }
 
   /// Sets the height in logical pixels that each row has at least, and
@@ -372,21 +383,27 @@ where
     scroll_bar,
     kinetic,
     overshoot,
+    horizontal,
   } = props;
   let offset = offset.unwrap_or_else(|| cx.signal(0.0));
+  let horizontal = cx.memo(prop_fn(horizontal, false));
   let row_height = cx.memo(prop_fn(row_height, ListView::DEFAULT_ROW_HEIGHT));
   let estimate = move || row_height.get().max(1) as f32;
   let height = cx.memo(prop_fn(height, ListView::DEFAULT_HEIGHT));
   let style = style.map(Prop::shared);
-  // The height rows show in: the list's, less its padding and border.
+  // The length rows show in: the list's, less its padding and border.
   let inner = {
     let style = style.clone();
     cx.memo(move || {
       let own = style.as_ref().map(|style| style()).unwrap_or_default();
       let padding = own.padding.unwrap_or_default();
       let border = own.border.map_or(0.0, |border| border.width.max(0.0));
-      let insets = padding.top as f32 + padding.bottom as f32 + 2.0 * border;
-      (height.get() as f32 - insets).max(0.0)
+      let sides = if horizontal.get() {
+        padding.left + padding.right
+      } else {
+        padding.top + padding.bottom
+      };
+      (height.get() as f32 - sides as f32 - 2.0 * border).max(0.0)
     })
   };
   // Shared by the list, its keyed rows and each row, which never call it
@@ -422,6 +439,18 @@ where
       drop(lengths);
       all.set(list);
       remeasure.set(());
+    });
+  }
+  // Turned, every length measured is the other way.
+  {
+    let lengths = Rc::clone(&lengths);
+    let mut was = None;
+    cx.effect(move || {
+      let now = horizontal.get();
+      if was.replace(now).is_some_and(|was| was != now) {
+        lengths.borrow_mut().measured.fill(None);
+        remeasure.set(());
+      }
     });
   }
   let count = cx.memo(move || all.with(Vec::len));
@@ -534,10 +563,10 @@ where
     });
   }
   let rows = Column::new()
-    .style(move || Style::new().height(total()))
+    .style(move || along(horizontal.get(), Style::new(), total()))
     .child(Stack::new().style(move || {
       let first = starts.with(|starts| starts[range.get().start]);
-      Style::new().height(first).shrink(0.0)
+      along(horizontal.get(), Style::new(), first).shrink(0.0)
     }))
     .children_keyed(
       move || {
@@ -557,20 +586,39 @@ where
         let measure = move |size: Size| {
           let mut lengths = lengths.borrow_mut();
           if let Some(&at) = lengths.index.get(&own) {
-            lengths.pending.push((at, size.height));
+            let length = if horizontal.get_untracked() {
+              size.width
+            } else {
+              size.height
+            };
+            lengths.pending.push((at, length));
             drop(lengths);
             measured.set(());
           }
         };
         let row = Stack::new()
-          .style(move || Style::new().min_height(row_height.get() as f32).shrink(0.0))
+          .style(move || {
+            let least = row_height.get() as f32;
+            let style = Style::new().shrink(0.0);
+            if horizontal.get() {
+              style.min_width(least)
+            } else {
+              style.min_height(least)
+            }
+          })
           .child(view(cx, item));
         let mut row = Box::new(row).into_element();
         row.common.measure = Some(Rc::new(measure));
         Built(Some(row))
       },
     );
-  let mut scroll = ScrollView::new(rows).offset(offset);
+  let mut rows = Box::new(rows).into_element();
+  if let ElementKind::Flex(flex) = &mut rows.kind {
+    flex.column_binding = Some((move || !horizontal.get()).into_prop());
+  }
+  let mut scroll = ScrollView::new(Built(Some(rows)))
+    .offset(offset)
+    .horizontal(move || horizontal.get());
   scroll.scroll.shifts = Some(shifts);
   if let Some(bar) = scroll_bar {
     scroll = scroll.scroll_bar(bar);
@@ -583,9 +631,19 @@ where
   }
   scroll = scroll.style(move || {
     let own = style.as_ref().map(|style| style()).unwrap_or_default();
-    own.height(height.get() as f32)
+    along(horizontal.get(), own, height.get() as f32)
   });
   Box::new(scroll).into_element()
+}
+
+/// `style` with its width, if `horizontal`, or else its height, set to
+/// `length`.
+fn along(horizontal: bool, style: Style, length: f32) -> Style {
+  if horizontal {
+    style.width(length)
+  } else {
+    style.height(length)
+  }
 }
 
 /// `prop` as a closure, or `default` when unset.

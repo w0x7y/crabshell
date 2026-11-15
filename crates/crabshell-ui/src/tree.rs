@@ -832,6 +832,9 @@ impl Tree {
         self.bind_opt(id, props.reverse, "reverse", |tree, id, value| {
           tree.update_flex(id, |flex| replace(&mut flex.reverse, value))
         });
+        self.bind_opt(id, props.column_binding, "horizontal", |tree, id, value| {
+          tree.update_flex(id, |flex| replace(&mut flex.column, value))
+        });
       }
       ElementKind::Grid(props) => self.bind_grid(id, props),
       ElementKind::Text(props) => {

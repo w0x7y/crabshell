@@ -126,6 +126,8 @@ pub(crate) struct FlexProps {
   pub(crate) justify: Option<Prop<Justify>>,
   pub(crate) wrap: Option<Prop<bool>>,
   pub(crate) reverse: Option<Prop<bool>>,
+  /// Overrides `column` with a binding, for a list that turns.
+  pub(crate) column_binding: Option<Prop<bool>>,
 }
 
 pub(crate) struct GridProps {
@@ -408,6 +410,7 @@ macro_rules! flex_widget {
             justify: None,
             wrap: None,
             reverse: None,
+            column_binding: None,
           },
           common: Common::default(),
           children: Vec::new(),
