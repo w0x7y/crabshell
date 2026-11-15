@@ -7,8 +7,8 @@ use crabshell_reactive::Signal;
 
 use super::{Counter, Harness, capture_logs, lift, pixels, rect_at, wheel};
 use crate::{
-  Align, Button, Column, Icon, Point, Row, ScrollSource, ScrollView, Style, Wheel, WheelAxis,
-  Window, advance_animations, animating, next_timer,
+  Align, Button, Column, Icon, Point, PointerButton, Row, ScrollSource, ScrollView, Style, Wheel,
+  WheelAxis, Window, advance_animations, animating, next_timer,
 };
 
 /// A 20 by 50 view of 30 icons of 20 pixels: 600 pixels, scrolling 550.
@@ -107,10 +107,10 @@ fn a_slow_lift_a_wheel_or_a_view_not_kinetic_doesnt_fling() {
 }
 
 #[test]
-fn a_fling_stops_at_once_for_a_wheel_or_a_write() {
+fn a_fling_stops_at_once_for_a_press_a_wheel_or_a_write() {
   let mut h = Harness::new();
   let offset = h.cx.signal(0.0);
-  let (window, _) = view(&mut h, offset, plain);
+  let (window, clicks) = view(&mut h, offset, plain);
   window.pointer_motion(Point::new(10.0, 10.0));
   let start = Instant::now();
   let fling = |h: &mut Harness, time: u32| {
@@ -120,6 +120,16 @@ fn a_fling_stops_at_once_for_a_wheel_or_a_write() {
       h.frame(&window);
     }
   };
+  fling(&mut h, 0);
+  let stopped = offset.get();
+  window.pointer_button_at(PointerButton::Left, true, 100);
+  advance_animations(start + Duration::from_millis(200));
+  h.frame(&window);
+  assert_eq!(offset.get(), stopped, "the press stopped it");
+  assert!(!animating());
+  window.pointer_button_at(PointerButton::Left, false, 150);
+  assert_eq!(clicks.get(), 1, "a tap that stops a fling still clicks");
+
   fling(&mut h, 1000);
   let stopped = offset.get();
   window.pointer_scroll_at(wheel(120), 1100);
@@ -260,6 +270,106 @@ fn view_with(h: &mut Harness, offset: Signal<f32>, overshoot: Signal<bool>) -> W
 }
 
 #[test]
+fn dragging_the_child_follows_the_pointer_cancels_the_click_and_flings() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0);
+  let (window, clicks) = view(&mut h, offset, plain);
+  window.pointer_motion_at(Point::new(10.0, 45.0), 0);
+  window.pointer_button_at(PointerButton::Left, true, 0);
+  window.pointer_motion_at(Point::new(10.0, 38.0), 5);
+  assert_eq!(offset.get(), 0.0, "within the threshold");
+  // Past it, the child moves with the pointer from the press.
+  for (n, y) in [30.0, 20.0, 10.0, 0.0].into_iter().enumerate() {
+    window.pointer_motion_at(Point::new(10.0, y), 10 + 10 * n as u32);
+  }
+  assert_eq!(offset.get(), 45.0);
+  window.pointer_button_at(PointerButton::Left, false, 45);
+  assert_eq!(clicks.get(), 0, "a drag isn't a click");
+  assert!(animating(), "it flings at 1000 pixels a second");
+  run_clock(&mut h, &window, Instant::now());
+  assert!(
+    (offset.get() - 45.0 - 333.3).abs() < 2.0,
+    "{}",
+    offset.get()
+  );
+  // A drag that comes back over the button it began on doesn't click it.
+  let at = offset.get();
+  window.pointer_motion_at(Point::new(10.0, 45.0), 1000);
+  window.pointer_button_at(PointerButton::Left, true, 1000);
+  window.pointer_motion_at(Point::new(10.0, 25.0), 1100);
+  window.pointer_motion_at(Point::new(10.0, 45.0), 1200);
+  h.frame(&window);
+  window.pointer_button_at(PointerButton::Left, false, 1500);
+  assert_eq!((offset.get(), clicks.get()), (at, 0));
+  // A tap still clicks.
+  window.pointer_button_at(PointerButton::Left, true, 2000);
+  window.pointer_button_at(PointerButton::Left, false, 2050);
+  assert_eq!(clicks.get(), 1);
+}
+
+#[test]
+fn a_drag_past_the_start_overshoots_and_springs_back_once_let_go() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0);
+  let (window, _) = view(&mut h, offset, plain);
+  window.pointer_motion_at(Point::new(10.0, 5.0), 0);
+  window.pointer_button_at(PointerButton::Left, true, 0);
+  window.pointer_motion_at(Point::new(10.0, 45.0), 500);
+  h.frame(&window);
+  assert_eq!(offset.get(), 0.0);
+  assert!(first_y(&window) > 5.0, "{}", first_y(&window));
+  window.pointer_button_at(PointerButton::Left, false, 1000);
+  run_clock(&mut h, &window, Instant::now());
+  assert_eq!(first_y(&window), 0.0);
+}
+
+#[test]
+fn a_button_that_drags_keeps_its_drag_and_the_innermost_view_along_a_drag_takes_it() {
+  let mut h = Harness::new();
+  let (outer, inner) = (h.cx.signal(0.0), h.cx.signal(0.0));
+  let drags = Counter::default();
+  let d = drags.clone();
+  let across = (0..10).fold(Row::new(), |row, _| row.child(Icon::new("x").size(20)));
+  let content = Column::new()
+    .child(Button::new(Icon::new("x").size(20)).on_drag(move |_, _| d.hit()))
+    .child(
+      ScrollView::new(across)
+        .horizontal(true)
+        .offset(inner)
+        .style(Style::new().height(20.0)),
+    )
+    .child(Icon::new("x").size(200));
+  let view = ScrollView::new(content)
+    .offset(outer)
+    .style(Style::new().width(50.0).height(50.0));
+  let row = Row::new().align(Align::Start).child(view);
+  let window = h.window(h.panel().child(row), 100.0, 100.0);
+  let drag = |from: Point, to: Point, time: u32| {
+    window.pointer_motion_at(from, time);
+    window.pointer_button_at(PointerButton::Left, true, time);
+    window.pointer_motion_at(to, time + 300);
+    window.pointer_button_at(PointerButton::Left, false, time + 600);
+  };
+  drag(Point::new(10.0, 10.0), Point::new(10.0, -20.0), 0);
+  assert!(drags.get() > 0);
+  assert_eq!(outer.get(), 0.0, "the button's own drag");
+  drag(Point::new(40.0, 30.0), Point::new(10.0, 30.0), 1000);
+  assert_eq!(
+    (inner.get(), outer.get()),
+    (30.0, 0.0),
+    "sideways, the inner view"
+  );
+  // Mostly up, a little sideways: up, so the outer one.
+  drag(Point::new(40.0, 30.0), Point::new(35.0, 10.0), 2000);
+  assert_eq!(
+    (inner.get(), outer.get()),
+    (30.0, 20.0),
+    "up and down, the outer one"
+  );
+  assert!(!animating());
+}
+
+#[test]
 fn a_horizontal_touchpad_fling_moves_sideways() {
   let mut h = Harness::new();
   let offset = h.cx.signal(0.0);
@@ -361,7 +471,7 @@ fn a_panicking_kinetic_or_overshoot_binding_is_logged_with_its_path() {
 }
 
 #[test]
-fn leaving_mid_gesture_springs_back() {
+fn leaving_mid_gesture_or_mid_drag_springs_back() {
   let mut h = Harness::new();
   let offset = h.cx.signal(0.0);
   let (window, _) = view(&mut h, offset, plain);
@@ -369,6 +479,14 @@ fn leaving_mid_gesture_springs_back() {
   window.pointer_scroll_at(pixels(-30.0), 0);
   window.pointer_leave();
   assert!(animating(), "the touchpad's stop went elsewhere");
+  run_clock(&mut h, &window, Instant::now());
+  assert_eq!(first_y(&window), 0.0);
+
+  window.pointer_motion_at(Point::new(10.0, 5.0), 1000);
+  window.pointer_button_at(PointerButton::Left, true, 1000);
+  window.pointer_motion_at(Point::new(10.0, 45.0), 1100);
+  window.pointer_leave();
+  assert!(animating());
   run_clock(&mut h, &window, Instant::now());
   assert_eq!(first_y(&window), 0.0);
 }
@@ -408,4 +526,34 @@ fn a_list_flings_and_passes_kinetic_and_overshoot_on() {
   assert_eq!(b.get(), 0.0, "no overshoot to come back from");
   window.pointer_scroll_at(lift(), 2005);
   assert!(!animating());
+}
+
+#[test]
+fn a_button_carrying_drag_data_drags_it_instead_of_the_view() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0);
+  let dropped = h.cx.signal(Vec::<u32>::new());
+  let content = Column::new()
+    .child(Button::new(Icon::new("x").size(20)).drag_data(Some(7_u32)))
+    .child(
+      Button::new(Icon::new("x").size(20))
+        .on_drop(move |_, value: u32| dropped.update(|all| all.push(value))),
+    )
+    .child(Icon::new("x").size(200));
+  let view = ScrollView::new(content)
+    .offset(offset)
+    .style(Style::new().width(20.0).height(50.0));
+  let row = Row::new().align(Align::Start).child(view);
+  let window = h.window(h.panel().child(row), 100.0, 100.0);
+  window.pointer_motion_at(Point::new(10.0, 5.0), 0);
+  window.pointer_button_at(PointerButton::Left, true, 0);
+  window.pointer_motion_at(Point::new(10.0, 30.0), 100);
+  h.frame(&window);
+  assert_eq!(
+    rect_at(&window, &[0, 0, 0, 1]).y,
+    20.0,
+    "the view stays put"
+  );
+  window.pointer_button_at(PointerButton::Left, false, 200);
+  assert_eq!((offset.get(), dropped.get()), (0.0, vec![7]));
 }

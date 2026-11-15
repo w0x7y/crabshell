@@ -19,7 +19,7 @@ use crate::cx::Cx;
 use crate::geometry::{Point, Rect, Size};
 use crate::keyboard::KeyHandler;
 use crate::prop::{Prop, PropKind};
-use crate::scrolling::BarDrag;
+use crate::scrolling::{BarDrag, Flick};
 use crate::tree::{ButtonNode, Change, Node, NodeId, NodeKind, Tree, borrow};
 use crate::window::Window;
 
@@ -31,7 +31,7 @@ const VALUE120_PER_STEP: i32 = 120;
 
 /// How far a held left button moves before it drags, in logical pixels:
 /// Qt's `startDragDistance`.
-const DRAG_THRESHOLD: f32 = 10.0;
+pub(crate) const DRAG_THRESHOLD: f32 = 10.0;
 
 /// How long the left button is held for a long press: Qt's
 /// `pressAndHoldInterval`.
@@ -305,6 +305,9 @@ pub(crate) struct Pointer {
   pressed: Option<Press>,
   /// A scroll bar's handle held, until the left button comes up.
   pub(crate) bar: Option<BarDrag>,
+  /// The scroll views under the left button, one maybe dragged, until it
+  /// comes up.
+  pub(crate) flick: Option<Flick>,
   /// The scroll view the touchpad gesture under way moves.
   pub(crate) gesture: Option<NodeId>,
   /// The last left click, with the time it came up and where it went
@@ -411,14 +414,25 @@ fn now_ms() -> u32 {
 
 impl Window {
   /// The pointer entered the window or moved, to `position` in logical
-  /// pixels. A held left button that moved far enough drags. Returns the
-  /// cursor to show.
+  /// pixels, now. See [`pointer_motion_at`](Self::pointer_motion_at).
   pub fn pointer_motion(&self, position: Point) -> CursorShape {
+    self.pointer_motion_at(position, now_ms())
+  }
+
+  /// The pointer moved to `position` at `time`, in milliseconds as
+  /// `wl_pointer.motion` counts them, which a drag's fling is timed by.
+  /// A held left button that moved far enough drags: its button's, or
+  /// else a scroll view's child. Returns the cursor to show.
+  pub fn pointer_motion_at(&self, position: Point, time: u32) -> CursorShape {
     let calls = {
       let mut tree = borrow(&self.tree);
       tree.pointer.position = Some(position);
       tree.bar_motion(position);
-      let calls = tree.drag_motion(position);
+      let calls = if tree.flick_motion(position, time) {
+        Vec::new()
+      } else {
+        tree.drag_motion(position)
+      };
       tree.hover_at(position);
       calls
     };
@@ -779,6 +793,12 @@ impl Tree {
     {
       return Vec::new();
     }
+    if let (PointerButton::Left, None, Some(at)) =
+      (button, self.pointer.pressed, self.pointer.position)
+    {
+      let drags = self.pointer.hovered.is_some_and(|id| self.drags(id));
+      self.press_views(at, drags);
+    }
     let (None, Some(id), Some(at)) = (
       self.pointer.pressed,
       self.pointer.hovered,
@@ -816,6 +836,7 @@ impl Tree {
   fn release(&mut self, button: PointerButton, time: u32) -> Vec<Call> {
     if button == PointerButton::Left {
       self.pointer.bar = None;
+      self.flick_release(Some(time));
     }
     let Some(press) = self.pointer.pressed.filter(|press| press.button == button) else {
       return Vec::new();
@@ -1001,6 +1022,7 @@ impl Tree {
   pub(crate) fn leave(&mut self) -> Vec<Call> {
     self.pointer.position = None;
     self.pointer.bar = None;
+    self.flick_release(None);
     if let Some(id) = self.pointer.gesture.take() {
       self.release_view(id, None);
     }
@@ -1141,6 +1163,15 @@ impl Tree {
       input.edit.cursor = at;
       input.edit.anchor = None;
     });
+  }
+
+  /// Lets go of the button the left button is on, without a click or its
+  /// `on_release`, as a scroll view's drag takes the pointer from it.
+  pub(crate) fn cancel_press(&mut self) {
+    if let Some(press) = self.pointer.pressed.filter(|press| !press.dragging) {
+      self.set_pressed(None);
+      self.stop_long_press(press.id);
+    }
   }
 
   /// Whether button `id` has the handlers `f` looks for.

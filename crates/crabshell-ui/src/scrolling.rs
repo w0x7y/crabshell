@@ -9,7 +9,7 @@ use crabshell_reactive::untrack;
 
 use crate::animation::{self, Spring};
 use crate::geometry::{Point, Rect};
-use crate::input::{Pointer, ScrollSource, Wheel, WheelAxis, local};
+use crate::input::{DRAG_THRESHOLD, Pointer, ScrollSource, Wheel, WheelAxis, local};
 use crate::scroll::PIXELS_PER_NOTCH;
 use crate::tree::{Change, NodeId, NodeKind, ScrollNode, Tree};
 
@@ -68,6 +68,20 @@ enum Phase {
   Spring { x: f32, v: f32 },
 }
 
+/// A left press over scroll views, which a move past the threshold turns
+/// into a drag of one view's child.
+pub(crate) struct Flick {
+  /// The views under the press, innermost first, each stopped by it.
+  views: Vec<NodeId>,
+  at: Point,
+  last: Point,
+  /// The view dragged, once one is.
+  view: Option<NodeId>,
+  /// Whether a move may still start a drag: not over a button that drags
+  /// itself, nor once a move found no view to drag.
+  may_drag: bool,
+}
+
 /// A scroll bar's handle held by the left button.
 #[derive(Clone, Copy)]
 pub(crate) struct BarDrag {
@@ -81,6 +95,13 @@ pub(crate) struct BarDrag {
 impl Pointer {
   /// Forgets removed scroll views.
   pub(crate) fn forget_views(&mut self, removed: &[NodeId]) {
+    if let Some(flick) = self.flick.as_mut() {
+      flick.views.retain(|id| !removed.contains(id));
+      if flick.view.is_some_and(|id| removed.contains(&id)) {
+        flick.view = None;
+        flick.may_drag = false;
+      }
+    }
     if self.gesture.is_some_and(|id| removed.contains(&id)) {
       self.gesture = None;
     }
@@ -485,6 +506,100 @@ impl Tree {
       signal.try_set(offset);
     }
     running
+  }
+
+  /// A left press at `at`: the scroll views under it stop where they
+  /// are, and unless it is on a button that drags, a move may drag one.
+  pub(crate) fn press_views(&mut self, at: Point, drags: bool) {
+    let views = self.scroll_views_at(at);
+    for &id in &views {
+      self.update_scroll(id, |scroll| {
+        scroll.halt();
+        Change::None
+      });
+    }
+    self.pointer.flick = (!views.is_empty()).then_some(Flick {
+      views,
+      at,
+      last: at,
+      view: None,
+      may_drag: !drags,
+    });
+  }
+
+  /// The left button held moved to `at` at `time`. Past the threshold
+  /// along a view's axis, the innermost view along it that can move, or
+  /// else push past an end, follows the pointer from the press, and the
+  /// button pressed lets go without a click. Returns whether a view's
+  /// child is dragged.
+  pub(crate) fn flick_motion(&mut self, at: Point, time: u32) -> bool {
+    let Some(flick) = self.pointer.flick.as_mut() else {
+      return false;
+    };
+    let last = std::mem::replace(&mut flick.last, at);
+    if let Some(id) = flick.view {
+      let delta = self.along_view(id, last) - self.along_view(id, at);
+      self.push_view(id, delta, time);
+      return true;
+    }
+    let (dx, dy) = (at.x - flick.at.x, at.y - flick.at.y);
+    if !flick.may_drag || dx.abs().max(dy.abs()) <= DRAG_THRESHOLD {
+      return false;
+    }
+    let (from, views) = (flick.at, flick.views.clone());
+    let sideways = dx.abs() > dy.abs();
+    let along: Vec<(NodeId, f32)> = views
+      .into_iter()
+      .filter(|&id| matches!(self.node(id).map(|node| &node.kind), Some(NodeKind::Scroll(scroll)) if scroll.horizontal == sideways))
+      .map(|id| (id, self.along_view(id, from) - self.along_view(id, at)))
+      .collect();
+    let can = |id: NodeId, test: &dyn Fn(&ScrollNode) -> bool| matches!(self.node(id).map(|node| &node.kind), Some(NodeKind::Scroll(scroll)) if test(scroll));
+    let picked = along
+      .iter()
+      .find(|&&(id, delta)| can(id, &|scroll| scroll.can_move(delta)))
+      .or_else(|| {
+        along
+          .iter()
+          .find(|&&(id, _)| can(id, &|scroll| scroll.overshoots))
+      })
+      .copied();
+    let Some((id, delta)) = picked else {
+      if let Some(flick) = self.pointer.flick.as_mut() {
+        flick.may_drag = false;
+      }
+      return false;
+    };
+    if let Some(flick) = self.pointer.flick.as_mut() {
+      flick.view = Some(id);
+    }
+    self.cancel_press();
+    self.push_view(id, delta, time);
+    true
+  }
+
+  /// Point `at`, in window coordinates, along view `id`'s axis in its own
+  /// coordinates.
+  fn along_view(&self, id: NodeId, at: Point) -> f32 {
+    match (
+      self.node(id).map(|node| &node.kind),
+      self.local_point(id, at),
+    ) {
+      (Some(NodeKind::Scroll(scroll)), Some(point)) => scroll.along(point),
+      _ => 0.0,
+    }
+  }
+
+  /// The left button came up at `time`, or the pointer left with no
+  /// time: the view dragged flings or springs back, and the others the
+  /// press stopped spring back.
+  pub(crate) fn flick_release(&mut self, time: Option<u32>) {
+    let Some(flick) = self.pointer.flick.take() else {
+      return;
+    };
+    for id in flick.views {
+      let time = time.filter(|_| flick.view == Some(id));
+      self.release_view(id, time);
+    }
   }
 
   /// A left press at `at` on a scroll bar: on the handle it starts
