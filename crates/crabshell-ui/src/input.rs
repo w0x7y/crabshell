@@ -577,9 +577,10 @@ impl Tree {
     path.into_iter().rev().find(|&id| {
       self.enabled(id)
         && self.has(id, |h| {
+          // One whose `on_drop` panicked takes nothing more.
           h.drop
             .as_ref()
-            .is_some_and(|target| target.accepts == carried)
+            .is_some_and(|target| target.accepts == carried && !target.handler.disabled.get())
         })
     })
   }
@@ -800,10 +801,10 @@ impl Tree {
     if button == PointerButton::Left {
       calls.extend(self.call(press.id, Action::Release));
     }
-    let dropped = self.drop_call();
-    let landed = dropped.is_some();
-    calls.extend(dropped);
-    calls.extend(self.end_press(landed));
+    // Set by the drop once its `on_drop` returns, before the `End` reads it.
+    let landed = Rc::new(Cell::new(false));
+    calls.extend(self.drop_call(&landed));
+    calls.extend(self.end_press(Some(landed)));
     if press.dragging {
       // The hover the drag held goes back to what is under the pointer.
       if let Some(at) = self.pointer.position {
@@ -845,26 +846,26 @@ impl Tree {
 
   /// The drop of what the dragged button carries on the button under the
   /// pointer that takes it, as the drag is released.
-  fn drop_call(&self) -> Option<Call> {
+  fn drop_call(&self, landed: &Rc<Cell<bool>>) -> Option<Call> {
     let target = self.drop_target()?;
     let press = self.pointer.pressed?;
     let Some(NodeKind::Button(button)) = self.node(press.id).map(|node| &node.kind) else {
       return None;
     };
     let value = untrack(|| button.drag_data?.try_get().flatten())?;
-    self.call(target, Action::Drop(value))
+    self.call(target, Action::Drop(value, Rc::clone(landed)))
   }
 
   /// Lets go of the held button: its pressed style and long press end,
-  /// its drag with an `End` that says whether it was `dropped`, and the
-  /// button it would drop on is told.
-  fn end_press(&mut self, dropped: bool) -> Option<Call> {
+  /// its drag with an `End` whose `dropped` is what `landed` holds when it
+  /// runs, and the button it would drop on is told.
+  fn end_press(&mut self, landed: Option<Rc<Cell<bool>>>) -> Option<Call> {
     let press = self.pointer.pressed?;
     self.set_pressed(None);
     self.update_drop();
     self.stop_long_press(press.id);
     if press.dragging {
-      self.drag_call(press, DragPhase::End, press.last, dropped)
+      self.drag_call(press, DragPhase::End, press.last, landed)
     } else {
       None
     }
@@ -883,7 +884,7 @@ impl Tree {
     }
     if press.dragging {
       return self
-        .drag_call(press, DragPhase::Move, at, false)
+        .drag_call(press, DragPhase::Move, at, None)
         .into_iter()
         .collect();
     }
@@ -908,12 +909,18 @@ impl Tree {
     self.stop_long_press(press.id);
     self.update_drop();
     self
-      .drag_call(press, DragPhase::Start, at, false)
+      .drag_call(press, DragPhase::Start, at, None)
       .into_iter()
       .collect()
   }
 
-  fn drag_call(&self, press: Press, phase: DragPhase, at: Point, dropped: bool) -> Option<Call> {
+  fn drag_call(
+    &self,
+    press: Press,
+    phase: DragPhase,
+    at: Point,
+    landed: Option<Rc<Cell<bool>>>,
+  ) -> Option<Call> {
     let rect = self.node(press.id)?.rect?;
     let drag = Drag {
       phase,
@@ -922,9 +929,9 @@ impl Tree {
       // down.
       position: self.button_local(press.id, at).unwrap_or(press.start),
       size: Size::new(rect.width, rect.height),
-      dropped,
+      dropped: false,
     };
-    self.call(press.id, Action::Drag(drag))
+    self.call(press.id, Action::Drag(drag, landed))
   }
 
   /// Arms button `id`'s long press, from now. Each button keeps one
@@ -970,7 +977,7 @@ impl Tree {
   /// click, and nothing is hovered.
   pub(crate) fn leave(&mut self) -> Vec<Call> {
     self.pointer.position = None;
-    let calls = self.end_press(false).into_iter().collect();
+    let calls = self.end_press(None).into_iter().collect();
     self.set_hovered(None, &[]);
     self.set_positions(&[], None);
     calls
@@ -989,7 +996,7 @@ impl Tree {
     let mut calls = Vec::new();
     if !enabled {
       if self.pointer.pressed.is_some_and(|press| press.id == id) {
-        calls.extend(self.end_press(false));
+        calls.extend(self.end_press(None));
       }
       if self.keyboard.focused == Some(id) {
         self.focus(None);
@@ -1252,8 +1259,10 @@ enum Action {
   Forward,
   Scroll(i32),
   Wheel(Wheel),
-  Drag(Drag),
-  Drop(DragValue),
+  /// A drag, and at its `End` after a drop, whether the drop landed.
+  Drag(Drag, Option<Rc<Cell<bool>>>),
+  /// A drop, which says whether its `on_drop` ran and returned.
+  Drop(DragValue, Rc<Cell<bool>>),
 }
 
 /// A handler to run once the tree is released.
@@ -1270,7 +1279,7 @@ enum Picked {
   Scroll(ScrollHandler, i32),
   Wheel(WheelHandler, Wheel),
   Drag(DragHandler, Drag),
-  Drop(DropHandler, DragValue),
+  Drop(DropHandler, DragValue, Rc<Cell<bool>>),
 }
 
 impl Call {
@@ -1293,10 +1302,20 @@ impl Call {
           Action::Forward => plain(&h.forward, "on_forward"),
           Action::Scroll(steps) => h.scroll.clone().map(|f| Picked::Scroll(f, *steps)),
           Action::Wheel(wheel) => h.wheel.clone().map(|f| Picked::Wheel(f, *wheel)),
-          Action::Drag(drag) => h.drag.clone().map(|f| Picked::Drag(f, *drag)),
-          Action::Drop(value) => {
+          Action::Drag(drag, landed) => {
+            let drag = Drag {
+              dropped: landed.as_ref().is_some_and(|landed| landed.get()),
+              ..*drag
+            };
+            h.drag.clone().map(|f| Picked::Drag(f, drag))
+          }
+          Action::Drop(value, landed) => {
             let target = h.drop.as_ref()?;
-            Some(Picked::Drop(target.handler.clone(), Rc::clone(value)))
+            Some(Picked::Drop(
+              target.handler.clone(),
+              Rc::clone(value),
+              Rc::clone(landed),
+            ))
           }
         }
       })
@@ -1319,8 +1338,9 @@ impl Call {
         run_isolated(path, "on_drag", handler, |f| f(cx, drag));
       }
       // The value goes inside, so its last copy is dropped isolated too.
-      Picked::Drop(handler, value) => {
-        run_isolated(path, "on_drop", handler, move |f| f(cx, &*value));
+      Picked::Drop(handler, value, landed) => {
+        let ran = run_isolated(path, "on_drop", handler, move |f| f(cx, &*value));
+        landed.set(ran.is_some());
       }
     }
   }

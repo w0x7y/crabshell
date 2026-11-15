@@ -355,3 +355,29 @@ fn a_drag_that_starts_at_the_press_inside_a_target_is_over_it_at_once() {
     "the source is skipped, not the zone it is in"
   );
 }
+
+#[test]
+fn a_target_whose_on_drop_panicked_reports_no_drop_and_takes_no_more() {
+  let mut h = Harness::new();
+  let hovered = h.cx.signal(false);
+  let broken = Button::new(square())
+    .on_drop(|_cx, _value: u32| panic!("drop failure"))
+    .drop_hovered(hovered);
+  let (window, drags) = window(&mut h, broken);
+  capture_logs(|| {
+    drag_to(&window, Point::new(45.0, 5.0));
+    window.pointer_button(PointerButton::Left, false);
+  });
+  let end = *drags.borrow().last().expect("the first drag ended");
+  assert_eq!(
+    (end.phase, end.dropped),
+    (DragPhase::End, false),
+    "the drop that panicked didn't land"
+  );
+
+  drag_to(&window, Point::new(45.0, 5.0));
+  assert!(!hovered.get_untracked(), "a disabled on_drop takes nothing");
+  window.pointer_button(PointerButton::Left, false);
+  let end = *drags.borrow().last().expect("the second drag ended");
+  assert_eq!((end.phase, end.dropped), (DragPhase::End, false));
+}
