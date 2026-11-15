@@ -72,6 +72,12 @@ mod switch_log;
 #[cfg(test)]
 mod tests;
 
+/// The type of an output's `transform`, from
+/// [`cx.outputs()`](ShellExt::outputs). Out of the prelude, beside `Mode`.
+pub use crabshell_render::Turn;
+/// The type of an output's `mode`, from [`cx.outputs()`](ShellExt::outputs).
+/// Out of the prelude, since `Mode` is a common name.
+pub use crabshell_wayland::Mode;
 /// The time library behind [`cx.clock()`](crabshell_services::ServicesExt::clock),
 /// so a config can name `jiff::Zoned` without its own copy.
 pub use jiff;

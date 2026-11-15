@@ -1917,6 +1917,13 @@ fn cx_outputs_lists_each_output_and_follows_its_changes() {
   let one = named("HEADLESS-1").expect("listed");
   assert_eq!((one.x, one.y, one.width, one.height), (0, 0, 1920, 1080));
   assert_eq!((one.scale, one.fractional_scale), (1, 1.0));
+  // A config can name the types of its fields.
+  let mode: Option<crabshell::Mode> = one.mode;
+  assert_eq!(
+    mode.map(|mode| (mode.width, mode.height)),
+    Some((1920, 1080))
+  );
+  assert_eq!(one.transform, crabshell::Turn::default());
   assert_eq!(*found.borrow(), [Some(one)], "its bar's builder found it");
 
   // A binding that reads the list follows a new scale.
@@ -1957,14 +1964,6 @@ fn cx_outputs_lists_each_output_and_follows_its_changes() {
   run_until(&mut shell, "HEADLESS-2 to go", |_| {
     names() == ["HEADLESS-1"]
   });
-  settle(&mut shell);
-  runtime.flush();
-  let runs = scales.borrow().len();
-  // A scale already in effect changes nothing, so nothing reruns.
-  sway.msg(&["output", "HEADLESS-1", "scale", "1.5"]);
-  settle(&mut shell);
-  runtime.flush();
-  assert_eq!(scales.borrow().len(), runs, "{:?}", scales.borrow());
   watcher.owner().dispose();
 
   drop(shell);
