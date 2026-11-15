@@ -253,8 +253,11 @@
         more compositors: hyprland's workspaces, monitors and windows, i3's
         events and outputs, the generic workspace protocol, global shortcuts, a
         focus grab and the shortcut inhibitor. v0.3 adds phase 13, a check
-        against every quickshell type. the
-        <a href="roadmap.html">roadmap</a> has every phase.
+        against every quickshell type. phases 14 to 19 bring what configs take
+        from qt itself: timers, transforms and springs, flexible layout and
+        dragging, drawing and image effects, styled text, and outside data like
+        http and the clipboard. the <a href="roadmap.html">roadmap</a> has every
+        phase.
       </p>
       <p id="types-line"></p>
     </main>
@@ -357,7 +360,7 @@
       document.getElementById("rail").innerHTML = railCells(PHASES);
       document.getElementById("rail-ticks").innerHTML = PHASES.map(
         (p) =>
-          `<span>${p.n === 0 || p.n === 13 ? p.n : p.n === 6 ? "v0.1" : ""}</span>`,
+          `<span>${p.n === 0 || p === PHASES[PHASES.length - 1] ? p.n : p.n === 6 ? "v0.1" : p.n === 13 ? "v0.3" : ""}</span>`,
       ).join("");
       document.getElementById("phases-done").textContent =
         `${done} of ${PHASES.length} phases done.`;

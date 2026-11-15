@@ -46,10 +46,14 @@
     <main>
       <h1>roadmap</h1>
       <p>
-        fourteen phases. a phase is done only when its exit check passes. phases
-        0 to 6 reach v0.1, a bar for sway. phases 7 to 12 bring most of the rest
-        of quickshell and shipped as v0.2. phase 13 checks every quickshell
-        type.
+        twenty phases. a phase is done only when its exit check passes. phases 0
+        to 6 reach v0.1, a bar for sway. phases 7 to 12 bring most of the rest
+        of quickshell and shipped as v0.2. phase 13 checks every quickshell type
+        and shipped as v0.3. a quickshell config is qml, and most of what it
+        draws and animates comes from qt, so phases 14 to 19 bring what five
+        public configs take from it: timers and motion, layout and the pointer,
+        drawing and effects, text, and outside data like http and the clipboard,
+        then the last quickshell gaps.
       </p>
 
       <div class="gauges">
@@ -59,7 +63,8 @@
         </div>
         <div>
           <div class="gauge-label">
-            <span>to everything quickshell does</span><b id="g-all"></b>
+            <span>to everything a quickshell config does</span
+            ><b id="g-all"></b>
           </div>
           <div class="gauge" id="gauge-all" aria-hidden="true"></div>
         </div>
@@ -138,13 +143,14 @@
           html += `<li class="milestone"><strong>v0.1</strong>a bar for sway, the first release</li>`;
         if (p.n === 13)
           html += `<li class="milestone"><strong>v0.2</strong>phases 7 to 12, with hyprland</li>`;
+        if (p.n === 14)
+          html += `<li class="milestone"><strong>v0.3</strong>phase 13, every quickshell type</li>`;
         html += `<li class="${p.state}">
     <span class="dot" aria-hidden="true">${p.state === "done" ? cs.ICON.yes : ""}</span>
     <div class="phase-head"><span class="num">phase ${p.n}</span><h3>${p.title}</h3><span class="when">${p.when}</span></div>
     <div class="phase-body"><ul class="checks">${p.items.map(([s, t]) => `<li>${cs.mark(s)}<span>${t}</span></li>`).join("")}</ul></div>
   </li>`;
       }
-      html += `<li class="milestone"><strong>v0.3</strong>phase 13, every quickshell type</li>`;
       document.getElementById("timeline").innerHTML = html;
     </script>
   </body>

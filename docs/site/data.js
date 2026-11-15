@@ -240,6 +240,82 @@ const PHASES = [
       ["yes", "released on crates.io, as 0.3"],
     ],
   },
+  {
+    n: 14,
+    title: "time and motion",
+    state: "next",
+    when: "up next",
+    items: [
+      ["no", "timers that wake only while they run"],
+      ["no", "animation sequences, delays, loops and an end callback"],
+      ["no", "spline, back, sine and expo curves, and springs"],
+      ["no", "exit transitions for removed children"],
+      ["no", "translate, scale and rotate"],
+    ],
+  },
+  {
+    n: 15,
+    title: "layout, pointer and views",
+    state: "later",
+    when: "later",
+    items: [
+      ["no", "per-child sizes, absolute positions, grids and wrapping rows"],
+      ["no", "pointer position, drag, long press and horizontal scroll"],
+      ["no", "every cursor shape, and focus set from code"],
+      ["no", "a widget's rectangle as a signal"],
+      ["no", "a slider, kinetic scrolling, a scroll bar and grid views"],
+    ],
+  },
+  {
+    n: 16,
+    title: "drawing and effects",
+    state: "later",
+    when: "later",
+    items: [
+      ["no", "a canvas with paths, arcs and dashes"],
+      ["no", "sweep gradients and a radius per corner"],
+      ["no", "tinted icons, image filters and a cached blur"],
+      ["no", "masks and shadows that follow the content"],
+      ["no", "animated gifs and wallpaper transitions"],
+    ],
+  },
+  {
+    n: 17,
+    title: "text",
+    state: "later",
+    when: "later",
+    items: [
+      ["no", "alignment, line height, letter spacing and font features"],
+      ["no", "styled spans, notification markup and links"],
+      ["no", "text measuring and fonts bundled in the config"],
+      ["no", "drag-select, selectable labels and a multi-line editor"],
+    ],
+  },
+  {
+    n: 18,
+    title: "system and outside data",
+    state: "later",
+    when: "later",
+    items: [
+      ["no", "http and remote cover art"],
+      ["no", "folder views, the clipboard and its history"],
+      ["no", "logind's sleep signal, power actions and brightness"],
+      ["no", "cpu, memory and temperature stats"],
+      ["no", "niri's ipc"],
+    ],
+  },
+  {
+    n: 19,
+    title: "parity remainder",
+    state: "later",
+    when: "last",
+    items: [
+      ["no", "native pipewire, with its link graph"],
+      ["no", "writing saved networks, and the wi-fi scanner"],
+      ["no", "a screen reader through accesskit"],
+      ["no", "a reload without the blink"],
+    ],
+  },
 ];
 
 // How far the phase underway is: a part done counts half.
@@ -317,12 +393,12 @@ const Q = {
     [
       "QsWindow",
       "part",
-      "panels, popups and floating windows, each with a mask; no item-to-window mapping, as for TransformWatcher",
+      "panels, popups and floating windows, each with a mask; item-to-window mapping comes in phase 15",
     ],
     [
       "Quickshell",
       "part",
-      "cx.outputs for screens; reload comes from the supervisor on save, not a call; env and paths are std's",
+      "cx.outputs for screens; env and paths are std's; the clipboard and icon paths come in phase 18, and a reload a config asks for in phase 19",
     ],
     [
       "QuickshellSettings",
@@ -355,7 +431,7 @@ const Q = {
     [
       "TransformWatcher",
       "no",
-      "widget positions aren't exposed; a popup anchors to the widget that opened it",
+      "widget positions aren't exposed yet; a popup anchors to the widget that opened it; a widget's rectangle comes in phase 15",
     ],
     ["Variants", "yes", "cx.per_output and children_keyed"],
   ],
@@ -421,7 +497,7 @@ const Q = {
     [
       "NMSettings",
       "part",
-      "saved_connections(), forget and clear_secrets; no write, which needs NetworkManager's typed values",
+      "saved_connections(), forget and clear_secrets; write, which needs NetworkManager's typed values, comes in phase 19",
     ],
     ["Network", "yes", "WifiNetwork"],
     ["NetworkBackendType", "na", "NetworkManager is the one backend"],
@@ -431,7 +507,7 @@ const Q = {
     [
       "WifiDevice",
       "part",
-      "wifi_mode and scan; no scannerEnabled, as scanning on a timer would wake an idle shell",
+      "wifi_mode and scan; scannerEnabled, scanning only while a config asks, comes in phase 19",
     ],
     ["WifiDeviceMode", "yes", "WifiMode"],
     ["WifiNetwork", "yes", "WifiNetwork"],
@@ -440,7 +516,11 @@ const Q = {
       "yes",
       "WifiSecurity; dynamic WEP and LEAP read as Wep",
     ],
-    ["WiredDevice", "part", "has_link and link_speed; no network of its own"],
+    [
+      "WiredDevice",
+      "part",
+      "has_link and link_speed; its own network comes in phase 19",
+    ],
   ],
   "Quickshell.Services.Greetd": [
     ["Greetd", "yes", "cx.greetd()"],
@@ -468,32 +548,40 @@ const Q = {
     [
       "Pipewire",
       "part",
-      "sinks, sources and streams through pipewire-pulse; no link graph",
+      "sinks, sources and streams through pipewire-pulse; native pipewire with its link graph comes in phase 19",
     ],
     ["PwAudioChannel", "yes", "AudioChannel, with each channel's volume"],
     [
       "PwLink",
       "no",
-      "the PulseAudio protocol has no link graph; AudioStream.sink names a stream's device",
+      "the PulseAudio protocol has no link graph; AudioStream.sink names a stream's device; native pipewire comes in phase 19",
     ],
     [
       "PwLinkGroup",
       "no",
-      "the PulseAudio protocol has no link graph; AudioStream.sink names a stream's device",
+      "the PulseAudio protocol has no link graph; AudioStream.sink names a stream's device; native pipewire comes in phase 19",
     ],
-    ["PwLinkState", "no", "the PulseAudio protocol has no link graph"],
-    ["PwNode", "part", "AudioNode and AudioStream"],
+    [
+      "PwLinkState",
+      "no",
+      "the PulseAudio protocol has no link graph; native pipewire comes in phase 19",
+    ],
+    [
+      "PwNode",
+      "part",
+      "AudioNode and AudioStream; native pipewire comes in phase 19",
+    ],
     ["PwNodeAudio", "yes", "volume, mute and each channel's volume"],
     [
       "PwNodeLinkTracker",
       "no",
-      "the PulseAudio protocol has no link graph; filter streams() by sink",
+      "the PulseAudio protocol has no link graph; filter streams() by sink; native pipewire comes in phase 19",
     ],
     ["PwNodePeakMonitor", "yes", "cx.audio().peaks(target)"],
     [
       "PwNodeType",
       "part",
-      "sinks, sources and streams; no video nodes, as the audio service is audio only",
+      "sinks, sources and streams; no video nodes, as the audio service is audio only; native pipewire comes in phase 19",
     ],
     ["PwObjectTracker", "na", "every node is followed"],
   ],
