@@ -12,9 +12,11 @@ use std::panic::{self, AssertUnwindSafe, Location};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Once;
+use std::time::Instant;
 
+use calloop::timer::TimeoutAction;
 use calloop::{Interest, RegistrationToken};
-use crabshell_reactive::{ReadSignal, Signal, untrack};
+use crabshell_reactive::{Owner, ReadSignal, Signal, untrack};
 use crabshell_ui::Cx;
 
 use crate::Shared;
@@ -36,6 +38,9 @@ pub(crate) struct Sockets(pub(crate) Rc<Shared>);
 /// closes it, [`connected`](Self::connected) turns `false` and it stays
 /// closed until [`reconnect`](Self::reconnect): nothing retries on its
 /// own, so a socket that isn't there never wakes the shell.
+///
+/// A [`SocketServer`](crate::SocketServer) hands each connection it
+/// accepts over as a `Socket` too, which can't reconnect.
 #[derive(Clone)]
 pub struct Socket {
   inner: Rc<Inner>,
@@ -49,6 +54,9 @@ struct Inner {
   /// must close for good.
   connected: Signal<bool>,
   state: RefCell<State>,
+  /// For a connection a server accepted, its own context's owner, which
+  /// goes once the connection ends.
+  served: Option<Owner>,
 }
 
 /// What a config does with each line.
@@ -92,11 +100,37 @@ pub(crate) fn socket(cx: &Cx, path: PathBuf) -> Socket {
     path,
     connected: cx.signal(false),
     state: RefCell::default(),
+    served: None,
   });
   // Dropped with the opening context's owner, which closes the socket.
   cx.owner().signal(CloseOnDrop(Rc::clone(&inner)));
   inner.connect();
   Socket { inner }
+}
+
+/// A connection a server accepted on `path`, as a `Socket` under `cx`,
+/// whose owner goes on the loop's turn after the connection ends. `None`,
+/// logged, if the loop can't take it.
+pub(crate) fn accepted(
+  cx: &Cx,
+  shared: &Rc<Shared>,
+  path: PathBuf,
+  stream: UnixStream,
+) -> Option<Socket> {
+  let inner = Rc::new(Inner {
+    shared: Some(Rc::clone(shared)),
+    path,
+    connected: cx.signal(false),
+    state: RefCell::default(),
+    served: Some(cx.owner()),
+  });
+  cx.owner().signal(CloseOnDrop(Rc::clone(&inner)));
+  if let Err(error) = inner.attach(stream) {
+    let path = inner.path.display();
+    tracing::warn!(%path, %error, "can't serve a connection");
+    return None;
+  }
+  Some(Socket { inner })
 }
 
 /// Closes the socket when the opening context's owner drops it.
@@ -160,8 +194,13 @@ impl Socket {
 
   /// Closes it and connects again, as after the other end restarted.
   /// Lines the old connection read and `on_line` hasn't had yet are
-  /// dropped.
+  /// dropped. A connection a server accepted can't: that is logged, and
+  /// it stays as it is.
   pub fn reconnect(&self) {
+    if self.inner.served.is_some() {
+      let path = self.inner.path.display();
+      return tracing::warn!(%path, "a connection a server accepted can't reconnect");
+    }
     self.inner.close();
     self.inner.connect();
   }
@@ -181,29 +220,30 @@ impl Inner {
   }
 
   fn connect(self: &Rc<Self>) {
-    let Some(event_loop) = self.shared.as_ref().and_then(|shared| shared.event_loop()) else {
-      return;
-    };
-    if !self.alive() {
+    let event_loop = self.shared.as_ref().and_then(|shared| shared.event_loop());
+    if event_loop.is_none() || !self.alive() {
       return;
     }
-    let opened = UnixStream::connect(&self.path).and_then(|stream| {
-      stream.set_nonblocking(true)?;
-      let fd = stream.as_fd().try_clone_to_owned()?;
-      Ok((stream, fd))
-    });
-    let (stream, fd) = match opened {
-      Ok(opened) => opened,
-      Err(error) => {
-        let path = self.path.display();
-        return tracing::warn!(%path, %error, "can't connect to the socket");
-      }
-    };
+    if let Err(error) = UnixStream::connect(&self.path).and_then(|stream| self.attach(stream)) {
+      let path = self.path.display();
+      tracing::warn!(%path, %error, "can't connect to the socket");
+    }
+  }
+
+  /// Reads and writes `stream` from the loop from now on.
+  fn attach(self: &Rc<Self>, stream: UnixStream) -> std::io::Result<()> {
+    let event_loop = self
+      .shared
+      .as_ref()
+      .and_then(|shared| shared.event_loop())
+      .ok_or_else(|| std::io::Error::other("the loop is gone"))?;
+    stream.set_nonblocking(true)?;
+    let fd = stream.as_fd().try_clone_to_owned()?;
     let inner = Rc::clone(self);
     let read = Box::new(move || inner.on_readable());
-    let Some(reader) = event_loop.insert_fd(fd, Interest::READ, read) else {
-      return;
-    };
+    let reader = event_loop
+      .insert_fd(fd, Interest::READ, read)
+      .ok_or_else(|| std::io::Error::other("the loop refused it"))?;
     let mut state = self.state.borrow_mut();
     state.lines.reset();
     state.serial += 1;
@@ -216,6 +256,7 @@ impl Inner {
     });
     drop(state);
     self.connected.try_set(true);
+    Ok(())
   }
 
   /// Reads what came, and passes each whole line on.
@@ -386,6 +427,15 @@ impl Inner {
       event_loop.remove(connection.reader);
       if let Some(writer) = connection.writer {
         event_loop.remove(writer);
+      }
+      // A server's connection never connects again, so its context goes,
+      // on the next turn: a handler that closed it may still use it.
+      if let Some(owner) = self.served.filter(|_| self.alive()) {
+        let gone = move || {
+          owner.dispose();
+          TimeoutAction::Drop
+        };
+        event_loop.insert_timer(Instant::now(), Box::new(gone));
       }
     }
     if untrack(|| self.connected.try_with(|connected| *connected)) == Some(true) {

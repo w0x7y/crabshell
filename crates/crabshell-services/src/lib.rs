@@ -32,6 +32,7 @@ mod polkit;
 mod power;
 mod process;
 mod socket;
+mod socket_server;
 mod spawn;
 mod sway;
 #[cfg(test)]
@@ -80,6 +81,7 @@ pub use power::{
 };
 pub use process::{IntoCommand, Process};
 pub use socket::Socket;
+pub use socket_server::SocketServer;
 pub use sway::{Sway, SwayEvent, SwayEventKind, SwayOutput, Workspace};
 pub use tray::{
   MenuEntry, MenuToggle, Tray, TrayCategory, TrayHost, TrayItem, TrayMenu, TrayStatus,
@@ -239,6 +241,14 @@ pub trait ServicesExt {
   /// something or takes what was written.
   fn socket(&self, path: impl Into<PathBuf>) -> Socket;
 
+  /// A server on the Unix socket at `path`, as Quickshell's
+  /// `SocketServer`: it listens at once, and each client that connects
+  /// becomes a [`Socket`] for [`SocketServer::on_connection`]. Each call
+  /// makes its own, which stops when this context goes, closing its
+  /// connections and removing its socket file. It wakes the shell only
+  /// when a client connects, sends something or takes what was written.
+  fn socket_server(&self, path: impl Into<PathBuf>) -> SocketServer;
+
   /// Runs the program `command` builds, as Quickshell's `Process`, and
   /// keeps what it prints and how it ended. `command` returns a
   /// [`Command`](std::process::Command) or a list such as
@@ -356,6 +366,10 @@ impl ServicesExt for Cx {
 
   fn socket(&self, path: impl Into<PathBuf>) -> Socket {
     socket::socket(self, path.into())
+  }
+
+  fn socket_server(&self, path: impl Into<PathBuf>) -> SocketServer {
+    socket_server::socket_server(self, path.into())
   }
 
   #[track_caller]
