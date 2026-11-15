@@ -12,8 +12,8 @@ use std::time::Duration;
 use crabshell_reactive::{Memo, Signal};
 
 use crate::cx::Cx;
-use crate::geometry::Rect;
-use crate::input::{CursorShape, Handler, Handlers, Wheel};
+use crate::geometry::{Point, Rect};
+use crate::input::{CursorShape, Drag, Handler, Handlers, Wheel};
 use crate::keyboard::KeyEvent;
 use crate::keyed::{self, KeyedList, KeyedMount};
 use crate::prop::{IntoProp, Prop};
@@ -166,6 +166,7 @@ pub(crate) struct ButtonProps {
   pub(crate) pressed_style: Option<Prop<Style>>,
   pub(crate) focus_style: Option<Prop<Style>>,
   pub(crate) hovered: Option<Signal<bool>>,
+  pub(crate) position: Option<Signal<Option<Point>>>,
   pub(crate) cursor: Option<Prop<CursorShape>>,
   pub(crate) handlers: Handlers,
 }
@@ -793,6 +794,7 @@ impl Button {
         pressed_style: None,
         focus_style: None,
         hovered: None,
+        position: None,
         cursor: None,
         handlers: Handlers::default(),
       },
@@ -857,7 +859,7 @@ impl Button {
   }
 
   /// Runs `handler` when the left button is pressed and released over this
-  /// button, unless that made a double click.
+  /// button, unless that ended a drag or made a double click.
   pub fn on_click(mut self, handler: impl Fn(&Cx) + 'static) -> Button {
     self.button.handlers.click = Some(Rc::new(Handler::new(handler)));
     self
@@ -869,6 +871,20 @@ impl Button {
   /// runs `on_click`.
   pub fn on_double_click(mut self, handler: impl Fn(&Cx) + 'static) -> Button {
     self.button.handlers.double_click = Some(Rc::new(Handler::new(handler)));
+    self
+  }
+
+  /// Runs `handler` as the left button drags this button: a
+  /// [`DragPhase::Start`](crate::DragPhase::Start) once it moves 10
+  /// logical pixels from where it went down, a `Move` for each motion
+  /// after, and an `End` when it comes up or the pointer leaves the
+  /// window. A button with no `on_click` or `on_double_click` starts at
+  /// the press instead, so a slider moves from the first touch.
+  ///
+  /// While it drags, the button gets every motion, even outside itself or
+  /// the window, stays hovered, and doesn't click.
+  pub fn on_drag(mut self, handler: impl Fn(&Cx, Drag) + 'static) -> Button {
+    self.button.handlers.drag = Some(Rc::new(Handler::new(handler)));
     self
   }
 
@@ -915,6 +931,15 @@ impl Button {
   /// is down and right. With `on_scroll` too, both run.
   pub fn on_wheel(mut self, handler: impl Fn(&Cx, Wheel) + 'static) -> Button {
     self.button.handlers.wheel = Some(Rc::new(Handler::new(handler)));
+    self
+  }
+
+  /// Shares where the pointer is: the button writes `position`, in its
+  /// own coordinates with (0, 0) at its top-left, while the pointer is
+  /// over it or anything inside it or dragging it, and `None` when it
+  /// leaves. It is written only on a change.
+  pub fn pointer_position(mut self, position: Signal<Option<Point>>) -> Button {
+    self.button.position = Some(position);
     self
   }
 

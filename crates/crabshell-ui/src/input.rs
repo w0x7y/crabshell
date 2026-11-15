@@ -1,5 +1,5 @@
-//! Pointer input: hit testing, hover and pressed state, double clicks,
-//! scrolling and calling button handlers.
+//! Pointer input: hit testing, hover and pressed state, drags, double
+//! clicks, scrolling and calling button handlers.
 //!
 //! The platform turns `wl_pointer` events into calls on [`Window`]. Handlers
 //! run after the window's tree is released, inside `catch_unwind`, so a
@@ -15,7 +15,7 @@ use std::time::Instant;
 use crabshell_reactive::{Signal, untrack};
 
 use crate::cx::Cx;
-use crate::geometry::{Point, Rect};
+use crate::geometry::{Point, Rect, Size};
 use crate::keyboard::KeyHandler;
 use crate::scroll::PIXELS_PER_NOTCH;
 use crate::tree::{ButtonNode, Change, Node, NodeId, NodeKind, Tree, borrow};
@@ -26,6 +26,10 @@ const PIXELS_PER_STEP: f32 = 15.0;
 
 /// `axis_value120` units per mouse-wheel notch.
 const VALUE120_PER_STEP: i32 = 120;
+
+/// How far a held left button moves before it drags, in logical pixels:
+/// Qt's `startDragDistance`.
+const DRAG_THRESHOLD: f32 = 10.0;
 
 /// The most time between two clicks of a double click, in milliseconds:
 /// Qt's `mouseDoubleClickInterval`.
@@ -53,6 +57,7 @@ impl<F> Handler<F> {
 pub(crate) type ClickHandler = Rc<Handler<dyn Fn(&Cx)>>;
 type ScrollHandler = Rc<Handler<dyn Fn(&Cx, i32)>>;
 pub(crate) type WheelHandler = Rc<Handler<dyn Fn(&Cx, Wheel)>>;
+pub(crate) type DragHandler = Rc<Handler<dyn Fn(&Cx, Drag)>>;
 
 /// A button's handlers.
 #[derive(Default)]
@@ -67,6 +72,7 @@ pub(crate) struct Handlers {
   pub(crate) forward: Option<ClickHandler>,
   pub(crate) scroll: Option<ScrollHandler>,
   pub(crate) wheel: Option<WheelHandler>,
+  pub(crate) drag: Option<DragHandler>,
   pub(crate) key: Option<KeyHandler>,
 }
 
@@ -127,6 +133,35 @@ pub struct Wheel {
   pub x: WheelAxis,
   /// Up and down.
   pub y: WheelAxis,
+}
+
+/// Where a [`Drag`] is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DragPhase {
+  /// The drag began: the held left button moved past the threshold, or
+  /// went down on a button that only drags.
+  Start,
+  /// The pointer moved while dragging.
+  Move,
+  /// The drag ended: the button came up or the pointer left the window.
+  End,
+}
+
+/// What [`Button::on_drag`](crate::Button::on_drag) gets each time a drag
+/// starts, moves or ends. Points are in the button's own coordinates:
+/// (0, 0) is its top-left corner, through any transform, so a slider turns
+/// `position.x / size.width` into its value.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Drag {
+  /// Whether it starts, moves or ends.
+  pub phase: DragPhase,
+  /// Where the left button went down.
+  pub start: Point,
+  /// Where the pointer is now. It goes past the button's size, and below
+  /// 0, when the pointer leaves the button while dragging.
+  pub position: Point,
+  /// The button's laid-out size.
+  pub size: Size,
 }
 
 /// The cursor the platform should show: every shape of
@@ -215,8 +250,14 @@ pub enum CursorShape {
 struct Press {
   id: NodeId,
   button: PointerButton,
-  /// Where it went down, in window coordinates.
+  /// Where it went down and where the pointer was last, in window
+  /// coordinates.
   at: Point,
+  last: Point,
+  /// Where it went down, in the button's own coordinates.
+  start: Point,
+  /// A drag started.
+  dragging: bool,
 }
 
 /// Where the pointer is and what it is doing.
@@ -228,6 +269,9 @@ pub(crate) struct Pointer {
   /// The buttons with a `hovered` signal that the pointer is inside: the
   /// hovered one and those around it.
   inside: Vec<(NodeId, Signal<bool>)>,
+  /// The buttons with a `pointer_position` signal that the pointer is
+  /// inside, and the position last written to each.
+  positions: Vec<(NodeId, Signal<Option<Point>>, Point)>,
   /// The button a pointer button went down on, until it comes up.
   pressed: Option<Press>,
   /// The last left click, with the time it came up and where it went
@@ -241,7 +285,8 @@ pub(crate) struct Pointer {
 }
 
 impl Pointer {
-  /// Forgets nodes that were removed from the tree.
+  /// Forgets nodes that were removed from the tree. Nothing of theirs
+  /// runs after: a drag on one ends without its `End`.
   pub(crate) fn forget(&mut self, removed: &[NodeId]) {
     if self.hovered.is_some_and(|id| removed.contains(&id)) {
       self.hovered = None;
@@ -256,6 +301,13 @@ impl Pointer {
       }
     }
     self.inside = kept;
+    self.positions.retain(|(id, signal, _)| {
+      let gone = removed.contains(id);
+      if gone {
+        signal.try_set(None);
+      }
+      !gone
+    });
     if self
       .pressed
       .is_some_and(|press| removed.contains(&press.id))
@@ -299,17 +351,25 @@ fn now_ms() -> u32 {
 
 impl Window {
   /// The pointer entered the window or moved, to `position` in logical
-  /// pixels. Returns the cursor to show.
+  /// pixels. A held left button that moved far enough drags. Returns the
+  /// cursor to show.
   pub fn pointer_motion(&self, position: Point) -> CursorShape {
-    let mut tree = borrow(&self.tree);
-    tree.pointer.position = Some(position);
-    tree.hover_at(position);
-    tree.cursor()
+    let calls = {
+      let mut tree = borrow(&self.tree);
+      tree.pointer.position = Some(position);
+      let calls = tree.drag_motion(position);
+      tree.hover_at(position);
+      calls
+    };
+    run_all(calls);
+    self.cursor()
   }
 
-  /// The pointer left the window. A held button never clicks.
+  /// The pointer left the window. A drag ends with its `End`, and a held
+  /// button never clicks.
   pub fn pointer_leave(&self) {
-    borrow(&self.tree).leave();
+    let calls = borrow(&self.tree).leave();
+    run_all(calls);
   }
 
   /// A pointer button went down or up, now. See
@@ -321,10 +381,10 @@ impl Window {
   /// A pointer button went down or up at `time`, in milliseconds as
   /// `wl_pointer.button` counts them, which double clicks are timed by.
   /// Releasing the left button runs `on_release` of the button it went
-  /// down on, then, over that button still, its `on_click` or
-  /// `on_double_click`. The other buttons run `on_right_click`,
-  /// `on_middle_click`, `on_back` or `on_forward` when released over the
-  /// button they went down on.
+  /// down on, then ends its drag, or else, over that button still, runs
+  /// its `on_click` or `on_double_click`. The other buttons run
+  /// `on_right_click`, `on_middle_click`, `on_back` or `on_forward` when
+  /// released over the button they went down on.
   pub fn pointer_button_at(&self, button: PointerButton, pressed: bool, time: u32) {
     let calls = borrow(&self.tree).button(button, pressed, time);
     run_all(calls);
@@ -409,11 +469,19 @@ impl Tree {
   }
 
   /// Hovers the deepest button under `point`, and marks the buttons around
-  /// it as having the pointer inside.
-  fn hover_at(&mut self, point: Point) {
+  /// it as having the pointer inside. A drag keeps its button hovered
+  /// wherever the pointer goes.
+  pub(crate) fn hover_at(&mut self, point: Point) {
     let mut path = Vec::new();
-    let hit = self.hit(self.root, point, &mut path);
+    let hit = match self.pointer.pressed.filter(|press| press.dragging) {
+      Some(press) => {
+        path = self.path_to(press.id);
+        Some(press.id)
+      }
+      None => self.hit(self.root, point, &mut path),
+    };
     self.set_hovered(hit, &path);
+    self.set_positions(&path, Some(point));
   }
 
   /// The nodes from the root down to `id`, both included.
@@ -507,6 +575,40 @@ impl Tree {
     self.pointer.inside = inside;
   }
 
+  /// Writes where the pointer is to the `pointer_position` signals of the
+  /// buttons on `path`, in each one's own coordinates, and `None` to
+  /// those it left. Each is written only on a change.
+  fn set_positions(&mut self, path: &[NodeId], at: Option<Point>) {
+    let now: Vec<(NodeId, Signal<Option<Point>>, Point)> = match at {
+      Some(at) => self
+        .path_buttons(path, |button| button.position_signal)
+        .into_iter()
+        .filter_map(|(id, signal)| Some((id, signal, self.button_local(id, at)?)))
+        .collect(),
+      None => Vec::new(),
+    };
+    for (id, signal, _) in &self.pointer.positions {
+      if !now.iter().any(|(other, ..)| other == id) {
+        signal.try_set(None);
+      }
+    }
+    for &(id, signal, point) in &now {
+      let same = |&(other, _, was): &(NodeId, _, Point)| other == id && was == point;
+      if !self.pointer.positions.iter().any(same) {
+        signal.try_set(Some(point));
+      }
+    }
+    self.pointer.positions = now;
+  }
+
+  /// `point`, in window coordinates, in button `id`'s own: (0, 0) at its
+  /// top-left corner, through the transforms around it.
+  fn button_local(&self, id: NodeId, point: Point) -> Option<Point> {
+    let rect = self.node(id)?.rect?;
+    let point = self.local_point(id, point)?;
+    Some(Point::new(point.x - rect.x, point.y - rect.y))
+  }
+
   fn set_pressed(&mut self, pressed: Option<Press>) {
     let old = std::mem::replace(&mut self.pointer.pressed, pressed);
     if let Some(old) = old {
@@ -541,12 +643,27 @@ impl Tree {
     ) else {
       return Vec::new();
     };
-    self.set_pressed(Some(Press { id, button, at }));
+    let start = self.button_local(id, at).unwrap_or_default();
+    self.set_pressed(Some(Press {
+      id,
+      button,
+      at,
+      last: at,
+      start,
+      dragging: false,
+    }));
     if button != PointerButton::Left {
       return Vec::new();
     }
     self.press_field(id);
-    self.call(id, Action::Press).into_iter().collect()
+    let mut calls: Vec<Call> = self.call(id, Action::Press).into_iter().collect();
+    // Nothing waits on the threshold, so a slider moves from the press.
+    let only_drags =
+      |h: &Handlers| h.drag.is_some() && h.click.is_none() && h.double_click.is_none();
+    if self.has(id, only_drags) {
+      calls.extend(self.start_drag(at));
+    }
+    calls
   }
 
   fn release(&mut self, button: PointerButton, time: u32) -> Vec<Call> {
@@ -557,7 +674,14 @@ impl Tree {
     if button == PointerButton::Left {
       calls.extend(self.call(press.id, Action::Release));
     }
-    self.set_pressed(None);
+    calls.extend(self.end_press());
+    if press.dragging {
+      // The hover the drag held goes back to what is under the pointer.
+      if let Some(at) = self.pointer.position {
+        self.hover_at(at);
+      }
+      return calls;
+    }
     if self.pointer.hovered != Some(press.id) {
       return calls;
     }
@@ -590,12 +714,76 @@ impl Tree {
     }
   }
 
-  /// The pointer left: a held button lets go without a click, and
-  /// nothing is hovered.
-  pub(crate) fn leave(&mut self) {
-    self.pointer.position = None;
+  /// Lets go of the held button: its pressed style ends, and its drag
+  /// with an `End`.
+  fn end_press(&mut self) -> Option<Call> {
+    let press = self.pointer.pressed?;
     self.set_pressed(None);
+    if press.dragging {
+      self.drag_call(press, DragPhase::End, press.last)
+    } else {
+      None
+    }
+  }
+
+  /// What a move to `at` does to a held left button: start a drag past
+  /// the threshold, or move one.
+  fn drag_motion(&mut self, at: Point) -> Vec<Call> {
+    let Some(press) = self.pointer.pressed.as_mut() else {
+      return Vec::new();
+    };
+    press.last = at;
+    let press = *press;
+    if press.button != PointerButton::Left {
+      return Vec::new();
+    }
+    if press.dragging {
+      return self
+        .drag_call(press, DragPhase::Move, at)
+        .into_iter()
+        .collect();
+    }
+    if distance(press.at, at) > DRAG_THRESHOLD && self.has(press.id, |h| h.drag.is_some()) {
+      self.start_drag(at)
+    } else {
+      Vec::new()
+    }
+  }
+
+  /// Starts dragging the held button, with the pointer at `at`.
+  fn start_drag(&mut self, at: Point) -> Vec<Call> {
+    let Some(press) = self.pointer.pressed.as_mut() else {
+      return Vec::new();
+    };
+    press.dragging = true;
+    let press = *press;
+    self
+      .drag_call(press, DragPhase::Start, at)
+      .into_iter()
+      .collect()
+  }
+
+  fn drag_call(&self, press: Press, phase: DragPhase, at: Point) -> Option<Call> {
+    let rect = self.node(press.id)?.rect?;
+    let drag = Drag {
+      phase,
+      start: press.start,
+      // A transform that squashes the button flat leaves it where it went
+      // down.
+      position: self.button_local(press.id, at).unwrap_or(press.start),
+      size: Size::new(rect.width, rect.height),
+    };
+    self.call(press.id, Action::Drag(drag))
+  }
+
+  /// The pointer left: a drag ends, a held button lets go without a
+  /// click, and nothing is hovered.
+  pub(crate) fn leave(&mut self) -> Vec<Call> {
+    self.pointer.position = None;
+    let calls = self.end_press().into_iter().collect();
     self.set_hovered(None, &[]);
+    self.set_positions(&[], None);
+    calls
   }
 
   fn scroll(&mut self, wheel: Wheel) -> Option<Scrolled> {
@@ -794,6 +982,7 @@ enum Action {
   Forward,
   Scroll(i32),
   Wheel(Wheel),
+  Drag(Drag),
 }
 
 /// A handler to run once the tree is released.
@@ -809,6 +998,7 @@ enum Picked {
   Plain(ClickHandler, &'static str),
   Scroll(ScrollHandler, i32),
   Wheel(WheelHandler, Wheel),
+  Drag(DragHandler, Drag),
 }
 
 impl Call {
@@ -830,6 +1020,7 @@ impl Call {
           Action::Forward => plain(&h.forward, "on_forward"),
           Action::Scroll(steps) => h.scroll.clone().map(|f| Picked::Scroll(f, steps)),
           Action::Wheel(wheel) => h.wheel.clone().map(|f| Picked::Wheel(f, wheel)),
+          Action::Drag(drag) => h.drag.clone().map(|f| Picked::Drag(f, drag)),
         }
       })
     });
@@ -846,6 +1037,9 @@ impl Call {
       }
       Picked::Wheel(handler, wheel) => {
         run_isolated(path, "on_wheel", handler, |f| f(cx, wheel));
+      }
+      Picked::Drag(handler, drag) => {
+        run_isolated(path, "on_drag", handler, |f| f(cx, drag));
       }
     }
   }

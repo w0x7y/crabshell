@@ -20,7 +20,7 @@ use taffy::TaffyTree;
 use crate::animation::{self, Transition};
 use crate::cx::{Anchor, Cx};
 use crate::floating::FloatingState;
-use crate::geometry::{Affine, Rect, Size};
+use crate::geometry::{Affine, Point, Rect, Size};
 use crate::input::{CursorShape, Handlers, Pointer};
 use crate::keyboard::Keyboard;
 use crate::keyed::KeyedSlot;
@@ -221,6 +221,9 @@ pub(crate) struct ButtonNode {
   pub(crate) handlers: Signal<Handlers>,
   /// Written while the pointer is over the button or inside it.
   pub(crate) hover_signal: Option<Signal<bool>>,
+  /// Written with where the pointer is while it is over the button or
+  /// dragging it.
+  pub(crate) position_signal: Option<Signal<Option<Point>>>,
   /// The cursor over it.
   pub(crate) cursor: CursorShape,
   pub(crate) hovered: bool,
@@ -703,6 +706,7 @@ impl Tree {
         focus_style: Style::new(),
         handlers: cx.signal(std::mem::take(&mut props.handlers)),
         hover_signal: props.hovered,
+        position_signal: props.position,
         cursor: CursorShape::Pointer,
         hovered: false,
         pressed: false,

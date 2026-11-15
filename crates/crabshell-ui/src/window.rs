@@ -682,8 +682,9 @@ const GEOMETRY_ROUNDS: usize = 8;
 
 impl Drop for Window {
   fn drop(&mut self) {
-    // A `hovered` signal owned elsewhere mustn't stay `true`.
-    self.pointer_leave();
+    // A `hovered` signal owned elsewhere mustn't stay `true`, and a drag
+    // on a window going away ends without running anything.
+    drop(borrow(&self.tree).leave());
     self.owner.dispose();
   }
 }

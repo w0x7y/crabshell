@@ -1,14 +1,19 @@
-//! Pointer input added in Phase 15: release, double click, both scroll
-//! axes, side buttons and cursors.
+//! Pointer input added in Phase 15: release, double click, drag, the
+//! position signal, both scroll axes, side buttons and cursors.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use super::{Counter, Harness, lift, rect_at, wheel};
+use crabshell_reactive::Signal;
+
+use super::{Counter, Harness, capture_logs, lift, rect_at, wheel};
 use crate::{
-  Align, Button, CursorShape, Icon, Point, PointerButton, Row, ScrollSource, Stack, TextInput,
-  Wheel, WheelAxis, Window,
+  Align, Button, Color, CursorShape, Drag, DragPhase, Icon, Point, PointerButton, Row,
+  ScrollSource, Size, Stack, Style, TextInput, Wheel, WheelAxis, Window,
 };
+
+const NORMAL: Style = Style::new().background(Color::rgb(1, 1, 1));
+const HOVER: Style = Style::new().background(Color::rgb(2, 2, 2));
 
 type Log = Rc<RefCell<Vec<String>>>;
 
@@ -36,6 +41,12 @@ fn one(h: &mut Harness, button: Button) -> Window {
 fn click_at(window: &Window, time: u32) {
   window.pointer_button_at(PointerButton::Left, true, time);
   window.pointer_button_at(PointerButton::Left, false, time + 50);
+}
+
+fn background(window: &Window, path: &[usize]) -> Option<Color> {
+  super::node_at(window.view().root(), path)
+    .style()
+    .background
 }
 
 #[test]
@@ -110,6 +121,222 @@ fn without_a_double_click_handler_both_clicks_click() {
   click_at(&window, 0);
   click_at(&window, 100);
   assert_eq!(clicks.get(), 2);
+}
+
+/// A button that keeps every drag it gets.
+fn dragged(log: &Rc<RefCell<Vec<Drag>>>) -> impl Fn(&crate::Cx, Drag) + 'static {
+  let log = Rc::clone(log);
+  move |_, drag| log.borrow_mut().push(drag)
+}
+
+#[test]
+fn a_held_button_drags_past_the_threshold_and_ends_on_release() {
+  let mut h = Harness::new();
+  let drags = Rc::new(RefCell::new(Vec::new()));
+  let log = log();
+  let row = Row::new().align(Align::Start).child(square()).child(
+    Button::new(square())
+      .style(NORMAL)
+      .hover_style(HOVER)
+      .cursor(CursorShape::Grab)
+      .on_click(note(&log, "click"))
+      .on_release(note(&log, "release"))
+      .on_drag(dragged(&drags)),
+  );
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+  // The button is at x = 20.
+  window.pointer_motion(Point::new(25.0, 5.0));
+  window.pointer_button(PointerButton::Left, true);
+  window.pointer_motion(Point::new(30.0, 5.0));
+  assert!(drags.borrow().is_empty(), "within the threshold");
+  window.pointer_motion(Point::new(36.0, 5.0));
+  let size = Size::new(20.0, 20.0);
+  assert_eq!(
+    drags.borrow()[0],
+    Drag {
+      phase: DragPhase::Start,
+      start: Point::new(5.0, 5.0),
+      position: Point::new(16.0, 5.0),
+      size,
+    }
+  );
+  // Out of the button and the window, it still moves and stays hovered.
+  assert_eq!(
+    window.pointer_motion(Point::new(300.0, -40.0)),
+    CursorShape::Grab
+  );
+  assert_eq!(background(&window, &[0, 1]), HOVER.background);
+  assert_eq!(
+    drags.borrow()[1],
+    Drag {
+      phase: DragPhase::Move,
+      start: Point::new(5.0, 5.0),
+      position: Point::new(280.0, -40.0),
+      size,
+    }
+  );
+  // Back over it, the release ends the drag and doesn't click.
+  window.pointer_motion(Point::new(25.0, 5.0));
+  window.pointer_button(PointerButton::Left, false);
+  let last = drags.borrow()[3];
+  assert_eq!(
+    (last.phase, last.position),
+    (DragPhase::End, Point::new(5.0, 5.0))
+  );
+  assert_eq!(*log.borrow(), ["release"]);
+  // After it the hover follows the pointer again.
+  window.pointer_motion(Point::new(100.0, 5.0));
+  assert_eq!(background(&window, &[0, 1]), NORMAL.background);
+  assert_eq!(drags.borrow().len(), 4);
+}
+
+#[test]
+fn a_button_that_only_drags_starts_at_the_press() {
+  let mut h = Harness::new();
+  let drags = Rc::new(RefCell::new(Vec::new()));
+  let window = one(&mut h, Button::new(square()).on_drag(dragged(&drags)));
+  window.pointer_motion(Point::new(4.0, 6.0));
+  window.pointer_button(PointerButton::Left, true);
+  let first = drags.borrow()[0];
+  assert_eq!(first.phase, DragPhase::Start);
+  assert_eq!(
+    (first.start, first.position),
+    (Point::new(4.0, 6.0), Point::new(4.0, 6.0))
+  );
+  window.pointer_motion(Point::new(5.0, 6.0));
+  assert_eq!(drags.borrow()[1].phase, DragPhase::Move);
+}
+
+#[test]
+fn a_drag_is_in_the_buttons_coordinates_through_its_transform() {
+  let mut h = Harness::new();
+  let drags = Rc::new(RefCell::new(Vec::new()));
+  let button = Button::new(square())
+    .style(Style::new().translate(50.0, 0.0).scale(2.0))
+    .on_drag(dragged(&drags));
+  let window = one(&mut h, button);
+  // Scaled 2 around its middle (10, 10) and moved 50 right: its top-left
+  // is drawn at (40, -10), so (60, 10) is its middle.
+  window.pointer_motion(Point::new(60.0, 10.0));
+  window.pointer_button(PointerButton::Left, true);
+  window.pointer_motion(Point::new(80.0, 10.0));
+  let drags = drags.borrow();
+  assert_eq!(drags[0].start, Point::new(10.0, 10.0));
+  assert_eq!(drags[1].position, Point::new(20.0, 10.0));
+  assert_eq!(drags[1].size, Size::new(20.0, 20.0));
+}
+
+#[test]
+fn leaving_ends_a_drag_and_a_dropped_window_runs_nothing() {
+  let mut h = Harness::new();
+  let drags = Rc::new(RefCell::new(Vec::new()));
+  let window = one(&mut h, Button::new(square()).on_drag(dragged(&drags)));
+  window.pointer_motion(Point::new(4.0, 4.0));
+  window.pointer_button(PointerButton::Left, true);
+  window.pointer_motion(Point::new(8.0, 4.0));
+  window.pointer_leave();
+  assert_eq!(drags.borrow().last().map(|d| d.phase), Some(DragPhase::End));
+  assert_eq!(
+    drags.borrow().last().map(|d| d.position),
+    Some(Point::new(8.0, 4.0))
+  );
+  // A release after coming back ends nothing again.
+  window.pointer_motion(Point::new(4.0, 4.0));
+  let count = drags.borrow().len();
+  window.pointer_button(PointerButton::Left, false);
+  assert_eq!(drags.borrow().len(), count);
+
+  window.pointer_button(PointerButton::Left, true);
+  let count = drags.borrow().len();
+  drop(window);
+  assert_eq!(drags.borrow().len(), count, "no End from a dropped window");
+}
+
+#[test]
+fn a_panicking_drag_handler_is_logged_and_the_rest_runs_on() {
+  let mut h = Harness::new();
+  let clicks = Counter::default();
+  let counted = clicks.clone();
+  let row = Row::new()
+    .align(Align::Start)
+    .child(Button::new(square()).on_drag(|_, _| panic!("drag failure")))
+    .child(Button::new(square()).on_click(move |_| counted.hit()));
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+  let logs = capture_logs(|| {
+    window.pointer_motion(Point::new(5.0, 5.0));
+    window.pointer_button(PointerButton::Left, true);
+    window.pointer_motion(Point::new(7.0, 5.0));
+    window.pointer_button(PointerButton::Left, false);
+    window.pointer_motion(Point::new(25.0, 5.0));
+    window.pointer_button(PointerButton::Left, true);
+    window.pointer_button(PointerButton::Left, false);
+  });
+  assert!(
+    logs.contains("handler PanelWindow[DP-1]/Row/Button[0].on_drag panicked and is disabled"),
+    "{logs}"
+  );
+  assert_eq!(logs.matches("drag failure").count(), 1, "{logs}");
+  assert_eq!(clicks.get(), 1);
+}
+
+#[test]
+fn the_position_signal_follows_the_pointer_over_the_button() {
+  let mut h = Harness::new();
+  let outer: Signal<Option<Point>> = h.cx.signal(None);
+  let inner: Signal<Option<Point>> = h.cx.signal(None);
+  let row = Row::new().align(Align::Start).child(
+    Button::new(
+      Row::new()
+        .child(square())
+        .child(Button::new(square()).pointer_position(inner)),
+    )
+    .pointer_position(outer),
+  );
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+  window.pointer_motion(Point::new(5.0, 6.0));
+  assert_eq!(outer.get_untracked(), Some(Point::new(5.0, 6.0)));
+  assert_eq!(inner.get_untracked(), None);
+  // Over the inner button, both have it, each in its own coordinates.
+  window.pointer_motion(Point::new(25.0, 6.0));
+  assert_eq!(outer.get_untracked(), Some(Point::new(25.0, 6.0)));
+  assert_eq!(inner.get_untracked(), Some(Point::new(5.0, 6.0)));
+  window.pointer_motion(Point::new(100.0, 6.0));
+  assert_eq!((outer.get_untracked(), inner.get_untracked()), (None, None));
+
+  // Written only on a change.
+  let writes = Counter::default();
+  let counted = writes.clone();
+  h.cx.effect(move || {
+    outer.get();
+    counted.hit();
+  });
+  h.runtime.flush();
+  window.pointer_motion(Point::new(5.0, 6.0));
+  h.runtime.flush();
+  window.pointer_motion(Point::new(5.0, 6.0));
+  h.runtime.flush();
+  window.pointer_leave();
+  h.runtime.flush();
+  assert_eq!(writes.get(), 3);
+  assert_eq!(outer.get_untracked(), None);
+}
+
+#[test]
+fn the_position_signal_follows_a_drag_out_of_the_button() {
+  let mut h = Harness::new();
+  let at: Signal<Option<Point>> = h.cx.signal(None);
+  let window = one(
+    &mut h,
+    Button::new(square())
+      .on_drag(|_, _| {})
+      .pointer_position(at),
+  );
+  window.pointer_motion(Point::new(5.0, 5.0));
+  window.pointer_button(PointerButton::Left, true);
+  window.pointer_motion(Point::new(150.0, 25.0));
+  assert_eq!(at.get_untracked(), Some(Point::new(150.0, 25.0)));
+  window.pointer_button(PointerButton::Left, false);
+  assert_eq!(at.get_untracked(), None, "not over it once the drag ends");
 }
 
 #[test]

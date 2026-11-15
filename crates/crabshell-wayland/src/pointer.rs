@@ -1,5 +1,5 @@
 //! Turning `wl_pointer` events into calls on a window:
-//! hit testing, hover, pressed state and scrolling all live in
+//! hit testing, hover, pressed state, drags and scrolling all live in
 //! `crabshell-ui`.
 
 use crabshell_ui::{CursorShape, Point, PointerButton, ScrollSource, Wheel, WheelAxis, Window};
