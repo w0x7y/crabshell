@@ -28,6 +28,7 @@ mod text;
 mod text_input;
 mod timer;
 mod transform;
+mod visible;
 mod window;
 
 use std::cell::Cell;

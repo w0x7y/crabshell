@@ -189,6 +189,10 @@ impl Tree {
     chain: &mut Vec<Affine>,
     fonts: &mut FontSystem,
   ) -> Rect {
+    if self.node(id).is_some_and(|node| !node.visible) {
+      self.unplace(id);
+      return Rect::default();
+    }
     let Ok(&layout) = self.taffy.layout(id) else {
       return Rect::default();
     };
@@ -248,6 +252,26 @@ impl Tree {
       chain.pop();
     }
     bounds
+  }
+
+  /// Forgets where a hidden node and everything in it were, repainting
+  /// the area they covered. Shown again, each is placed and painted as a
+  /// new one is.
+  fn unplace(&mut self, id: NodeId) {
+    let mut pending = vec![id];
+    while let Some(next) = pending.pop() {
+      let Some(node) = self.taffy.get_node_context_mut(next) else {
+        continue;
+      };
+      // Not placed since it was hidden, nor is anything in it.
+      if node.rect.take().is_none() {
+        continue;
+      }
+      if next == id {
+        add_damage(&mut self.damage, node.window_bounds);
+      }
+      pending.extend(self.taffy.children(next).unwrap_or_default());
+    }
   }
 
   /// The rest of [`place`](Self::place), once the children are placed:
@@ -472,6 +496,9 @@ fn taffy_style(node: &Node, parent: Parent, size: crate::Size) -> taffy::Style {
     | NodeKind::Image(_)
     | NodeKind::Capture(_)
     | NodeKind::Input(_) => {}
+  }
+  if !node.visible {
+    style.display = Display::None;
   }
   // A size the style sets wins over the content's, but never over the
   // window's own.

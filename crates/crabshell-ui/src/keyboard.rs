@@ -275,6 +275,10 @@ impl Tree {
     let mut found = Vec::new();
     let mut pending = vec![self.root];
     while let Some(id) = pending.pop() {
+      // A hidden widget is skipped with everything in it.
+      if self.node(id).is_some_and(|node| !node.visible) {
+        continue;
+      }
       if let Some(node) = self.node(id)
         && matches!(node.kind, NodeKind::Button(_) | NodeKind::Input(_))
       {

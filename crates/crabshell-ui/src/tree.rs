@@ -135,6 +135,8 @@ pub(crate) struct Node {
   /// A layout property changed, so the node is repainted after the next
   /// layout even if it doesn't move.
   pub(crate) changed: bool,
+  /// Shown, rather than taken out of the layout with everything in it.
+  pub(crate) visible: bool,
 }
 
 pub(crate) enum NodeKind {
@@ -318,6 +320,7 @@ impl Node {
       fade: None,
       fades: 0,
       changed: true,
+      visible: true,
     }
   }
 
@@ -443,11 +446,12 @@ impl Tree {
     self.taffy.get_node_context_mut(id)
   }
 
-  /// `id`'s children in the order they are drawn, and so found by the
-  /// pointer last first: by their style's `z`, lowest first, and in child
-  /// order where it is equal.
+  /// `id`'s shown children in the order they are drawn, and so found by
+  /// the pointer last first: by their style's `z`, lowest first, and in
+  /// child order where it is equal.
   pub(crate) fn drawn_children(&self, id: NodeId) -> Vec<NodeId> {
     let mut children = self.taffy.children(id).unwrap_or_default();
+    children.retain(|&child| self.node(child).is_some_and(|node| node.visible));
     // A stable sort keeps child order for equal z.
     children.sort_by_cached_key(|&child| {
       self
@@ -581,7 +585,7 @@ impl Tree {
   pub(crate) fn mount(&mut self, element: Element, parent_cx: &Cx, parent: NodeId) -> NodeId {
     let Element {
       name,
-      style,
+      common,
       mut kind,
       children,
     } = element;
@@ -663,7 +667,8 @@ impl Tree {
       .expect("invariant: adding a leaf to taffy never fails");
     anchor.set(self.this.clone(), id);
 
-    self.bind_opt(id, style, "style", set_style);
+    self.bind_opt(id, common.style, "style", set_style);
+    self.bind_opt(id, common.visible, "visible", set_visible);
     self.bind_kind(id, kind);
     self.mount_children(id, children, &cx, &path);
     id
@@ -1190,6 +1195,29 @@ impl Surface {
 
 fn set_style(tree: &mut Tree, id: NodeId, style: Style) {
   tree.update_style(id, |node| node.style = style);
+}
+
+/// Shows or hides node `id`. Hidden, it and everything in it let go of
+/// the keyboard focus and the pointer at once; the next layout frees its
+/// space and repaints where it was.
+fn set_visible(tree: &mut Tree, id: NodeId, visible: bool) {
+  if tree.update(id, |node| replace(&mut node.visible, visible)) == Change::None || visible {
+    return;
+  }
+  let mut hidden = Vec::new();
+  let mut pending = vec![id];
+  while let Some(next) = pending.pop() {
+    hidden.push(next);
+    pending.extend(tree.taffy.children(next).unwrap_or_default());
+  }
+  if tree
+    .keyboard
+    .focused
+    .is_some_and(|focused| hidden.contains(&focused))
+  {
+    tree.focus(None);
+  }
+  tree.pointer_hide(&hidden);
 }
 
 /// Where an icon of `size` logical pixels is drawn in its node's `content`

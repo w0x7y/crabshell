@@ -11,7 +11,8 @@ use crate::popup::PopupWindow;
 use crate::prop::{IntoProp, Prop};
 use crate::style::{Color, Style};
 use crate::widgets::{
-  Align, Button, Column, Element, ElementKind, Row, Spacer, Stack, Text, Widget,
+  Align, Button, Column, Common, Element, ElementKind, Row, Spacer, Stack, Text, Widget,
+  visibility_methods,
 };
 
 /// One entry of a [`Menu`].
@@ -91,6 +92,7 @@ pub struct Menu {
   separator_style: Option<Prop<Style>>,
   on_activate: Option<EntryHandler>,
   on_open_submenu: Option<EntryHandler>,
+  common: Common,
 }
 
 impl Menu {
@@ -104,6 +106,7 @@ impl Menu {
       separator_style: None,
       on_activate: None,
       on_open_submenu: None,
+      common: Common::default(),
     }
   }
 
@@ -146,6 +149,8 @@ impl Menu {
     self.on_open_submenu = Some(Rc::new(handler));
     self
   }
+
+  visibility_methods!();
 }
 
 /// What a menu and its submenus share: the styles as closures any of them
@@ -179,7 +184,9 @@ impl Widget for Menu {
       on_activate: self.on_activate,
       on_open_submenu: self.on_open_submenu,
     });
-    menu(look, shared(Some(self.entries), Vec::new()))
+    let mut element = menu(look, shared(Some(self.entries), Vec::new()));
+    element.common.visible = self.common.visible;
+    element
   }
 }
 

@@ -8,7 +8,9 @@ use crabshell_reactive::{Memo, Signal, untrack};
 use crate::cx::Cx;
 use crate::prop::{IntoProp, Prop};
 use crate::style::Style;
-use crate::widgets::{Column, Element, ElementChild, ElementKind, Stack, Widget};
+use crate::widgets::{
+  Column, Common, Element, ElementChild, ElementKind, Stack, Widget, visibility_methods,
+};
 
 /// Logical pixels a mouse wheel scrolls per notch.
 pub(crate) const PIXELS_PER_NOTCH: f32 = 48.0;
@@ -29,7 +31,7 @@ pub(crate) struct ScrollProps {
 /// ```
 pub struct ScrollView {
   scroll: ScrollProps,
-  style: Option<Prop<Style>>,
+  common: Common,
   child: Box<dyn Widget>,
 }
 
@@ -38,7 +40,7 @@ impl ScrollView {
   pub fn new(child: impl Widget) -> ScrollView {
     ScrollView {
       scroll: ScrollProps { offset: None },
-      style: None,
+      common: Common::default(),
       child: Box::new(child),
     }
   }
@@ -54,21 +56,23 @@ impl ScrollView {
   /// Sets the style. A scroll view cuts its child to the inside of its
   /// border whatever `clip` says.
   pub fn style(mut self, style: impl IntoProp<Style>) -> ScrollView {
-    self.style = Some(style.into_prop());
+    self.common.style = Some(style.into_prop());
     self
   }
+
+  visibility_methods!();
 }
 
 impl Widget for ScrollView {
   fn into_element(self: Box<Self>) -> Element {
     let ScrollView {
       scroll,
-      style,
+      common,
       child,
     } = *self;
     Element {
       name: "ScrollView",
-      style,
+      common,
       kind: ElementKind::Scroll(scroll),
       children: vec![ElementChild::One(Box::new(child.into_element()))],
     }
@@ -97,6 +101,7 @@ pub struct ListView {
   /// Builds the list once it has a context for its signals.
   build: Build,
   props: ListProps,
+  common: Common,
 }
 
 /// Builds a list's element from its properties, with a context.
@@ -137,6 +142,7 @@ impl ListView {
         offset: None,
         style: None,
       },
+      common: Common::default(),
     }
   }
 
@@ -170,11 +176,17 @@ impl ListView {
     self.props.style = Some(style.into_prop());
     self
   }
+
+  visibility_methods!();
 }
 
 impl Widget for ListView {
   fn into_element(self: Box<Self>) -> Element {
-    let ListView { build, props } = *self;
+    let ListView {
+      build,
+      props,
+      common,
+    } = *self;
     let mut once = Some((build, props));
     // A keyed list of one is how a widget gets a context to make its
     // signals with.
@@ -185,6 +197,7 @@ impl Widget for ListView {
     ))
     .into_element();
     element.name = "ListView";
+    element.common = common;
     element
   }
 }

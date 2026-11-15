@@ -13,7 +13,7 @@ use crate::prop::{IntoProp, Prop};
 use crate::style::Style;
 use crate::text::TextNode;
 use crate::tree::{NodeKind, borrow};
-use crate::widgets::{Element, ElementKind, Widget};
+use crate::widgets::{Common, Element, ElementKind, Widget, visibility_methods};
 use crate::window::Window;
 
 /// What a password shows for each character.
@@ -52,7 +52,7 @@ pub(crate) struct InputProps {
 /// ```
 pub struct TextInput {
   input: InputProps,
-  style: Option<Prop<Style>>,
+  common: Common,
 }
 
 impl TextInput {
@@ -66,7 +66,7 @@ impl TextInput {
         focus: None,
         on_accept: None,
       },
-      style: None,
+      common: Common::default(),
     }
   }
 
@@ -98,16 +98,18 @@ impl TextInput {
 
   /// Sets the style. A field cuts its text to the inside of its border.
   pub fn style(mut self, style: impl IntoProp<Style>) -> TextInput {
-    self.style = Some(style.into_prop());
+    self.common.style = Some(style.into_prop());
     self
   }
+
+  visibility_methods!();
 }
 
 impl Widget for TextInput {
   fn into_element(self: Box<Self>) -> Element {
     Element {
       name: "TextInput",
-      style: self.style,
+      common: self.common,
       kind: ElementKind::Input(Box::new(self.input)),
       children: Vec::new(),
     }

@@ -52,7 +52,7 @@ pub trait Widget: 'static {
 /// into its element. Only this crate's widgets create one.
 pub struct Element {
   pub(crate) name: &'static str,
-  pub(crate) style: Option<Prop<Style>>,
+  pub(crate) common: Common,
   pub(crate) kind: ElementKind,
   pub(crate) children: Vec<ElementChild>,
 }
@@ -70,6 +70,13 @@ pub(crate) enum ElementKind {
   Button(Box<ButtonProps>),
   Scroll(ScrollProps),
   Input(Box<InputProps>),
+}
+
+/// What every widget takes besides its own properties.
+#[derive(Default)]
+pub(crate) struct Common {
+  pub(crate) style: Option<Prop<Style>>,
+  pub(crate) visible: Option<Prop<bool>>,
 }
 
 /// One entry of a container's child list: a single widget, or a keyed list
@@ -285,16 +292,35 @@ macro_rules! container_methods {
   };
 }
 
-/// The `style` method every widget has.
-macro_rules! style_method {
+/// The `visible` method every widget has.
+macro_rules! visibility_methods {
   () => {
-    /// Sets the widget's [`Style`].
-    pub fn style(mut self, style: impl IntoProp<Style>) -> Self {
-      self.style = Some(style.into_prop());
+    /// Shows or hides the widget. Hidden, it is taken out of the layout,
+    /// so its space goes to the others, and it isn't drawn, hit or
+    /// reached by Tab; it drops the keyboard focus and the pointer. Its
+    /// bindings and state stay, so it shows again as it was. Shown by
+    /// default.
+    pub fn visible(mut self, visible: impl $crate::IntoProp<bool>) -> Self {
+      self.common.visible = Some(visible.into_prop());
       self
     }
   };
 }
+
+/// The `style` method every widget has, with `visible`.
+macro_rules! style_method {
+  () => {
+    /// Sets the widget's [`Style`](crate::Style).
+    pub fn style(mut self, style: impl $crate::IntoProp<$crate::Style>) -> Self {
+      self.common.style = Some(style.into_prop());
+      self
+    }
+
+    $crate::widgets::visibility_methods!();
+  };
+}
+
+pub(crate) use visibility_methods;
 
 /// Defines `Row` and `Column`, which differ only in direction.
 macro_rules! flex_widget {
@@ -305,7 +331,7 @@ macro_rules! flex_widget {
     /// the layout. Each takes a value or a closure.
     pub struct $name {
       flex: FlexProps,
-      style: Option<Prop<Style>>,
+      common: Common,
       children: Vec<Child>,
     }
 
@@ -324,7 +350,7 @@ macro_rules! flex_widget {
             wrap: None,
             reverse: None,
           },
-          style: None,
+          common: Common::default(),
           children: Vec::new(),
         }
       }
@@ -390,7 +416,7 @@ macro_rules! flex_widget {
       fn into_element(self: Box<Self>) -> Element {
         Element {
           name: stringify!($name),
-          style: self.style,
+          common: self.common,
           kind: ElementKind::Flex(self.flex),
           children: describe(self.children),
         }
@@ -431,7 +457,7 @@ flex_widget!(
 /// ```
 pub struct Grid {
   grid: GridProps,
-  style: Option<Prop<Style>>,
+  common: Common,
   children: Vec<Child>,
 }
 
@@ -447,7 +473,7 @@ impl Grid {
         padding_vertical: None,
         padding_horizontal: None,
       },
-      style: None,
+      common: Common::default(),
       children: Vec::new(),
     }
   }
@@ -501,7 +527,7 @@ impl Widget for Grid {
   fn into_element(self: Box<Self>) -> Element {
     Element {
       name: "Grid",
-      style: self.style,
+      common: self.common,
       kind: ElementKind::Grid(self.grid),
       children: describe(self.children),
     }
@@ -511,7 +537,7 @@ impl Widget for Grid {
 /// Draws its children on top of each other in one cell, each stretched to
 /// the size of the largest. Later children are on top.
 pub struct Stack {
-  style: Option<Prop<Style>>,
+  common: Common,
   children: Vec<Child>,
 }
 
@@ -519,7 +545,7 @@ impl Stack {
   /// An empty stack.
   pub fn new() -> Stack {
     Stack {
-      style: None,
+      common: Common::default(),
       children: Vec::new(),
     }
   }
@@ -538,7 +564,7 @@ impl Widget for Stack {
   fn into_element(self: Box<Self>) -> Element {
     Element {
       name: "Stack",
-      style: self.style,
+      common: self.common,
       kind: ElementKind::Stack,
       children: describe(self.children),
     }
@@ -546,14 +572,20 @@ impl Widget for Stack {
 }
 
 /// Takes the space left over in a [`Row`] or [`Column`]. Several spacers
-/// share it equally.
-pub struct Spacer;
+/// share it equally, or by their styles' [`grow`](Style::grow).
+pub struct Spacer {
+  common: Common,
+}
 
 impl Spacer {
   /// A spacer.
   pub fn new() -> Spacer {
-    Spacer
+    Spacer {
+      common: Common::default(),
+    }
   }
+
+  style_method!();
 }
 
 impl Default for Spacer {
@@ -566,7 +598,7 @@ impl Widget for Spacer {
   fn into_element(self: Box<Self>) -> Element {
     Element {
       name: "Spacer",
-      style: None,
+      common: self.common,
       kind: ElementKind::Spacer,
       children: Vec::new(),
     }
@@ -580,7 +612,7 @@ impl Widget for Spacer {
 /// text's own.
 pub struct Text {
   text: TextProps,
-  style: Option<Prop<Style>>,
+  common: Common,
 }
 
 impl Text {
@@ -592,7 +624,7 @@ impl Text {
         ellipsis: None,
         max_lines: None,
       },
-      style: None,
+      common: Common::default(),
     }
   }
 
@@ -618,7 +650,7 @@ impl Widget for Text {
   fn into_element(self: Box<Self>) -> Element {
     Element {
       name: "Text",
-      style: self.style,
+      common: self.common,
       kind: ElementKind::Text(self.text),
       children: Vec::new(),
     }
@@ -628,7 +660,7 @@ impl Widget for Text {
 /// An icon, drawn as a square.
 pub struct Icon {
   icon: IconProps,
-  style: Option<Prop<Style>>,
+  common: Common,
 }
 
 impl Icon {
@@ -643,7 +675,7 @@ impl Icon {
         source: source.into_prop(),
         size: None,
       },
-      style: None,
+      common: Common::default(),
     }
   }
 
@@ -660,7 +692,7 @@ impl Icon {
 /// drawn at a fixed size.
 pub struct Image {
   image: ImageProps,
-  style: Option<Prop<Style>>,
+  common: Common,
 }
 
 impl Image {
@@ -677,7 +709,7 @@ impl Image {
         height: None,
         fit: None,
       },
-      style: None,
+      common: Common::default(),
     }
   }
 
@@ -706,7 +738,7 @@ impl Widget for Image {
   fn into_element(self: Box<Self>) -> Element {
     Element {
       name: "Image",
-      style: self.style,
+      common: self.common,
       kind: ElementKind::Image(self.image),
       children: Vec::new(),
     }
@@ -717,7 +749,7 @@ impl Widget for Icon {
   fn into_element(self: Box<Self>) -> Element {
     Element {
       name: "Icon",
-      style: self.style,
+      common: self.common,
       kind: ElementKind::Icon(self.icon),
       children: Vec::new(),
     }
@@ -732,7 +764,7 @@ impl Widget for Icon {
 /// is logged and never called again.
 pub struct Button {
   button: ButtonProps,
-  style: Option<Prop<Style>>,
+  common: Common,
   child: Box<dyn Widget>,
 }
 
@@ -748,7 +780,7 @@ impl Button {
         hovered: None,
         handlers: Handlers::default(),
       },
-      style: None,
+      common: Common::default(),
     }
   }
 
@@ -838,7 +870,7 @@ impl Widget for Button {
   fn into_element(self: Box<Self>) -> Element {
     Element {
       name: "Button",
-      style: self.style,
+      common: self.common,
       kind: ElementKind::Button(Box::new(self.button)),
       children: vec![ElementChild::One(Box::new(self.child.into_element()))],
     }

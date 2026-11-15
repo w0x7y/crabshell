@@ -9,7 +9,7 @@ use crate::geometry::Size;
 use crate::prop::{IntoProp, Prop};
 use crate::style::Style;
 use crate::tree::{Change, NodeId, NodeKind, Tree, borrow, replace};
-use crate::widgets::{Element, ElementKind, Fit, Widget};
+use crate::widgets::{Common, Element, ElementKind, Fit, Widget, visibility_methods};
 use crate::window::Window;
 
 /// Numbers every view mounted, in every window, so a platform's capture
@@ -53,7 +53,7 @@ pub(crate) struct ScreencopyProps {
 /// ```
 pub struct ScreencopyView {
   props: ScreencopyProps,
-  style: Option<Prop<Style>>,
+  common: Common,
 }
 
 impl ScreencopyView {
@@ -67,7 +67,7 @@ impl ScreencopyView {
         paint_cursors: None,
         fit: None,
       },
-      style: None,
+      common: Common::default(),
     }
   }
 
@@ -92,16 +92,18 @@ impl ScreencopyView {
 
   /// Sets the style, whose `width` and `height` give the view its size.
   pub fn style(mut self, style: impl IntoProp<Style>) -> ScreencopyView {
-    self.style = Some(style.into_prop());
+    self.common.style = Some(style.into_prop());
     self
   }
+
+  visibility_methods!();
 }
 
 impl Widget for ScreencopyView {
   fn into_element(self: Box<Self>) -> Element {
     Element {
       name: "ScreencopyView",
-      style: self.style,
+      common: self.common,
       kind: ElementKind::Capture(self.props),
       children: Vec::new(),
     }

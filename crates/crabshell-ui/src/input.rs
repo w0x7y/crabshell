@@ -127,6 +127,21 @@ impl Pointer {
   }
 }
 
+impl Tree {
+  /// Lets go of hidden nodes as of removed ones, and shows the hovered or
+  /// pressed button among them as neither, so it shows again unhovered.
+  pub(crate) fn pointer_hide(&mut self, hidden: &[NodeId]) {
+    let held = [self.pointer.hovered, self.pointer.pressed.map(|(id, _)| id)];
+    self.pointer.forget(hidden);
+    for id in held.into_iter().flatten().filter(|id| hidden.contains(id)) {
+      self.update_button_style(id, |button| {
+        button.hovered = false;
+        button.pressed = false;
+      });
+    }
+  }
+}
+
 impl Window {
   /// The pointer entered the window or moved, to `position` in logical
   /// pixels. Returns the cursor to show.
