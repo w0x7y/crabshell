@@ -3555,6 +3555,19 @@ fn the_motion_windows_draw_only_while_they_move() {
 /// The motion example's OSD card color, from examples/motion.rs.
 const OSD_CARD: [u8; 3] = [0x31, 0x32, 0x44];
 
+/// The motion example's accent color, which fills the OSD's volume bar.
+const ACCENT: [u8; 3] = [0x89, 0xb4, 0xfa];
+
+/// Whether a screenshot at `scale` shows the motion example's OSD with a
+/// volume, so not "no audio", and its first toast in place: a point in
+/// the volume bar's fill at 25% and one 6 pixels into the toast.
+fn motion_settled(shot: &Image, scale: f32) -> bool {
+  let at = |x: f32, y: f32| rgb(shot, x as u32, y as u32);
+  let (width, height) = (shot.width as f32, shot.height as f32);
+  at(width / 2.0 - 50.0 * scale, height - 37.0 * scale) == ACCENT
+    && at(width - 342.0 * scale, 42.0 * scale) == OSD_CARD
+}
+
 /// Whether the motion example's OSD card shows at the bottom middle of a
 /// screenshot at scale 1.
 fn osd_shows(shot: &Image) -> bool {
@@ -3584,12 +3597,19 @@ fn the_motion_example_slides_spins_and_sleeps() {
     // Settled states only: a toast that never expires, the OSD held up.
     desktop.notify("Hello", 0);
     assert_eq!(ipc_call(&sway, "osd", "pin"), "{\"ok\":\"\"}\n");
+    // Both replies come before the shell draws, so wait to see both.
+    let factor: f32 = scale.parse().expect("a scale");
+    wait_for_shot(&sway, "HEADLESS-1", "the toast and the OSD", |shot| {
+      motion_settled(shot, factor)
+    });
     let shot = steady_shot(&sway, "HEADLESS-1");
     check_golden(&format!("motion@{scale}x"), &shot, shot.height);
   }
 
   let sway = Sway::start();
   sway.msg(&["output", "HEADLESS-1", "mode", MOTION_MODE, "scale", "1"]);
+  // A headless seat has no pointer until a program gives it one.
+  let mut pointer = VirtualPointer::new(&sway);
   let shell = desktop.run(&sway, "motion");
   shell.wait_for(FIRST_FRAME);
   let idle = steady_shot(&sway, "HEADLESS-1");
@@ -3636,6 +3656,17 @@ fn the_motion_example_slides_spins_and_sleeps() {
     rgb(shot, inside.0, inside.1) == OSD_CARD
   });
   wait_for_shot(&sway, "HEADLESS-1", "the toast to go", |shot| {
+    shot.rgba == idle.rgba
+  });
+
+  // One that never expires goes when clicked.
+  desktop.notify("Click me", 0);
+  wait_for_shot(&sway, "HEADLESS-1", "the toast to click", |shot| {
+    rgb(shot, inside.0, inside.1) == OSD_CARD
+  });
+  pointer.move_to(1680 - 8 - 170, 36 + 20, (1680, 1050));
+  pointer.click();
+  wait_for_shot(&sway, "HEADLESS-1", "the clicked toast to go", |shot| {
     shot.rgba == idle.rgba
   });
 
