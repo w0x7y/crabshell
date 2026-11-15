@@ -59,7 +59,7 @@ struct SliderProps {
   value: Signal<f32>,
   min: Option<Prop<f32>>,
   max: Option<Prop<f32>>,
-  step: f32,
+  step: Option<Prop<f32>>,
   vertical: Option<Prop<bool>>,
   enabled: Option<Prop<bool>>,
   style: Option<Prop<Style>>,
@@ -86,7 +86,7 @@ impl Slider {
         value,
         min: None,
         max: None,
-        step: 0.0,
+        step: None,
         vertical: None,
         enabled: None,
         style: None,
@@ -108,8 +108,8 @@ impl Slider {
 
   /// Snaps the value to whole steps from the start of the range. 0, the
   /// default, or a step that isn't a number above 0, slides freely.
-  pub fn step(mut self, step: f32) -> Slider {
-    self.props.step = step;
+  pub fn step(mut self, step: impl IntoProp<f32>) -> Slider {
+    self.props.step = Some(step.into_prop());
     self
   }
 
@@ -184,7 +184,7 @@ struct Range {
   value: Signal<f32>,
   min: Memo<f32>,
   max: Memo<f32>,
-  step: f32,
+  step: Memo<f32>,
 }
 
 impl Range {
@@ -210,15 +210,12 @@ impl Range {
   /// One step of the wheel or the keys.
   fn unit(self) -> f32 {
     let (min, max) = self.bounds();
-    if self.snaps() {
-      self.step
-    } else {
-      (max - min) / PARTS
-    }
+    self.snap().unwrap_or((max - min) / PARTS)
   }
 
-  fn snaps(self) -> bool {
-    self.step.is_finite() && self.step > 0.0
+  /// The step, unless it slides freely.
+  fn snap(self) -> Option<f32> {
+    untrack(|| self.step.try_get()).filter(|step| step.is_finite() && *step > 0.0)
   }
 
   /// The value read now, NaN as the start, outside any binding.
@@ -234,8 +231,8 @@ impl Range {
     untrack(|| {
       let (min, max) = self.bounds();
       let mut value = if value.is_nan() { min } else { value };
-      if self.snaps() {
-        value = min + ((value - min) / self.step).round() * self.step;
+      if let Some(step) = self.snap() {
+        value = min + ((value - min) / step).round() * step;
       }
       let value = value.max(min).min(max);
       if self.value.try_get() != Some(value) {
@@ -268,7 +265,7 @@ fn build(cx: &Cx, props: SliderProps) -> Button {
     value,
     min: cx.memo(shared_or(min, 0.0)),
     max: cx.memo(shared_or(max, 1.0)),
-    step,
+    step: cx.memo(shared_or(step, 0.0)),
   };
   if let Some(dragging) = dragging {
     // Kept under the slider's context, so it drops when the slider goes.
@@ -332,7 +329,7 @@ fn build(cx: &Cx, props: SliderProps) -> Button {
       return;
     }
     let unit = untrack(|| range.unit());
-    if range.snaps() {
+    if range.snap().is_some() {
       let total = partial.get() + steps;
       let whole = total.trunc();
       partial.set(total - whole);

@@ -268,3 +268,25 @@ fn a_slider_removed_mid_drag_writes_dragging_false() {
   h.frame(&window);
   assert_eq!(writes.get(), 3);
 }
+
+#[test]
+fn a_step_can_be_bound() {
+  let mut h = Harness::new();
+  let value = h.cx.signal(0.0);
+  let step = h.cx.signal(10.0);
+  let window = window(
+    &mut h,
+    Slider::new(value)
+      .range(0.0, 100.0)
+      .step(move || step.get()),
+  );
+  press(&window, 8.0 + 0.47 * 104.0, 8.0);
+  assert_eq!(value.get(), 50.0);
+  step.set(25.0);
+  h.frame(&window);
+  window.pointer_motion(Point::new(8.0 + 0.62 * 104.0, 8.0));
+  assert_eq!(value.get(), 50.0, "62 is nearer 50 than 75");
+  window.pointer_motion(Point::new(8.0 + 0.64 * 104.0, 8.0));
+  assert_eq!(value.get(), 75.0);
+  release(&window);
+}
