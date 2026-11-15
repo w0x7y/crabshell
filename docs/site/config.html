@@ -540,6 +540,39 @@ let offset = cx.animate(move || picked.get() as f32 * 44.0, Transition::new(250)
                 <code>respond</code> and <code>cancel</code>
               </td>
             </tr>
+            <tr>
+              <td><code>cx.hyprland()</code></td>
+              <td>
+                hyprland's workspaces, monitors and windows.
+                <code>focus_workspace</code> switches, and
+                <code>on_event</code> hears every raw event
+              </td>
+            </tr>
+            <tr>
+              <td><code>cx.sway().outputs()</code></td>
+              <td>
+                sway's outputs. <code>dispatch</code> runs any sway command, and
+                <code>on_event</code> hears the event kinds you name
+              </td>
+            </tr>
+            <tr>
+              <td><code>cx.window_manager()</code></td>
+              <td>
+                the workspaces of any compositor with ext-workspace, with
+                <code>windowsets_on(output)</code> for a bar and
+                <code>activate</code> to switch
+              </td>
+            </tr>
+            <tr>
+              <td><code>cx.global_shortcut(app, name, about)</code></td>
+              <td>
+                <code>true</code> while the compositor's binding for it is held,
+                as hyprland's <code>global, crabshell:launcher</code>. a
+                window's <code>inhibit_shortcuts</code> takes the compositor's
+                own shortcuts, and <code>focus_grab</code> keeps the focus on a
+                set of windows until a click elsewhere
+              </td>
+            </tr>
           </tbody>
         </table>
       </div>

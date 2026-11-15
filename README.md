@@ -2,7 +2,7 @@
 
 # crabshell
 
-a rust replacement for quickshell: your whole desktop shell is a rust crate, and everything quickshell does, crabshell will do. v0.1, a bar for sway and other wlroots compositors, is on crates.io. main also has floating windows and keyboard input, animations and blur, desktop services like bluetooth, networks, media players and notifications, launchers, and a lock screen, greeter and polkit agent. hyprland and more compositors come next. [the roadmap](docs/site/roadmap.html) shows each phase, and [the features page](docs/site/features.html) goes through every quickshell type
+a rust replacement for quickshell: your whole desktop shell is a rust crate, and everything quickshell does, crabshell will do. v0.1, a bar for sway and other wlroots compositors, is on crates.io. main also has floating windows and keyboard input, animations and blur, desktop services like bluetooth, networks, media players and notifications, launchers, a lock screen, greeter and polkit agent, and hyprland's workspaces, monitors and windows. a check against every quickshell type comes next. [the roadmap](docs/site/roadmap.html) shows each phase, and [the features page](docs/site/features.html) goes through every quickshell type
 
 ### ai disclosure
 
@@ -13,7 +13,7 @@ ai agents write the code, the tests and most of the docs, and other agents revie
 you need
 
 ~ rust 1.99 or newer\
-~ sway or another wlroots compositor with layer-shell, like labwc. only sway shows workspaces for now\
+~ sway, hyprland or another compositor with layer-shell, like labwc. the template bar shows sway's workspaces, and the hyprland example hyprland's\
 ~ linux 5.3 or newer\
 ~ pkg-config, and fontconfig, libpulse, libxkbcommon and libpam with their development files: `pkg-config libfontconfig1-dev libpulse-dev libxkbcommon-dev libpam0g-dev` on debian or ubuntu\
 ~ pulseaudio or pipewire-pulse for the volume, a d-bus session bus for the tray, and a notification daemon like mako for build errors
@@ -68,7 +68,7 @@ every widget property takes a value or a closure. a closure runs again when a si
 
 ### numbers
 
-on headless sway with one 1920×1080 output, the counter example uses 16.7 MiB and draws its first frame in 9.5 ms, and the v0.1 bar uses 20.2 MiB. neither wakes while idle, except the bar's clock once a minute. on a 1280×720 output, a reload rebuilds a one-line edit in 0.7 s and leaves no bar for 13 to 19 ms. quickshell drawing the [phase 0 test bar](spike/RESULTS.md) used 125 MiB and took 219 ms to its first frame. the [design doc](docs/design.md#performance-targets) has every phase's numbers
+on headless sway with one 1920×1080 output, the counter example uses 16.7 MiB and draws its first frame in 9.1 ms, and the v0.1 bar uses 20.2 MiB. neither wakes while idle, except the bar's clock once a minute. on a 1280×720 output, a reload rebuilds a one-line edit in 0.7 s and leaves no bar for 13 to 19 ms. quickshell drawing the [phase 0 test bar](spike/RESULTS.md) used 125 MiB and took 219 ms to its first frame. the [design doc](docs/design.md#performance-targets) has every phase's numbers
 
 ### crates
 
@@ -87,10 +87,11 @@ on headless sway with one 1920×1080 output, the counter example uses 16.7 MiB a
 cargo test --workspace
 env -u SWAYSOCK cargo test -p crabshell-wayland --test headless -- --ignored --test-threads=1
 env -u SWAYSOCK cargo test -p crabshell --test headless -- --ignored --test-threads=1
+env -u SWAYSOCK cargo test -p crabshell-services --lib sway::tests::headless -- --ignored --test-threads=1
 env -u SWAYSOCK cargo test -p crabshell-cli --test exit_check -- --ignored --nocapture
 ```
 
-the first needs `dbus-daemon` and `dbus-monitor`, and its golden images expect noto sans as your `sans-serif`, plus dejavu sans. ci runs it with fmt and clippy on every push. the other three run only on your machine. each test starts a private sway from a copy of `sway`, so nothing reaches your session, and they refuse to start with `SWAYSOCK` set. they need `sway`, `swaymsg`, `grim`, `labwc`, `wl-copy`, `wl-paste`, `pipewire` and `pactl`. `CRABSHELL_BLESS=1` rewrites the golden images
+the first needs `dbus-daemon` and `dbus-monitor`, and its golden images expect noto sans as your `sans-serif`, plus dejavu sans. ci runs it with fmt and clippy on every push. the others run only on your machine. each test starts a private sway from a copy of `sway`, so nothing reaches your session, and they refuse to start with `SWAYSOCK` set. they need `sway`, `swaymsg`, `grim`, `labwc`, `wl-copy`, `wl-paste`, `pipewire` and `pactl`. `CRABSHELL_BLESS=1` rewrites the golden images
 
 ### formatting
 

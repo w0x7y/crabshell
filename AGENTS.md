@@ -73,6 +73,7 @@ The most common defect here is a change that works where you tested it and break
   ```sh
   env -u SWAYSOCK cargo test -p crabshell-wayland --test headless -- --ignored --test-threads=1
   env -u SWAYSOCK cargo test -p crabshell --test headless -- --ignored --test-threads=1
+  env -u SWAYSOCK cargo test -p crabshell-services --lib sway::tests::headless -- --ignored --test-threads=1
   env -u SWAYSOCK CRABSHELL_MEASURE=1 cargo test -p crabshell --test headless measure_the_counter_bar -- --ignored
   ```
 
@@ -112,15 +113,15 @@ Everything runs on one thread. A calloop loop dispatches ready sources, runs `ru
 - `crates/crabshell-reactive`: signals, memos, effects, owners and `flush`.
 - `crates/crabshell-ui`: `Cx`, widgets, styles, layout, text, text editing, keyboard focus, hit testing, invalidation, the animation clock with `cx.animate` and style fades, and the `SessionLock` declaration.
 - `crates/crabshell-render`: drawing, damage history, clipping, gradients, shadows, glyphs, icons, images and the in-house icon theme lookup. Goldens are in `tests/golden`.
-- `crates/crabshell-wayland`: the event loop, layer-shell and floating windows, popups, shm buffers, scale, pointer, keyboard, input methods, the clipboard, outputs, the animation timer, blur behind windows, idle watches and inhibitors, other programs' windows over wlr-foreign-toplevel-management, and the session lock over ext-session-lock-v1. The headless tests and shared Sway helper are in `tests/`.
-- `crates/crabshell-services`: the services configs read: Sway's workspaces, the tray, audio, the clock, UPower and power profiles, Bluetooth, NetworkManager, MPRIS media players, the notification server, desktop entries, programs (`process.rs`), files and JSON files, Unix sockets, PAM (`pam.rs`, through `nonstick`), greetd and the polkit agent, with the shared D-Bus driver in `dbus.rs`, detached spawning and reaping in `spawn.rs`, the one inotify instance in `watch.rs`, and a fake daemon for tests in `testing.rs`.
-- `crates/crabshell`: `run`, `Shell`, `ShellExt::per_output`, `cx.floating`, `cx.persist`, `cx.idle_monitor`, `cx.ipc` and its socket, `cx.quantize_colors`, `cx.toplevels`, `cx.session_lock`, `cx.exit`, the prelude and the examples (`counter`, `bar`, `launcher`, `effects`, `desktop`, `overview`, `lock`, `greeter`). Its headless tests, goldens and exit-code tests are in `tests/`.
+- `crates/crabshell-wayland`: the event loop, layer-shell and floating windows, popups, shm buffers, scale, pointer, keyboard, input methods, the clipboard, outputs, the animation timer, blur behind windows, idle watches and inhibitors, other programs' windows over wlr-foreign-toplevel-management, the session lock over ext-session-lock-v1, workspaces over ext-workspace-v1, the shortcuts inhibitor, and Hyprland's global shortcuts and focus grab, generated from the XML in `protocols/hyprland`. The headless tests and shared Sway helper are in `tests/`.
+- `crates/crabshell-services`: the services configs read: Sway's workspaces, outputs and events, Hyprland's IPC, the tray, audio, the clock, UPower and power profiles, Bluetooth, NetworkManager, MPRIS media players, the notification server, desktop entries, programs (`process.rs`), files and JSON files, Unix sockets, PAM (`pam.rs`, through `nonstick`), greetd and the polkit agent, with the shared D-Bus driver in `dbus.rs`, detached spawning and reaping in `spawn.rs`, the one inotify instance in `watch.rs`, and a fake daemon for tests in `testing.rs`.
+- `crates/crabshell`: `run`, `Shell`, `ShellExt::per_output`, `cx.floating`, `cx.persist`, `cx.idle_monitor`, `cx.ipc` and its socket, `cx.quantize_colors`, `cx.toplevels`, `cx.session_lock`, `cx.exit`, `cx.window_manager`, `cx.global_shortcut`, the prelude and the examples (`counter`, `bar`, `launcher`, `effects`, `desktop`, `overview`, `lock`, `greeter`, `hyprland`). Its headless tests, goldens and exit-code tests are in `tests/`.
 - `crates/crabshell-cli`: the `crabshell` command (`init`, `check`, `ipc`, and `run` with the supervisor) and the config template in `template/`, which must match the design doc's "Writing a config".
 - `spike/` and `baseline/`: the frozen Phase 0 prototype, the Quickshell bar it was measured against, and `baseline/harness.py`, which measured both.
 
 ## Taste
 
-- Every crate root has `#![forbid(unsafe_code)]`, a new crate's too, and tests and examples stay free of `unsafe`. If a task seems to need it, stop and explain why.
+- Every crate root has `#![forbid(unsafe_code)]`, a new crate's too, and tests and examples stay free of `unsafe`. If a task seems to need it, stop and explain why. The one accepted exception: the Hyprland protocol bindings `wayland-scanner` generates in crabshell-wayland hold `unsafe` that the lint doesn't see, as `wayland-protocols`' own do.
 - `expect` is for internal invariants, with a message naming the invariant.
 - Dependencies come from the doc's crate table, pinned once as `=x.y.z` under `[workspace.dependencies]`, and licensed MIT, Apache-2.0, BSD, ISC, Zlib or Unicode. That's why the icon theme lookup is in-house: `freedesktop-icons` pulls in an MPL-2.0 crate.
 - Work from specs: the Wayland protocol XML, the freedesktop specs, sway-ipc(7) and the PulseAudio docs. Quickshell is LGPL-3.0, so its source stays unread.
@@ -136,3 +137,4 @@ Everything runs on one thread. A calloop loop dispatches ready sources, runs `ru
 - Load only the font files fontconfig matches into cosmic-text. `load_system_fonts` costs startup time.
 - zbus 6 runs on `calloop::futures::executor`, with no tokio.
 - Unix socket paths are capped at 108 bytes, so a private `XDG_RUNTIME_DIR` must stay short.
+- Hyprland isn't installed here and must never be started. Its IPC is tested against a fake Hyprland, and from Hyprland 0.57 its request socket reads `dispatch` as Lua.
