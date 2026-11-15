@@ -489,6 +489,214 @@ fn a_panicking_target_is_logged_with_its_call_site_and_only_that_animation_stops
   assert!(!broken.running().get());
 }
 
+/// Ticks the clock at `ms` past `start`, returning whether it still runs.
+fn tick(start: Instant, ms: u64) -> bool {
+  advance_animations(start + Duration::from_millis(ms))
+}
+
+#[test]
+fn a_cycle_repeats_while_running_and_rests_at_0_otherwise() {
+  let h = Harness::new();
+  let busy = h.cx.signal(false);
+  let spin = h.cx.cycle(move || busy.get(), LINEAR);
+  h.runtime.flush();
+  assert!(!animating(), "a cycle that isn't running wakes nothing");
+  assert_eq!(spin.get(), 0.0);
+
+  busy.set(true);
+  h.runtime.flush();
+  let start = Instant::now();
+  tick(start, 0);
+  assert_eq!(spin.get(), 0.0);
+  tick(start, 25);
+  assert!(close(spin.get(), 0.25), "{}", spin.get());
+  tick(start, 125);
+  assert!(close(spin.get(), 0.25), "again: {}", spin.get());
+  tick(start, 190);
+  assert!(close(spin.get(), 0.9), "{}", spin.get());
+  assert!(animating());
+}
+
+#[test]
+fn an_alternating_cycle_goes_there_and_back_each_leg_taking_the_time() {
+  let h = Harness::new();
+  let pulse = h
+    .cx
+    .cycle(|| true, LINEAR.easing(Easing::InQuad).alternate());
+  h.runtime.flush();
+  let start = Instant::now();
+  tick(start, 0);
+  tick(start, 50);
+  assert!(close(pulse.get(), 0.25), "{}", pulse.get());
+  tick(start, 100);
+  assert!(close(pulse.get(), 1.0), "{}", pulse.get());
+  // The way back retraces the curve.
+  tick(start, 150);
+  assert!(close(pulse.get(), 0.25), "{}", pulse.get());
+  tick(start, 190);
+  assert!(close(pulse.get(), 0.01), "{}", pulse.get());
+  tick(start, 250);
+  assert!(close(pulse.get(), 0.25), "up again: {}", pulse.get());
+}
+
+#[test]
+fn a_stopped_cycle_finishes_its_round_then_the_clock_stops_and_a_restart_begins_at_0() {
+  let h = Harness::new();
+  let busy = h.cx.signal(true);
+  let pulse = h.cx.cycle(move || busy.get(), LINEAR.alternate());
+  h.runtime.flush();
+  let start = Instant::now();
+  tick(start, 0);
+  tick(start, 50);
+  busy.set(false);
+  h.runtime.flush();
+  // The round trip takes 200 ms, and this one runs to its end.
+  assert!(tick(start, 150));
+  assert!(close(pulse.get(), 0.5), "{}", pulse.get());
+  assert!(tick(start, 199));
+  assert!(!tick(start, 210), "the round is over");
+  assert_eq!(pulse.get(), 0.0);
+  assert!(!animating());
+
+  busy.set(true);
+  h.runtime.flush();
+  let later = start + Duration::from_secs(5);
+  tick(later, 0);
+  assert_eq!(pulse.get(), 0.0, "from the start");
+  tick(later, 30);
+  assert!(close(pulse.get(), 0.3), "{}", pulse.get());
+
+  // Stopped and started again before the round ends, it never stops.
+  busy.set(false);
+  h.runtime.flush();
+  tick(later, 60);
+  busy.set(true);
+  h.runtime.flush();
+  tick(later, 260);
+  assert!(close(pulse.get(), 0.6), "{}", pulse.get());
+}
+
+#[test]
+fn a_cycle_waits_out_its_delay_once() {
+  let h = Harness::new();
+  let spin = h.cx.cycle(|| true, LINEAR.delay(50));
+  h.runtime.flush();
+  let start = Instant::now();
+  tick(start, 0);
+  tick(start, 40);
+  assert_eq!(spin.get(), 0.0);
+  tick(start, 75);
+  assert!(close(spin.get(), 0.25), "{}", spin.get());
+  tick(start, 175);
+  assert!(
+    close(spin.get(), 0.25),
+    "no delay between rounds: {}",
+    spin.get()
+  );
+}
+
+#[test]
+fn frames_counts_time_while_running_and_nothing_ticks_while_not() {
+  let h = Harness::new();
+  let playing = h.cx.signal(false);
+  let elapsed = h.cx.frames(move || playing.get());
+  h.runtime.flush();
+  assert!(!animating());
+  assert_eq!(elapsed.get(), Duration::ZERO);
+
+  playing.set(true);
+  h.runtime.flush();
+  assert!(animating());
+  let start = Instant::now();
+  tick(start, 0);
+  assert_eq!(elapsed.get(), Duration::ZERO);
+  tick(start, 16);
+  assert_eq!(elapsed.get(), Duration::from_millis(16));
+  assert!(tick(start, 33));
+  assert_eq!(elapsed.get(), Duration::from_millis(33));
+
+  playing.set(false);
+  h.runtime.flush();
+  assert!(!tick(start, 50), "stopped");
+  assert_eq!(
+    elapsed.get(),
+    Duration::from_millis(33),
+    "it keeps its last time"
+  );
+  assert!(!animating());
+
+  playing.set(true);
+  h.runtime.flush();
+  let later = start + Duration::from_secs(3);
+  tick(later, 0);
+  assert_eq!(elapsed.get(), Duration::ZERO, "a new run counts from 0");
+  tick(later, 10);
+  assert_eq!(elapsed.get(), Duration::from_millis(10));
+}
+
+#[test]
+fn a_panicking_running_closure_is_logged_and_its_cycle_or_frames_stops() {
+  let h = Harness::new();
+  let fail = h.cx.signal(false);
+  let spin = h.cx.cycle(
+    move || {
+      assert!(!fail.get(), "running failure");
+      true
+    },
+    LINEAR,
+  );
+  let frames = h.cx.frames(move || {
+    assert!(!fail.get(), "frames failure");
+    true
+  });
+  let fine = h.cx.cycle(|| true, LINEAR);
+  h.runtime.flush();
+  let start = Instant::now();
+  tick(start, 0);
+  tick(start, 50);
+  let logs = capture_logs(|| {
+    fail.set(true);
+    h.runtime.flush();
+  });
+  assert!(logs.contains("animation cx.cycle at "), "{logs}");
+  assert!(logs.contains("animation cx.frames at "), "{logs}");
+  assert!(logs.contains("tests/animation.rs"), "{logs}");
+  assert!(
+    logs.contains("panicked and stops: running failure"),
+    "{logs}"
+  );
+  tick(start, 60);
+  assert_eq!(frames.get(), Duration::from_millis(50), "frames stopped");
+  tick(start, 110);
+  assert_eq!(spin.get(), 0.0, "the cycle finished its round");
+  assert!(close(fine.get(), 0.1), "the other goes on: {}", fine.get());
+  fail.set(false);
+  h.runtime.flush();
+  tick(start, 120);
+  assert_eq!(spin.get(), 0.0, "and it stays stopped");
+}
+
+#[test]
+fn everything_goes_with_its_owner() {
+  let h = Harness::new();
+  h.runtime.flush();
+  let before = h.runtime.node_count();
+  let child = h.cx.child();
+  let target = h.cx.signal(0.0_f32);
+  let slide = child.animation(move || target.get(), LINEAR);
+  let spin = child.cycle(|| true, LINEAR);
+  let elapsed = child.frames(|| true);
+  h.runtime.flush();
+  target.set(1.0);
+  h.runtime.flush();
+  tick(Instant::now(), 0);
+  child.owner().dispose();
+  assert_eq!(h.runtime.node_count(), before + 1, "only `target` is left");
+  assert!(!tick(Instant::now(), 10), "nothing runs");
+  assert!(slide.value().try_get().is_none() && spin.try_get().is_none());
+  assert!(elapsed.try_get().is_none());
+}
+
 mod fades {
   use std::time::{Duration, Instant};
 

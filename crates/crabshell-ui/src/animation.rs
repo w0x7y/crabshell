@@ -5,7 +5,7 @@
 use std::cell::{Cell, RefCell};
 use std::panic::{self, AssertUnwindSafe};
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crabshell_reactive::{ReadSignal, Signal, untrack};
 
@@ -206,6 +206,9 @@ pub struct Transition {
   pub easing: Easing,
   /// How long it waits before it moves, in milliseconds.
   pub delay: u32,
+  /// Whether a [`Cx::cycle`] comes back each round instead of starting
+  /// over. Nothing else reads it.
+  pub alternate: bool,
 }
 
 impl Transition {
@@ -215,6 +218,7 @@ impl Transition {
       ms,
       easing: Easing::OutCubic,
       delay: 0,
+      alternate: false,
     }
   }
 
@@ -226,6 +230,15 @@ impl Transition {
   /// The same transition waiting `ms` milliseconds before it moves.
   pub const fn delay(self, ms: u32) -> Transition {
     Transition { delay: ms, ..self }
+  }
+
+  /// The same transition coming back after each round of a
+  /// [`Cx::cycle`], so it goes 0 to 1 to 0, each way taking `ms`.
+  pub const fn alternate(self) -> Transition {
+    Transition {
+      alternate: true,
+      ..self
+    }
   }
 
   /// Whether it takes no time at all, so the new value shows at once.
@@ -539,5 +552,132 @@ impl Cx {
       value: value.read_only(),
       running: running.read_only(),
     }
+  }
+
+  /// Progress from 0 to 1, eased, repeating every `transition.ms` while
+  /// `running` gives `true`, for spinners and pulses. With
+  /// [`Transition::alternate`] it comes back, 0 to 1 to 0, each way taking
+  /// `ms`. It waits out the delay once, at the start. When `running` turns
+  /// `false`, the round it is in runs to its end, then it rests at 0 and
+  /// the clock stops; `true` again before then keeps it going, and after
+  /// it begins at 0. A 0 ms cycle never moves. A panic in `running` is
+  /// logged with this call's place and ends the cycle after its round.
+  ///
+  /// ```
+  /// use crabshell_ui::{Cx, Easing, Transition};
+  ///
+  /// const SPIN: Transition = Transition::new(1000).easing(Easing::Linear);
+  /// const PULSE: Transition = Transition::new(600).easing(Easing::InOutSine).alternate();
+  ///
+  /// fn busy(cx: &Cx) {
+  ///     let loading = cx.signal(true);
+  ///     let turn = cx.cycle(move || loading.get(), SPIN); // turns: turn.get() * 360.0
+  ///     let glow = cx.cycle(move || loading.get(), PULSE); // an opacity: 0.5 + glow.get() / 2.0
+  /// }
+  /// ```
+  #[track_caller]
+  pub fn cycle(
+    &self,
+    mut running: impl FnMut() -> bool + 'static,
+    transition: Transition,
+  ) -> ReadSignal<f32> {
+    let label: Rc<str> = format!("cx.cycle at {}", std::panic::Location::caller()).into();
+    let value = self.signal(0.0_f32);
+    // What `running` last gave, and whether a round is on the clock.
+    let wanted = Rc::new(Cell::new(false));
+    let ticking = Rc::new(Cell::new(false));
+    let mut broken = false;
+    self.effect(move || {
+      let on = !broken
+        && guarded(&label, &mut running).unwrap_or_else(|| {
+          broken = true;
+          false
+        });
+      wanted.set(on);
+      if !on || ticking.get() || transition.ms == 0 {
+        return;
+      }
+      ticking.set(true);
+      let (wanted, ticking) = (Rc::clone(&wanted), Rc::clone(&ticking));
+      let leg = f64::from(transition.ms);
+      let period = if transition.alternate { 2.0 * leg } else { leg };
+      let mut started = start_time();
+      // Round 0 is the delay, then 1, 2 and on.
+      let mut round = 0_u64;
+      start(
+        Rc::clone(&label),
+        Box::new(move |now| {
+          let begun = *started.get_or_insert(now);
+          let elapsed = now.saturating_duration_since(begun).as_secs_f64() * 1000.0
+            - f64::from(transition.delay);
+          let now_round = if elapsed < 0.0 {
+            0
+          } else {
+            (elapsed / period) as u64 + 1
+          };
+          let ended = !wanted.get() && (now_round == 0 || now_round > round);
+          round = now_round;
+          if ended {
+            ticking.set(false);
+            value.try_set(0.0);
+            return false;
+          }
+          let phase = elapsed.max(0.0) % period / leg;
+          let t = if phase <= 1.0 { phase } else { 2.0 - phase };
+          value.try_set(transition.easing.value_at(t as f32))
+        }),
+      );
+    });
+    value.read_only()
+  }
+
+  /// The time since `running` turned `true`, updated at each tick of the
+  /// animation clock while it stays true, as Qt's `FrameAnimation` gives.
+  /// Nothing ticks while it is false, and the time stays where it was
+  /// until the next run starts again from 0. A panic in `running` is
+  /// logged with this call's place and stops it.
+  ///
+  /// ```
+  /// use crabshell_ui::Cx;
+  ///
+  /// fn wave(cx: &Cx) {
+  ///     let shown = cx.signal(true);
+  ///     let time = cx.frames(move || shown.get());
+  ///     // A bar's height: 10.0 + 5.0 * (time.get().as_secs_f32() * 6.0).sin()
+  /// }
+  /// ```
+  #[track_caller]
+  pub fn frames(&self, mut running: impl FnMut() -> bool + 'static) -> ReadSignal<Duration> {
+    let label: Rc<str> = format!("cx.frames at {}", std::panic::Location::caller()).into();
+    let value = self.signal(Duration::ZERO);
+    let wanted = Rc::new(Cell::new(false));
+    let ticking = Rc::new(Cell::new(false));
+    let mut broken = false;
+    self.effect(move || {
+      let on = !broken
+        && guarded(&label, &mut running).unwrap_or_else(|| {
+          broken = true;
+          false
+        });
+      wanted.set(on);
+      if !on || ticking.get() {
+        return;
+      }
+      ticking.set(true);
+      let (wanted, ticking) = (Rc::clone(&wanted), Rc::clone(&ticking));
+      let mut started = start_time();
+      start(
+        Rc::clone(&label),
+        Box::new(move |now| {
+          if !wanted.get() {
+            ticking.set(false);
+            return false;
+          }
+          let begun = *started.get_or_insert(now);
+          value.try_set(now.saturating_duration_since(begun))
+        }),
+      );
+    });
+    value.read_only()
   }
 }
