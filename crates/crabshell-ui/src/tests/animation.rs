@@ -33,6 +33,150 @@ fn easings_start_at_0_end_at_1_and_bend_their_way() {
   assert!((ease - 0.8024).abs() < 0.001, "{ease}");
 }
 
+/// A curve's formula, as easings.net gives it.
+type Formula = fn(f32) -> f32;
+
+#[test]
+fn the_named_curves_follow_their_formulas() {
+  use std::f32::consts::PI;
+  // Each curve with its formula from easings.net, checked at a few points.
+  let curves: [(Easing, Formula); 18] = [
+    (Easing::InSine, |t| 1.0 - (t * PI / 2.0).cos()),
+    (Easing::OutSine, |t| (t * PI / 2.0).sin()),
+    (Easing::InOutSine, |t| -((PI * t).cos() - 1.0) / 2.0),
+    (Easing::InExpo, |t| 2_f32.powf(10.0 * t - 10.0)),
+    (Easing::OutExpo, |t| 1.0 - 2_f32.powf(-10.0 * t)),
+    (Easing::InOutExpo, |t| {
+      if t < 0.5 {
+        2_f32.powf(20.0 * t - 10.0) / 2.0
+      } else {
+        (2.0 - 2_f32.powf(-20.0 * t + 10.0)) / 2.0
+      }
+    }),
+    (Easing::InQuart, |t| t.powi(4)),
+    (Easing::OutQuart, |t| 1.0 - (1.0 - t).powi(4)),
+    (Easing::InOutQuart, |t| {
+      if t < 0.5 {
+        8.0 * t.powi(4)
+      } else {
+        1.0 - (-2.0 * t + 2.0).powi(4) / 2.0
+      }
+    }),
+    (Easing::InQuint, |t| t.powi(5)),
+    (Easing::OutQuint, |t| 1.0 - (1.0 - t).powi(5)),
+    (Easing::InOutQuint, |t| {
+      if t < 0.5 {
+        16.0 * t.powi(5)
+      } else {
+        1.0 - (-2.0 * t + 2.0).powi(5) / 2.0
+      }
+    }),
+    (Easing::InCirc, |t| 1.0 - (1.0 - t * t).sqrt()),
+    (Easing::OutCirc, |t| (1.0 - (t - 1.0).powi(2)).sqrt()),
+    (Easing::InOutCirc, |t| {
+      if t < 0.5 {
+        (1.0 - (1.0 - (2.0 * t).powi(2)).sqrt()) / 2.0
+      } else {
+        ((1.0 - (-2.0 * t + 2.0).powi(2)).sqrt() + 1.0) / 2.0
+      }
+    }),
+    (Easing::InBack, |t| {
+      let c1 = 1.70158_f32;
+      (c1 + 1.0) * t.powi(3) - c1 * t * t
+    }),
+    (Easing::OutBack, |t| {
+      let c1 = 1.70158_f32;
+      1.0 + (c1 + 1.0) * (t - 1.0).powi(3) + c1 * (t - 1.0).powi(2)
+    }),
+    (Easing::InOutBack, |t| {
+      let c2 = 1.70158_f32 * 1.525;
+      if t < 0.5 {
+        (2.0 * t).powi(2) * ((c2 + 1.0) * 2.0 * t - c2) / 2.0
+      } else {
+        ((2.0 * t - 2.0).powi(2) * ((c2 + 1.0) * (t * 2.0 - 2.0) + c2) + 2.0) / 2.0
+      }
+    }),
+  ];
+  for (easing, formula) in curves {
+    assert!(close(easing.value_at(0.0), 0.0), "{easing:?} at 0");
+    assert!(close(easing.value_at(1.0), 1.0), "{easing:?} at 1");
+    for t in [0.25, 0.5, 0.7] {
+      let (got, want) = (easing.value_at(t), formula(t));
+      assert!(close(got, want), "{easing:?} at {t}: {got}, not {want}");
+    }
+  }
+  // Back pulls behind the start, or runs past the end, by about 10%.
+  let lowest = (1..100)
+    .map(|i| Easing::InBack.value_at(i as f32 / 100.0))
+    .fold(f32::MAX, f32::min);
+  let highest = (1..100)
+    .map(|i| Easing::OutBack.value_at(i as f32 / 100.0))
+    .fold(f32::MIN, f32::max);
+  assert!((lowest + 0.1).abs() < 0.01, "{lowest}");
+  assert!((highest - 1.1).abs() < 0.01, "{highest}");
+  assert!(Easing::InOutBack.value_at(0.1) < 0.0 && Easing::InOutBack.value_at(0.9) > 1.0);
+}
+
+/// Material 3's emphasized curve, as two Bézier segments.
+const EMPHASIZED: &[[f32; 6]] = &[
+  [0.05, 0.0, 0.133333, 0.06, 0.166666, 0.4],
+  [0.208333, 0.82, 0.25, 1.0, 1.0, 1.0],
+];
+
+#[test]
+fn a_spline_of_one_segment_is_that_bezier_and_of_two_follows_each() {
+  const EASE: &[[f32; 6]] = &[[0.25, 0.1, 0.25, 1.0, 1.0, 1.0]];
+  for t in [0.0, 0.1, 0.33, 0.5, 0.8, 1.0] {
+    let spline = Easing::Spline(EASE).value_at(t);
+    let bezier = Easing::Bezier(0.25, 0.1, 0.25, 1.0).value_at(t);
+    assert!(close(spline, bezier), "at {t}: {spline} and {bezier}");
+  }
+
+  let emphasized = Easing::Spline(EMPHASIZED);
+  assert!(close(emphasized.value_at(0.0), 0.0) && close(emphasized.value_at(1.0), 1.0));
+  // The segments meet at (1/6, 0.4).
+  assert!(close(emphasized.value_at(0.166666), 0.4));
+  // Past the joint, it is the second segment scaled into its box: a
+  // Bézier from (1/6, 0.4) to (1, 1).
+  let (x0, y0) = (0.166666_f32, 0.4_f32);
+  let scale = |x: f32, y: f32| ((x - x0) / (1.0 - x0), (y - y0) / (1.0 - y0));
+  let (ax, ay) = scale(0.208333, 0.82);
+  let (bx, by) = scale(0.25, 1.0);
+  for t in [0.3, 0.5, 0.9] {
+    let want = y0 + (1.0 - y0) * Easing::Bezier(ax, ay, bx, by).value_at((t - x0) / (1.0 - x0));
+    assert!(close(emphasized.value_at(t), want), "at {t}");
+  }
+  // It rises fast: past halfway by a fifth of the time.
+  assert!(emphasized.value_at(0.2) > 0.5);
+}
+
+#[test]
+fn a_bad_spline_moves_linearly_and_never_gives_nan() {
+  const EMPTY: &[[f32; 6]] = &[];
+  const BACKWARD: &[[f32; 6]] = &[
+    [0.1, 0.3, 0.4, 0.6, 0.5, 0.7],
+    [0.4, 0.75, 0.3, 0.8, 0.2, 0.8],
+    [0.5, 0.9, 0.9, 0.95, 1.0, 1.0],
+  ];
+  const SHORT: &[[f32; 6]] = &[[0.3, 0.0, 0.7, 1.0, 0.8, 0.9]];
+  const NAN: &[[f32; 6]] = &[[f32::NAN, 0.0, 0.7, 1.0, 1.0, 1.0]];
+  const INFINITE: &[[f32; 6]] = &[[0.2, f32::INFINITY, 0.7, 1.0, 1.0, 1.0]];
+  for bad in [EMPTY, BACKWARD, SHORT, NAN, INFINITE] {
+    for t in [0.0, 0.25, 0.5, 1.0, f32::NAN] {
+      let value = Easing::Spline(bad).value_at(t);
+      let want = if t.is_nan() { 1.0 } else { t };
+      assert!(close(value, want), "{bad:?} at {t}: {value}");
+    }
+  }
+  // Control points outside their segment are kept inside it, as a
+  // Bézier's are: these become (0, 0) and (1, 1), a straight line.
+  const WIDE: &[[f32; 6]] = &[[-2.0, 0.0, 3.0, 1.0, 1.0, 1.0]];
+  for t in [0.1, 0.3, 0.6, 0.9] {
+    let value = Easing::Spline(WIDE).value_at(t);
+    assert!(close(value, t), "at {t}: {value}");
+  }
+}
+
 #[test]
 fn a_value_moves_to_its_new_target_over_the_transition_then_stops() {
   let h = Harness::new();

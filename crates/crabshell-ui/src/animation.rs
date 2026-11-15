@@ -34,17 +34,77 @@ pub enum Easing {
   OutCubic,
   /// Starts and ends slower.
   InOutCubic,
+  /// Starts slow, along a quarter sine wave.
+  InSine,
+  /// Ends slow, along a quarter sine wave.
+  OutSine,
+  /// Starts and ends slow, along half a sine wave.
+  InOutSine,
+  /// Starts slower than a cubic.
+  InQuart,
+  /// Ends slower than a cubic.
+  OutQuart,
+  /// Starts and ends slower than a cubic.
+  InOutQuart,
+  /// Starts slower still.
+  InQuint,
+  /// Ends slower still.
+  OutQuint,
+  /// Starts and ends slower still.
+  InOutQuint,
+  /// Barely moves, then rushes in: each tenth of the time doubles it.
+  InExpo,
+  /// Rushes out, then barely moves.
+  OutExpo,
+  /// Barely moves at both ends.
+  InOutExpo,
+  /// Starts slow along a quarter circle.
+  InCirc,
+  /// Ends slow along a quarter circle.
+  OutCirc,
+  /// Starts and ends slow along quarter circles.
+  InOutCirc,
+  /// Pulls back about 10% behind the start, then goes.
+  InBack,
+  /// Runs about 10% past the end, then settles back.
+  OutBack,
+  /// Pulls back at the start and runs past the end.
+  InOutBack,
   /// A cubic Bézier from (0, 0) to (1, 1) through the control points
   /// `(x1, y1)` and `(x2, y2)`, as CSS's `cubic-bezier`. The x values are
   /// kept within 0 to 1.
   Bezier(f32, f32, f32, f32),
+  /// Cubic Bézier segments joined end to end, as Qt's
+  /// `Easing.BezierSpline`. Each is `[c1x, c1y, c2x, c2y, end_x, end_y]`:
+  /// two control points and an end, starting from the previous end, the
+  /// first from (0, 0). The last must end at (1, 1), and the ends' x
+  /// values must never go back. A spline that breaks either rule, is
+  /// empty, or holds a number that isn't finite moves linearly instead.
+  /// A control point's x is kept within its segment.
+  ///
+  /// Material 3's emphasized curve:
+  ///
+  /// ```
+  /// use crabshell_ui::{Easing, Transition};
+  ///
+  /// const EMPHASIZED: Easing = Easing::Spline(&[
+  ///     [0.05, 0.0, 0.133333, 0.06, 0.166666, 0.4],
+  ///     [0.208333, 0.82, 0.25, 1.0, 1.0, 1.0],
+  /// ]);
+  /// const ENTER: Transition = Transition::new(500).easing(EMPHASIZED);
+  /// ```
+  Spline(&'static [[f32; 6]]),
 }
 
 impl Easing {
-  /// How far along the animation is, from 0 to 1 (a Bézier may overshoot
-  /// either end), when `t` of its time has passed. `t` is kept within 0
-  /// to 1.
+  /// How far along the animation is, from 0 to 1 (Back, a Bézier or a
+  /// spline may overshoot either end), when `t` of its time has passed.
+  /// `t` is kept within 0 to 1.
   pub fn value_at(self, t: f32) -> f32 {
+    use std::f32::consts::PI;
+    // Back's overshoot, the usual constant: about 10%.
+    const C1: f32 = 1.70158;
+    const C2: f32 = C1 * 1.525;
     let t = if t.is_nan() { 1.0 } else { t.clamp(0.0, 1.0) };
     match self {
       Easing::Linear => t,
@@ -56,29 +116,84 @@ impl Easing {
       Easing::OutCubic => 1.0 - (1.0 - t).powi(3),
       Easing::InOutCubic if t < 0.5 => 4.0 * t * t * t,
       Easing::InOutCubic => 1.0 - (-2.0 * t + 2.0).powi(3) / 2.0,
-      Easing::Bezier(x1, y1, x2, y2) => bezier(t, x1.clamp(0.0, 1.0), y1, x2.clamp(0.0, 1.0), y2),
+      Easing::InSine => 1.0 - (t * PI / 2.0).cos(),
+      Easing::OutSine => (t * PI / 2.0).sin(),
+      Easing::InOutSine => (1.0 - (PI * t).cos()) / 2.0,
+      Easing::InQuart => t.powi(4),
+      Easing::OutQuart => 1.0 - (1.0 - t).powi(4),
+      Easing::InOutQuart if t < 0.5 => 8.0 * t.powi(4),
+      Easing::InOutQuart => 1.0 - (-2.0 * t + 2.0).powi(4) / 2.0,
+      Easing::InQuint => t.powi(5),
+      Easing::OutQuint => 1.0 - (1.0 - t).powi(5),
+      Easing::InOutQuint if t < 0.5 => 16.0 * t.powi(5),
+      Easing::InOutQuint => 1.0 - (-2.0 * t + 2.0).powi(5) / 2.0,
+      // The formulas miss their ends by 2^-10, so the ends are exact.
+      Easing::InExpo | Easing::OutExpo | Easing::InOutExpo if t == 0.0 || t == 1.0 => t,
+      Easing::InExpo => 2_f32.powf(10.0 * t - 10.0),
+      Easing::OutExpo => 1.0 - 2_f32.powf(-10.0 * t),
+      Easing::InOutExpo if t < 0.5 => 2_f32.powf(20.0 * t - 10.0) / 2.0,
+      Easing::InOutExpo => (2.0 - 2_f32.powf(-20.0 * t + 10.0)) / 2.0,
+      Easing::InCirc => 1.0 - (1.0 - t * t).sqrt(),
+      Easing::OutCirc => (1.0 - (t - 1.0).powi(2)).sqrt(),
+      Easing::InOutCirc if t < 0.5 => (1.0 - (1.0 - (2.0 * t).powi(2)).sqrt()) / 2.0,
+      Easing::InOutCirc => ((1.0 - (-2.0 * t + 2.0).powi(2)).sqrt() + 1.0) / 2.0,
+      Easing::InBack => (C1 + 1.0) * t.powi(3) - C1 * t * t,
+      Easing::OutBack => 1.0 + (C1 + 1.0) * (t - 1.0).powi(3) + C1 * (t - 1.0).powi(2),
+      Easing::InOutBack if t < 0.5 => (2.0 * t).powi(2) * ((C2 + 1.0) * 2.0 * t - C2) / 2.0,
+      Easing::InOutBack => {
+        ((2.0 * t - 2.0).powi(2) * ((C2 + 1.0) * (2.0 * t - 2.0) + C2) + 2.0) / 2.0
+      }
+      Easing::Bezier(x1, y1, x2, y2) => bezier(t, (0.0, 0.0), [x1, y1, x2, y2, 1.0, 1.0]),
+      Easing::Spline(segments) => spline(t, segments),
     }
   }
 }
 
-/// The y of a cubic Bézier through (0, 0), `(x1, y1)`, `(x2, y2)` and
-/// (1, 1) at the point whose x is `x`, found by bisection: x grows with
-/// the curve's parameter when both control x values are within 0 to 1.
-fn bezier(x: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
-  let at = |a: f32, b: f32, s: f32| {
+/// A spline's y where its x is `x`, or `x` itself for a spline that
+/// breaks the rules [`Easing::Spline`] gives.
+fn spline(x: f32, segments: &[[f32; 6]]) -> f32 {
+  let mut end = 0.0;
+  let valid = segments.iter().all(|segment| {
+    let forward = segment[4] >= end;
+    end = segment[4];
+    forward && segment.iter().all(|n| n.is_finite())
+  }) && segments
+    .last()
+    .is_some_and(|last| last[4] == 1.0 && last[5] == 1.0);
+  if !valid {
+    return x;
+  }
+  let mut start = (0.0, 0.0);
+  for segment in segments {
+    if x <= segment[4] {
+      return bezier(x, start, *segment);
+    }
+    start = (segment[4], segment[5]);
+  }
+  1.0
+}
+
+/// The y of a cubic Bézier from `start` through the control points and
+/// to the end in `segment` (laid out as in [`Easing::Spline`]) at the
+/// point whose x is `x`, found by bisection: x grows with the curve's
+/// parameter once both control x values are kept between the ends.
+fn bezier(x: f32, (x0, y0): (f32, f32), segment: [f32; 6]) -> f32 {
+  let [x1, y1, x2, y2, x3, y3] = segment;
+  let (x1, x2) = (x1.clamp(x0, x3), x2.clamp(x0, x3));
+  let at = |p0: f32, p1: f32, p2: f32, p3: f32, s: f32| {
     let r = 1.0 - s;
-    3.0 * r * r * s * a + 3.0 * r * s * s * b + s * s * s
+    r * r * r * p0 + 3.0 * r * r * s * p1 + 3.0 * r * s * s * p2 + s * s * s * p3
   };
   let (mut low, mut high) = (0.0_f32, 1.0_f32);
   for _ in 0..32 {
     let middle = (low + high) / 2.0;
-    if at(x1, x2, middle) < x {
+    if at(x0, x1, x2, x3, middle) < x {
       low = middle;
     } else {
       high = middle;
     }
   }
-  at(y1, y2, (low + high) / 2.0)
+  at(y0, y1, y2, y3, (low + high) / 2.0)
 }
 
 /// How long an animation takes and how it moves. Copy it into styles and
