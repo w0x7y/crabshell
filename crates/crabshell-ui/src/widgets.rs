@@ -59,6 +59,7 @@ pub struct Element {
 
 pub(crate) enum ElementKind {
   Flex(FlexProps),
+  Grid(GridProps),
   Stack,
   Spacer,
   Text(TextProps),
@@ -108,6 +109,15 @@ pub(crate) struct FlexProps {
   pub(crate) justify: Option<Prop<Justify>>,
   pub(crate) wrap: Option<Prop<bool>>,
   pub(crate) reverse: Option<Prop<bool>>,
+}
+
+pub(crate) struct GridProps {
+  pub(crate) columns: Option<Prop<u32>>,
+  pub(crate) gap: Option<Prop<u32>>,
+  pub(crate) row_gap: Option<Prop<u32>>,
+  pub(crate) column_gap: Option<Prop<u32>>,
+  pub(crate) padding_vertical: Option<Prop<u32>>,
+  pub(crate) padding_horizontal: Option<Prop<u32>>,
 }
 
 pub(crate) struct TextProps {
@@ -399,6 +409,104 @@ flex_widget!(
   true,
   "Lays its children out top to bottom, like a CSS flexbox column."
 );
+
+/// Places its children row by row into equal-width columns, each row as
+/// tall as its tallest child. A child takes several cells with
+/// [`Style::span`], and places itself in its cell with
+/// [`Style::align_self`] and [`Style::justify_self`]; it fills the cell by
+/// default.
+///
+/// `columns`, `gap`, `row_gap`, `column_gap` and `padding` change the
+/// layout. Each takes a value or a closure.
+///
+/// ```
+/// use crabshell_ui::{Grid, Style, Text};
+///
+/// let days = (1..=31).fold(Grid::new().columns(7).gap(4), |grid, day| {
+///     grid.child(Text::new(day.to_string()))
+/// });
+/// let wide = Grid::new()
+///     .columns(2)
+///     .child(Text::new("title").style(Style::new().span(2, 1)));
+/// ```
+pub struct Grid {
+  grid: GridProps,
+  style: Option<Prop<Style>>,
+  children: Vec<Child>,
+}
+
+impl Grid {
+  /// An empty grid of one column.
+  pub fn new() -> Grid {
+    Grid {
+      grid: GridProps {
+        columns: None,
+        gap: None,
+        row_gap: None,
+        column_gap: None,
+        padding_vertical: None,
+        padding_horizontal: None,
+      },
+      style: None,
+      children: Vec::new(),
+    }
+  }
+
+  /// Sets the number of columns, all as wide. 1 by default, and 0
+  /// counts as 1.
+  pub fn columns(mut self, columns: impl IntoProp<u32>) -> Grid {
+    self.grid.columns = Some(columns.into_prop());
+    self
+  }
+
+  /// Sets the space between rows and between columns in logical pixels.
+  /// `row_gap` and `column_gap` win over it.
+  pub fn gap(mut self, gap: impl IntoProp<u32>) -> Grid {
+    self.grid.gap = Some(gap.into_prop());
+    self
+  }
+
+  /// Sets the space between rows in logical pixels.
+  pub fn row_gap(mut self, gap: impl IntoProp<u32>) -> Grid {
+    self.grid.row_gap = Some(gap.into_prop());
+    self
+  }
+
+  /// Sets the space between columns in logical pixels.
+  pub fn column_gap(mut self, gap: impl IntoProp<u32>) -> Grid {
+    self.grid.column_gap = Some(gap.into_prop());
+    self
+  }
+
+  /// Sets the padding: `vertical` above and below, `horizontal` left and
+  /// right, in logical pixels. It wins over the padding of the grid's
+  /// [`Style`], as a [`Row`]'s does.
+  pub fn padding(mut self, vertical: impl IntoProp<u32>, horizontal: impl IntoProp<u32>) -> Grid {
+    self.grid.padding_vertical = Some(vertical.into_prop());
+    self.grid.padding_horizontal = Some(horizontal.into_prop());
+    self
+  }
+
+  container_methods!();
+  style_method!();
+}
+
+impl Default for Grid {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
+impl Widget for Grid {
+  fn into_element(self: Box<Self>) -> Element {
+    Element {
+      name: "Grid",
+      style: self.style,
+      kind: ElementKind::Grid(self.grid),
+      children: describe(self.children),
+    }
+  }
+}
 
 /// Draws its children on top of each other in one cell, each stretched to
 /// the size of the largest. Later children are on top.

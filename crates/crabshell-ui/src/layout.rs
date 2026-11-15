@@ -33,6 +33,8 @@ enum Parent {
   Flex,
   /// A `Stack`'s one-cell grid.
   Stack,
+  /// A `Grid`, whose children may span cells.
+  Grid,
   /// The window's one-cell grid.
   Window,
   /// A scroll view, whose child keeps its full height.
@@ -158,6 +160,7 @@ impl Tree {
     let child_parent = match node.kind {
       NodeKind::Root => Parent::Window,
       NodeKind::Stack => Parent::Stack,
+      NodeKind::Grid(_) => Parent::Grid,
       NodeKind::Scroll(_) => Parent::Scroll,
       _ => Parent::Flex,
     };
@@ -431,6 +434,24 @@ fn taffy_style(node: &Node, parent: Parent, size: crate::Size) -> taffy::Style {
         Justify::SpaceEvenly => JustifyContent::SPACE_EVENLY,
       };
     }
+    NodeKind::Grid(grid) => {
+      style.display = Display::Grid;
+      // `minmax(0, 1fr)`: equal widths, whatever the content wants.
+      let column = taffy::prelude::minmax(
+        taffy::MinTrackSizingFunction::length(0.0),
+        taffy::MaxTrackSizingFunction::fr(1.0),
+      );
+      let count = grid.columns.clamp(1, u32::from(u16::MAX)) as u16;
+      style.grid_template_columns = vec![taffy::prelude::repeat(count, vec![column])];
+      // Rows as tall as their content, packed at the top, rather than
+      // stretched to share a taller grid, as CSS's are.
+      style.align_content = AlignContent::START;
+      let gap = |own: Option<u32>| LengthPercentage::length(own.unwrap_or(grid.gap) as f32);
+      style.gap = taffy::Size {
+        width: gap(grid.column_gap),
+        height: gap(grid.row_gap),
+      };
+    }
     NodeKind::Stack => style.display = Display::Grid,
     NodeKind::Scroll(_) => {
       style.flex_direction = FlexDirection::Column;
@@ -470,6 +491,19 @@ fn taffy_style(node: &Node, parent: Parent, size: crate::Size) -> taffy::Style {
     };
     style.grid_row = cell.clone();
     style.grid_column = cell;
+  }
+  if parent == Parent::Grid
+    && let Some((columns, rows)) = own.span
+  {
+    let span = |cells: u32| GridPlacement::from_span(cells.clamp(1, u32::from(u16::MAX)) as u16);
+    style.grid_column = Line {
+      start: span(columns),
+      end: GridPlacement::Auto,
+    };
+    style.grid_row = Line {
+      start: span(rows),
+      end: GridPlacement::Auto,
+    };
   }
   style
 }

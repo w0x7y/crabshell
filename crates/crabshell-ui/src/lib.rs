@@ -108,8 +108,8 @@ pub use view::{
   CaptureView, Content, IconView, ImageView, InputView, NodeView, TextView, WindowView,
 };
 pub use widgets::{
-  Align, Button, Column, Element, Fit, Icon, IconPixels, IconSource, Image, Justify, Row, Spacer,
-  Stack, Text, Widget,
+  Align, Button, Column, Element, Fit, Grid, Icon, IconPixels, IconSource, Image, Justify, Row,
+  Spacer, Stack, Text, Widget,
 };
 pub use window::{
   Anchors, Edge, KeyboardFocus, Layer, Margins, Output, PanelWindow, SurfaceConfig, Window,
@@ -118,8 +118,8 @@ pub use window::{
 /// What a bar's code needs, in one `use`.
 pub mod prelude {
   pub use crate::{
-    Align, Button, Color, Column, Cx, Edge, Font, Icon, IconSource, Justify, Layer, Menu, Output,
-    PanelWindow, PopupWindow, Row, Size, Spacer, Stack, Style, Text, TextSystem, Timer, Widget,
-    Window,
+    Align, Button, Color, Column, Cx, Edge, Font, Grid, Icon, IconSource, Justify, Layer, Menu,
+    Output, PanelWindow, PopupWindow, Rect, Row, Size, Spacer, Stack, Style, Text, TextSystem,
+    Timer, Widget, Window,
   };
 }

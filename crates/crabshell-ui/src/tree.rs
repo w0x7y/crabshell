@@ -30,7 +30,9 @@ use crate::screencopy::CaptureNode;
 use crate::style::{Padding, Style};
 use crate::text::TextNode;
 use crate::text_input::InputNode;
-use crate::widgets::{Align, Element, ElementChild, ElementKind, Fit, IconSource, Justify};
+use crate::widgets::{
+  Align, Element, ElementChild, ElementKind, Fit, GridProps, IconSource, Justify,
+};
 use crate::window::{
   Anchors, DEFAULT_NAMESPACE, Hints, KeyboardFocus, Layer, Margins, Output, PanelWindow, Window,
 };
@@ -139,6 +141,7 @@ pub(crate) enum NodeKind {
   /// The `PanelWindow` itself.
   Root,
   Flex(Flex),
+  Grid(GridNode),
   Stack,
   Spacer,
   Text(TextNode),
@@ -161,6 +164,15 @@ pub(crate) struct Flex {
   pub(crate) padding_horizontal: Option<u32>,
   pub(crate) align: Align,
   pub(crate) justify: Justify,
+}
+
+pub(crate) struct GridNode {
+  pub(crate) columns: u32,
+  pub(crate) gap: u32,
+  pub(crate) row_gap: Option<u32>,
+  pub(crate) column_gap: Option<u32>,
+  pub(crate) padding_vertical: Option<u32>,
+  pub(crate) padding_horizontal: Option<u32>,
 }
 
 pub(crate) struct ScrollNode {
@@ -363,26 +375,22 @@ impl Node {
       || style.border.is_some()
   }
 
-  /// The padding in effect: a row's or column's own wins over its style's,
-  /// on both sides of its axis.
+  /// The padding in effect: a row's, column's or grid's own wins over its
+  /// style's, on both sides of its axis.
   pub(crate) fn padding(&self) -> Padding {
     let style = self.effective_style().padding.unwrap_or_default();
-    match &self.kind {
-      NodeKind::Flex(flex) => {
-        let (top, bottom) = flex
-          .padding_vertical
-          .map_or((style.top, style.bottom), |own| (own, own));
-        let (left, right) = flex
-          .padding_horizontal
-          .map_or((style.left, style.right), |own| (own, own));
-        Padding {
-          top,
-          right,
-          bottom,
-          left,
-        }
-      }
-      _ => style,
+    let (vertical, horizontal) = match &self.kind {
+      NodeKind::Flex(flex) => (flex.padding_vertical, flex.padding_horizontal),
+      NodeKind::Grid(grid) => (grid.padding_vertical, grid.padding_horizontal),
+      _ => return style,
+    };
+    let (top, bottom) = vertical.map_or((style.top, style.bottom), |own| (own, own));
+    let (left, right) = horizontal.map_or((style.left, style.right), |own| (own, own));
+    Padding {
+      top,
+      right,
+      bottom,
+      left,
     }
   }
 }
@@ -603,6 +611,14 @@ impl Tree {
         align: Align::default(),
         justify: Justify::default(),
       }),
+      ElementKind::Grid(_) => NodeKind::Grid(GridNode {
+        columns: 1,
+        gap: 0,
+        row_gap: None,
+        column_gap: None,
+        padding_vertical: None,
+        padding_horizontal: None,
+      }),
       ElementKind::Stack => NodeKind::Stack,
       ElementKind::Spacer => NodeKind::Spacer,
       ElementKind::Text(_) => NodeKind::Text(TextNode::new()),
@@ -686,6 +702,7 @@ impl Tree {
           tree.update_flex(id, |flex| replace(&mut flex.reverse, value))
         });
       }
+      ElementKind::Grid(props) => self.bind_grid(id, props),
       ElementKind::Text(props) => {
         self.bind(id, props.text, "text", |tree, id, value| {
           tree.update_text(id, |text| text.set_content(value))
@@ -798,6 +815,34 @@ impl Tree {
     }
   }
 
+  fn bind_grid(&mut self, id: NodeId, props: GridProps) {
+    self.bind_opt(id, props.columns, "columns", |tree, id, value| {
+      tree.update_grid(id, |grid| replace(&mut grid.columns, value))
+    });
+    self.bind_opt(id, props.gap, "gap", |tree, id, value| {
+      tree.update_grid(id, |grid| replace(&mut grid.gap, value))
+    });
+    self.bind_opt(id, props.row_gap, "row_gap", |tree, id, value| {
+      tree.update_grid(id, |grid| replace(&mut grid.row_gap, Some(value)))
+    });
+    self.bind_opt(id, props.column_gap, "column_gap", |tree, id, value| {
+      tree.update_grid(id, |grid| replace(&mut grid.column_gap, Some(value)))
+    });
+    self.bind_opt(id, props.padding_vertical, "padding", |tree, id, value| {
+      tree.update_grid(id, |grid| replace(&mut grid.padding_vertical, Some(value)))
+    });
+    self.bind_opt(
+      id,
+      props.padding_horizontal,
+      "padding",
+      |tree, id, value| {
+        tree.update_grid(id, |grid| {
+          replace(&mut grid.padding_horizontal, Some(value))
+        })
+      },
+    );
+  }
+
   /// Mounts a container's children, each `child` call as one group and
   /// each `children_keyed` call as a group its effect fills.
   fn mount_children(&mut self, id: NodeId, children: Vec<ElementChild>, cx: &Cx, path: &Rc<str>) {
@@ -829,7 +874,10 @@ impl Tree {
   /// `Row/Button[2]`. `None` for the only child of a window or button.
   fn next_index(&mut self, parent: NodeId) -> Option<usize> {
     let node = self.node_mut(parent)?;
-    if !matches!(node.kind, NodeKind::Flex(_) | NodeKind::Stack) {
+    if !matches!(
+      node.kind,
+      NodeKind::Flex(_) | NodeKind::Grid(_) | NodeKind::Stack
+    ) {
       return None;
     }
     let index = node.next_child;
@@ -1039,6 +1087,13 @@ impl Tree {
   fn update_flex(&mut self, id: NodeId, f: impl FnOnce(&mut Flex) -> Change) {
     self.update(id, |node| match &mut node.kind {
       NodeKind::Flex(flex) => f(flex),
+      _ => Change::None,
+    });
+  }
+
+  fn update_grid(&mut self, id: NodeId, f: impl FnOnce(&mut GridNode) -> Change) {
+    self.update(id, |node| match &mut node.kind {
+      NodeKind::Grid(grid) => f(grid),
       _ => Change::None,
     });
   }

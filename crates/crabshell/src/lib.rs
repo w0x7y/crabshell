@@ -105,11 +105,11 @@ pub mod prelude {
   };
   pub use crabshell_ui::{
     Adjust, Align, Anchors, Animate, Animation, Border, Button, CaptureSource, Color, Column, Cx,
-    Easing, Edge, Fit, FloatingWindow, Font, Gradient, GradientShape, Icon, IconPixels, IconSource,
-    Image, Justify, Key, KeyEvent, KeyboardFocus, Layer, ListView, Margins, Menu, MenuEntry,
-    MenuToggle, Modifiers, Output, Padding, PanelWindow, PopupWindow, Region, Row, ScreencopyView,
-    ScrollView, SessionLock, Shadow, Size, Spacer, Spring, Stack, Style, Text, TextInput, Timer,
-    Transition, Widget,
+    Easing, Edge, Fit, FloatingWindow, Font, Gradient, GradientShape, Grid, Icon, IconPixels,
+    IconSource, Image, Justify, Key, KeyEvent, KeyboardFocus, Layer, ListView, Margins, Menu,
+    MenuEntry, MenuToggle, Modifiers, Output, Padding, PanelWindow, PopupWindow, Rect, Region, Row,
+    ScreencopyView, ScrollView, SessionLock, Shadow, Size, Spacer, Spring, Stack, Style, Text,
+    TextInput, Timer, Transition, Widget,
   };
   pub use crabshell_wayland::{OutputInfo, Toplevel, Windowset, WindowsetProjection};
   /// For [`cx.after`](Cx::after) and [`cx.interval`](Cx::interval).
