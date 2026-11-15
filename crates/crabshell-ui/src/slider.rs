@@ -315,7 +315,7 @@ fn build(cx: &Cx, props: SliderProps) -> Button {
     range.write_fraction(if vertical { 1.0 - t } else { t });
   };
   // Whole steps of a wheel or touchpad that haven't added up yet.
-  let partial = Rc::new(Cell::new(0.0_f32));
+  let partial = Cell::new(0.0_f32);
   let on_wheel = move |_: &Cx, wheel: Wheel| {
     // Up and right move it up.
     let notches = wheel.x.notches - wheel.y.notches;

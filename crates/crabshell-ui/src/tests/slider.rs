@@ -214,3 +214,24 @@ fn a_panicking_range_is_logged_with_its_path_and_the_window_runs_on() {
   assert!(logs.contains("range failure"), "{logs}");
   assert_eq!(other.get(), 52.0, "the other slider still works");
 }
+
+#[test]
+fn dropping_a_slider_frees_everything_it_made() {
+  let mut h = Harness::new();
+  let before = h.runtime.node_count();
+  let value = h.cx.signal(0.0);
+  let vertical = h.cx.signal(false);
+  let window = window(
+    &mut h,
+    pixels_slider(value)
+      .step(4.0)
+      .vertical(move || vertical.get()),
+  );
+  press(&window, 60.0, 8.0);
+  window.pointer_scroll(wheel(-120));
+  vertical.set(true);
+  h.frame(&window);
+  drop(window);
+  // The two signals the test made outlive the window.
+  assert_eq!(h.runtime.node_count(), before + 2);
+}
