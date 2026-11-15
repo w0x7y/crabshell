@@ -757,3 +757,87 @@ fn a_socket_nothing_listens_on_falls_back_to_the_spawned_helper() {
   assert!(logs.contains("spawning it instead"), "{logs}");
   assert_eq!(polkit.runs(), ["root cookie-1"]);
 }
+
+/// polkit itself with its socket-started helper, as polkit 127 and later
+/// have them, and a real PAM. It asks the system bus's polkit to let this
+/// process use `pkexec`, answers once wrong and then with
+/// `CRABSHELL_REAL_POLKIT_PASSWORD`, and expects the authorization. Never
+/// on a real desktop: it registers an agent on the real system bus, and
+/// the wrong answer counts toward `pam_faillock`. It is for a throwaway
+/// container, run as a user in `wheel` with that password.
+#[test]
+#[ignore = "needs a throwaway system with polkit 127 or later"]
+fn the_real_polkit_authorizes_through_its_helper_socket() {
+  let Ok(password) = std::env::var("CRABSHELL_REAL_POLKIT_PASSWORD") else {
+    eprintln!("CRABSHELL_REAL_POLKIT_PASSWORD is unset, so nothing ran");
+    return;
+  };
+  let mut shell = Harness::new(Config {
+    system_bus: Some(zbus::Address::system().expect("the system bus's address")),
+    polkit_helper: PathBuf::from(super::HELPER),
+    polkit_socket: PathBuf::from(super::HELPER_SOCKET),
+    ..offline()
+  });
+  // Real PAM pauses after a wrong answer, so this waits longer than 5 s.
+  let wait = |shell: &mut Harness, what: &str, done: &dyn Fn() -> bool| {
+    let give_up = Instant::now() + Duration::from_secs(30);
+    while !done() {
+      assert!(Instant::now() < give_up, "no {what} after 30 s");
+      shell.run_until(Instant::now() + Duration::from_millis(100));
+    }
+  };
+  let agent = shell.cx.polkit_agent();
+  let service = Rc::clone(agent.service.as_ref().expect("the shell's agent"));
+  let registered = move || {
+    let state = service.state.borrow();
+    state
+      .as_ref()
+      .is_some_and(|state| state.authority.is_some())
+  };
+  wait(&mut shell, "registration", &registered);
+
+  let result: Rc<RefCell<Option<Result<bool, String>>>> = Rc::default();
+  let sink = Rc::clone(&result);
+  shell.spawn(async move {
+    let check = async {
+      let connection = zbus::connection::Builder::system().build().await?;
+      let details: HashMap<&str, &str> = HashMap::new();
+      // 1 allows interaction, which is what reaches the agent.
+      let body = (
+        subject(None),
+        "org.freedesktop.policykit.exec",
+        details,
+        1_u32,
+        "",
+      );
+      let reply = connection
+        .call_method(
+          Some(AUTHORITY),
+          super::AUTHORITY_PATH,
+          Some(super::AUTHORITY_INTERFACE),
+          "CheckAuthorization",
+          &body,
+        )
+        .await?;
+      let (authorized, _, _): (bool, bool, HashMap<String, String>) = reply.body().deserialize()?;
+      Ok::<_, zbus::Error>(authorized)
+    };
+    *sink.borrow_mut() = Some(check.await.map_err(|error| error.to_string()));
+  });
+  let request = agent.request();
+  let state_is = |like: fn(&AuthState) -> bool| {
+    move || {
+      request
+        .get_untracked()
+        .is_some_and(|shown| like(&shown.state))
+    }
+  };
+  wait(&mut shell, "question", &state_is(asking));
+  agent.respond("not the password");
+  wait(&mut shell, "failure", &state_is(failed));
+  agent.respond(password);
+  let answered = Rc::clone(&result);
+  wait(&mut shell, "answer", &move || answered.borrow().is_some());
+  assert_eq!(result.borrow_mut().take(), Some(Ok(true)));
+  assert_eq!(agent.request().get_untracked(), None);
+}
