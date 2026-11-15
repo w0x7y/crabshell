@@ -825,6 +825,61 @@ fn a_mask_lets_clicks_through_until_it_changes() {
   });
 }
 
+/// How many frames window `id` committed.
+fn commits(shell: &mut Shell, id: WindowId) -> u64 {
+  let info = shell.event_loop.platform().window_info(id);
+  info.expect("the window is held").commits
+}
+
+/// Runs `change`, which changes only a hint of window `id`, and checks it
+/// took exactly `frames` frames to commit.
+fn hint_frames(shell: &mut Shell, id: WindowId, frames: u64, change: impl FnOnce()) {
+  let before = commits(shell, id);
+  change();
+  if frames > 0 {
+    run_until(&mut shell.event_loop, "a frame with the hint", |platform| {
+      platform
+        .window_info(id)
+        .is_some_and(|info| info.commits > before)
+    });
+  }
+  settle(&mut shell.event_loop);
+  assert_eq!(commits(shell, id), before + frames);
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_hint_change_rides_the_next_frame_and_an_opacity_sway_lacks_sends_nothing() {
+  let sway = Sway::start();
+  let mut shell = Shell::new(&sway);
+  let bar = shell.wait_for_bar("HEADLESS-1");
+  let knobs = shell.knobs;
+  // Not a layer-shell reconfigure, which has the compositor arrange the
+  // output again, and Sway answer with a configure.
+  hint_frames(&mut shell, bar, 1, || knobs.masked.set(true));
+  // Sway lacks hyprland-surface-v1, so there is nothing to commit.
+  hint_frames(&mut shell, bar, 0, || knobs.opacity.set(0.5));
+
+  // A floating window's hints don't commit its toplevel either.
+  let cx = Cx::new(shell.runtime.new_owner());
+  let (masked, faded) = (cx.signal(false), cx.signal(1.0_f32));
+  let floating = FloatingWindow::new()
+    .title("crabshell-hinted")
+    .mask(move || masked.get().then(|| Region::rect(0, 0, 10, 10)))
+    .compositor_opacity(move || faded.get())
+    .child(Text::new("hinted"));
+  let platform = shell.event_loop.platform();
+  let id = platform.add_window(Window::floating(&cx, floating));
+  run_until(&mut shell.event_loop, "the floating window", |platform| {
+    platform
+      .window_info(id)
+      .is_some_and(|info| info.commits > 0)
+  });
+  settle(&mut shell.event_loop);
+  hint_frames(&mut shell, id, 1, || masked.set(true));
+  hint_frames(&mut shell, id, 0, || faded.set(0.5));
+}
+
 #[test]
 #[ignore = "needs headless Sway"]
 fn a_blur_the_compositor_cant_give_is_logged_once_and_the_bar_still_draws() {

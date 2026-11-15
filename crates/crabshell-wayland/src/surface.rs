@@ -179,6 +179,8 @@ pub(crate) struct Surface {
   pub(crate) buffer_size: Option<(u32, u32)>,
   /// A panel's layer-shell namespace, which can't change once sent.
   pub(crate) namespace: String,
+  /// A panel's layer-shell settings last sent.
+  pub(crate) layer_sent: Option<SurfaceConfig>,
   /// The size the last configure gave, 0 where it left a side free.
   pub(crate) given: (u32, u32),
   /// A floating window's settings last sent.
@@ -221,6 +223,7 @@ impl Surface {
       last_damage: Vec::new(),
       buffer_size: None,
       namespace: String::new(),
+      layer_sent: None,
       given: (0, 0),
       floating: None,
       mask_sent: None,
@@ -291,12 +294,14 @@ impl Surface {
     Some(size)
   }
 
-  /// Sends a panel's new settings from the window's description, which
-  /// must have passed [`size_problem`]. The compositor answers with a
-  /// configure.
-  pub(crate) fn reconfigure(&mut self, config: &SurfaceConfig) {
+  /// Sends a panel's new layer-shell settings from the window's
+  /// description, which must have passed [`size_problem`], and commits.
+  /// The compositor answers with a configure. Returns whether it sent
+  /// anything: not when only the mask or other hints changed, since
+  /// layer-shell would have the compositor arrange the output again.
+  pub(crate) fn reconfigure(&mut self, config: &SurfaceConfig) -> bool {
     let Role::Layer(surface) = &self.role else {
-      return;
+      return false;
     };
     if self.namespace != namespace(&config.namespace) {
       tracing::warn!(
@@ -306,6 +311,13 @@ impl Surface {
       );
       self.namespace = namespace(&config.namespace);
     }
+    if self
+      .layer_sent
+      .as_ref()
+      .is_some_and(|sent| !layer_changed(sent, config))
+    {
+      return false;
+    }
     apply(surface, config);
     if let SurfaceKind::Wlr(wlr) = surface.kind() {
       // Changing the layer later needs version 2.
@@ -314,6 +326,8 @@ impl Surface {
       }
     }
     surface.commit();
+    self.layer_sent = Some(config.clone());
+    true
   }
 
   /// Whether the input mask was cut to another size than the surface's.
@@ -321,19 +335,19 @@ impl Surface {
     self.size.is_some() && self.mask_sent.as_ref().map(|(_, size)| *size) != self.size
   }
 
-  /// Sends `mask`, cut to the surface's size, unless that was sent last.
-  /// The next commit applies it. Nothing is sent before the first
-  /// configure, which gives the size.
-  pub(crate) fn send_mask(&mut self, compositor: &CompositorState, mask: Option<&Region>) {
+  /// Sends `mask`, cut to the surface's size, unless that was sent last,
+  /// and says whether it did. The next commit applies it. Nothing is sent
+  /// before the first configure, which gives the size.
+  pub(crate) fn send_mask(&mut self, compositor: &CompositorState, mask: Option<&Region>) -> bool {
     let Some(size) = self.size else {
-      return;
+      return false;
     };
     if self
       .mask_sent
       .as_ref()
       .is_some_and(|(sent, sent_size)| sent.as_ref() == mask && *sent_size == size)
     {
-      return;
+      return false;
     }
     let surface = self.wl_surface();
     match mask {
@@ -347,11 +361,12 @@ impl Surface {
         }
         Err(error) => {
           tracing::warn!(%error, "couldn't create a region for a window's mask");
-          return;
+          return false;
         }
       },
     }
     self.mask_sent = Some((mask.cloned(), size));
+    true
   }
 
   /// Draws `window`'s damage into a free buffer and commits it, with a
@@ -493,6 +508,23 @@ pub(crate) fn size_problem(config: &SurfaceConfig) -> Option<&'static str> {
   } else {
     None
   }
+}
+
+/// Whether `config` changes a layer-shell setting `sent` didn't have.
+/// The mask goes with a frame, and the namespace is read once.
+pub(crate) fn layer_changed(sent: &SurfaceConfig, config: &SurfaceConfig) -> bool {
+  let settings = |config: &SurfaceConfig| {
+    (
+      config.anchors,
+      config.width,
+      config.height,
+      config.exclusive_zone,
+      config.layer,
+      config.margins,
+      config.keyboard_focus,
+    )
+  };
+  settings(sent) != settings(config)
 }
 
 /// The size to draw at after a configure: the compositor's, or the

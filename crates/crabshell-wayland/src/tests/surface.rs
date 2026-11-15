@@ -84,6 +84,60 @@ fn a_zero_side_needs_anchors_on_both_edges_across_it() {
   );
 }
 
+#[test]
+fn only_layer_shell_settings_need_a_layer_shell_request() {
+  use crabshell_ui::{KeyboardFocus, Margins, Region, SurfaceConfig};
+
+  use crate::surface::layer_changed;
+
+  let sent = SurfaceConfig {
+    anchors: Edge::Top | Edge::Left | Edge::Right,
+    height: 30,
+    exclusive_zone: 30,
+    ..SurfaceConfig::default()
+  };
+  // The mask goes with the next frame, and a namespace is read once.
+  let hinted = SurfaceConfig {
+    mask: Some(Region::rect(0, 0, 10, 10)),
+    namespace: String::from("other"),
+    ..sent.clone()
+  };
+  assert!(!layer_changed(&sent, &hinted));
+  assert!(!layer_changed(&sent, &sent));
+  for changed in [
+    SurfaceConfig {
+      anchors: Edge::Top.into(),
+      ..sent.clone()
+    },
+    SurfaceConfig {
+      width: 100,
+      ..sent.clone()
+    },
+    SurfaceConfig {
+      height: 40,
+      ..sent.clone()
+    },
+    SurfaceConfig {
+      exclusive_zone: -1,
+      ..sent.clone()
+    },
+    SurfaceConfig {
+      layer: Layer::Overlay,
+      ..sent.clone()
+    },
+    SurfaceConfig {
+      margins: Margins::all(2),
+      ..sent.clone()
+    },
+    SurfaceConfig {
+      keyboard_focus: KeyboardFocus::Exclusive,
+      ..sent.clone()
+    },
+  ] {
+    assert!(layer_changed(&sent, &changed), "{changed:?}");
+  }
+}
+
 /// A shown window with a label, and frames that drew it and saw the frame
 /// callback.
 struct Shown {

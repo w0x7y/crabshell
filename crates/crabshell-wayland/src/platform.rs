@@ -699,20 +699,26 @@ impl Platform {
         if entry.window.is_popup() {
           // A popup's settings are its hints, which a frame commits.
           if let Some(surface) = &mut entry.surface {
-            surface.send_mask(compositor, config.mask.as_ref());
-            surface.send_hyprland(hyprland_surfaces, registry, compositor, &entry.window, qh);
-            surface.frames.pacing.redraw();
+            let mut hinted = surface.send_mask(compositor, config.mask.as_ref());
+            hinted |=
+              surface.send_hyprland(hyprland_surfaces, registry, compositor, &entry.window, qh);
+            if hinted {
+              surface.frames.pacing.redraw();
+            }
           }
         } else if !refused(entry, &config)
           && let Some(surface) = &mut entry.surface
         {
           // Settings layer-shell would refuse are never sent, and the
-          // surface keeps the last good ones. These go before
-          // `reconfigure`, whose commit applies them.
-          surface.send_mask(compositor, config.mask.as_ref());
-          surface.send_blur(effects, compositor, entry.window.blur().as_ref(), qh);
-          surface.send_hyprland(hyprland_surfaces, registry, compositor, &entry.window, qh);
-          surface.reconfigure(&config);
+          // surface keeps the last good ones. The hints go first, for
+          // `reconfigure`'s commit, or without one for the next frame's.
+          let mut hinted = surface.send_mask(compositor, config.mask.as_ref());
+          hinted |= surface.send_blur(effects, compositor, entry.window.blur().as_ref(), qh);
+          hinted |=
+            surface.send_hyprland(hyprland_surfaces, registry, compositor, &entry.window, qh);
+          if !surface.reconfigure(&config) && hinted {
+            surface.frames.pacing.redraw();
+          }
         }
       }
       let Some(surface) = entry.surface.as_mut() else {
@@ -835,6 +841,7 @@ impl Platform {
       let entry = &mut self.windows.entries[index];
       let mut surface = Surface::new(Role::Layer(layer), fractional, pool, scale);
       surface.namespace = namespace;
+      surface.layer_sent = Some(config);
       entry.surface = Some(surface);
       entry.output = Some(output);
     }

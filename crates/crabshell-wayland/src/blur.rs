@@ -35,31 +35,32 @@ impl Drop for Blur {
 
 impl Surface {
   /// Sends `region`, cut to the surface's size, as the area to blur
-  /// behind, unless that was sent last. The next commit applies it.
-  /// Nothing is sent before the first configure, which gives the size.
+  /// behind, unless that was sent last, and says whether it sent
+  /// anything. The next commit applies it. Nothing is sent before the
+  /// first configure, which gives the size.
   pub(crate) fn send_blur(
     &mut self,
     effects: &mut Effects,
     compositor: &CompositorState,
     region: Option<&Region>,
     qh: &QueueHandle<Platform>,
-  ) {
+  ) -> bool {
     let Some(size) = self.size else {
-      return;
+      return false;
     };
     if self
       .blur_sent
       .as_ref()
       .is_some_and(|(sent, sent_size)| sent.as_ref() == region && *sent_size == size)
     {
-      return;
+      return false;
     }
     self.blur_sent = Some((region.cloned(), size));
     let Some(region) = region else {
       if let Some(blur) = &self.blur {
         blur.0.set_blur_region(None);
       }
-      return;
+      return self.blur.is_some();
     };
     let Some(manager) = effects.manager.as_ref().filter(|_| effects.blur) else {
       if !std::mem::replace(&mut effects.warned, true) {
@@ -68,7 +69,7 @@ impl Surface {
            its blur is off, so they show unblurred"
         );
       }
-      return;
+      return false;
     };
     let surface = self.wl_surface().clone();
     let blur = self
@@ -80,8 +81,12 @@ impl Surface {
           wl_region.add(x, y, width, height);
         }
         blur.0.set_blur_region(Some(wl_region.wl_region()));
+        true
       }
-      Err(error) => tracing::warn!(%error, "couldn't create a region for a window's blur"),
+      Err(error) => {
+        tracing::warn!(%error, "couldn't create a region for a window's blur");
+        false
+      }
     }
   }
 

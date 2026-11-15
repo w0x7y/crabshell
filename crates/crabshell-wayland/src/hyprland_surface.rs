@@ -127,10 +127,10 @@ pub(crate) fn buffer_rects(
 impl Surface {
   /// Sends Hyprland `window`'s compositor opacity and visible mask, cut
   /// to the surface's size at its scale, where they differ from what it
-  /// was last told. The next commit applies them. The surface gets its
-  /// object, and the shell the manager, the first time one differs from
-  /// the default. Nothing is sent before the first configure, which gives
-  /// the size.
+  /// was last told, and says whether it sent anything. The next commit
+  /// applies them. The surface gets its object, and the shell the
+  /// manager, the first time one differs from the default. Nothing is
+  /// sent before the first configure, which gives the size.
   pub(crate) fn send_hyprland(
     &mut self,
     hyprland: &mut HyprlandSurfaces,
@@ -138,9 +138,9 @@ impl Surface {
     compositor: &CompositorState,
     window: &Window,
     qh: &QueueHandle<Platform>,
-  ) {
+  ) -> bool {
     let Some(size) = self.size else {
-      return;
+      return false;
     };
     let scale = self.frames.scale;
     self.hyprland_cut = Some((size, scale));
@@ -151,11 +151,11 @@ impl Surface {
         .and_then(|region| buffer_rects(&region, size, scale)),
     };
     if wanted == self.hyprland_shown {
-      return;
+      return false;
     }
     let sent = std::mem::replace(&mut self.hyprland_shown, wanted.clone());
     let Some(version) = hyprland.version(registry, qh) else {
-      return;
+      return false;
     };
     if version < 2 && wanted.visible.is_some() && !std::mem::replace(&mut hyprland.warned, true) {
       tracing::warn!(
@@ -165,7 +165,7 @@ impl Surface {
     }
     let requests = requests(&sent, &wanted, version);
     let Some(manager) = hyprland.manager.as_ref().filter(|_| !requests.is_empty()) else {
-      return;
+      return false;
     };
     let surface = self.wl_surface().clone();
     let object = self
@@ -186,6 +186,7 @@ impl Surface {
         },
       }
     }
+    true
   }
 
   /// Whether the visible mask was cut at another size or scale than the

@@ -66,12 +66,13 @@ impl Platform {
       if let (Some(config), Some(surface)) = (entry.window.floating_config(), &mut entry.surface)
         && entry.window.take_surface_changed()
       {
-        // Before the commit below, which applies them.
+        // Before the commit below, or the next frame's.
+        let mut hinted = false;
         if config.shown {
-          surface.send_mask(&self.compositor, entry.window.surface().mask.as_ref());
+          hinted = surface.send_mask(&self.compositor, entry.window.surface().mask.as_ref());
           let blur = entry.window.blur();
-          surface.send_blur(&mut self.effects, &self.compositor, blur.as_ref(), &self.qh);
-          surface.send_hyprland(
+          hinted |= surface.send_blur(&mut self.effects, &self.compositor, blur.as_ref(), &self.qh);
+          hinted |= surface.send_hyprland(
             &mut self.hyprland_surfaces,
             &self.registry,
             &self.compositor,
@@ -84,6 +85,11 @@ impl Platform {
           // Its pointer events stop with its surface.
           self.windows.entries[index].window.pointer_leave();
           self.windows.entries[index].surface = None;
+        } else if surface.floating.as_ref() == Some(&config) {
+          // Only its hints changed, which need no commit of their own.
+          if hinted {
+            surface.frames.pacing.redraw();
+          }
         } else if let Role::Toplevel(toplevel) = &surface.role {
           apply(toplevel, &config, surface.floating.as_ref());
           toplevel.commit();
