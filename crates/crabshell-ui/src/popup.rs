@@ -139,9 +139,11 @@ impl PopupWindow {
   }
 
   /// Sets the part of the popup that takes pointer input, as
-  /// [`PanelWindow::mask`](crate::PanelWindow::mask) does: clicks outside
-  /// it reach whatever is below, and `None`, the default, is the whole
-  /// popup.
+  /// [`PanelWindow::mask`](crate::PanelWindow::mask) does, and `None`, the
+  /// default, is the whole popup. A popup a click opened holds the
+  /// pointer, so a click outside its mask reaches the shell's own window
+  /// below, but over another program it closes the popup, as any click
+  /// outside does.
   pub fn mask(mut self, mask: impl IntoProp<Option<Region>>) -> PopupWindow {
     self.mask = Some(mask.into_prop());
     self

@@ -2037,7 +2037,7 @@ fn a_menu_too_wide_for_the_output_is_drawn_at_the_width_sway_resizes_it_to() {
 
 #[test]
 #[ignore = "needs headless Sway"]
-fn a_menus_mask_lets_clicks_through_to_what_is_below() {
+fn a_menus_mask_lets_clicks_through_to_the_shells_own_window_below() {
   // The mask is in logical pixels, whatever the scale.
   for scale in ["1", "1.5", "2"] {
     let sway = Sway::start();
