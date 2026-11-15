@@ -76,6 +76,7 @@ mod scroll;
 mod style;
 mod text;
 mod text_input;
+mod timer;
 mod tree;
 mod view;
 mod widgets;
@@ -100,6 +101,7 @@ pub use scroll::{ListView, ScrollView};
 pub use style::{Border, Color, Font, Gradient, GradientShape, Padding, Shadow, Style};
 pub use text::TextSystem;
 pub use text_input::{FieldState, Preedit, TextInput};
+pub use timer::{Timer, fire_timers, next_timer};
 pub use view::{
   CaptureView, Content, IconView, ImageView, InputView, NodeView, TextView, WindowView,
 };
@@ -115,6 +117,7 @@ pub use window::{
 pub mod prelude {
   pub use crate::{
     Align, Button, Color, Column, Cx, Edge, Font, Icon, IconSource, Justify, Layer, Menu, Output,
-    PanelWindow, PopupWindow, Row, Size, Spacer, Stack, Style, Text, TextSystem, Widget, Window,
+    PanelWindow, PopupWindow, Row, Size, Spacer, Stack, Style, Text, TextSystem, Timer, Widget,
+    Window,
   };
 }

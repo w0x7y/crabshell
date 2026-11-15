@@ -23,6 +23,7 @@ mod services;
 mod style;
 mod text;
 mod text_input;
+mod timer;
 mod window;
 
 use std::cell::Cell;
