@@ -23,6 +23,7 @@ use fake::{
 };
 
 mod fake;
+mod peaks;
 mod pipewire;
 
 const NORM: u32 = Volume::NORMAL.0;
@@ -802,6 +803,7 @@ fn node_info(index: u32, name: &str, volumes: &[u32], monitor: bool) -> NodeInfo
     muted: false,
     monitor,
     monitor_source: Some(format!("{name}.monitor")),
+    running: true,
   }
 }
 
@@ -816,6 +818,7 @@ fn stream_info(index: u32, sink: u32, volumes: &[u32]) -> StreamInfo {
     volumes: channels(volumes),
     map: front(volumes.len()),
     muted: false,
+    corked: false,
   }
 }
 

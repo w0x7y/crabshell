@@ -57,7 +57,7 @@ use calloop::{Interest, LoopHandle, Mode, PostAction, RegistrationToken};
 use crabshell_reactive::{Owner, ReadSignal, Signal};
 use crabshell_ui::Cx;
 
-pub use audio::{Audio, AudioChannel, AudioNode, AudioStream, Sink};
+pub use audio::{Audio, AudioChannel, AudioNode, AudioStream, PeakTarget, Sink};
 pub use bluetooth::{
   Bluetooth, BluetoothAdapter, BluetoothAdapterState, BluetoothDevice, BluetoothDeviceState,
 };
@@ -165,7 +165,8 @@ pub trait ServicesExt {
   /// The audio server's default sink, with its volume and mute. Every
   /// caller shares one connection, which starts on the loop's next turn
   /// and never waits for the server. It wakes the shell only when the
-  /// server reports a change.
+  /// server reports a change, and while a peak meter from
+  /// [`Audio::peaks`] records.
   ///
   /// With no server, the sink is `None` and the service tries again
   /// every 2 s, for up to a minute after startup and after each drop of

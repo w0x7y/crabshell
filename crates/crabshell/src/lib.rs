@@ -97,7 +97,7 @@ pub mod prelude {
     FileView, GreetMessage, GreetState, Greetd, Hyprland, HyprlandEvent, HyprlandMonitor,
     HyprlandToplevel, HyprlandWorkspace, IntoCommand, LoopStatus, Mpris, Network, NetworkDevice,
     NetworkKind, NetworkState, Notification, Notifications, Pam, PamError, PamMessage, PamResult,
-    PamState, PerformanceDegradation, PlaybackStatus, Player, PolkitAgent, PowerDevice,
+    PamState, PeakTarget, PerformanceDegradation, PlaybackStatus, Player, PolkitAgent, PowerDevice,
     PowerProfile, PowerProfiles, Precision, Process, SavedConnection, ServicesExt, Sink, Socket,
     Sway, SwayEvent, SwayEventKind, SwayOutput, Timeout, Tray, TrayCategory, TrayHost, TrayItem,
     TrayMenu, TrayStatus, UPower, Urgency, WifiMode, WifiNetwork, WifiSecurity, Workspace,

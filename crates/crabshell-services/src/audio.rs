@@ -7,14 +7,14 @@
 //! libpulse's callbacks run on its thread and only send a message over a
 //! calloop channel, so the signal is set on the main thread like any other.
 
-use std::cell::{OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Rc;
 use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
 
 use calloop::channel::Sender;
 use calloop::timer::TimeoutAction;
-use crabshell_reactive::{ReadSignal, Signal};
+use crabshell_reactive::{Owner, ReadSignal, Signal};
 use crabshell_ui::Cx;
 use libpulse_binding::callbacks::ListResult;
 use libpulse_binding::channelmap::{Map, Position};
@@ -23,14 +23,18 @@ use libpulse_binding::context::introspect::{
 };
 use libpulse_binding::context::subscribe::{Facility, InterestMaskSet};
 use libpulse_binding::context::{Context, FlagSet, State};
+use libpulse_binding::def::SinkState;
 use libpulse_binding::mainloop::threaded::Mainloop;
 use libpulse_binding::volume::{ChannelVolumes, Volume};
 
 use crate::Shared;
 use crate::dbus::set_changed;
 
+mod peaks;
 #[cfg(test)]
 mod tests;
+
+pub use peaks::PeakTarget;
 
 /// How long the service waits before each reconnect.
 pub(crate) const RETRY: Duration = Duration::from_secs(2);
@@ -147,6 +151,10 @@ pub enum AudioChannel {
 pub struct Audio {
   sink: ReadSignal<Option<Sink>>,
   lists: ReadLists,
+  /// The asking context's, which owns its peak meters.
+  owner: Owner,
+  /// Empty and never set, for a meter that can't record.
+  no_peaks: ReadSignal<Vec<f32>>,
   /// `None` on a context the shell didn't set up.
   service: Option<Rc<AudioService>>,
 }
@@ -287,7 +295,7 @@ impl Audio {
 /// `cx.audio()`.
 pub(crate) fn audio(cx: &Cx) -> Audio {
   if let Some(service) = cx.service::<AudioService>() {
-    return service.audio();
+    return service.audio(cx.owner());
   }
   static LOGGED: Once = Once::new();
   LOGGED.call_once(|| {
@@ -301,6 +309,8 @@ pub(crate) fn audio(cx: &Cx) -> Audio {
       streams: cx.signal(Vec::new()).read_only(),
       default_source: cx.signal(None).read_only(),
     },
+    owner: cx.owner(),
+    no_peaks: cx.signal(Vec::new()).read_only(),
     service: None,
   }
 }
@@ -348,6 +358,11 @@ pub(crate) struct AudioService {
   /// libpulse, from first use on. `None` before that, and if libpulse
   /// couldn't start its thread.
   pulse: RefCell<Option<Pulse>>,
+  /// The peak meters configs hold, recording or not.
+  meters: RefCell<Vec<peaks::Wanted>>,
+  next_meter: Cell<u64>,
+  /// What a meter that can't record shows, made with `sink`.
+  no_peaks: OnceCell<Signal<Vec<f32>>>,
 }
 
 /// What libpulse's thread sends: the generation of the context it came
@@ -377,6 +392,10 @@ pub(crate) enum Event {
   Streams(Vec<StreamInfo>),
   /// The sink asked for by name, or `None` for no such sink.
   Info(Option<Info>),
+  /// The peak meter with this id has peaks to read.
+  Peaks(u64),
+  /// The peak meter with this id changed its state.
+  MeterState(u64),
 }
 
 impl AudioService {
@@ -386,10 +405,13 @@ impl AudioService {
       sink: OnceCell::new(),
       lists: OnceCell::new(),
       pulse: RefCell::new(None),
+      meters: RefCell::new(Vec::new()),
+      next_meter: Cell::new(0),
+      no_peaks: OnceCell::new(),
     }
   }
 
-  fn audio(self: &Rc<Self>) -> Audio {
+  fn audio(self: &Rc<Self>, owner: Owner) -> Audio {
     let sink = *self.sink.get_or_init(|| {
       // On the loop's next turn, so `cx.audio()` never waits on libpulse.
       self.after(Duration::ZERO, AudioService::start);
@@ -404,9 +426,14 @@ impl AudioService {
         default_source: root.signal(None),
       }
     });
+    let no_peaks = *self
+      .no_peaks
+      .get_or_init(|| self.shared.root.signal(Vec::new()));
     Audio {
       sink: sink.read_only(),
       lists: lists.read_only(),
+      owner,
+      no_peaks: no_peaks.read_only(),
       service: Some(Rc::clone(self)),
     }
   }
@@ -439,6 +466,7 @@ impl AudioService {
     let (sender, channel) = calloop::channel::channel();
     // From here on, dropping `pulse` stops libpulse's thread.
     let pulse = Pulse {
+      meters: Vec::new(),
       intro: None,
       context: None,
       mainloop,
@@ -510,17 +538,25 @@ impl AudioService {
       Event::Stream => pulse.read_streams(),
       Event::Sinks(sinks) => {
         pulse.nodes.sinks = sinks;
-        pulse.show_lists();
+        self.show_lists(pulse);
       }
       Event::Sources(sources) => {
         pulse.nodes.sources = sources;
-        pulse.show_lists();
+        self.show_lists(pulse);
       }
       Event::Streams(streams) => {
         pulse.nodes.streams = streams;
-        pulse.show_lists();
+        self.show_lists(pulse);
       }
+      Event::Peaks(id) => pulse.read_peaks(id),
+      Event::MeterState(id) => pulse.on_meter_state(id),
     }
+  }
+
+  /// Shows the lists as last read, and moves the peak meters to match.
+  fn show_lists(&self, pulse: &mut Pulse) {
+    pulse.show_lists();
+    pulse.sync_meters(&self.meters.borrow());
   }
 
   /// Drops the connection, shows no sink and tries again every `retry`
@@ -572,7 +608,9 @@ impl AudioService {
 /// the main thread: `Mainloop` holds an `Rc`, so the compiler won't let it
 /// go to another.
 struct Pulse {
-  // Declared before `mainloop`, so they drop before it.
+  // Declared before `mainloop`, so they drop before it, the streams
+  // before their context.
+  meters: Vec<peaks::Meter>,
   intro: Option<Introspector>,
   context: Option<Context>,
   mainloop: Mainloop,
@@ -622,6 +660,8 @@ pub(crate) struct NodeInfo {
   monitor: bool,
   /// The name of a sink's monitor, which a peak meter records.
   monitor_source: Option<String>,
+  /// Whether a sink plays: an idle one sends its meters nothing.
+  running: bool,
 }
 
 impl NodeInfo {
@@ -649,6 +689,8 @@ pub(crate) struct StreamInfo {
   volumes: ChannelVolumes,
   map: Map,
   muted: bool,
+  /// Paused: it sends its meters nothing.
+  corked: bool,
 }
 
 impl StreamInfo {
@@ -665,6 +707,7 @@ impl StreamInfo {
       volumes: info.volume,
       map: info.channel_map,
       muted: info.mute,
+      corked: info.corked,
     }
   }
 }
@@ -815,8 +858,10 @@ impl Pulse {
             info.mute,
           );
           let monitor_source = info.monitor_source_name.as_deref().map(str::to_owned);
+          let running = info.state == SinkState::Running;
           found.extend(read.map(|node| NodeInfo {
             monitor_source,
+            running,
             ..node
           }));
         }
@@ -1069,6 +1114,7 @@ impl Pulse {
   /// outage.
   fn disconnect(&mut self) -> bool {
     let lock = Locked::new(&mut self.mainloop);
+    peaks::close_all(&mut self.meters);
     self.intro = None;
     if let Some(mut context) = self.context.take() {
       // Cleared first: disconnecting calls the state callback.
@@ -1188,6 +1234,7 @@ fn node(
     muted,
     monitor: false,
     monitor_source: None,
+    running: false,
   })
 }
 
