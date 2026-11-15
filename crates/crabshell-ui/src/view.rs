@@ -4,7 +4,6 @@ use std::cell::Ref;
 use std::path::Path;
 
 use cosmic_text::{Buffer, LayoutRun};
-use taffy::TraversePartialTree;
 
 use crate::geometry::{Affine, Point, Rect, Size};
 use crate::screencopy::CaptureFrame;
@@ -40,7 +39,8 @@ impl<'w> WindowView<'w> {
 }
 
 /// One node of a laid-out window: a widget, or the window itself at the
-/// root. Draw it, then its children in order, so later ones are on top.
+/// root. Draw it, then its [`children`](Self::children) in order, so later
+/// ones are on top.
 #[derive(Clone, Copy)]
 pub struct NodeView<'a> {
   tree: &'a Tree,
@@ -101,12 +101,13 @@ impl<'a> NodeView<'a> {
     self.node.shown_style()
   }
 
-  /// The children, in drawing order.
+  /// The children, in drawing order: by their style's `z`, lowest
+  /// first, and in child order where it is equal.
   pub fn children(&self) -> impl Iterator<Item = NodeView<'a>> + 'a {
     let tree = self.tree;
     tree
-      .taffy
-      .child_ids(self.id)
+      .drawn_children(self.id)
+      .into_iter()
       .filter_map(move |id| NodeView::new(tree, id))
   }
 

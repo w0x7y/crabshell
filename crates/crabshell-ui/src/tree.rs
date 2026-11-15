@@ -154,6 +154,8 @@ pub(crate) enum NodeKind {
 pub(crate) struct Flex {
   pub(crate) column: bool,
   pub(crate) grow: bool,
+  pub(crate) wrap: bool,
+  pub(crate) reverse: bool,
   pub(crate) gap: u32,
   pub(crate) padding_vertical: Option<u32>,
   pub(crate) padding_horizontal: Option<u32>,
@@ -433,6 +435,21 @@ impl Tree {
     self.taffy.get_node_context_mut(id)
   }
 
+  /// `id`'s children in the order they are drawn, and so found by the
+  /// pointer last first: by their style's `z`, lowest first, and in child
+  /// order where it is equal.
+  pub(crate) fn drawn_children(&self, id: NodeId) -> Vec<NodeId> {
+    let mut children = self.taffy.children(id).unwrap_or_default();
+    // A stable sort keeps child order for equal z.
+    children.sort_by_cached_key(|&child| {
+      self
+        .node(child)
+        .and_then(|node| node.effective_style().z)
+        .unwrap_or(0)
+    });
+    children
+  }
+
   /// Applies the window's own properties and adds its child, which the
   /// caller already turned into an element.
   pub(crate) fn mount_panel(&mut self, panel: PanelWindow, child: Option<Element>) {
@@ -578,6 +595,8 @@ impl Tree {
       ElementKind::Flex(props) => NodeKind::Flex(Flex {
         column: props.column,
         grow: props.grow,
+        wrap: false,
+        reverse: false,
         gap: 0,
         padding_vertical: None,
         padding_horizontal: None,
@@ -659,6 +678,12 @@ impl Tree {
         });
         self.bind_opt(id, props.justify, "justify", |tree, id, value| {
           tree.update_flex(id, |flex| replace(&mut flex.justify, value))
+        });
+        self.bind_opt(id, props.wrap, "wrap", |tree, id, value| {
+          tree.update_flex(id, |flex| replace(&mut flex.wrap, value))
+        });
+        self.bind_opt(id, props.reverse, "reverse", |tree, id, value| {
+          tree.update_flex(id, |flex| replace(&mut flex.reverse, value))
         });
       }
       ElementKind::Text(props) => {

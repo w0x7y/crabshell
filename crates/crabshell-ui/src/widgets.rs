@@ -106,6 +106,8 @@ pub(crate) struct FlexProps {
   pub(crate) padding_horizontal: Option<Prop<u32>>,
   pub(crate) align: Option<Prop<Align>>,
   pub(crate) justify: Option<Prop<Justify>>,
+  pub(crate) wrap: Option<Prop<bool>>,
+  pub(crate) reverse: Option<Prop<bool>>,
 }
 
 pub(crate) struct TextProps {
@@ -289,8 +291,8 @@ macro_rules! flex_widget {
   ($name:ident, $column:literal, $doc:literal) => {
     #[doc = $doc]
     ///
-    /// `gap`, `padding`, `align` and `justify` change the layout. Each
-    /// takes a value or a closure.
+    /// `gap`, `padding`, `align`, `justify`, `wrap` and `reverse` change
+    /// the layout. Each takes a value or a closure.
     pub struct $name {
       flex: FlexProps,
       style: Option<Prop<Style>>,
@@ -309,6 +311,8 @@ macro_rules! flex_widget {
             padding_horizontal: None,
             align: None,
             justify: None,
+            wrap: None,
+            reverse: None,
           },
           style: None,
           children: Vec::new(),
@@ -343,6 +347,22 @@ macro_rules! flex_widget {
       /// Sets how children are placed along the direction.
       pub fn justify(mut self, justify: impl IntoProp<Justify>) -> Self {
         self.flex.justify = Some(justify.into_prop());
+        self
+      }
+
+      /// When on, children that don't fit start a new line, `gap` apart
+      /// like the children, and the lines pack at the start. Off by
+      /// default.
+      pub fn wrap(mut self, wrap: impl IntoProp<bool>) -> Self {
+        self.flex.wrap = Some(wrap.into_prop());
+        self
+      }
+
+      /// When on, a row runs right to left and a column bottom to top, so
+      /// [`Justify::Start`] packs children at the right or the bottom.
+      /// Tab still moves through them in child order. Off by default.
+      pub fn reverse(mut self, reverse: impl IntoProp<bool>) -> Self {
+        self.flex.reverse = Some(reverse.into_prop());
         self
       }
 

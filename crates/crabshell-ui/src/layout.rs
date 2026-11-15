@@ -15,8 +15,8 @@
 use cosmic_text::FontSystem;
 use taffy::prelude::{TaffyGridLine, TaffyGridSpan};
 use taffy::{
-  AlignItems, AvailableSpace, Dimension, Display, FlexDirection, GridPlacement, JustifyContent,
-  LengthPercentage, LengthPercentageAuto, Line, Overflow, Position,
+  AlignContent, AlignItems, AvailableSpace, Dimension, Display, FlexDirection, FlexWrap,
+  GridPlacement, JustifyContent, LengthPercentage, LengthPercentageAuto, Line, Overflow, Position,
 };
 
 use crate::geometry::{Affine, Point, Rect, through};
@@ -400,11 +400,18 @@ fn taffy_style(node: &Node, parent: Parent, size: crate::Size) -> taffy::Style {
       style.grid_template_rows = vec![taffy::prelude::fr(1.0)];
     }
     NodeKind::Flex(flex) => {
-      style.flex_direction = if flex.column {
-        FlexDirection::Column
-      } else {
-        FlexDirection::Row
+      style.flex_direction = match (flex.column, flex.reverse) {
+        (false, false) => FlexDirection::Row,
+        (false, true) => FlexDirection::RowReverse,
+        (true, false) => FlexDirection::Column,
+        (true, true) => FlexDirection::ColumnReverse,
       };
+      if flex.wrap {
+        style.flex_wrap = FlexWrap::Wrap;
+        // Lines pack at the start, as Qt's Flow does, rather than
+        // stretch to share a taller box, as CSS's do.
+        style.align_content = AlignContent::FLEX_START;
+      }
       if flex.grow {
         style.flex_grow = 1.0;
       }
@@ -415,9 +422,10 @@ fn taffy_style(node: &Node, parent: Parent, size: crate::Size) -> taffy::Style {
       };
       style.align_items = align_items(flex.align);
       style.justify_content = match flex.justify {
-        Justify::Start => JustifyContent::START,
+        // Flex starts and ends, which a reversed row swaps.
+        Justify::Start => JustifyContent::FLEX_START,
         Justify::Center => JustifyContent::CENTER,
-        Justify::End => JustifyContent::END,
+        Justify::End => JustifyContent::FLEX_END,
         Justify::SpaceBetween => JustifyContent::SPACE_BETWEEN,
         Justify::SpaceAround => JustifyContent::SPACE_AROUND,
         Justify::SpaceEvenly => JustifyContent::SPACE_EVENLY,

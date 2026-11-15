@@ -186,7 +186,7 @@ impl Window {
 impl Tree {
   /// The deepest button under `point`, in the coordinates of `id`'s
   /// parent, in `id`'s subtree, with the nodes on the way down to it,
-  /// itself included, pushed onto `path`. Later children are drawn on
+  /// itself included, pushed onto `path`. Children drawn later are on
   /// top, so they are tried first.
   fn hit(&self, id: NodeId, point: Point, path: &mut Vec<NodeId>) -> Option<NodeId> {
     let node = self.node(id)?;
@@ -209,7 +209,7 @@ impl Tree {
     let children = if node.clips() && !inside.contains(point) {
       Vec::new()
     } else {
-      self.taffy.children(id).unwrap_or_default()
+      self.drawn_children(id)
     };
     path.push(id);
     if let Some(hit) = children
@@ -453,8 +453,8 @@ impl Tree {
     if !node.inner_bounds.contains(point) {
       return None;
     }
-    let children = self.taffy.children(id).unwrap_or_default();
-    children
+    self
+      .drawn_children(id)
       .into_iter()
       .rev()
       .find_map(|child| self.scroll_view_at(child, point))
