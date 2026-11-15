@@ -37,6 +37,7 @@ use crate::events::{self, Event, Listener};
 use crate::focus_grab::FocusGrabs;
 use crate::foreign_toplevels::Foreign;
 use crate::global_shortcuts::GlobalShortcuts;
+use crate::hyprland_surface::HyprlandSurfaces;
 use crate::idle::Idle;
 use crate::keyboard::SeatKeyboard;
 use crate::lock::Locks;
@@ -339,6 +340,8 @@ pub struct Platform {
   pub(crate) global_shortcuts: GlobalShortcuts,
   /// The windows' focus grabs.
   pub(crate) focus_grabs: FocusGrabs,
+  /// Hyprland's surface manager, once a window asks.
+  pub(crate) hyprland_surfaces: HyprlandSurfaces,
   /// Every program's windows, once a watch asks.
   pub(crate) foreign: Foreign,
   /// The workspaces, once a watch asks.
@@ -450,6 +453,7 @@ impl Platform {
       shortcuts_inhibit,
       global_shortcuts,
       focus_grabs,
+      hyprland_surfaces: HyprlandSurfaces::default(),
       foreign: Foreign::default(),
       windowsets: Windowsets::default(),
       locks,
@@ -678,7 +682,9 @@ impl Platform {
       qh,
       stats,
       compositor,
+      registry,
       effects,
+      hyprland_surfaces,
       idle,
       shortcuts_inhibit,
       seats,
@@ -691,9 +697,10 @@ impl Platform {
       if entry.surface.is_some() && entry.window.take_surface_changed() {
         let config = entry.window.surface();
         if entry.window.is_popup() {
-          // A popup's one setting is its mask, which a frame commits.
+          // A popup's settings are its hints, which a frame commits.
           if let Some(surface) = &mut entry.surface {
             surface.send_mask(compositor, config.mask.as_ref());
+            surface.send_hyprland(hyprland_surfaces, registry, compositor, &entry.window, qh);
             surface.frames.pacing.redraw();
           }
         } else if !refused(entry, &config)
@@ -704,6 +711,7 @@ impl Platform {
           // `reconfigure`, whose commit applies them.
           surface.send_mask(compositor, config.mask.as_ref());
           surface.send_blur(effects, compositor, entry.window.blur().as_ref(), qh);
+          surface.send_hyprland(hyprland_surfaces, registry, compositor, &entry.window, qh);
           surface.reconfigure(&config);
         }
       }
@@ -730,10 +738,14 @@ impl Platform {
           pointer.show(entry.window.cursor());
         }
       }
-      // A new size, from a configure or a popup's layout, cuts the mask
-      // again; the frame drawn at that size commits it.
+      // A new size, from a configure or a popup's layout, cuts the masks
+      // again, as a new scale does the visible one; the frame drawn at
+      // that size commits them.
       if surface.mask_outdated() {
         surface.send_mask(compositor, entry.window.surface().mask.as_ref());
+      }
+      if surface.hyprland_outdated() {
+        surface.send_hyprland(hyprland_surfaces, registry, compositor, &entry.window, qh);
       }
       if surface.frames.pacing.should_draw(entry.window.has_damage()) {
         let started = Instant::now();

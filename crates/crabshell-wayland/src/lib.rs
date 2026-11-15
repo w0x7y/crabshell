@@ -81,6 +81,7 @@ mod foreign_toplevels;
 mod global_shortcuts;
 mod handlers;
 mod hyprland;
+mod hyprland_surface;
 mod idle;
 mod keyboard;
 mod lock;

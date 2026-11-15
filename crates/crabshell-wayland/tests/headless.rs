@@ -134,6 +134,10 @@ struct Knobs {
   adjust: Signal<Adjust>,
   /// The part of every [`menu`] that takes clicks.
   menu_mask: Signal<Option<Region>>,
+  /// The opacity the bar and every [`menu`] ask the compositor for.
+  opacity: Signal<f32>,
+  /// The part of the bar and every [`menu`] said to hold anything to see.
+  visible: Signal<Option<Region>>,
 }
 
 /// A popup with two entries: the first opens another menu beside it, and
@@ -142,6 +146,8 @@ fn menu(knobs: Knobs) -> PopupWindow {
   PopupWindow::new()
     .adjustment(move || knobs.adjust.get())
     .mask(move || knobs.menu_mask.get())
+    .compositor_opacity(move || knobs.opacity.get())
+    .visible_mask(move || knobs.visible.get())
     .style(
       Style::new()
         .background(Color::hex("#313244"))
@@ -195,6 +201,8 @@ fn bar(cx: &Cx, output: &str, knobs: Knobs) -> Window {
     .inhibit_shortcuts(move || knobs.inhibit.get())
     .shortcuts_inhibited(knobs.inhibited)
     .focus_grab(knobs.grab)
+    .compositor_opacity(move || knobs.opacity.get())
+    .visible_mask(move || knobs.visible.get())
     .on_key(move |_, event| {
       knobs.keys.update(|keys| keys.push(event.clone()));
       false
@@ -329,6 +337,8 @@ impl Shell {
       grab: cx.signal(false),
       adjust: cx.signal(Adjust::FLIP | Adjust::SLIDE),
       menu_mask: cx.signal(None),
+      opacity: cx.signal(1.0),
+      visible: cx.signal(None),
     };
     let mut event_loop = sway.connect();
     let built = Rc::new(RefCell::new(Vec::new()));
@@ -931,6 +941,80 @@ fn a_focus_grab_without_hyprland_is_logged_once_and_left_alone() {
     1,
     "{text}"
   );
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_compositor_opacity_and_visible_mask_without_hyprland_log_once_and_change_nothing() {
+  // Sway lacks hyprland-surface-v1.
+  let (logs, _logging) = capture_logs();
+  let sway = Sway::start();
+  let mut menus = Menus::start(&sway, "1.5");
+  menus.shell.runtime.flush();
+  let nodes = menus.shell.runtime.node_count();
+  let knobs = menus.shell.knobs;
+  knobs.opacity.set(0.5);
+  knobs.visible.set(Some(Region::rect(0, 0, 100, 30)));
+  let cx = Cx::new(menus.shell.runtime.new_owner());
+  let floating = FloatingWindow::new()
+    .title("crabshell-faded")
+    .compositor_opacity(0.25)
+    .visible_mask(Some(Region::rect(0, 0, 50, 50)))
+    .child(Text::new("faded"));
+  let platform = menus.shell.event_loop.platform();
+  let id = platform.add_window(Window::floating(&cx, floating));
+  run_until(
+    &mut menus.shell.event_loop,
+    "the floating window",
+    |platform| {
+      platform
+        .window_info(id)
+        .is_some_and(|info| info.commits > 0)
+    },
+  );
+  settle(&mut menus.shell.event_loop);
+  assert!(logs.text().contains("lacks hyprland-surface-v1"));
+  // Sway shows the bar as drawn.
+  let platform = menus.shell.event_loop.platform();
+  let snapshot = platform.snapshot(menus.bar).expect("the bar draws");
+  assert_matches("faded-bar@1.5", &sway.screenshot("HEADLESS-1"), &snapshot);
+  let menu = menus.open_from_bar();
+
+  // Changes, a new scale and the defaults again log nothing more, and
+  // every window still draws.
+  knobs.opacity.set(0.75);
+  sway.msg(&["output", "HEADLESS-1", "scale", "2"]);
+  settle(&mut menus.shell.event_loop);
+  knobs.opacity.set(1.0);
+  knobs.visible.set(None);
+  let before = menus.info(menus.bar).commits;
+  knobs.label.set(String::from("still drawing"));
+  run_until(
+    &mut menus.shell.event_loop,
+    "a frame with the new label",
+    |platform| {
+      platform
+        .window_info(menus.bar)
+        .is_some_and(|info| info.commits > before)
+    },
+  );
+  let text = logs.text();
+  assert_eq!(
+    text.matches("lacks hyprland-surface-v1").count(),
+    1,
+    "{text}"
+  );
+
+  // The menu and the floating window go, and so does all they made.
+  sway.msg(&["output", "HEADLESS-1", "scale", "1.5"]);
+  settle(&mut menus.shell.event_loop);
+  menus.click_entry(menu, 1);
+  menus.wait_for("the menu to close", <[_]>::is_empty);
+  menus.shell.event_loop.platform().remove_window(id);
+  cx.owner().dispose();
+  settle(&mut menus.shell.event_loop);
+  menus.shell.runtime.flush();
+  assert_eq!(menus.shell.runtime.node_count(), nodes);
 }
 
 /// A bar that takes the keyboard, on HEADLESS-1 at scale 1, and a

@@ -71,6 +71,13 @@ impl Platform {
           surface.send_mask(&self.compositor, entry.window.surface().mask.as_ref());
           let blur = entry.window.blur();
           surface.send_blur(&mut self.effects, &self.compositor, blur.as_ref(), &self.qh);
+          surface.send_hyprland(
+            &mut self.hyprland_surfaces,
+            &self.registry,
+            &self.compositor,
+            &entry.window,
+            &self.qh,
+          );
         }
         if !config.shown {
           self.windows.remove_popups_of(id);

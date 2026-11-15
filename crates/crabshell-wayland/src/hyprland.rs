@@ -29,3 +29,4 @@ hyprland_protocol!(
   "protocols/hyprland/hyprland-global-shortcuts-v1.xml"
 );
 hyprland_protocol!(focus_grab, "protocols/hyprland/hyprland-focus-grab-v1.xml");
+hyprland_protocol!(surface, "protocols/hyprland/hyprland-surface-v1.xml");

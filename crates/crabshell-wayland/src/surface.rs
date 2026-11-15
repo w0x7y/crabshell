@@ -193,6 +193,13 @@ pub(crate) struct Surface {
   pub(crate) inhibitor: Option<crate::idle::Inhibitor>,
   /// The shortcuts inhibitor, while the window asks for one.
   pub(crate) shortcuts_inhibitor: Option<crate::shortcuts_inhibit::ShortcutsInhibitor>,
+  /// Hyprland's object, once the window asked for a compositor opacity
+  /// or a visible mask.
+  pub(crate) hyprland: Option<crate::hyprland_surface::HyprlandSurface>,
+  /// What Hyprland was last told.
+  pub(crate) hyprland_shown: crate::hyprland_surface::Shown,
+  /// The size and scale the visible mask was last cut at.
+  pub(crate) hyprland_cut: Option<((u32, u32), Scale)>,
 }
 
 impl Surface {
@@ -221,6 +228,9 @@ impl Surface {
       blur_sent: None,
       inhibitor: None,
       shortcuts_inhibitor: None,
+      hyprland: None,
+      hyprland_shown: crate::hyprland_surface::Shown::default(),
+      hyprland_cut: None,
     }
   }
 
