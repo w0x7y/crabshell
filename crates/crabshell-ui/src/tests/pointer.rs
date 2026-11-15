@@ -1,5 +1,5 @@
-//! Pointer input added in Phase 15: both scroll axes, side buttons and
-//! cursors.
+//! Pointer input added in Phase 15: release, double click, both scroll
+//! axes, side buttons and cursors.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -30,6 +30,86 @@ fn square() -> Icon {
 fn one(h: &mut Harness, button: Button) -> Window {
   let row = Row::new().align(Align::Start).child(button);
   h.window(h.panel().child(row), 200.0, 30.0)
+}
+
+/// A left press and release at the given times.
+fn click_at(window: &Window, time: u32) {
+  window.pointer_button_at(PointerButton::Left, true, time);
+  window.pointer_button_at(PointerButton::Left, false, time + 50);
+}
+
+#[test]
+fn release_runs_before_click_and_wherever_the_pointer_is() {
+  let mut h = Harness::new();
+  let log = log();
+  let window = one(
+    &mut h,
+    Button::new(square())
+      .on_release(note(&log, "release"))
+      .on_click(note(&log, "click")),
+  );
+  window.pointer_motion(Point::new(10.0, 10.0));
+  click_at(&window, 0);
+  assert_eq!(*log.borrow(), ["release", "click"]);
+  // Released away from the button: no click, but still the release.
+  window.pointer_button_at(PointerButton::Left, true, 1000);
+  window.pointer_motion(Point::new(100.0, 10.0));
+  window.pointer_button_at(PointerButton::Left, false, 1100);
+  assert_eq!(*log.borrow(), ["release", "click", "release"]);
+  // Other buttons don't release it.
+  window.pointer_motion(Point::new(10.0, 10.0));
+  window.pointer_button_at(PointerButton::Right, true, 2000);
+  window.pointer_button_at(PointerButton::Right, false, 2050);
+  assert_eq!(log.borrow().len(), 3);
+}
+
+#[test]
+fn a_second_click_soon_and_close_is_a_double_click() {
+  let mut h = Harness::new();
+  let log = log();
+  let window = one(
+    &mut h,
+    Button::new(square())
+      .on_click(note(&log, "click"))
+      .on_double_click(note(&log, "double")),
+  );
+  window.pointer_motion(Point::new(10.0, 10.0));
+  click_at(&window, 1000);
+  // 400 ms after the first click's release, and 4 pixels away.
+  window.pointer_motion(Point::new(13.0, 12.0));
+  click_at(&window, 1350);
+  assert_eq!(*log.borrow(), ["click", "double"]);
+  // A third click starts over.
+  click_at(&window, 1500);
+  assert_eq!(*log.borrow(), ["click", "double", "click"]);
+  // Too late.
+  click_at(&window, 1951);
+  assert_eq!(log.borrow().len(), 4);
+  assert_eq!(log.borrow()[3], "click");
+  // Too far: 6 pixels.
+  window.pointer_motion(Point::new(19.0, 12.0));
+  click_at(&window, 2000);
+  assert_eq!(log.borrow()[4], "click");
+  // Times count on from where they wrap around.
+  window.pointer_motion(Point::new(10.0, 10.0));
+  click_at(&window, u32::MAX - 100);
+  click_at(&window, 100);
+  assert_eq!(log.borrow()[6], "double");
+}
+
+#[test]
+fn without_a_double_click_handler_both_clicks_click() {
+  let mut h = Harness::new();
+  let clicks = Counter::default();
+  let counted = clicks.clone();
+  let window = one(
+    &mut h,
+    Button::new(square()).on_click(move |_| counted.hit()),
+  );
+  window.pointer_motion(Point::new(10.0, 10.0));
+  click_at(&window, 0);
+  click_at(&window, 100);
+  assert_eq!(clicks.get(), 2);
 }
 
 #[test]

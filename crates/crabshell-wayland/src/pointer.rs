@@ -19,8 +19,8 @@ pub(crate) enum Input {
   Motion(Point),
   /// The pointer left.
   Leave,
-  /// A button went down (`true`) or up.
-  Button(PointerButton, bool),
+  /// A button went down (`true`) or up, at this time in milliseconds.
+  Button(PointerButton, bool, u32),
   /// Scrolling on either axis, or its end.
   Scroll(Wheel),
 }
@@ -34,8 +34,8 @@ pub(crate) fn inputs(kind: &PointerEventKind, (x, y): (f64, f64)) -> Vec<Input> 
       point(x, y).map(Input::Motion).into_iter().collect()
     }
     PointerEventKind::Leave { .. } => vec![Input::Leave],
-    PointerEventKind::Press { button, .. } => button_input(*button, true),
-    PointerEventKind::Release { button, .. } => button_input(*button, false),
+    PointerEventKind::Press { button, time, .. } => button_input(*button, true, *time),
+    PointerEventKind::Release { button, time, .. } => button_input(*button, false, *time),
     PointerEventKind::Axis {
       horizontal,
       vertical,
@@ -52,7 +52,7 @@ fn point(x: f64, y: f64) -> Option<Point> {
   (x.is_finite() && y.is_finite()).then(|| Point::new(x as f32, y as f32))
 }
 
-fn button_input(button: u32, pressed: bool) -> Vec<Input> {
+fn button_input(button: u32, pressed: bool, time: u32) -> Vec<Input> {
   let button = match button {
     BTN_LEFT => PointerButton::Left,
     BTN_RIGHT => PointerButton::Right,
@@ -61,7 +61,7 @@ fn button_input(button: u32, pressed: bool) -> Vec<Input> {
     BTN_EXTRA | BTN_FORWARD => PointerButton::Forward,
     _ => return Vec::new(),
   };
-  vec![Input::Button(button, pressed)]
+  vec![Input::Button(button, pressed, time)]
 }
 
 /// A frame's scrolling on both axes. A wheel reports `axis_value120`, or
@@ -111,7 +111,7 @@ pub(crate) fn apply(window: &Window, input: Input) -> CursorShape {
   match input {
     Input::Motion(position) => return window.pointer_motion(position),
     Input::Leave => window.pointer_leave(),
-    Input::Button(button, pressed) => window.pointer_button(button, pressed),
+    Input::Button(button, pressed, time) => window.pointer_button_at(button, pressed, time),
     Input::Scroll(wheel) => window.pointer_scroll(wheel),
   }
   window.cursor()

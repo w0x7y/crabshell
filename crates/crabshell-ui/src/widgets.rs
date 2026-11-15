@@ -849,10 +849,26 @@ impl Button {
     self
   }
 
+  /// Runs `handler` when the left button comes up after going down on
+  /// this button, wherever the pointer is by then, before `on_click`.
+  pub fn on_release(mut self, handler: impl Fn(&Cx) + 'static) -> Button {
+    self.button.handlers.release = Some(Rc::new(Handler::new(handler)));
+    self
+  }
+
   /// Runs `handler` when the left button is pressed and released over this
-  /// button.
+  /// button, unless that made a double click.
   pub fn on_click(mut self, handler: impl Fn(&Cx) + 'static) -> Button {
     self.button.handlers.click = Some(Rc::new(Handler::new(handler)));
+    self
+  }
+
+  /// Runs `handler` instead of a second `on_click` when a click comes
+  /// within 400 ms and 5 logical pixels of the one before, as Qt's
+  /// defaults say. A third click starts over. Without it, every click
+  /// runs `on_click`.
+  pub fn on_double_click(mut self, handler: impl Fn(&Cx) + 'static) -> Button {
+    self.button.handlers.double_click = Some(Rc::new(Handler::new(handler)));
     self
   }
 

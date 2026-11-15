@@ -1,5 +1,5 @@
-//! Pointer input: hit testing, hover and pressed state, scrolling and
-//! calling button handlers.
+//! Pointer input: hit testing, hover and pressed state, double clicks,
+//! scrolling and calling button handlers.
 //!
 //! The platform turns `wl_pointer` events into calls on [`Window`]. Handlers
 //! run after the window's tree is released, inside `catch_unwind`, so a
@@ -9,6 +9,8 @@ use std::any::Any;
 use std::cell::Cell;
 use std::panic::{self, AssertUnwindSafe};
 use std::rc::Rc;
+use std::sync::OnceLock;
+use std::time::Instant;
 
 use crabshell_reactive::{Signal, untrack};
 
@@ -24,6 +26,14 @@ const PIXELS_PER_STEP: f32 = 15.0;
 
 /// `axis_value120` units per mouse-wheel notch.
 const VALUE120_PER_STEP: i32 = 120;
+
+/// The most time between two clicks of a double click, in milliseconds:
+/// Qt's `mouseDoubleClickInterval`.
+const DOUBLE_CLICK_MS: u32 = 400;
+
+/// The farthest apart two clicks of a double click are, in logical
+/// pixels: Qt's `mouseDoubleClickDistance`.
+const DOUBLE_CLICK_DISTANCE: f32 = 5.0;
 
 /// A user's event handler, and whether it was disabled after panicking.
 pub(crate) struct Handler<F: ?Sized> {
@@ -49,6 +59,8 @@ pub(crate) type WheelHandler = Rc<Handler<dyn Fn(&Cx, Wheel)>>;
 pub(crate) struct Handlers {
   pub(crate) click: Option<ClickHandler>,
   pub(crate) press: Option<ClickHandler>,
+  pub(crate) release: Option<ClickHandler>,
+  pub(crate) double_click: Option<ClickHandler>,
   pub(crate) right_click: Option<ClickHandler>,
   pub(crate) middle_click: Option<ClickHandler>,
   pub(crate) back: Option<ClickHandler>,
@@ -203,6 +215,8 @@ pub enum CursorShape {
 struct Press {
   id: NodeId,
   button: PointerButton,
+  /// Where it went down, in window coordinates.
+  at: Point,
 }
 
 /// Where the pointer is and what it is doing.
@@ -216,6 +230,9 @@ pub(crate) struct Pointer {
   inside: Vec<(NodeId, Signal<bool>)>,
   /// The button a pointer button went down on, until it comes up.
   pressed: Option<Press>,
+  /// The last left click, with the time it came up and where it went
+  /// down, which a second one may make a double click.
+  last_click: Option<(NodeId, u32, Point)>,
   /// Scrolling that hasn't added up to a whole step yet.
   wheel: i32,
   pixels: f32,
@@ -245,6 +262,12 @@ impl Pointer {
     {
       self.pressed = None;
     }
+    if self
+      .last_click
+      .is_some_and(|(id, _, _)| removed.contains(&id))
+    {
+      self.last_click = None;
+    }
   }
 }
 
@@ -266,6 +289,14 @@ impl Tree {
   }
 }
 
+/// Milliseconds on a clock of this process, for events that come without
+/// the compositor's time.
+fn now_ms() -> u32 {
+  static START: OnceLock<Instant> = OnceLock::new();
+  // Wraps after 49 days, as `wl_pointer`'s times do.
+  START.get_or_init(Instant::now).elapsed().as_millis() as u32
+}
+
 impl Window {
   /// The pointer entered the window or moved, to `position` in logical
   /// pixels. Returns the cursor to show.
@@ -281,11 +312,21 @@ impl Window {
     borrow(&self.tree).leave();
   }
 
-  /// A pointer button went down or up. Releasing it over the button it
-  /// went down on runs that button's `on_click`, `on_right_click`,
-  /// `on_middle_click`, `on_back` or `on_forward`.
+  /// A pointer button went down or up, now. See
+  /// [`pointer_button_at`](Self::pointer_button_at).
   pub fn pointer_button(&self, button: PointerButton, pressed: bool) {
-    let calls = borrow(&self.tree).button(button, pressed);
+    self.pointer_button_at(button, pressed, now_ms());
+  }
+
+  /// A pointer button went down or up at `time`, in milliseconds as
+  /// `wl_pointer.button` counts them, which double clicks are timed by.
+  /// Releasing the left button runs `on_release` of the button it went
+  /// down on, then, over that button still, its `on_click` or
+  /// `on_double_click`. The other buttons run `on_right_click`,
+  /// `on_middle_click`, `on_back` or `on_forward` when released over the
+  /// button they went down on.
+  pub fn pointer_button_at(&self, button: PointerButton, pressed: bool, time: u32) {
+    let calls = borrow(&self.tree).button(button, pressed, time);
     run_all(calls);
   }
 
@@ -318,6 +359,10 @@ fn run_all(calls: Vec<Call>) {
   for call in calls {
     call.run();
   }
+}
+
+fn distance(a: Point, b: Point) -> f32 {
+  (a.x - b.x).hypot(a.y - b.y)
 }
 
 impl Tree {
@@ -480,19 +525,23 @@ impl Tree {
     }
   }
 
-  fn button(&mut self, button: PointerButton, pressed: bool) -> Vec<Call> {
+  fn button(&mut self, button: PointerButton, pressed: bool, time: u32) -> Vec<Call> {
     if pressed {
       self.press(button)
     } else {
-      self.release(button)
+      self.release(button, time)
     }
   }
 
   fn press(&mut self, button: PointerButton) -> Vec<Call> {
-    let (None, Some(id)) = (self.pointer.pressed, self.pointer.hovered) else {
+    let (None, Some(id), Some(at)) = (
+      self.pointer.pressed,
+      self.pointer.hovered,
+      self.pointer.position,
+    ) else {
       return Vec::new();
     };
-    self.set_pressed(Some(Press { id, button }));
+    self.set_pressed(Some(Press { id, button, at }));
     if button != PointerButton::Left {
       return Vec::new();
     }
@@ -500,22 +549,45 @@ impl Tree {
     self.call(id, Action::Press).into_iter().collect()
   }
 
-  fn release(&mut self, button: PointerButton) -> Vec<Call> {
+  fn release(&mut self, button: PointerButton, time: u32) -> Vec<Call> {
     let Some(press) = self.pointer.pressed.filter(|press| press.button == button) else {
       return Vec::new();
     };
+    let mut calls = Vec::new();
+    if button == PointerButton::Left {
+      calls.extend(self.call(press.id, Action::Release));
+    }
     self.set_pressed(None);
     if self.pointer.hovered != Some(press.id) {
-      return Vec::new();
+      return calls;
     }
     let action = match button {
-      PointerButton::Left => Action::Click,
+      PointerButton::Left => self.left_click(press.id, time, press.at),
       PointerButton::Right => Action::RightClick,
       PointerButton::Middle => Action::MiddleClick,
       PointerButton::Back => Action::Back,
       PointerButton::Forward => Action::Forward,
     };
-    self.call(press.id, action).into_iter().collect()
+    calls.extend(self.call(press.id, action));
+    calls
+  }
+
+  /// A left click on `id`, coming up at `time` after going down at `at`:
+  /// a double click if it has `on_double_click` and the click before was
+  /// close enough in time and place.
+  fn left_click(&mut self, id: NodeId, time: u32, at: Point) -> Action {
+    let close = self.pointer.last_click.is_some_and(|(last, then, place)| {
+      last == id
+        && time.wrapping_sub(then) <= DOUBLE_CLICK_MS
+        && distance(place, at) <= DOUBLE_CLICK_DISTANCE
+    });
+    if close && self.has(id, |h| h.double_click.is_some()) {
+      self.pointer.last_click = None;
+      Action::DoubleClick
+    } else {
+      self.pointer.last_click = Some((id, time, at));
+      Action::Click
+    }
   }
 
   /// The pointer left: a held button lets go without a click, and
@@ -714,6 +786,8 @@ enum Scrolled {
 enum Action {
   Click,
   Press,
+  Release,
+  DoubleClick,
   RightClick,
   MiddleClick,
   Back,
@@ -748,6 +822,8 @@ impl Call {
         match self.action {
           Action::Click => plain(&h.click, "on_click"),
           Action::Press => plain(&h.press, "on_press"),
+          Action::Release => plain(&h.release, "on_release"),
+          Action::DoubleClick => plain(&h.double_click, "on_double_click"),
           Action::RightClick => plain(&h.right_click, "on_right_click"),
           Action::MiddleClick => plain(&h.middle_click, "on_middle_click"),
           Action::Back => plain(&h.back, "on_back"),

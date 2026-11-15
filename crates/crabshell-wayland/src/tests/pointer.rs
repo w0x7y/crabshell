@@ -69,27 +69,27 @@ fn positions_buttons_and_leaving() {
   );
   assert_eq!(
     inputs(&press(BTN_LEFT), at),
-    [Input::Button(PointerButton::Left, true)]
+    [Input::Button(PointerButton::Left, true, 7)]
   );
   assert_eq!(
     inputs(&release(BTN_RIGHT), at),
-    [Input::Button(PointerButton::Right, false)]
+    [Input::Button(PointerButton::Right, false, 9)]
   );
   assert_eq!(
     inputs(&press(BTN_MIDDLE), at),
-    [Input::Button(PointerButton::Middle, true)]
+    [Input::Button(PointerButton::Middle, true, 7)]
   );
   // Both names Linux has for each side button.
   for back in [BTN_SIDE, BTN_BACK] {
     assert_eq!(
       inputs(&press(back), at),
-      [Input::Button(PointerButton::Back, true)]
+      [Input::Button(PointerButton::Back, true, 7)]
     );
   }
   for forward in [BTN_EXTRA, BTN_FORWARD] {
     assert_eq!(
       inputs(&release(forward), at),
-      [Input::Button(PointerButton::Forward, false)]
+      [Input::Button(PointerButton::Forward, false, 9)]
     );
   }
   assert_eq!(inputs(&press(BTN_TASK), at), []);
