@@ -907,7 +907,9 @@ impl Tree {
         return Change::Layout;
       }
       // A node not yet drawn shows its style at once.
-      if let Some(transition) = after.transition.filter(|transition| transition.ms > 0)
+      if let Some(transition) = after
+        .transition
+        .filter(|transition| !transition.is_instant())
         && node.rect.is_some()
       {
         node.fades += 1;

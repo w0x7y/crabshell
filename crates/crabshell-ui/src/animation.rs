@@ -7,7 +7,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::rc::Rc;
 use std::time::Instant;
 
-use crabshell_reactive::{ReadSignal, untrack};
+use crabshell_reactive::{ReadSignal, Signal, untrack};
 
 use crate::cx::Cx;
 use crate::geometry::Point;
@@ -196,22 +196,25 @@ fn bezier(x: f32, (x0, y0): (f32, f32), segment: [f32; 6]) -> f32 {
   at(y0, y1, y2, y3, (low + high) / 2.0)
 }
 
-/// How long an animation takes and how it moves. Copy it into styles and
-/// constants like a color.
+/// How long an animation takes, how it moves, and how long it waits
+/// first. Copy it into styles and constants like a color.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Transition {
   /// The time it takes, in milliseconds. 0 jumps straight to the end.
   pub ms: u32,
   /// How it moves.
   pub easing: Easing,
+  /// How long it waits before it moves, in milliseconds.
+  pub delay: u32,
 }
 
 impl Transition {
-  /// A transition of `ms` milliseconds, easing out.
+  /// A transition of `ms` milliseconds, easing out, with no delay.
   pub const fn new(ms: u32) -> Transition {
     Transition {
       ms,
       easing: Easing::OutCubic,
+      delay: 0,
     }
   }
 
@@ -220,13 +223,26 @@ impl Transition {
     Transition { easing, ..self }
   }
 
+  /// The same transition waiting `ms` milliseconds before it moves.
+  pub const fn delay(self, ms: u32) -> Transition {
+    Transition { delay: ms, ..self }
+  }
+
+  /// Whether it takes no time at all, so the new value shows at once.
+  pub(crate) fn is_instant(self) -> bool {
+    self.ms == 0 && self.delay == 0
+  }
+
   /// How far along an animation that started at `start` is at `now`,
-  /// eased, and whether it has ended.
+  /// eased, and whether it has ended. It stays at 0 through the delay.
   pub(crate) fn progress(self, start: Instant, now: Instant) -> (f32, bool) {
+    let elapsed = now.saturating_duration_since(start).as_secs_f32() * 1000.0 - self.delay as f32;
+    if elapsed < 0.0 {
+      return (0.0, false);
+    }
     if self.ms == 0 {
       return (1.0, true);
     }
-    let elapsed = now.saturating_duration_since(start).as_secs_f32() * 1000.0;
     let t = elapsed / self.ms as f32;
     if t >= 1.0 {
       (1.0, true)
@@ -353,11 +369,64 @@ fn drop_isolated(label: &str, step: Step) {
   }
 }
 
+/// Runs `f`, a config's closure for the animation `label`, and logs a
+/// panic as that animation's, giving `None`.
+fn guarded<R>(label: &str, f: impl FnOnce() -> R) -> Option<R> {
+  match panic::catch_unwind(AssertUnwindSafe(f)) {
+    Ok(value) => Some(value),
+    Err(payload) => {
+      tracing::error!(
+        "animation {label} panicked and stops: {}",
+        panic_message(payload.as_ref())
+      );
+      None
+    }
+  }
+}
+
+/// Sets `signal` to `value` only when that changes it, since a set always
+/// tells its readers.
+fn set_changed<T: PartialEq + 'static>(signal: Signal<T>, value: T) {
+  if untrack(|| signal.try_with(|old| *old != value)) == Some(true) {
+    signal.try_set(value);
+  }
+}
+
+/// A value moving toward its target, from [`Cx::animation`]: a `Copy`
+/// handle to its value and to whether it moves.
+pub struct Animation<T: 'static> {
+  value: ReadSignal<T>,
+  running: ReadSignal<bool>,
+}
+
+impl<T> Clone for Animation<T> {
+  fn clone(&self) -> Self {
+    *self
+  }
+}
+
+impl<T> Copy for Animation<T> {}
+
+impl<T> Animation<T> {
+  /// The value, as [`Cx::animate`] gives it.
+  pub fn value(&self) -> ReadSignal<T> {
+    self.value
+  }
+
+  /// `true` from the moment a new target starts it, through its delay,
+  /// until it settles there. It turns `false` once per animation, so an
+  /// effect on it is the place for what follows.
+  pub fn running(&self) -> ReadSignal<bool> {
+    self.running
+  }
+}
+
 impl Cx {
   /// A value that follows `target`, moving to each new one over
   /// `transition` instead of jumping. It starts at `target`'s first value.
   /// A new target while it moves starts a new animation from where it is.
-  /// The animation goes when this context's owner does.
+  /// The animation goes when this context's owner does. It is
+  /// [`Cx::animation`]'s value.
   ///
   /// ```
   /// use crabshell_ui::{Cx, Transition};
@@ -371,17 +440,65 @@ impl Cx {
   #[track_caller]
   pub fn animate<T: Animate>(
     &self,
-    mut target: impl FnMut() -> T + 'static,
+    target: impl FnMut() -> T + 'static,
     transition: Transition,
   ) -> ReadSignal<T> {
-    let label: Rc<str> = format!("cx.animate at {}", std::panic::Location::caller()).into();
+    self.follow("cx.animate", target, transition).value
+  }
+
+  /// A value that follows `target` as [`Cx::animate`]'s does, and whether
+  /// it moves. A panic in `target` is logged with this call's place, and
+  /// the value stays where it was.
+  ///
+  /// ```
+  /// use crabshell_ui::{Cx, Transition};
+  ///
+  /// fn slide_in_then_focus(cx: &Cx) {
+  ///     let open = cx.signal(false);
+  ///     let ready = cx.signal(false);
+  ///     let slide = cx.animation(move || if open.get() { 0.0 } else { -200.0 }, Transition::new(200));
+  ///     cx.effect(move || {
+  ///         if open.get() && !slide.running().get() {
+  ///             ready.set(true);
+  ///         }
+  ///     });
+  /// }
+  /// ```
+  #[track_caller]
+  pub fn animation<T: Animate>(
+    &self,
+    target: impl FnMut() -> T + 'static,
+    transition: Transition,
+  ) -> Animation<T> {
+    self.follow("cx.animation", target, transition)
+  }
+
+  /// [`Cx::animation`], logged as `what` at the caller's place.
+  #[track_caller]
+  fn follow<T: Animate>(
+    &self,
+    what: &str,
+    mut target: impl FnMut() -> T + 'static,
+    transition: Transition,
+  ) -> Animation<T> {
+    let label: Rc<str> = format!("{what} at {}", std::panic::Location::caller()).into();
     let first = untrack(&mut target);
     let value = self.signal(first.clone());
+    let running = self.signal(false);
     let mut last = first;
     // Bumped by each new target, so the animation it replaces stops.
     let generation = Rc::new(Cell::new(0_u64));
+    let mut broken = false;
     self.effect(move || {
-      let to = target();
+      if broken {
+        return;
+      }
+      let Some(to) = guarded(&label, &mut target) else {
+        broken = true;
+        generation.set(generation.get() + 1);
+        set_changed(running, false);
+        return;
+      };
       if to == last {
         return;
       }
@@ -392,10 +509,12 @@ impl Cx {
       let current = generation.get() + 1;
       generation.set(current);
       // No time to take: the new value shows in this flush.
-      if transition.ms == 0 {
+      if transition.is_instant() {
         value.try_set(to);
+        set_changed(running, false);
         return;
       }
+      set_changed(running, true);
       let generation = Rc::clone(&generation);
       let mut started = start_time();
       start(
@@ -408,10 +527,17 @@ impl Cx {
           let (t, ended) = transition.progress(begun, now);
           let next = if ended { to.clone() } else { from.lerp(&to, t) };
           // A value whose owner is gone stops its animation.
-          value.try_set(next) && !ended
+          let kept = value.try_set(next);
+          if ended {
+            running.try_set(false);
+          }
+          kept && !ended
         }),
       );
     });
-    value.read_only()
+    Animation {
+      value: value.read_only(),
+      running: running.read_only(),
+    }
   }
 }

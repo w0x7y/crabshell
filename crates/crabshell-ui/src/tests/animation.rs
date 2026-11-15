@@ -341,6 +341,154 @@ fn a_panicking_animation_is_logged_and_dropped() {
   assert!(!animating());
 }
 
+const LINEAR: Transition = Transition::new(100).easing(Easing::Linear);
+
+#[test]
+fn a_delay_holds_the_value_then_it_moves() {
+  let h = Harness::new();
+  let target = h.cx.signal(0.0_f32);
+  let value = h.cx.animate(move || target.get(), LINEAR.delay(50));
+  h.runtime.flush();
+  target.set(100.0);
+  h.runtime.flush();
+  let start = Instant::now();
+  advance_animations(start);
+  assert!(advance_animations(start + Duration::from_millis(40)));
+  assert_eq!(value.get(), 0.0, "still waiting");
+  advance_animations(start + Duration::from_millis(100));
+  assert!(close(value.get(), 50.0), "{}", value.get());
+  assert!(!advance_animations(start + Duration::from_millis(150)));
+  assert_eq!(value.get(), 100.0);
+}
+
+#[test]
+fn a_new_target_during_the_delay_waits_its_own_delay() {
+  let h = Harness::new();
+  let target = h.cx.signal(0.0_f32);
+  let value = h.cx.animate(move || target.get(), LINEAR.delay(50));
+  h.runtime.flush();
+  target.set(100.0);
+  h.runtime.flush();
+  let start = Instant::now();
+  advance_animations(start);
+  advance_animations(start + Duration::from_millis(30));
+  target.set(200.0);
+  h.runtime.flush();
+  // The new one counts from the tick at 30 ms, so it waits until 80.
+  advance_animations(start + Duration::from_millis(70));
+  assert_eq!(value.get(), 0.0);
+  advance_animations(start + Duration::from_millis(130));
+  assert!(close(value.get(), 100.0), "{}", value.get());
+  assert!(!advance_animations(start + Duration::from_millis(180)));
+  assert_eq!(value.get(), 200.0);
+}
+
+#[test]
+fn a_zero_transition_with_a_delay_jumps_once_the_delay_is_over() {
+  let h = Harness::new();
+  let target = h.cx.signal(0.0_f32);
+  let value = h
+    .cx
+    .animate(move || target.get(), Transition::new(0).delay(50));
+  h.runtime.flush();
+  target.set(1.0);
+  h.runtime.flush();
+  assert_eq!(value.get(), 0.0, "not in the same flush");
+  let start = Instant::now();
+  advance_animations(start);
+  advance_animations(start + Duration::from_millis(49));
+  assert_eq!(value.get(), 0.0);
+  assert!(!advance_animations(start + Duration::from_millis(50)));
+  assert_eq!(value.get(), 1.0);
+}
+
+#[test]
+fn running_is_true_from_a_new_target_through_its_delay_until_it_settles() {
+  use std::cell::RefCell;
+  use std::rc::Rc;
+
+  let h = Harness::new();
+  let target = h.cx.signal(0.0_f32);
+  let slide = h.cx.animation(move || target.get(), LINEAR.delay(20));
+  let seen = Rc::new(RefCell::new(Vec::new()));
+  let log = Rc::clone(&seen);
+  let running = slide.running();
+  h.cx.effect(move || log.borrow_mut().push(running.get()));
+  h.runtime.flush();
+  assert_eq!(*seen.borrow(), [false]);
+
+  target.set(100.0);
+  h.runtime.flush();
+  assert!(running.get(), "true before the first tick");
+  let start = Instant::now();
+  advance_animations(start);
+  advance_animations(start + Duration::from_millis(10));
+  assert!(
+    running.get() && slide.value().get() == 0.0,
+    "and in the delay"
+  );
+  advance_animations(start + Duration::from_millis(70));
+  // A new target mid-flight keeps it running, with no false in between.
+  target.set(0.0);
+  h.runtime.flush();
+  advance_animations(start + Duration::from_millis(120));
+  h.runtime.flush();
+  assert!(running.get());
+  assert!(!advance_animations(start + Duration::from_millis(190)));
+  h.runtime.flush();
+  assert!(!running.get());
+  assert_eq!(slide.value().get(), 0.0);
+  assert_eq!(*seen.borrow(), [false, true, false], "one edge each way");
+
+  // A 0 ms transition never runs.
+  let jump = h.cx.animation(move || target.get(), Transition::new(0));
+  h.runtime.flush();
+  target.set(5.0);
+  h.runtime.flush();
+  assert!(!jump.running().get() && jump.value().get() == 5.0);
+}
+
+#[test]
+fn a_panicking_target_is_logged_with_its_call_site_and_only_that_animation_stops() {
+  let h = Harness::new();
+  let target = h.cx.signal(0.0_f32);
+  let broken = h.cx.animation(
+    move || {
+      let to = target.get();
+      assert!(to < 50.0, "target failure");
+      to
+    },
+    LINEAR,
+  );
+  let fine = h.cx.animation(move || target.get(), LINEAR);
+  h.runtime.flush();
+  target.set(10.0);
+  h.runtime.flush();
+  let start = Instant::now();
+  advance_animations(start);
+  advance_animations(start + Duration::from_millis(50));
+  let logs = capture_logs(|| {
+    target.set(100.0);
+    h.runtime.flush();
+  });
+  assert!(logs.contains("animation cx.animation at "), "{logs}");
+  assert!(logs.contains("tests/animation.rs"), "{logs}");
+  assert!(
+    logs.contains("panicked and stops: target failure"),
+    "{logs}"
+  );
+  assert!(!broken.running().get(), "it stops where it was");
+  advance_animations(start + Duration::from_millis(100));
+  assert!(close(broken.value().get(), 5.0), "{}", broken.value().get());
+  assert!(fine.running().get());
+  assert!(!advance_animations(start + Duration::from_millis(150)));
+  assert_eq!(fine.value().get(), 100.0);
+  // Later changes leave it be.
+  target.set(1.0);
+  h.runtime.flush();
+  assert!(!broken.running().get());
+}
+
 mod fades {
   use std::time::{Duration, Instant};
 
@@ -423,6 +571,47 @@ mod fades {
     h.frame(&window);
     assert!(!animating(), "changing to a style with no transition");
     assert_eq!(background(&window), None);
+  }
+
+  #[test]
+  fn a_fade_waits_out_its_delay() {
+    let mut h = hover_harness();
+    let row = Row::new().align(Align::Start).child(
+      Button::new(Icon::new("x").size(20))
+        .style(NORMAL)
+        .hover_style(HOVER.transition(FADE.delay(50))),
+    );
+    let window = h.window(h.panel().child(row), 200.0, 30.0);
+    window.pointer_motion(Point::new(10.0, 10.0));
+    let start = Instant::now();
+    advance_animations(start);
+    advance_animations(start + Duration::from_millis(40));
+    assert_eq!(background(&window), Some(Color::rgb(0, 0, 0)), "waiting");
+    advance_animations(start + Duration::from_millis(100));
+    assert_eq!(background(&window), Some(Color::rgb(100, 50, 0)));
+  }
+
+  #[test]
+  fn a_zero_fade_with_a_delay_changes_once_the_delay_is_over() {
+    let mut h = hover_harness();
+    let row = Row::new().align(Align::Start).child(
+      Button::new(Icon::new("x").size(20))
+        .style(NORMAL)
+        .hover_style(HOVER.transition(Transition::new(0).delay(50))),
+    );
+    let window = h.window(h.panel().child(row), 200.0, 30.0);
+    window.pointer_motion(Point::new(10.0, 10.0));
+    assert_eq!(
+      background(&window),
+      Some(Color::rgb(0, 0, 0)),
+      "not at once"
+    );
+    let start = Instant::now();
+    advance_animations(start);
+    advance_animations(start + Duration::from_millis(40));
+    assert_eq!(background(&window), Some(Color::rgb(0, 0, 0)));
+    assert!(!advance_animations(start + Duration::from_millis(50)));
+    assert_eq!(background(&window), Some(Color::rgb(200, 100, 0)));
   }
 
   #[test]
