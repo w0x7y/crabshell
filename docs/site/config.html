@@ -370,6 +370,38 @@ let offset = cx.animate(move || picked.get() as f32 * 44.0, Transition::new(250)
         <code>examples/effects.rs</code> puts it all together.
       </p>
 
+      <h2 id="motion">time and motion</h2>
+      <p>
+        <code>cx.after(delay, f)</code> runs <code>f</code> once and
+        <code>cx.interval(period, f)</code> runs it every period. each gives a
+        <code>Timer</code> you can <code>stop</code> and <code>restart</code>,
+        and its <code>running()</code> is a signal, so an osd can show while its
+        hide timer runs. <code>cx.animation</code> is
+        <code>cx.animate</code> with a <code>running()</code> signal to chain on
+        when it settles, <code>cx.cycle</code> repeats for spinners and pulses,
+        and <code>cx.spring</code> follows a number on a spring. a transition
+        can wait with <code>.delay(ms)</code>, and <code>Easing</code> has sine,
+        expo, back and the other usual curves, plus splines.
+      </p>
+      <pre class="code" data-lang="rust">
+const SPIN: Transition = Transition::new(1000).easing(Easing::Linear);
+
+let hide = cx.after(Duration::from_millis(1500), || {});
+hide.stop();
+cx.effect(move || { volume.get(); hide.restart(); });
+let turn = cx.cycle(move || busy.get(), SPIN);
+let icon = Icon::new("view-refresh").style(move || Style::new().rotate(turn.get() * 360.0));</pre>
+      <p>
+        <code>translate</code>, <code>scale</code>, <code>rotate</code> and
+        <code>origin</code> on a style move a widget where it is drawn and
+        clicked, never its layout, and they fade with the style's transition.
+        <code>.exit(duration)</code> after <code>children_keyed</code> keeps a
+        removed item on screen for that long while its
+        <code>cx.leaving()</code> is true, so it can slide or fade out. nothing
+        ticks while nothing moves. <code>examples/motion.rs</code> has an osd, a
+        spinner and toasts that slide in and out.
+      </p>
+
       <h2 id="services">services</h2>
       <div class="table">
         <table>

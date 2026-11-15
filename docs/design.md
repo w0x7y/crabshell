@@ -301,6 +301,17 @@ API rules settled in Phase 13, parity:
 - `AudioNode` and `AudioStream` add `volumes` and `channels`, each channel's volume and `AudioChannel` position, set with `set_sink_volumes`, `set_source_volumes` and `set_stream_volumes`. `cx.audio().peaks(target)` gives a `ReadSignal<Vec<f32>>` meter for a `PeakTarget`, a value or a closure, as Quickshell's `PwNodePeakMonitor`. A meter wakes the shell 25 times a second while its target plays, so build one only while it shows.
 - The prelude adds `OutputInfo`, `TrayCategory`, `PerformanceDegradation`, `BluetoothAdapterState`, `BluetoothDeviceState`, `CloseReason`, `PamError`, `Connectivity`, `ConnectionFailReason`, `WifiMode`, `WifiSecurity`, `SavedConnection`, `FileError`, `FileErrorKind`, `SocketServer`, `AudioChannel` and `PeakTarget`. Several of these, and the new fields and variants, change published types, so they ship as 0.3.
 
+API rules settled in Phase 14, time and motion:
+
+- `cx.after(delay, f)` runs `f` once after `delay`, and `cx.interval(period, f)` every `period`, the first time one period in. Each gives a `Timer`, a `Copy` handle: `stop()`, `restart()`, which counts again from now and runs a one-shot that fired again, and `running()`, a signal a binding can read. A timer runs from the moment it is made, so one that waits for a first change is stopped on the next line. It goes with the asking context.
+- `Easing` adds Sine, Quart, Quint, Expo, Circ and Back, each `In`, `Out` and `InOut`, and `Spline(&[[c1x, c1y, c2x, c2y, x, y], ...])`, Qt's `BezierSpline`, for curves of several segments such as Material 3's emphasized one.
+- `Transition::delay(ms)` waits before it moves, style fades included, and `Transition::alternate()` makes a cycle come back.
+- `cx.animation(target, transition)` gives an `Animation`, a `Copy` handle with `value()` and `running()`, which is true from a new target, through its delay, until it settles. An effect on `running()` is where whatever follows an animation goes, as Qt's `onFinished`. `cx.animate` is its `value()`.
+- `cx.cycle(running, transition)` gives eased progress from 0 to 1 that repeats while `running` is true, for spinners and pulses. `cx.spring(target, Spring::new(stiffness, damping))` follows an `f32` on a spring that keeps its speed when the target moves; the default is 700 and 0.9. `cx.frames(running)` gives the time since `running` turned true, updated each frame, as Qt's `FrameAnimation`.
+- `Style::translate(x, y)`, `scale(s)`, `rotate(degrees)` and `origin(x, y)` are `const`. They move a widget and everything inside it where it is drawn and hit, never the layout, and they fade with the `transition`. Popups and anything else anchored to a widget keep its laid-out rectangle.
+- `.exit(duration)` after `children_keyed` takes a value or a closure, read as each key leaves. The removed child stays for that long while `cx.leaving()`, a `ReadSignal<bool>`, is true, so its own `cx.animate` can move it out, and an exit of 0 removes it at once. A leaving child still takes input, so a handler can check `cx.leaving()`. To move a new child in, set a signal after making its `cx.animate`; the next flush starts the move.
+- The prelude adds `Timer`, `Animation`, `Spring` and `std::time::Duration`. The motion example shows them together. `Transition` has two new public fields, `delay` and `alternate`, and `Easing` new variants, so a 0.3 config that builds a `Transition` from its fields or matches every `Easing` no longer builds, and they ship as 0.4.
+
 ## Process model and reload
 
 Two processes run. The `crabshell` CLI, installed once per machine, is the supervisor. The shell is the user's own compiled binary, which links the `crabshell` library.
@@ -462,10 +473,11 @@ v0.1 shipped ten widgets, Phase 7 added five, Phase 10 one, and the phases after
 - Each property is either a layout property or a paint property. Text content, font, padding, gap, size and children are layout. Colors, background, gradient, border, opacity and radius are paint. A shadow reaches past its widget, so changing one lays the window out again to find the area it paints.
 - A binding that changes a paint property marks only its own widget for repaint. A layout change marks the whole window for layout, then every widget whose rectangle moved is repainted at both its old and new position.
 - When nothing is dirty there is no layout, no paint and no commit.
+- Translate, scale, rotate and origin are paint properties that move the area painted. A change repaints the old area and places the window again without taffy, which repaints the new one.
 
 ### Styles
 
-- `Style` has `background`, `gradient`, `shadow`, `color`, `font` (family, size, weight), `padding`, `radius`, `border` (width, color), `opacity`, `clip`, `width`, `height` and `transition`. Every field is optional, and an unset field falls back to the widget's default. `clip`, `width` and `height` are layout properties.
+- `Style` has `background`, `gradient`, `shadow`, `color`, `font` (family, size, weight), `padding`, `radius`, `border` (width, color), `opacity`, `clip`, `width`, `height`, `translate`, `scale`, `rotate`, `origin` and `transition`. Every field is optional, and an unset field falls back to the widget's default. `clip`, `width` and `height` are layout properties.
 - `Text` inherits `color` and `font` from the nearest ancestor that sets them. Nothing else inherits, and there are no selectors or classes.
 - Colors are sRGB with alpha. `Color::rgb`, `Color::rgba` and `Color::hex` are all `const fn`.
 
@@ -534,6 +546,15 @@ Rules settled while building `crabshell-ui` (Phase 13):
 - Padding is set per side. A row's or column's own padding wins on both sides of its axis, and a list fits its rows between its top and bottom padding.
 - A popup is the size of its content, in whole logical pixels and at least 1×1, and no larger than a smaller size the compositor configured it at; it still asks for its content's size.
 - A `compositor_opacity` outside 0 to 1 is clamped, and NaN reads as 1, logged once per window with its path. Popups carry the same window hints as panels but use only the mask, compositor opacity and visible mask. `f32` takes a plain value.
+
+Rules settled while building `crabshell-ui` (Phase 14):
+
+- `fire_timers(now)` runs the timers due at the call, earliest first, each with the table released, so a callback may stop, restart or make timers, itself included; one made during the call fires at a later one. An interval's late fire keeps the schedule, and after a stall longer than a period the next fire is one period from then. A period under 1 ms becomes 1 ms. A callback that panics is logged as `timer cx.interval at <file:line> in <path>` and stops, and `restart` runs it again. A timer whose context went is freed at the next `next_timer` or `fire_timers`, its callback dropped inside `catch_unwind`, and never arms the loop. `Owner::name` gives the nearest debug name for that line.
+- A spline that is empty, goes back in x, doesn't end at (1, 1) or holds a number that isn't finite moves linearly. A delay counts from the animation's time 0, and while it waits nothing is written or repainted; a 0 ms transition with a delay jumps when it ends. `running()` changes only on an edge. A panic in a target, a `running` closure or a config's own `lerp` is logged as `animation cx.<fn> at <file:line>`, stops that animation and leaves `running()` false.
+- A cycle's legs each take `ms`, and its delay comes once. Stopped, it finishes its round and rests at 0; started again before then, it never stops. A 0 ms cycle never moves. A spring steps by implicit Euler, at most 1 ms a step and 0.25 s a tick, rests within 0.001 of its target below 0.01 a second and snaps onto it, and jumps to a target or spring that isn't finite. Stopping `frames`, or a retarget, leaves one tick before the clock stops.
+- A widget is scaled and turned clockwise around its origin, the middle by default, then translated, and a child's transform composes with its parent's. A number that isn't finite counts as unset, a scale of 0 draws nothing and is never hit, and a negative scale also turns it upside down. The painted area is the bounding box of the transformed one, grown by a logical pixel at each transformed level. `NodeView::bounds` is in the parent's coordinates and `inner_bounds` in the node's own.
+- The pointer is mapped back through each transform. Children are searched within the subtree's area, so a child moved or overflowing outside its parent's box is hit where it is drawn, and a widget itself only inside its own box; a clip still cuts both. In 0.3 an overflowing child couldn't be clicked. Hover is checked again when the pointer moves and after a layout, never after a transform alone places the window, so a hover transform that moves its button off a still pointer stays hovered until the pointer moves. A text field tells input methods where its caret is drawn.
+- A leaving child stays right after the child before it in the last order, and a first one stays first. A key that comes back while leaving keeps its child and state, takes its new place and frees its exit's timer. Each leave gets a one-shot `cx.after` under a child owner of the item, so disposing the list frees every item and timer at once. An exit binding that panics is logged with the list's path, and the child goes at once. Every root `Cx` holds one `false` leaving signal that its contexts share.
 
 ## Rendering
 
@@ -615,6 +636,11 @@ Rules settled while building `crabshell-render` (Phase 8):
 - A gradient is laid out in buffer pixels and moved onto each tile, so tiles agree. A linear one takes CSS's angle, with its line long enough for the ends to meet the corners. A radial one is a circle from the middle to the farthest corner. A clear stop fades each side out in its neighbor's color, as CSS blends with the alpha applied. Nothing is dithered, so a subtle gradient across a wide bar shows steps.
 - A shadow is drawn under its box, so a translucent background shows it. A sharp one is a filled shape. A blurred one is a Gaussian of half the blur, worked out for each pixel in buffer pixels: the product of the error function on each axis away from the corners, and eight Gaussian-weighted rows near one. A corner smaller than the spread grows by less, as in CSS, so a square box keeps square corners.
 - A full draw of an 1880 pixel wide box with a 12 pixel blur at scale 2 takes 5.1 ms, 0.8 ms of it without the shadow.
+
+Rules settled while building `crabshell-render` (Phase 14):
+
+- A transformed node draws its subtree into a layer holding what lands in the tile, plus 2 pixels, in its own buffer pixels, then blends it in through the transform with bilinear filtering. Opacity shares that layer, and a clip is cut inside it, so the clip follows the turned shape. As with tiles, a curve cut at a layer's edge antialiases a few levels differently near tile edges, and a layer past 4 Mi pixels isn't drawn.
+- A turning 200×60 card with text draws in 1.51 ms a frame at scale 2, and the motion example's spinner in 0.2 ms.
 
 ## Wayland platform
 
@@ -789,6 +815,10 @@ Rules settled while building `crabshell-wayland` (Phase 13):
 - A mask is cut to the size after the layout. A floating window's new mask goes before its settings' commit, a popup's asks for a frame. Headless Sway passes a click outside a toplevel's or popup's input region to the surface below it.
 - `hyprland_surface_manager_v1` (hyprland-protocols v0.8.0, beside the other two) is bound at versions 1 to 2 the first time a window asks for anything but the defaults, and a surface gets its object then; without it, that is logged once, and version 1 has no visible regions, also logged once. The visible region is in buffer pixels, as the protocol says: grown by a logical pixel each way so curves' soft edges stay inside, cut to whole buffer pixels and to the buffer, and sent again on a new size or scale. An empty region is sent as none, which Hyprland reads as no hint. It passed a hand check on Hyprland 0.57.2 on 2026-11-15, at version 2: a fade blended the panel and a floating window with what is behind them, Hyprland skipped drawing outside the visible mask, the region was sent again in buffer pixels at scale 1.5, and hiding and showing a window three times made a new object each time with no protocol error.
 - A panel reconfigures layer-shell only when a layer-shell setting changes. A change to its mask, blur, compositor opacity or visible mask alone is sent before the next frame, which commits it, and a floating window commits its toplevel only when its own settings change; a hint that sends nothing commits nothing.
+
+Rules settled while building `crabshell-wayland` (Phase 14):
+
+- One calloop `Timer` serves every config timer. After each flush it is armed at the earliest deadline, moved when that changes and removed when none runs. Deadlines are monotonic, so they pause while the machine sleeps. A hand-driven `EventLoop::dispatch` arms a timer made outside the loop only after its first wait.
 
 ## Services
 
@@ -1151,6 +1181,22 @@ Measured on 2026-11-15 with `measure_the_counter_bar`, release builds on one 192
 | Lock example RSS, locked                          | 24.8 MiB        | 25.0 MiB       |
 | Idle wakeups, counter, desktop, overview and lock | 0               | 0              |
 
+### Phase 14 results
+
+Measured on 2026-11-15 with `measure_the_counter_bar`, release builds on one 1920×1080 headless Sway output at scale 1. "Before" is 6ee49eb, built in a second checkout, and both were measured one after the other while other builds ran, so first frames are noisy. Phase 14 adds code that runs only when a config asks for it, and one shared signal per root context.
+
+| Metric                                            | Before Phase 14 | After Phase 14 |
+| ------------------------------------------------- | --------------- | -------------- |
+| Counter example RSS                               | 16.9 MiB        | 17.0 MiB       |
+| Counter first frame                               | 9.9 ms          | 9.9 ms         |
+| v0.1 bar RSS                                      | 20.2 MiB        | 20.5 MiB       |
+| Desktop example RSS                               | 20.8 MiB        | 20.2 MiB       |
+| Overview example RSS, open                        | 19.6 MiB        | 19.7 MiB       |
+| Lock example RSS, locked                          | 24.8 MiB        | 24.9 MiB       |
+| Idle wakeups, counter, desktop, overview and lock | 0               | 0              |
+| Motion example, a spinner frame at scale 2        |                 | 0.2 ms         |
+| Motion example idle wakeups over 60 s             |                 | 0              |
+
 ## Phases
 
 Seven phases to v0.1, totaling 16 to 26 weeks of focused work, all guesses, then the phases in "Beyond v0.1". A phase is done only when its exit check passes. Phase 0 is a go/no-go gate for the whole project.
@@ -1213,26 +1259,28 @@ Phases 7 to 12 were released on 2026-11-15: every crate at 0.2.0 on crates.io, t
 
 Phase 13 passed on 2026-11-15 on the laptop, built in the commits from ed3a486 to 76a610b. Agents built seven steps in worktrees of their own: the services' status gaps, NetworkManager, I/O, audio, outputs and padding, popups and masks, and Hyprland's surface. Each was reviewed before its fixes went in, and the I/O step's fixes were reviewed again. Its exit check is the features page, which goes through all 149 Quickshell 0.3.2 types: 125 are built, 11 don't apply to a config written in Rust, and 13 are written down with a reason. Of those 13, 8 are partly built, such as `NMSettings` without `write`. The other 5 aren't built: the PipeWire link graph's four types, which the PulseAudio protocol doesn't carry, and `TransformWatcher`, as widget positions aren't exposed. fmt, clippy, the workspace tests and the wayland (71), crabshell (41) and Sway services (4) headless suites pass on the merged result. Hyprland's surface opacity and visible mask then passed a hand check on Hyprland 0.57.2, in a nested Hyprland on the maintainer's desktop. Gaps left for later: peak meters were tested on pipewire-pulse only, not a real PulseAudio; a half-open socket-server client that then hangs up keeps its place until a write fails or 5 s pass. Phase 13 was released on 2026-11-15 as 0.3.0 of every crate, tagged `v0.3.0`. It breaks 0.2 configs in these places: `PamResult::Error` holds a `kind` and a `message`; `Padding` has four sides; `OutputInfo` has new fields and no `Eq`; `Adjust::ALL` includes resizing; `NetworkState` has `Disconnecting`; and several structs have new public fields.
 
+Phase 14 passed on 2026-11-15 on the laptop, built in the commits from 744295b to e544883. Agents built five steps in worktrees of their own: timers, the animation work, transforms, exit transitions and the exit check. Each was reviewed before its fixes went in. Its exit check, in `crates/crabshell/tests/headless.rs`, runs the motion example on headless Sway with a private pipewire-pulse and session bus. With its OSD held up and a toast shown, it matches its goldens at scales 1, 1.25, 1.5, 1.75 and 2. A `pactl` volume change slides the OSD up from about 0.9 scale; it hides 1.5 s after the last change through one restarted `cx.after`, and once its slide-out ends it lets the pointer through. A program run over IPC turns the bar's spinner, which finishes its turn and rests once the program exits. A notification slides in and, once it expires, slides out over its exit, and everything it made is freed. Then the shell wakes nothing for 60 s. While the spinner turns at scale 2, a frame takes 0.2 ms to draw in a release build, repainting 38×38 pixels. A panicking timer is logged with its place while the shell runs on, which `a_panicking_timer_is_logged_with_its_place_and_the_shell_runs_on` checks. fmt, clippy, the workspace tests and the wayland (72) and crabshell (44) headless suites pass on the merged result. Gaps left for later phases, most of them found by writing the motion example: a timer runs from the moment it is made, so one that waits for a first change is stopped by hand; an animation has one transition, so a different curve in and out takes two; an exit's length is kept equal to the item's own animation by hand; `cx.spring` has no `running()`; `cx.process` can't wait idle, so a program run on demand needs a context per run; a leaving child keeps its space, so the ones after it jump when it goes, which displaced transitions in Phase 15 fix; an exiting list inside a leaving item sees only its own leaving; a screencopy view inside a transform captures at its laid-out size; the default spring's numbers weren't checked against Material's docs; and Elastic and Bounce curves stay out. Phase 14 isn't released yet. It ships as 0.4, which breaks 0.3 configs that build a `Transition` from its fields or match every `Easing`, and makes children that overflow their parent clickable.
+
 ### Phases 14 to 19: what configs take from Qt
 
 Phase 13 matched Quickshell's own types, but a Quickshell config is QML, and most of what it draws and animates comes from Qt. On 2026-11-15 a survey counted what five public configs use: caelestia's shell, end-4's illogical-impulse, noctalia-shell 4.7.7 (its last release on Quickshell, before it went native), DankMaterialShell and the maintainer's rime. It read Qt's and Quickshell's public docs and the configs' QML, never Quickshell's source. Phases 14 to 19 bring what they use, most used first. Each item keeps the four rules: a timer, a loop or a kinetic scroll is in the event loop only while it runs and gets an idle test, and every new callback runs inside `catch_unwind`. The exit checks below are first guesses, settled when each phase starts.
 
-**Phase 14, time and motion.**
+**Phase 14, time and motion.** Done; "Phase 14 passed" above says what was built and what was left.
 
 - `cx.after(duration, f)` and `cx.interval(duration, f)`, as handles that stop and restart, on a calloop `Timer` that is in the loop only while it runs. All five configs use `Timer`, for an OSD that hides itself, tooltip delays, debouncing and polling.
-- Sequences: a delay on a `Transition`, an `on_finished` callback, and loops that stop while hidden, for spinners and pulses.
+- Sequences: a delay on a `Transition`, a `running()` signal an effect can follow where Qt has `onFinished`, and cycles that stop when asked, for spinners and pulses.
 - More curves: a multi-segment spline usable in a `const`, which Material 3's emphasized curves need, plus Back, Sine, Expo, Quart, Quint and Circ. A spring that keeps its velocity when the target moves.
 - A per-frame signal on the animation clock, as `FrameAnimation` gives.
 - Exit transitions: `children_keyed` keeps a removed child painted while it animates out, then disposes it.
 - Translate, scale, rotate and their origin as paint properties of `Style`. The subtree draws into a layer, as opacity does, and is composited through a tiny-skia `Transform`. Damage is the transformed bounds, and hit testing maps the pointer back. A slide then no longer lays the window out each frame.
-- Exit check: an OSD that slides and scales in on a volume change and hides 1.5 s later through `cx.after`, a spinner while a process runs, and a dismissed notification sliding out. Goldens at all five scales, nothing woken for 60 s afterwards, panicking timer and `on_finished` callbacks logged with their paths, and the frame time of a rotating subtree at scale 2.
+- Exit check: an OSD that slides and scales in on a volume change and hides 1.5 s later through `cx.after`, a spinner while a process runs, and a dismissed notification sliding out. Goldens at all five scales, nothing woken for 60 s afterwards, panicking timer callbacks logged with their paths, and the frame time of a rotating subtree at scale 2.
 
 **Phase 15, layout, pointer and views.**
 
 - Layout through taffy, which already builds with its grid feature: per-child grow, shrink and basis, min, max and preferred sizes, `align_self`, absolute positions inside a `Stack` with `z`, a `Grid`, and rows that wrap. `visible` that frees the space, `enabled` that turns off a `Button`'s handlers, hover style and Tab stop, and right-to-left rows.
 - Pointer: the position as a signal the widget writes back, release, double-click, long press, drag with a pointer grab, horizontal and touchpad scroll with pixel deltas, the back and forward buttons, every `wp_cursor_shape_v1` shape, and a touch tap as a click.
 - Focus set from code, as `TextInput` has, and a widget's rectangle as a signal written after layout, which covers `TransformWatcher` and `QsWindow`'s item mapping.
-- Views: a `Slider` that writes back a `Signal<f32>`, kinetic scrolling with overshoot that sleeps at rest, a scroll bar, a highlight that follows the current row, `ListView` rows of different heights, horizontal lists, and a grid view for app and wallpaper pickers. Drag and drop inside the shell comes once drag works.
+- Views: a `Slider` that writes back a `Signal<f32>`, kinetic scrolling with overshoot that sleeps at rest, a scroll bar, a highlight that follows the current row, `ListView` rows of different heights, horizontal lists, and a grid view for app and wallpaper pickers. Displaced transitions, so the children after one that is added or leaves move into place instead of jumping. Drag and drop inside the shell comes once drag works.
 - Exit check: a control-center example on headless Sway where a slider dragged by a virtual pointer moves the volume and `pactl` agrees, a calendar grid, wrapping chips and a highlight that follows the hovered row. Goldens at all five scales, and a kinetic scroll that comes to rest, then nothing woken for 60 s.
 
 **Phase 16, drawing and effects.**

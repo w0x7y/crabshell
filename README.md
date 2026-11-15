@@ -2,7 +2,7 @@
 
 # crabshell
 
-a rust replacement for quickshell: your whole desktop shell is a rust crate, and everything quickshell does, crabshell will do. v0.3 is on crates.io. it has a bar for sway and other wlroots compositors, floating windows and keyboard input, animations and blur, desktop services like bluetooth, networks, media players and notifications, launchers, a lock screen, greeter and polkit agent, and hyprland's workspaces, monitors and windows. and it has been checked against every quickshell type: of its 149 types, 125 are built and the rest are written down with a reason. next, phases 14 to 19 bring what quickshell configs take from qt itself, like timers, transforms, drawing, styled text and http. [the roadmap](docs/site/roadmap.html) shows each phase, and [the features page](docs/site/features.html) goes through every quickshell type
+a rust replacement for quickshell: your whole desktop shell is a rust crate, and everything quickshell does, crabshell will do. v0.3 is on crates.io. it has a bar for sway and other wlroots compositors, floating windows and keyboard input, animations and blur, desktop services like bluetooth, networks, media players and notifications, launchers, a lock screen, greeter and polkit agent, and hyprland's workspaces, monitors and windows. and it has been checked against every quickshell type: of its 149 types, 125 are built and the rest are written down with a reason. phase 14, timers, springs, transforms and exit animations, is done on main and ships as v0.4. phases 15 to 19 bring the rest of what quickshell configs take from qt itself, like flexible layout, drawing, styled text and http. [the roadmap](docs/site/roadmap.html) shows each phase, and [the features page](docs/site/features.html) goes through every quickshell type
 
 ### ai disclosure
 
@@ -59,7 +59,7 @@ fn bar(cx: &Cx, output: &Output) -> PanelWindow {
 }
 ```
 
-every widget property takes a value or a closure. a closure runs again when a signal it reads changes, and only what changed is redrawn. `per_output` builds windows for every monitor, now and later. the [examples](crates/crabshell/examples/) show the rest. from a clone, `cargo run --release -p crabshell --example launcher` runs one, and so do `counter`, `bar`, `effects` and `desktop`
+every widget property takes a value or a closure. a closure runs again when a signal it reads changes, and only what changed is redrawn. `per_output` builds windows for every monitor, now and later. the [examples](crates/crabshell/examples/) show the rest. from a clone, `cargo run --release -p crabshell --example launcher` runs one, and so do `counter`, `bar`, `effects`, `desktop` and `motion`
 
 ### docs
 
