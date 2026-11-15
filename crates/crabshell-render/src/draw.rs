@@ -541,9 +541,6 @@ impl Painter<'_> {
         self.node(pixmap, child);
       }
     }
-    if let Some((handle, bar)) = node.scroll_bar() {
-      self.draw_box(pixmap, handle, &bar);
-    }
   }
 
   /// `node`'s children, drawn into a layer that is blended in through a
@@ -567,6 +564,10 @@ impl Painter<'_> {
     self.through_mask(pixmap, node.rect(), (inside, radius), |painter, layer| {
       for child in node.children() {
         painter.node(layer, child);
+      }
+      // A scroll view always clips; its bar is cut to its corners too.
+      if let Some((handle, bar)) = node.scroll_bar() {
+        painter.draw_box(layer, handle, &bar);
       }
     });
   }

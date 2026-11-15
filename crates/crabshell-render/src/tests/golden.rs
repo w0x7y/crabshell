@@ -375,7 +375,8 @@ fn clip() {
 }
 
 /// A bordered, rounded view scrolled partway with a rounded bar inside
-/// its border, and a horizontal one with its bar along the bottom.
+/// its border, and a rounded horizontal one whose bar along the bottom is
+/// cut to its corner.
 #[test]
 fn scroll_bar() {
   check("scroll_bar", 140.0, 60.0, |scene| {
@@ -416,7 +417,7 @@ fn scroll_bar() {
             .horizontal(true)
             .offset(offset)
             .scroll_bar(bar.width(3.0))
-            .style(Style::new().width(60.0).height(30.0)),
+            .style(Style::new().width(60.0).height(30.0).radius(10.0)),
         ),
     )
   });
