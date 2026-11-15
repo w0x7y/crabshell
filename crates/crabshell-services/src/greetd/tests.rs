@@ -519,3 +519,54 @@ fn only_the_latest_messages_are_kept() {
   assert_eq!(messages.len(), MAX_MESSAGES);
   assert_eq!(messages[0].text, "5", "the oldest go");
 }
+
+/// greetd itself and a real PAM. greetd runs this as its greeter, with
+/// `GREETD_SOCK` set, and it logs `CRABSHELL_REAL_GREETD_USER` in, once
+/// with a wrong password and then with `CRABSHELL_REAL_GREETD_PASSWORD`,
+/// then starts `sh -c "$CRABSHELL_REAL_GREETD_SESSION"` as their session,
+/// which greetd runs once this exits. Never on a real desktop: the wrong
+/// answer counts toward `pam_faillock`. It is for a throwaway container.
+#[test]
+#[ignore = "needs a throwaway system whose greetd runs this as its greeter"]
+fn the_real_greetd_logs_in_and_starts_the_session() {
+  let var = |name| std::env::var(name).ok().filter(|value| !value.is_empty());
+  let (Some(user), Some(password), Some(session), Some(sock)) = (
+    var("CRABSHELL_REAL_GREETD_USER"),
+    var("CRABSHELL_REAL_GREETD_PASSWORD"),
+    var("CRABSHELL_REAL_GREETD_SESSION"),
+    var("GREETD_SOCK"),
+  ) else {
+    eprintln!("the CRABSHELL_REAL_GREETD_* variables or GREETD_SOCK are unset, so nothing ran");
+    return;
+  };
+  let mut shell = Harness::new(Config {
+    greetd: Some(PathBuf::from(sock)),
+    ..offline()
+  });
+  let greetd = shell.cx.greetd();
+  // Real PAM pauses after a wrong answer, so this waits longer than 5 s.
+  let mut wait = |what: &str, like: fn(&GreetState) -> bool| {
+    let give_up = Instant::now() + Duration::from_secs(30);
+    while !like(&state(&greetd)) {
+      let now = state(&greetd);
+      assert!(Instant::now() < give_up, "no {what} after 30 s: {now:?}");
+      shell.run_until(Instant::now() + Duration::from_millis(100));
+    }
+  };
+  let asking = |state: &GreetState| matches!(state, GreetState::Asking { .. });
+  greetd.create_session(&user);
+  wait("question", asking);
+  greetd.respond("not the password");
+  wait("failure", |state| {
+    matches!(state, GreetState::Failed { auth: true, .. })
+  });
+  greetd.create_session(&user);
+  wait("second question", asking);
+  greetd.respond(&password);
+  wait("authentication", |state| {
+    *state == GreetState::Authenticated
+  });
+  let command = vec![String::from("sh"), String::from("-c"), session];
+  greetd.start_session(command, Vec::new());
+  wait("start", |state| *state == GreetState::Started);
+}
