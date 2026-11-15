@@ -12,6 +12,7 @@ use std::time::Duration;
 use crabshell_reactive::{Memo, Signal};
 
 use crate::cx::Cx;
+use crate::geometry::Rect;
 use crate::input::{Handler, Handlers};
 use crate::keyboard::KeyEvent;
 use crate::keyed::{self, KeyedList, KeyedMount};
@@ -77,6 +78,7 @@ pub(crate) enum ElementKind {
 pub(crate) struct Common {
   pub(crate) style: Option<Prop<Style>>,
   pub(crate) visible: Option<Prop<bool>>,
+  pub(crate) geometry: Option<Signal<Rect>>,
 }
 
 /// One entry of a container's child list: a single widget, or a keyed list
@@ -292,7 +294,7 @@ macro_rules! container_methods {
   };
 }
 
-/// The `visible` method every widget has.
+/// The `visible` and `geometry` methods every widget has.
 macro_rules! visibility_methods {
   () => {
     /// Shows or hides the widget. Hidden, it is taken out of the layout,
@@ -304,10 +306,22 @@ macro_rules! visibility_methods {
       self.common.visible = Some(visible.into_prop());
       self
     }
+
+    /// Shares where the widget is: after each layout that moves or
+    /// resizes it, its laid-out rectangle in the window's logical
+    /// pixels, scrolled with any scroll view around it but not moved by
+    /// a style's translate, scale or rotate, is written to `geometry`. A
+    /// hidden widget writes nothing. An effect that reads it may change
+    /// the layout: the window is laid out again at once, until nothing
+    /// moves.
+    pub fn geometry(mut self, geometry: ::crabshell_reactive::Signal<$crate::Rect>) -> Self {
+      self.common.geometry = Some(geometry);
+      self
+    }
   };
 }
 
-/// The `style` method every widget has, with `visible`.
+/// The `style` method every widget has, with `visible` and `geometry`.
 macro_rules! style_method {
   () => {
     /// Sets the widget's [`Style`](crate::Style).

@@ -356,6 +356,12 @@ impl Tree {
       Some(transform) => through(&[transform], inside),
       None => inside,
     };
+    if let Some(signal) = node.geometry
+      && node.written != Some(rect)
+    {
+      node.written = Some(rect);
+      self.geometry.push((signal, rect));
+    }
     node.clips = clips;
     node.rect = Some(rect);
     node.content = content;

@@ -64,6 +64,9 @@ pub(crate) struct Tree {
   pub(crate) floating: Option<FloatingState>,
   /// The screencopy views, in the order they were built.
   pub(crate) captures: Vec<NodeId>,
+  /// Rectangles the last layout moved, for the window to write to their
+  /// widgets' `geometry` signals once the tree is released.
+  pub(crate) geometry: Vec<(Signal<Rect>, Rect)>,
 }
 
 /// What only a popup's tree has.
@@ -137,6 +140,11 @@ pub(crate) struct Node {
   pub(crate) changed: bool,
   /// Shown, rather than taken out of the layout with everything in it.
   pub(crate) visible: bool,
+  /// Written with `rect` when a layout changes it.
+  pub(crate) geometry: Option<Signal<Rect>>,
+  /// What `geometry` was last written, so a layout that moves nothing
+  /// writes nothing.
+  pub(crate) written: Option<Rect>,
 }
 
 pub(crate) enum NodeKind {
@@ -321,6 +329,8 @@ impl Node {
       fades: 0,
       changed: true,
       visible: true,
+      geometry: None,
+      written: None,
     }
   }
 
@@ -435,6 +445,7 @@ impl Tree {
       popup: None,
       floating: None,
       captures: Vec::new(),
+      geometry: Vec::new(),
     }
   }
 
@@ -666,6 +677,9 @@ impl Tree {
       )
       .expect("invariant: adding a leaf to taffy never fails");
     anchor.set(self.this.clone(), id);
+    if let Some(node) = self.node_mut(id) {
+      node.geometry = common.geometry;
+    }
 
     self.bind_opt(id, common.style, "style", set_style);
     self.bind_opt(id, common.visible, "visible", set_visible);

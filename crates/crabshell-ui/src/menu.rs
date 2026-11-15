@@ -186,6 +186,7 @@ impl Widget for Menu {
     });
     let mut element = menu(look, shared(Some(self.entries), Vec::new()));
     element.common.visible = self.common.visible;
+    element.common.geometry = self.common.geometry;
     element
   }
 }

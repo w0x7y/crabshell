@@ -9,6 +9,7 @@ mod animation;
 mod edit;
 mod floating;
 mod flow;
+mod geometry;
 mod grid;
 mod input;
 mod invalidation;

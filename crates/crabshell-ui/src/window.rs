@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::ops::BitOr;
 use std::rc::Rc;
 
-use crabshell_reactive::{Owner, Signal, untrack};
+use crabshell_reactive::{Owner, Runtime, Signal, untrack};
 
 use crate::cx::{Anchor, Cx};
 use crate::geometry::{Rect, Size};
@@ -619,8 +619,36 @@ impl Window {
 
   /// Lays the window out at its size, measuring text with `text`, and
   /// records the areas that moved or changed as damage.
+  ///
+  /// Then it writes each moved widget's `geometry` signal and runs the
+  /// effects that read one, which may change the layout, and lays out
+  /// again, until nothing moves or 8 layouts have run.
   pub fn layout(&self, text: &mut TextSystem) {
-    borrow(&self.tree).layout(text);
+    for _ in 0..GEOMETRY_ROUNDS {
+      let moved = {
+        let mut tree = borrow(&self.tree);
+        tree.layout(text);
+        std::mem::take(&mut tree.geometry)
+      };
+      // Nothing new to tell, so no effects run here.
+      if moved.is_empty() {
+        return;
+      }
+      // Written with the tree released, so an effect may lay it out.
+      for (signal, rect) in moved {
+        signal.try_set(rect);
+      }
+      Runtime::current().flush();
+      if !self.needs_layout() {
+        return;
+      }
+    }
+    let tree = self.tree.borrow();
+    let path = tree.node(tree.root).map_or("", |node| &node.path);
+    tracing::warn!(
+      "{path} still moved after {GEOMETRY_ROUNDS} layouts that wrote `geometry`, so it is laid \
+       out again at the next event; check the effects that size widgets from it"
+    );
   }
 
   /// Whether any area needs repainting.
@@ -640,6 +668,10 @@ impl Window {
     WindowView::new(self.tree.borrow())
   }
 }
+
+/// The most layouts one [`Window::layout`] runs while effects reading
+/// `geometry` keep moving widgets.
+const GEOMETRY_ROUNDS: usize = 8;
 
 impl Drop for Window {
   fn drop(&mut self) {
