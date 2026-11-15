@@ -689,13 +689,19 @@ impl Platform {
     let mut drawn = Vec::new();
     for entry in windows.entries.iter_mut() {
       if entry.surface.is_some() && entry.window.take_surface_changed() {
-        // Settings layer-shell would refuse are never sent; the
-        // surface keeps the last good ones.
         let config = entry.window.surface();
-        if !refused(entry, &config)
+        if entry.window.is_popup() {
+          // A popup's one setting is its mask, which a frame commits.
+          if let Some(surface) = &mut entry.surface {
+            surface.send_mask(compositor, config.mask.as_ref());
+            surface.frames.pacing.redraw();
+          }
+        } else if !refused(entry, &config)
           && let Some(surface) = &mut entry.surface
         {
-          // Before `reconfigure`, whose commit applies it.
+          // Settings layer-shell would refuse are never sent, and the
+          // surface keeps the last good ones. These go before
+          // `reconfigure`, whose commit applies them.
           surface.send_mask(compositor, config.mask.as_ref());
           surface.send_blur(effects, compositor, entry.window.blur().as_ref(), qh);
           surface.reconfigure(&config);
@@ -706,11 +712,6 @@ impl Platform {
       };
       if !surface.frames.pacing.configured() {
         continue;
-      }
-      // A new size cuts the mask again; the frame drawn at that size
-      // commits it.
-      if surface.mask_outdated() {
-        surface.send_mask(compositor, entry.window.surface().mask.as_ref());
       }
       surface.inhibit_idle(idle, entry.window.inhibits_idle(), qh);
       surface.inhibit_shortcuts(shortcuts_inhibit, (entry.id, &entry.window), seats, qh);
@@ -728,6 +729,11 @@ impl Platform {
         {
           pointer.show(entry.window.cursor());
         }
+      }
+      // A new size, from a configure or a popup's layout, cuts the mask
+      // again; the frame drawn at that size commits it.
+      if surface.mask_outdated() {
+        surface.send_mask(compositor, entry.window.surface().mask.as_ref());
       }
       if surface.frames.pacing.should_draw(entry.window.has_damage()) {
         let started = Instant::now();

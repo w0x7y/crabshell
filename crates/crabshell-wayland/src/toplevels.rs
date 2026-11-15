@@ -66,8 +66,9 @@ impl Platform {
       if let (Some(config), Some(surface)) = (entry.window.floating_config(), &mut entry.surface)
         && entry.window.take_surface_changed()
       {
-        // Before the commit below, which applies it.
+        // Before the commit below, which applies them.
         if config.shown {
+          surface.send_mask(&self.compositor, entry.window.surface().mask.as_ref());
           let blur = entry.window.blur();
           surface.send_blur(&mut self.effects, &self.compositor, blur.as_ref(), &self.qh);
         }

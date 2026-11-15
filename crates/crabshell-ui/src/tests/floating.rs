@@ -173,6 +173,42 @@ fn a_floating_window_takes_a_blur_region_too() {
 }
 
 #[test]
+fn a_floating_window_takes_a_mask_too() {
+  let mut h = Harness::new();
+  let masked = h.cx.signal(true);
+  let window = build(
+    &mut h,
+    FloatingWindow::new().mask(move || masked.get().then(|| crate::Region::rect(0, 0, 50, 50))),
+  );
+  assert!(window.take_surface_changed());
+  assert_eq!(
+    window.surface().mask,
+    Some(crate::Region::rect(0, 0, 50, 50))
+  );
+  masked.set(false);
+  h.frame(&window);
+  assert!(window.take_surface_changed());
+  assert_eq!(window.surface().mask, None);
+
+  // A mask that panics is logged with its path, and the window goes on.
+  let title = h.cx.signal(String::from("one"));
+  let logs = capture_logs(|| {
+    let floating = FloatingWindow::new()
+      .title(move || title.get())
+      .mask(|| -> Option<crate::Region> { panic!("no mask") });
+    let window = build(&mut h, floating);
+    title.set(String::from("two"));
+    h.frame(&window);
+    assert_eq!(window.surface().mask, None);
+    assert_eq!(shown(&window).title, "two");
+  });
+  assert!(
+    logs.contains("FloatingWindow.mask panicked and is disabled"),
+    "{logs}"
+  );
+}
+
+#[test]
 fn a_floating_window_can_inhibit_idle_too() {
   let mut h = Harness::new();
   let window = build(&mut h, FloatingWindow::new().inhibit_idle(true));

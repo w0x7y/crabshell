@@ -404,7 +404,6 @@ impl Tree {
       margins,
       keyboard_focus,
       namespace,
-      mask,
       hints,
       on_key,
       style,
@@ -435,25 +434,24 @@ impl Tree {
     self.bind_opt(root, namespace, "namespace", |tree, _, value| {
       tree.surface.set(|s| &mut s.namespace, value);
     });
-    self.bind_opt(root, mask, "mask", |tree, _, value| {
-      tree.surface.set(|s| &mut s.mask, value);
-    });
     self.bind_compositor_hints(hints);
     self.mount_root(style, child);
     self.surface.changed = true;
   }
 
   /// Binds what a panel or floating window asks of the compositor: its
-  /// blur region, whether it inhibits idle and shortcuts, and the signals
-  /// the platform writes.
+  /// input mask, blur region, whether it inhibits idle and shortcuts, and
+  /// the signals the platform writes.
   pub(crate) fn bind_compositor_hints(&mut self, hints: Hints) {
     let Hints {
+      mask,
       blur,
       inhibit_idle,
       inhibit_shortcuts,
       shortcuts_inhibited,
       focus_grab,
     } = hints;
+    self.bind_mask(mask);
     self.bind_opt(self.root, blur, "blur", |tree, _, value| {
       tree.surface.set(|s| &mut s.blur, value);
     });
@@ -468,6 +466,14 @@ impl Tree {
     );
     self.surface.shortcuts_inhibited = shortcuts_inhibited;
     self.surface.focus_grab = focus_grab;
+  }
+
+  /// Binds the window's input mask, as a panel's, floating window's or
+  /// popup's.
+  pub(crate) fn bind_mask(&mut self, mask: Option<Prop<Option<Region>>>) {
+    self.bind_opt(self.root, mask, "mask", |tree, _, value| {
+      tree.surface.set(|s| &mut s.mask, value);
+    });
   }
 
   /// Applies the root's style and adds its child, as a panel's or a

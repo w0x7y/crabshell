@@ -11,6 +11,7 @@ use crate::cx::{Anchor, Cx};
 use crate::geometry::{Rect, Size};
 use crate::input::panic_message;
 use crate::prop::{IntoProp, Prop};
+use crate::region::Region;
 use crate::style::Style;
 use crate::tree::{PopupState, Tree, borrow};
 use crate::widgets::Widget;
@@ -33,6 +34,7 @@ pub struct PopupWindow {
   edges: Option<Prop<Anchors>>,
   gravity: Option<Prop<Anchors>>,
   adjustment: Option<Prop<Adjust>>,
+  mask: Option<Prop<Option<Region>>>,
 }
 
 /// How a popup may move or shrink to stay on its output, combined with
@@ -135,6 +137,15 @@ impl PopupWindow {
     self.adjustment = Some(adjustment.into_prop());
     self
   }
+
+  /// Sets the part of the popup that takes pointer input, as
+  /// [`PanelWindow::mask`](crate::PanelWindow::mask) does: clicks outside
+  /// it reach whatever is below, and `None`, the default, is the whole
+  /// popup.
+  pub fn mask(mut self, mask: impl IntoProp<Option<Region>>) -> PopupWindow {
+    self.mask = Some(mask.into_prop());
+    self
+  }
 }
 
 impl Cx {
@@ -179,7 +190,7 @@ impl Cx {
         (
           popup.style,
           child,
-          (popup.edges, popup.gravity, popup.adjustment),
+          (popup.edges, popup.gravity, popup.adjustment, popup.mask),
         )
       })
     }));
@@ -211,7 +222,7 @@ impl Cx {
     {
       let mut tree = borrow(&popup);
       tree.mount_root(style, child);
-      let (edges, gravity, adjustment) = placement;
+      let (edges, gravity, adjustment, mask) = placement;
       let root = tree.root;
       tree.bind_opt(root, edges, "edges", |tree, _, value| {
         if let Some(popup) = tree.popup.as_mut() {
@@ -228,6 +239,7 @@ impl Cx {
           popup.placement.adjustment = Some(value);
         }
       });
+      tree.bind_mask(mask);
     }
     borrow(&tree).popups.push(Window { tree: popup, owner });
   }

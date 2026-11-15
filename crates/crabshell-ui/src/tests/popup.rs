@@ -272,6 +272,44 @@ fn a_popup_carries_the_placement_its_config_set() {
 }
 
 #[test]
+fn a_popup_takes_a_mask() {
+  let mut h = Harness::new();
+  let masked = h.cx.signal(true);
+  let window = opener(&mut h, move |_| {
+    PopupWindow::new()
+      .mask(move || masked.get().then(|| crate::Region::rect(0, 0, 10, 10)))
+      .child(square())
+  });
+  let popup = open(&mut h, &window);
+  assert!(popup.take_surface_changed());
+  assert_eq!(
+    popup.surface().mask,
+    Some(crate::Region::rect(0, 0, 10, 10))
+  );
+  assert!(!popup.take_surface_changed(), "reported once");
+  masked.set(false);
+  h.frame(&popup);
+  assert!(popup.take_surface_changed());
+  assert_eq!(popup.surface().mask, None);
+
+  // A mask that panics is logged with its path, and the popup opens.
+  let window = opener(&mut h, |_| {
+    PopupWindow::new()
+      .mask(|| -> Option<crate::Region> { panic!("no mask") })
+      .child(square())
+  });
+  let logs = capture_logs(|| {
+    let popup = open(&mut h, &window);
+    assert_eq!(popup.size(), Size::new(20.0, 20.0));
+    assert_eq!(popup.surface().mask, None);
+  });
+  assert!(
+    logs.contains("PanelWindow[DP-1]/Row/Button[0]/PopupWindow.mask panicked and is disabled"),
+    "{logs}"
+  );
+}
+
+#[test]
 fn all_adjustments_include_resizing_as_in_quickshell() {
   use crate::Adjust;
 

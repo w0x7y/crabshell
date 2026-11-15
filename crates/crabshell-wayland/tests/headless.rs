@@ -23,7 +23,7 @@ use crabshell_ui::{
   Output, PanelWindow, PopupWindow, Rect, Region, Row, Spacer, Style, Text, TextInput, Window,
 };
 use crabshell_ui::{CaptureFrame, CaptureSource, FloatingWindow, ScreencopyView, Transition};
-use crabshell_ui::{Lock, SessionLock};
+use crabshell_ui::{Layer, Lock, SessionLock};
 use crabshell_wayland::{
   Event, EventLoop, LockId, Platform, Toplevel, WindowId, Windowset, WindowsetProjection,
 };
@@ -131,6 +131,8 @@ struct Knobs {
   grab: Signal<bool>,
   /// How every [`menu`] may move or shrink to stay on the output.
   adjust: Signal<Adjust>,
+  /// The part of every [`menu`] that takes clicks.
+  menu_mask: Signal<Option<Region>>,
 }
 
 /// A popup with two entries: the first opens another menu beside it, and
@@ -138,6 +140,7 @@ struct Knobs {
 fn menu(knobs: Knobs) -> PopupWindow {
   PopupWindow::new()
     .adjustment(move || knobs.adjust.get())
+    .mask(move || knobs.menu_mask.get())
     .style(
       Style::new()
         .background(Color::hex("#313244"))
@@ -322,6 +325,7 @@ impl Shell {
       inhibited: cx.signal(false),
       grab: cx.signal(false),
       adjust: cx.signal(Adjust::FLIP | Adjust::SLIDE),
+      menu_mask: cx.signal(None),
     };
     let mut event_loop = sway.connect();
     let built = Rc::new(RefCell::new(Vec::new()));
@@ -1333,6 +1337,87 @@ fn a_floating_window_shows_closes_comes_back_and_opens_popups() {
   });
 }
 
+/// Adds a panel covering HEADLESS-1 in the bottom layer, below every
+/// other window, and waits for it. Returns how many clicks reached it.
+fn add_floor(shell: &mut Shell, cx: &Cx) -> Signal<u32> {
+  let clicks = cx.signal(0);
+  let floor = PanelWindow::new(&Output::new("HEADLESS-1"))
+    .anchors(Edge::Top | Edge::Bottom | Edge::Left | Edge::Right)
+    .layer(Layer::Bottom)
+    .exclusive_zone(-1)
+    .child(Button::new(Text::new("floor")).on_click(move |_| clicks.update(|count| *count += 1)));
+  let id = shell
+    .event_loop
+    .platform()
+    .add_window(Window::new(cx, floor));
+  run_until(&mut shell.event_loop, "the floor", |platform| {
+    platform
+      .window_info(id)
+      .is_some_and(|info| info.commits > 0)
+  });
+  clicks
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_floating_windows_mask_lets_clicks_through_to_what_is_below() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let mut pointer = VirtualPointer::new(&sway);
+  let mut shell = Shell::new(&sway);
+  shell.wait_for_bar("HEADLESS-1");
+  let cx = Cx::new(shell.runtime.new_owner());
+  let below = add_floor(&mut shell, &cx);
+  let (masked, clicks) = (cx.signal(true), cx.signal(0));
+  let floating = FloatingWindow::new()
+    .title("crabshell-masked")
+    // The window fills the workspace; only its left 400 pixels take
+    // clicks.
+    .mask(move || masked.get().then(|| Region::rect(0, 0, 400, 100_000)))
+    .child(Button::new(Text::new("window")).on_click(move |_| clicks.update(|count| *count += 1)));
+  let id = shell
+    .event_loop
+    .platform()
+    .add_window(Window::floating(&cx, floating));
+  run_until(&mut shell.event_loop, "the floating window", |platform| {
+    platform
+      .window_info(id)
+      .is_some_and(|info| info.commits > 0)
+  });
+  pointer.move_to(960, 600, (1920, 1080));
+  settle(&mut shell.event_loop);
+  // A virtual pointer's clicks never reached a toplevel on Sway.
+  let click = |x: u32| {
+    sway.msg(&["seat", "-", "cursor", "set", &x.to_string(), "600"]);
+    sway.msg(&["seat", "-", "cursor", "press", "button1"]);
+    sway.msg(&["seat", "-", "cursor", "release", "button1"]);
+  };
+  click(1500);
+  run_until(&mut shell.event_loop, "a click outside the mask", |_| {
+    below.get_untracked() == 1
+  });
+  click(100);
+  run_until(&mut shell.event_loop, "a click inside the mask", |_| {
+    clicks.get_untracked() == 1
+  });
+
+  // Without a mask the whole window takes clicks, and with one again
+  // they pass.
+  masked.set(false);
+  settle(&mut shell.event_loop);
+  click(1500);
+  run_until(&mut shell.event_loop, "a click once unmasked", |_| {
+    clicks.get_untracked() == 2
+  });
+  masked.set(true);
+  settle(&mut shell.event_loop);
+  click(1500);
+  run_until(&mut shell.event_loop, "a click once masked again", |_| {
+    below.get_untracked() == 2
+  });
+  assert_eq!(clicks.get_untracked(), 2);
+}
+
 /// The popups held, in the order they opened. Only one chain is ever
 /// open, so each opened from the one before.
 fn popups(platform: &Platform) -> Vec<WindowId> {
@@ -1948,6 +2033,73 @@ fn a_menu_too_wide_for_the_output_is_drawn_at_the_width_sway_resizes_it_to() {
   assert_eq!(info.position.map(|(x, _)| x), Some(0));
   assert_eq!(info.size, Some(wanted));
   assert_eq!(info.buffer_size, Some(wanted));
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_menus_mask_lets_clicks_through_to_what_is_below() {
+  // The mask is in logical pixels, whatever the scale.
+  for scale in ["1", "1.5", "2"] {
+    let sway = Sway::start();
+    let mut menus = Menus::start(&sway, scale);
+    let cx = Cx::new(menus.shell.runtime.new_owner());
+    let below = add_floor(&mut menus.shell, &cx);
+    let menu = menus.open_from_bar();
+    // Only the first entry's rows take clicks, as wide as the menu gets.
+    let first = entry_rect(menus.shell.event_loop.platform(), menu, 0);
+    let rows = (first.y + first.height).ceil() as u32;
+    menus
+      .shell
+      .knobs
+      .menu_mask
+      .set(Some(Region::rect(0, 0, 100_000, rows)));
+    settle(&mut menus.shell.event_loop);
+    // `close` is outside the mask: the floor gets the click, and the menu
+    // stays.
+    menus.click_entry(menu, 1);
+    run_until(
+      &mut menus.shell.event_loop,
+      "a click outside the mask",
+      |_| below.get_untracked() == 1,
+    );
+    settle(&mut menus.shell.event_loop);
+    assert_eq!(
+      popups(menus.shell.event_loop.platform()),
+      [menu],
+      "at {scale}"
+    );
+
+    // Grown wider, the menu's new part takes clicks too: the first entry's
+    // far end opens a submenu.
+    let narrow = menus.info(menu).size.expect("sized").0;
+    menus
+      .shell
+      .knobs
+      .entry
+      .set(String::from("a much longer first entry"));
+    run_until(&mut menus.shell.event_loop, "a wider menu", |platform| {
+      platform
+        .window_info(menu)
+        .and_then(|info| info.size)
+        .is_some_and(|(width, _)| width > narrow + 20)
+    });
+    settle(&mut menus.shell.event_loop);
+    let platform = menus.shell.event_loop.platform();
+    let first = entry_rect(platform, menu, 0);
+    let (x, y) = origin(platform, menu);
+    menus.click((
+      x + first.x + first.width - 5.0,
+      y + first.y + first.height / 2.0,
+    ));
+    menus.wait_for("a submenu", |open| open.len() == 2);
+
+    // Without a mask, `close` takes the click.
+    menus.shell.knobs.menu_mask.set(None);
+    settle(&mut menus.shell.event_loop);
+    menus.click_entry(menu, 1);
+    menus.wait_for("every menu to close", <[_]>::is_empty);
+    assert_eq!(below.get_untracked(), 1, "at {scale}");
+  }
 }
 
 #[test]

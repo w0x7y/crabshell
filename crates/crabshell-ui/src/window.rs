@@ -210,7 +210,6 @@ pub struct PanelWindow {
   pub(crate) margins: Option<Prop<Margins>>,
   pub(crate) keyboard_focus: Option<Prop<KeyboardFocus>>,
   pub(crate) namespace: Option<Prop<String>>,
-  pub(crate) mask: Option<Prop<Option<Region>>>,
   pub(crate) hints: Hints,
   pub(crate) on_key: Option<KeyHandler>,
   pub(crate) style: Option<Prop<Style>>,
@@ -230,7 +229,6 @@ impl PanelWindow {
       margins: None,
       keyboard_focus: None,
       namespace: None,
-      mask: None,
       hints: Hints::default(),
       on_key: None,
       style: None,
@@ -302,7 +300,7 @@ impl PanelWindow {
   /// it reach whatever is below. `None`, the default, is the whole window,
   /// and [`Region::empty`] lets every click through.
   pub fn mask(mut self, mask: impl IntoProp<Option<Region>>) -> PanelWindow {
-    self.mask = Some(mask.into_prop());
+    self.hints.mask = Some(mask.into_prop());
     self
   }
 
@@ -388,9 +386,10 @@ impl PanelWindow {
 }
 
 /// What a panel or floating window asks of the compositor besides its
-/// surface's settings.
+/// layer-shell or toplevel settings.
 #[derive(Default)]
 pub(crate) struct Hints {
+  pub(crate) mask: Option<Prop<Option<Region>>>,
   pub(crate) blur: Option<Prop<Option<Region>>>,
   pub(crate) inhibit_idle: Option<Prop<bool>>,
   pub(crate) inhibit_shortcuts: Option<Prop<bool>>,

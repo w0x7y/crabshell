@@ -126,6 +126,15 @@ impl FloatingWindow {
     self
   }
 
+  /// Sets the part of the window that takes pointer input, as
+  /// [`PanelWindow::mask`](crate::PanelWindow::mask) does: clicks outside
+  /// it reach whatever is below, and `None`, the default, is the whole
+  /// window.
+  pub fn mask(mut self, mask: impl IntoProp<Option<Region>>) -> FloatingWindow {
+    self.hints.mask = Some(mask.into_prop());
+    self
+  }
+
   /// Asks the compositor to blur what is behind this part of the window,
   /// as [`PanelWindow::blur`](crate::PanelWindow::blur) does.
   pub fn blur(mut self, region: impl IntoProp<Option<Region>>) -> FloatingWindow {
