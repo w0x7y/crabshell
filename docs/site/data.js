@@ -252,6 +252,7 @@ const PHASES = [
       ["yes", "exit transitions for removed children"],
       ["yes", "translate, scale and rotate"],
       ["yes", "exit check: the motion example on headless sway"],
+      ["yes", "released on crates.io, as 0.4"],
     ],
   },
   {
