@@ -835,7 +835,9 @@ impl Tree {
 
   fn release(&mut self, button: PointerButton, time: u32) -> Vec<Call> {
     if button == PointerButton::Left {
-      self.pointer.bar = None;
+      if let Some(bar) = self.pointer.bar.take() {
+        self.release_view(bar.view, None);
+      }
       self.flick_release(Some(time));
     }
     let Some(press) = self.pointer.pressed.filter(|press| press.button == button) else {
@@ -1021,7 +1023,9 @@ impl Tree {
   /// click, and nothing is hovered.
   pub(crate) fn leave(&mut self) -> Vec<Call> {
     self.pointer.position = None;
-    self.pointer.bar = None;
+    if let Some(bar) = self.pointer.bar.take() {
+      self.release_view(bar.view, None);
+    }
     self.flick_release(None);
     if let Some(id) = self.pointer.gesture.take() {
       self.release_view(id, None);

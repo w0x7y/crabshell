@@ -82,7 +82,7 @@ pub(crate) struct Flick {
   may_drag: bool,
 }
 
-/// A scroll bar's handle held by the left button.
+/// A scroll bar held by the left button.
 #[derive(Clone, Copy)]
 pub(crate) struct BarDrag {
   pub(crate) view: NodeId,
@@ -90,6 +90,8 @@ pub(crate) struct BarDrag {
   from: f32,
   /// The offset then.
   offset: f32,
+  /// On the handle, which drags; beside it, it paged.
+  handle: bool,
 }
 
 impl Pointer {
@@ -620,24 +622,30 @@ impl Tree {
         return true;
       };
       let from = scroll.along(point);
-      if handle.contains(point) {
-        self.pointer.bar = Some(BarDrag {
-          view: id,
-          from,
-          offset,
-        });
+      let on_handle = handle.contains(point);
+      let (start, _) = scroll.span(handle);
+      let (_, page) = scroll.span(rect);
+      let to = if on_handle {
+        offset
+      } else if from < start {
+        offset - page
       } else {
-        let (start, _) = scroll.span(handle);
-        let (_, page) = scroll.span(rect);
-        let to = if from < start {
-          offset - page
-        } else {
-          offset + page
-        };
-        let to = to.clamp(0.0, scroll.most);
-        if to != offset {
-          scroll.signal.try_set(to);
-        }
+        offset + page
+      };
+      let (to, signal) = (to.clamp(0.0, scroll.most), scroll.signal);
+      // It stops at once, as under any press, until the bar lets go.
+      self.update_scroll(id, |scroll| {
+        scroll.halt();
+        Change::None
+      });
+      self.pointer.bar = Some(BarDrag {
+        view: id,
+        from,
+        offset,
+        handle: on_handle,
+      });
+      if to != offset {
+        signal.try_set(to);
       }
       return true;
     }
@@ -656,7 +664,7 @@ impl Tree {
   /// The pointer moved to `at` while dragging a bar's handle: the offset
   /// follows it, the whole track's room standing for the whole content.
   pub(crate) fn bar_motion(&mut self, at: Point) {
-    let Some(drag) = self.pointer.bar else {
+    let Some(drag) = self.pointer.bar.filter(|bar| bar.handle) else {
       return;
     };
     let Some(point) = self.local_point(drag.view, at) else {

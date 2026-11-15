@@ -586,3 +586,41 @@ fn a_button_that_takes_the_touchpad_stop_still_lets_the_gesture_go() {
   run_clock(&mut h, &window, Instant::now());
   assert_eq!(button(), 30.0);
 }
+
+#[test]
+fn a_press_on_the_bar_stops_a_fling_and_its_drag_starts_from_there() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0);
+  let (window, _) = view(&mut h, offset, |view| view.scroll_bar(Style::new()));
+  window.pointer_motion(Point::new(10.0, 10.0));
+  swipe(&window, 10.0, 0);
+  let start = Instant::now();
+  for tick in 0..4 {
+    advance_animations(start + Duration::from_millis(16 * tick));
+    h.frame(&window);
+  }
+  let stopped = offset.get();
+  // The 20 by 50 view of 600 has a 16-pixel handle, at 50 + 34 × the
+  // offset's fraction of 550.
+  let handle = 34.0 * stopped / 550.0 + 8.0;
+  window.pointer_motion(Point::new(17.0, handle));
+  window.pointer_button_at(PointerButton::Left, true, 100);
+  advance_animations(start + Duration::from_millis(200));
+  h.frame(&window);
+  assert_eq!(offset.get(), stopped, "the press on the handle stopped it");
+  assert!(!animating());
+  window.pointer_motion(Point::new(17.0, handle + 1.0));
+  let moved = offset.get() - stopped;
+  assert!((moved - 550.0 / 34.0).abs() < 0.01, "{moved}");
+  window.pointer_button_at(PointerButton::Left, false, 300);
+  // Held past the end, the bar's release lets it spring back.
+  window.pointer_motion(Point::new(10.0, 10.0));
+  window.pointer_scroll_at(pixels(10_000.0), 400);
+  h.frame(&window);
+  assert!(first_y(&window) < -550.0);
+  window.pointer_motion(Point::new(17.0, 42.0));
+  window.pointer_button_at(PointerButton::Left, true, 500);
+  window.pointer_button_at(PointerButton::Left, false, 550);
+  run_clock(&mut h, &window, Instant::now());
+  assert_eq!(first_y(&window), -550.0);
+}
