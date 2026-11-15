@@ -434,3 +434,52 @@ fn a_fade_cut_short_places_the_widget_where_its_new_style_says() {
     bounds(&window, &[0, 0])
   );
 }
+
+#[test]
+fn a_button_moved_out_of_its_parents_box_is_hit_where_it_is_drawn() {
+  let mut h = Harness::new();
+  let clicks = h.cx.signal(0_u32);
+  // The row is as large as the button, 20 by 20 at (0, 0).
+  let row = Row::new().align(Align::Start).child(
+    Row::new().child(
+      Button::new(Icon::new("x").size(20))
+        .style(Style::new().translate(50.0, 0.0))
+        .on_click(move |_| clicks.update(|n| *n += 1)),
+    ),
+  );
+  let window = h.window(h.panel().child(row), 200.0, 60.0);
+  assert!(clicked_at(&window, clicks, Point::new(60.0, 10.0)));
+  assert!(!clicked_at(&window, clicks, Point::new(10.0, 10.0)));
+  // A clip still cuts it off.
+  let mut h = Harness::new();
+  let clicks = h.cx.signal(0_u32);
+  let row = Row::new().align(Align::Start).child(
+    Row::new().style(Style::new().clip(true)).child(
+      Button::new(Icon::new("x").size(20))
+        .style(Style::new().translate(50.0, 0.0))
+        .on_click(move |_| clicks.update(|n| *n += 1)),
+    ),
+  );
+  let window = h.window(h.panel().child(row), 200.0, 60.0);
+  assert!(!clicked_at(&window, clicks, Point::new(60.0, 10.0)));
+  // Text ink reaches an em past its button, which isn't hit there.
+  let mut h = Harness::new();
+  let clicks = h.cx.signal(0_u32);
+  let row = Row::new()
+    .align(Align::Start)
+    .padding(10, 10)
+    .child(Button::new(crate::Text::new("x")).on_click(move |_| clicks.update(|n| *n += 1)));
+  let window = h.window(h.panel().child(row), 200.0, 60.0);
+  let button = rect_at(&window, &[0, 0]);
+  let middle = button.y + button.height / 2.0;
+  assert!(clicked_at(
+    &window,
+    clicks,
+    Point::new(button.x + 1.0, middle)
+  ));
+  assert!(!clicked_at(
+    &window,
+    clicks,
+    Point::new(button.x - 3.0, middle)
+  ));
+}

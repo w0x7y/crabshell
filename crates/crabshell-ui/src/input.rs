@@ -191,7 +191,12 @@ impl Tree {
   fn hit(&self, id: NodeId, point: Point, path: &mut Vec<NodeId>) -> Option<NodeId> {
     let node = self.node(id)?;
     let point = local(node, point)?;
-    let rect = node.rect.filter(|rect| rect.contains(point))?;
+    let rect = node.rect?;
+    // Children reach past the box when they are moved or overflow it, so
+    // the subtree's whole area is searched, and the box only for itself.
+    if !node.inner_bounds.contains(point) {
+      return None;
+    }
     let style = node.effective_style();
     // A clip hides its children under its border too.
     let border = style.border.map_or(0.0, |border| border.width.max(0.0));
@@ -214,7 +219,7 @@ impl Tree {
     {
       return Some(hit);
     }
-    if matches!(node.kind, NodeKind::Button(_) | NodeKind::Input(_)) {
+    if rect.contains(point) && matches!(node.kind, NodeKind::Button(_) | NodeKind::Input(_)) {
       return Some(id);
     }
     path.pop();
@@ -444,7 +449,8 @@ impl Tree {
   fn scroll_view_at(&self, id: NodeId, point: Point) -> Option<NodeId> {
     let node = self.node(id)?;
     let point = local(node, point)?;
-    if !node.rect.is_some_and(|rect| rect.contains(point)) {
+    // As in `hit`: the subtree's area for the children, the box for itself.
+    if !node.inner_bounds.contains(point) {
       return None;
     }
     let children = self.taffy.children(id).unwrap_or_default();
@@ -452,7 +458,10 @@ impl Tree {
       .into_iter()
       .rev()
       .find_map(|child| self.scroll_view_at(child, point))
-      .or_else(|| matches!(node.kind, NodeKind::Scroll(_)).then_some(id))
+      .or_else(|| {
+        let inside = node.rect.is_some_and(|rect| rect.contains(point));
+        (inside && matches!(node.kind, NodeKind::Scroll(_))).then_some(id)
+      })
   }
 
   /// `point`, in window coordinates, in the coordinates node `id`'s
