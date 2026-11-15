@@ -471,6 +471,15 @@ impl FakeService {
       .expect("the held replies sent");
   }
 
+  /// Sends the oldest reply held, and holds the rest.
+  pub(crate) fn release_first(&self, shell: &mut Harness) {
+    let reply = self.held.borrow_mut().as_mut().map(|held| held.remove(0));
+    let (connection, reply) = (self.connection.clone(), reply.expect("a held reply"));
+    shell
+      .block_on(async move { connection.send(&reply).await })
+      .expect("the held reply sent");
+  }
+
   /// How many replies are held.
   pub(crate) fn held(&self) -> usize {
     self.held.borrow().as_ref().map_or(0, Vec::len)

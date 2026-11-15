@@ -35,7 +35,10 @@ const SLOW_CALL: std::time::Duration = std::time::Duration::from_secs(90);
 /// nothing new.
 fn read(interface: &str, name: &str) -> bool {
   match interface {
-    ADAPTER => matches!(name, "Alias" | "Address" | "Powered" | "Discovering"),
+    ADAPTER => matches!(
+      name,
+      "Alias" | "Address" | "Powered" | "PowerState" | "Discovering"
+    ),
     DEVICE => matches!(
       name,
       "Address" | "Alias" | "Name" | "Icon" | "Connected" | "Paired" | "Trusted" | "Adapter"
@@ -43,6 +46,35 @@ fn read(interface: &str, name: &str) -> bool {
     BATTERY => name == "Percentage",
     _ => false,
   }
+}
+
+/// Whether an adapter is on, from BlueZ's `PowerState`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BluetoothAdapterState {
+  /// On.
+  Enabled,
+  /// Off.
+  Disabled,
+  /// Turning on.
+  Enabling,
+  /// Turning off.
+  Disabling,
+  /// Off, and held off by rfkill, as by a laptop's airplane mode.
+  Blocked,
+}
+
+/// Whether a device is connected, from BlueZ's `Connected` and the calls
+/// made through [`Bluetooth`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BluetoothDeviceState {
+  /// Not connected.
+  Disconnected,
+  /// A [`Bluetooth::connect`] call is out.
+  Connecting,
+  /// Connected.
+  Connected,
+  /// A [`Bluetooth::disconnect`] call is out.
+  Disconnecting,
 }
 
 /// A Bluetooth radio BlueZ knows.
@@ -56,18 +88,45 @@ pub struct BluetoothAdapter {
   pub address: String,
   /// Whether it is on.
   pub powered: bool,
+  /// Whether it is on, off or on the way. An older BlueZ, without
+  /// `PowerState`, says only `Enabled` or `Disabled`, from
+  /// [`powered`](Self::powered).
+  pub state: BluetoothAdapterState,
   /// Whether it is looking for devices.
   pub discovering: bool,
 }
 
 impl BluetoothAdapter {
   fn from_props(path: String, props: &Props) -> BluetoothAdapter {
+    let powered = dbus::get(props, "Powered").unwrap_or(false);
+    let state = match dbus::get::<&str>(props, "PowerState") {
+      Some("on") => BluetoothAdapterState::Enabled,
+      Some("off") => BluetoothAdapterState::Disabled,
+      Some("off-enabling") => BluetoothAdapterState::Enabling,
+      Some("on-disabling") => BluetoothAdapterState::Disabling,
+      Some("off-blocked") => BluetoothAdapterState::Blocked,
+      unknown => {
+        if let Some(unknown) = unknown {
+          tracing::debug!(
+            path,
+            state = unknown,
+            "an unknown power state; read from Powered"
+          );
+        }
+        if powered {
+          BluetoothAdapterState::Enabled
+        } else {
+          BluetoothAdapterState::Disabled
+        }
+      }
+    };
     BluetoothAdapter {
-      path,
       name: dbus::text(props, "Alias"),
       address: dbus::text(props, "Address"),
-      powered: dbus::get(props, "Powered").unwrap_or(false),
+      powered,
+      state,
       discovering: dbus::get(props, "Discovering").unwrap_or(false),
+      path,
     }
   }
 }
@@ -87,6 +146,9 @@ pub struct BluetoothDevice {
   pub icon: String,
   /// Whether it is connected.
   pub connected: bool,
+  /// Whether it is connected, or on the way while a call made through
+  /// [`Bluetooth`] is out.
+  pub state: BluetoothDeviceState,
   /// Whether it is paired.
   pub paired: bool,
   /// Whether it may connect without asking.
@@ -96,8 +158,19 @@ pub struct BluetoothDevice {
 }
 
 impl BluetoothDevice {
-  fn from_props(path: String, props: &Props, battery: Option<&Props>) -> BluetoothDevice {
+  fn from_props(
+    path: String,
+    props: &Props,
+    battery: Option<&Props>,
+    call: Option<BluetoothDeviceState>,
+  ) -> BluetoothDevice {
     let address = dbus::text(props, "Address");
+    let connected = dbus::get(props, "Connected").unwrap_or(false);
+    let state = match (call, connected) {
+      (Some(call), _) => call,
+      (None, true) => BluetoothDeviceState::Connected,
+      (None, false) => BluetoothDeviceState::Disconnected,
+    };
     let name = [dbus::text(props, "Alias"), dbus::text(props, "Name")]
       .into_iter()
       .find(|name| !name.is_empty())
@@ -109,7 +182,8 @@ impl BluetoothDevice {
       address,
       name,
       icon: dbus::text(props, "Icon"),
-      connected: dbus::get(props, "Connected").unwrap_or(false),
+      connected,
+      state,
       paired: dbus::get(props, "Paired").unwrap_or(false),
       trusted: dbus::get(props, "Trusted").unwrap_or(false),
       battery: battery
@@ -159,12 +233,16 @@ impl Bluetooth {
     self.call(adapter, ADAPTER, "StopDiscovery", ());
   }
 
-  /// Connects the device at `device`, its path.
+  /// Connects the device at `device`, its path. Its state is
+  /// [`Connecting`](BluetoothDeviceState::Connecting) until BlueZ answers
+  /// or says it connected or disconnected.
   pub fn connect(&self, device: &str) {
     self.call(device, DEVICE, "Connect", ());
   }
 
-  /// Disconnects the device at `device`.
+  /// Disconnects the device at `device`, which is
+  /// [`Disconnecting`](BluetoothDeviceState::Disconnecting) as
+  /// [`connect`](Self::connect) is connecting.
   pub fn disconnect(&self, device: &str) {
     self.call(device, DEVICE, "Disconnect", ());
   }
@@ -212,15 +290,24 @@ impl Bluetooth {
     else {
       return tracing::info!(method, "BlueZ isn't running; nothing sent");
     };
-    let (shared, path) = (Rc::clone(&service.shared), path.to_owned());
-    service.shared.spawn(async move {
+    let marked = match method {
+      "Connect" => Some(service.mark(path, BluetoothDeviceState::Connecting)),
+      "Disconnect" => Some(service.mark(path, BluetoothDeviceState::Disconnecting)),
+      _ => None,
+    };
+    let (shared, service, path) = (&service.shared, Rc::clone(service), path.to_owned());
+    shared.spawn(async move {
       let call = connection.call_method(Some(BLUEZ), path.as_str(), Some(interface), method, &body);
       let limit = if matches!(method, "Pair" | "Connect") {
         SLOW_CALL
       } else {
         CALL_TIMEOUT
       };
-      if let Err(error) = shared.timeout(limit, call).await {
+      let answer = service.shared.timeout(limit, call).await;
+      if let Some(number) = marked {
+        service.unmark(&path, number);
+      }
+      if let Err(error) = answer {
         tracing::warn!(%error, path, method, "BlueZ refused it");
       }
     });
@@ -257,6 +344,12 @@ struct BluetoothState {
   /// The bus, while BlueZ runs, for the methods.
   connection: Option<Connection>,
   generation: u64,
+  /// The devices a connect or disconnect call is out for, by path, with
+  /// the call's number, so the answer to one that another replaced
+  /// changes nothing.
+  calls: HashMap<String, (BluetoothDeviceState, u64)>,
+  /// The number the next such call gets.
+  next_call: u64,
 }
 
 /// The interfaces this service reads on one of BlueZ's objects. An
@@ -322,6 +415,8 @@ impl BluetoothService {
       objects: BTreeMap::new(),
       connection: None,
       generation: 0,
+      calls: HashMap::new(),
+      next_call: 0,
     });
     match self.shared.config.system_bus.clone() {
       Some(address) => {
@@ -356,10 +451,12 @@ impl BluetoothService {
       let mut devices = objects()
         .filter_map(|(path, object)| {
           let device = object.device.as_ref()?;
+          let call = state.calls.get(&path).map(|(call, _)| *call);
           Some(BluetoothDevice::from_props(
             path,
             device,
             object.battery.as_ref(),
+            call,
           ))
         })
         .collect::<Vec<_>>();
@@ -375,6 +472,40 @@ impl BluetoothService {
     if let Some((adapters_signal, adapters, devices_signal, devices)) = shown {
       set_changed(adapters_signal, adapters);
       set_changed(devices_signal, devices);
+    }
+  }
+
+  /// Shows `device` in `state` while a call is out for it. The call's
+  /// number.
+  fn mark(&self, device: &str, state: BluetoothDeviceState) -> u64 {
+    let number = {
+      let mut held = self.state.borrow_mut();
+      let Some(held) = held.as_mut() else {
+        return 0;
+      };
+      held.next_call += 1;
+      held
+        .calls
+        .insert(device.to_owned(), (state, held.next_call));
+      held.next_call
+    };
+    self.publish();
+    number
+  }
+
+  /// Ends call `number` for `device`, which BlueZ answered, unless another
+  /// call or a change of `Connected` ended it already.
+  fn unmark(&self, device: &str, number: u64) {
+    let ended = {
+      let mut state = self.state.borrow_mut();
+      let Some(calls) = state.as_mut().map(|state| &mut state.calls) else {
+        return;
+      };
+      let current = calls.get(device).is_some_and(|(_, at)| *at == number);
+      current && calls.remove(device).is_some()
+    };
+    if ended {
+      self.publish();
     }
   }
 }
@@ -412,6 +543,7 @@ impl Daemon for BluetoothService {
         return 0;
       };
       state.objects.clear();
+      state.calls.clear();
       state.connection = None;
       state.generation += 1;
       state.generation
@@ -464,9 +596,16 @@ impl Daemon for BluetoothService {
     if let Some((path, interface, changed, dropped)) = dbus::properties_changed(message) {
       {
         let mut state = self.state.borrow_mut();
+        let Some(state) = state.as_mut() else {
+          return;
+        };
+        // It can come before the answer, and ends the call either way.
+        if interface == DEVICE && changed.contains_key("Connected") {
+          state.calls.remove(&path);
+        }
         let props = state
-          .as_mut()
-          .and_then(|state| state.objects.get_mut(&path))
+          .objects
+          .get_mut(&path)
           .and_then(|object| object.slot(&interface)?.as_mut());
         let Some(props) = props else {
           return;

@@ -5,9 +5,14 @@ use std::time::{Duration, Instant};
 
 use zbus::{ObjectPath, Variant};
 
-use super::{ADAPTER, BATTERY, BLUEZ, BluetoothAdapter, BluetoothDevice, DEVICE};
+use super::{
+  ADAPTER, BATTERY, BLUEZ, BluetoothAdapter, BluetoothAdapterState, BluetoothDevice,
+  BluetoothDeviceState, DEVICE,
+};
 use crate::dbus::OBJECT_MANAGER;
-use crate::testing::{FakeService, Harness, PrivateBus, capture_logs, offline, reply};
+use crate::testing::{
+  FakeService, Harness, PrivateBus, capture_logs, capture_logs_from, offline, reply,
+};
 use crate::{Config, ServicesExt};
 
 const HCI0: &str = "/org/bluez/hci0";
@@ -84,6 +89,7 @@ fn headset() -> BluetoothDevice {
     name: "headset".into(),
     icon: "input-mouse".into(),
     connected: false,
+    state: BluetoothDeviceState::Disconnected,
     paired: true,
     trusted: false,
     battery: Some(80),
@@ -148,6 +154,7 @@ fn adapters_and_devices_show_in_path_order() {
       name: "laptop".into(),
       address: "00:1A:7D:DA:71:13".into(),
       powered: true,
+      state: BluetoothAdapterState::Enabled,
       discovering: false,
     }]
   );
@@ -230,6 +237,7 @@ fn property_changes_show() {
   });
   let expected = BluetoothDevice {
     connected: true,
+    state: BluetoothDeviceState::Connected,
     battery: Some(75),
     ..headset()
   };
@@ -238,6 +246,131 @@ fn property_changes_show() {
     [expected, mouse()],
     "the rest stays"
   );
+}
+
+#[test]
+fn an_adapters_state_is_its_power_state_or_else_whether_it_is_powered() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let bluez = fake_bluez(&mut shell, &bus);
+  let adapters = shell.cx.bluetooth().adapters();
+  let state = || {
+    adapters
+      .get_untracked()
+      .first()
+      .map(|adapter| adapter.state)
+  };
+  // As an older BlueZ, which has no PowerState.
+  wait_for(&mut shell, "the adapter", || {
+    state() == Some(BluetoothAdapterState::Enabled)
+  });
+  bluez.set(
+    &mut shell,
+    HCI0,
+    ADAPTER,
+    &[("Powered", Variant::from(false))],
+  );
+  wait_for(&mut shell, "disabled", || {
+    state() == Some(BluetoothAdapterState::Disabled)
+  });
+
+  for (sent, read) in [
+    ("off-enabling", BluetoothAdapterState::Enabling),
+    ("on", BluetoothAdapterState::Enabled),
+    ("on-disabling", BluetoothAdapterState::Disabling),
+    ("off-blocked", BluetoothAdapterState::Blocked),
+    ("off", BluetoothAdapterState::Disabled),
+  ] {
+    let power_state = [("PowerState", Variant::from(sent))];
+    bluez.set(&mut shell, HCI0, ADAPTER, &power_state);
+    wait_for(&mut shell, sent, || state() == Some(read));
+  }
+  // One BlueZ may add later reads as whether it is powered.
+  let logs = capture_logs_from(tracing::Level::DEBUG, || {
+    let changed = [
+      ("PowerState", Variant::from("on-sleeping")),
+      ("Powered", Variant::from(true)),
+    ];
+    bluez.set(&mut shell, HCI0, ADAPTER, &changed);
+    wait_for(&mut shell, "enabled", || {
+      state() == Some(BluetoothAdapterState::Enabled)
+    });
+  });
+  assert!(logs.contains("an unknown power state"), "{logs}");
+}
+
+#[test]
+fn a_device_connects_and_disconnects_while_its_call_is_out() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let bluez = fake_bluez(&mut shell, &bus);
+  for member in ["Connect", "Disconnect"] {
+    bluez.on(member, |call| reply(call, &()));
+  }
+  let bluetooth = shell.cx.bluetooth();
+  let devices = bluetooth.devices();
+  wait_for(&mut shell, "the devices", || {
+    devices.get_untracked().len() == 2
+  });
+  let state = || devices.get_untracked()[0].state;
+
+  // A connect that BlueZ answers without connecting.
+  bluez.hold();
+  bluetooth.connect(HEADSET);
+  assert_eq!(state(), BluetoothDeviceState::Connecting, "at once");
+  wait_for(&mut shell, "the call", || bluez.held() == 1);
+  assert_eq!(state(), BluetoothDeviceState::Connecting);
+  bluez.release(&mut shell);
+  wait_for(&mut shell, "the answer", || {
+    state() == BluetoothDeviceState::Disconnected
+  });
+
+  // One that connects before BlueZ answers.
+  bluez.hold();
+  bluetooth.connect(HEADSET);
+  wait_for(&mut shell, "the call", || bluez.held() == 1);
+  let connected = [("Connected", Variant::from(true))];
+  bluez.set(&mut shell, HEADSET, DEVICE, &connected);
+  wait_for(&mut shell, "connected", || {
+    state() == BluetoothDeviceState::Connected
+  });
+  bluez.release(&mut shell);
+  shell.run_until(Instant::now() + Duration::from_millis(100));
+  assert_eq!(state(), BluetoothDeviceState::Connected);
+
+  // A disconnect over a connect: the connect's answer leaves it
+  // disconnecting.
+  bluez.hold();
+  bluetooth.connect(HEADSET);
+  bluetooth.disconnect(HEADSET);
+  assert_eq!(state(), BluetoothDeviceState::Disconnecting);
+  wait_for(&mut shell, "both calls", || bluez.held() == 2);
+  bluez.release_first(&mut shell);
+  shell.run_until(Instant::now() + Duration::from_millis(100));
+  assert_eq!(state(), BluetoothDeviceState::Disconnecting);
+  let disconnected = [("Connected", Variant::from(false))];
+  bluez.set(&mut shell, HEADSET, DEVICE, &disconnected);
+  wait_for(&mut shell, "disconnected", || {
+    state() == BluetoothDeviceState::Disconnected
+  });
+  bluez.release(&mut shell);
+  shell.run_until(Instant::now() + Duration::from_millis(100));
+  assert_eq!(state(), BluetoothDeviceState::Disconnected);
+  assert!(!devices.get_untracked()[0].connected);
+
+  // BlueZ leaving ends the call that was out.
+  bluez.hold();
+  bluetooth.connect(HEADSET);
+  wait_for(&mut shell, "the call", || bluez.held() == 1);
+  bluez.leave(&mut shell);
+  wait_for(&mut shell, "no devices", || {
+    devices.get_untracked().is_empty()
+  });
+  let _again = fake_bluez(&mut shell, &bus);
+  wait_for(&mut shell, "the devices again", || {
+    devices.get_untracked().len() == 2
+  });
+  assert_eq!(state(), BluetoothDeviceState::Disconnected);
 }
 
 #[test]
@@ -416,6 +549,7 @@ fn wrong_types_read_as_defaults() {
   assert_eq!(headset.name, "AA:BB:CC:DD:EE:01");
   assert_eq!(headset.adapter, "", "a string, not an object path");
   assert!(!headset.connected);
+  assert_eq!(headset.state, BluetoothDeviceState::Disconnected);
   assert_eq!(headset.battery, Some(100), "clamped");
   assert_eq!(devices.get_untracked()[1].battery, None);
 }

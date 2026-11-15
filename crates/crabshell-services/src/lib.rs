@@ -58,7 +58,9 @@ use crabshell_reactive::{Owner, ReadSignal, Signal};
 use crabshell_ui::Cx;
 
 pub use audio::{Audio, AudioNode, AudioStream, Sink};
-pub use bluetooth::{Bluetooth, BluetoothAdapter, BluetoothDevice};
+pub use bluetooth::{
+  Bluetooth, BluetoothAdapter, BluetoothAdapterState, BluetoothDevice, BluetoothDeviceState,
+};
 pub use clock::Precision;
 pub use desktop_entries::{DesktopAction, DesktopEntries, DesktopEntry};
 pub use file::FileView;
