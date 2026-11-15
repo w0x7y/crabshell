@@ -64,14 +64,19 @@ impl Lines {
 
   /// Adds what was read, for [`next`](Self::next).
   pub(crate) fn append(&mut self, bytes: &[u8]) {
+    self.compact();
+    self.inbox.extend_from_slice(bytes);
+  }
+
+  /// Drops what was passed on, and a long line's room with it, so a
+  /// stream that goes quiet keeps nothing it won't use.
+  fn compact(&mut self) {
     if self.start > 0 {
       self.inbox.drain(..self.start);
       self.scanned -= self.start;
       self.start = 0;
-      // A long line's room isn't kept.
       self.inbox.shrink_to(64 * 1024);
     }
-    self.inbox.extend_from_slice(bytes);
   }
 
   /// The next whole line, without its marker, decoded as UTF-8 with bad
@@ -115,15 +120,23 @@ impl Lines {
     if self.skipping {
       self.start = known;
     }
+    self.compact();
     None
   }
 
   /// What is left once the sender is done and every whole line was taken,
-  /// as a last line, if anything. It empties what waits.
-  pub(crate) fn rest(&mut self) -> Option<String> {
+  /// as a last line, if anything; over [`MAX_LINE`] it is dropped and
+  /// logged as coming from `from`. It empties what waits.
+  pub(crate) fn rest(&mut self, from: &dyn Display) -> Option<String> {
     let rest = &self.inbox[self.start..];
-    let text =
-      (!rest.is_empty() && !self.skipping).then(|| String::from_utf8_lossy(rest).into_owned());
+    let text = if rest.is_empty() || self.skipping {
+      None
+    } else if rest.len() > MAX_LINE {
+      tracing::warn!(%from, "a line over 1 MiB was dropped");
+      None
+    } else {
+      Some(String::from_utf8_lossy(rest).into_owned())
+    };
     self.reset();
     text
   }
@@ -138,7 +151,7 @@ impl Lines {
   /// done.
   pub(crate) fn finish(&mut self, from: &dyn Display) -> Vec<String> {
     let mut lines: Vec<String> = std::iter::from_fn(|| self.next(from)).collect();
-    lines.extend(self.rest());
+    lines.extend(self.rest(from));
     lines
   }
 }

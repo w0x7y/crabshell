@@ -433,3 +433,38 @@ fn a_marker_set_outside_a_handler_splits_what_waits_on_the_next_turn() {
   run(&mut shell, 50);
   assert_eq!(*lines.borrow(), ["a", "b"]);
 }
+
+#[test]
+fn a_handler_that_sets_its_marker_on_every_line_stays_quick() {
+  // Each set used to add a next-turn timer, and calloop finds a free
+  // slot by a linear scan, so many lines in one read took quadratic time.
+  const LINES: usize = 40_000;
+  let server = Server::new();
+  let mut shell = Harness::new(offline());
+  let count = Rc::new(RefCell::new(0_usize));
+  let socket = Rc::new(RefCell::new(None::<Socket>));
+  let (kept, held) = (Rc::clone(&count), Rc::clone(&socket));
+  let handler = Rc::new(RefCell::new(None::<Rc<dyn Fn(&str)>>));
+  let again = Rc::clone(&handler);
+  *handler.borrow_mut() = Some(Rc::new(move |_: &str| {
+    *kept.borrow_mut() += 1;
+    let socket = held.borrow().clone().unwrap();
+    let next = Rc::clone(again.borrow().as_ref().unwrap());
+    let _ = socket.on_split("\n", move |line| next(line));
+  }));
+  let first = Rc::clone(handler.borrow().as_ref().unwrap());
+  let opened = shell
+    .cx
+    .socket(server.path())
+    .on_line(move |line| first(line));
+  *socket.borrow_mut() = Some(opened);
+  let mut peer = server.accept();
+  peer.write_all(&b"x\n".repeat(LINES)).unwrap();
+  let started = Instant::now();
+  let done = Rc::clone(&count);
+  shell.retry_until("every line", move || *done.borrow() == LINES, |_| {});
+  let took = started.elapsed();
+  assert!(took < Duration::from_secs(1), "{took:?} for {LINES} lines");
+  socket.borrow_mut().take();
+  handler.borrow_mut().take();
+}

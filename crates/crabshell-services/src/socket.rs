@@ -79,6 +79,8 @@ struct State {
   /// What was read and not passed on yet. Emptied by a close or a connect,
   /// so lines read before one aren't passed on after it.
   lines: Lines,
+  /// A next-turn delivery is on its way, and passes on all that waits.
+  later: bool,
 }
 
 struct Connection {
@@ -346,8 +348,12 @@ impl Inner {
     let Some(event_loop) = self.shared.as_ref().and_then(|shared| shared.event_loop()) else {
       return;
     };
+    if std::mem::replace(&mut self.state.borrow_mut().later, true) {
+      return;
+    }
     let inner = Rc::clone(self);
     let later = move || {
+      inner.state.borrow_mut().later = false;
       inner.deliver(false);
       TimeoutAction::Drop
     };
@@ -364,7 +370,7 @@ impl Inner {
         let mut state = self.state.borrow_mut();
         let line = match state.lines.next(&self.path.display()) {
           Some(line) => line,
-          None if done => match state.lines.rest() {
+          None if done => match state.lines.rest(&self.path.display()) {
             Some(line) => line,
             None => return,
           },

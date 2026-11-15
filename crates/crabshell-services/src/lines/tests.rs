@@ -87,7 +87,7 @@ fn lines_come_one_at_a_time_so_a_new_marker_splits_the_rest() {
   assert_eq!(lines.next(&"test").as_deref(), Some("r1"));
   assert_eq!(lines.next(&"test").as_deref(), Some("r2\nr3"));
   assert_eq!(lines.next(&"test"), None);
-  assert_eq!(lines.rest(), None);
+  assert_eq!(lines.rest(&"test"), None);
 }
 
 /// The whole stream split at each marker in turn, leftmost first, with
@@ -140,4 +140,29 @@ fn reads_of_any_size_split_as_the_whole_stream_would() {
       "{marker:?} {stream:?}"
     );
   }
+}
+
+#[test]
+fn a_long_lines_room_goes_once_it_is_passed_on_not_at_the_next_read() {
+  let mut lines = Lines::new("\n");
+  for chunk in vec![b'z'; 900 * 1024].chunks(64 * 1024) {
+    assert!(push(&mut lines, chunk).is_empty());
+  }
+  assert_eq!(push(&mut lines, b"\n").len(), 1);
+  // Nothing more comes, as when the stream goes quiet.
+  assert!(
+    lines.inbox.capacity() <= 64 * 1024,
+    "{}",
+    lines.inbox.capacity()
+  );
+}
+
+#[test]
+fn a_last_line_over_the_cap_is_dropped_too() {
+  let mut lines = Lines::new("\r\n\r\n");
+  let logs = capture_logs(|| {
+    assert!(push(&mut lines, &vec![b'y'; MAX_LINE + 3]).is_empty());
+    assert!(lines.finish(&"test").is_empty());
+  });
+  assert_eq!(logs.matches("a line over 1 MiB").count(), 1, "{logs}");
 }

@@ -145,6 +145,8 @@ struct State {
   /// yet. Split at a newline until a handler says otherwise, so one set
   /// late still gets the start of its first line.
   lines: Lines,
+  /// A next-turn delivery is on its way, and passes on all that waits.
+  later: bool,
 }
 
 /// What a config does with each line.
@@ -586,8 +588,12 @@ impl Inner {
     let Some(event_loop) = self.event_loop() else {
       return;
     };
+    if std::mem::replace(&mut self.state.borrow_mut().later, true) {
+      return;
+    }
     let inner = Rc::clone(self);
     let later = move || {
+      inner.state.borrow_mut().later = false;
       let program = inner
         .state
         .borrow()
@@ -611,7 +617,7 @@ impl Inner {
         let mut state = self.state.borrow_mut();
         let line = match state.lines.next(&program) {
           Some(line) => line,
-          None if done => match state.lines.rest() {
+          None if done => match state.lines.rest(&program) {
             Some(line) => line,
             None => return,
           },
