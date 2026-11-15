@@ -24,7 +24,7 @@ use crate::tree::{ButtonNode, Change, Node, NodeId, NodeKind, Tree, borrow};
 use crate::window::Window;
 
 /// Logical pixels of touchpad scrolling per scroll step.
-const PIXELS_PER_STEP: f32 = 15.0;
+pub(crate) const PIXELS_PER_STEP: f32 = 15.0;
 
 /// `axis_value120` units per mouse-wheel notch.
 const VALUE120_PER_STEP: i32 = 120;

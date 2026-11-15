@@ -203,7 +203,7 @@ impl Widget for ListView {
 }
 
 /// An element already described, as a widget.
-struct Built(Option<Element>);
+pub(crate) struct Built(pub(crate) Option<Element>);
 
 impl Widget for Built {
   fn into_element(self: Box<Self>) -> Element {

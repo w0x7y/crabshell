@@ -27,6 +27,7 @@ mod region;
 mod screencopy;
 mod scroll;
 mod services;
+mod slider;
 mod style;
 mod text;
 mod text_input;

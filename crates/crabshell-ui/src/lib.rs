@@ -73,6 +73,7 @@ mod prop;
 mod region;
 mod screencopy;
 mod scroll;
+mod slider;
 mod style;
 mod text;
 mod text_input;
@@ -100,6 +101,7 @@ pub use prop::{IntoProp, Prop};
 pub use region::Region;
 pub use screencopy::{CaptureFrame, CaptureRequest, CaptureSource, ScreencopyView};
 pub use scroll::{ListView, ScrollView};
+pub use slider::Slider;
 pub use style::{Border, Color, Font, Gradient, GradientShape, Padding, Shadow, Style};
 pub use text::TextSystem;
 pub use text_input::{FieldState, Preedit, TextInput};
@@ -120,7 +122,7 @@ pub mod prelude {
   pub use crate::{
     Align, Button, Color, Column, CursorShape, Cx, Drag, DragPhase, Edge, Font, Grid, Icon,
     IconSource, Justify, Layer, Menu, Output, PanelWindow, Point, PopupWindow, Rect, Row,
-    ScrollSource, Size, Spacer, Stack, Style, Text, TextSystem, Timer, Wheel, WheelAxis, Widget,
-    Window,
+    ScrollSource, Size, Slider, Spacer, Stack, Style, Text, TextSystem, Timer, Wheel, WheelAxis,
+    Widget, Window,
   };
 }
