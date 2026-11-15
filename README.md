@@ -2,7 +2,7 @@
 
 # crabshell
 
-a rust replacement for quickshell: your whole desktop shell is a rust crate, and everything quickshell does, crabshell will do. v0.1, a bar for sway and other wlroots compositors, is on crates.io. main also has floating windows and keyboard input, animations and blur, desktop services like bluetooth, networks, media players and notifications, launchers, a lock screen, greeter and polkit agent, and hyprland's workspaces, monitors and windows. a check against every quickshell type comes next. [the roadmap](docs/site/roadmap.html) shows each phase, and [the features page](docs/site/features.html) goes through every quickshell type
+a rust replacement for quickshell: your whole desktop shell is a rust crate, and everything quickshell does, crabshell will do. v0.2 is on crates.io. it has a bar for sway and other wlroots compositors, floating windows and keyboard input, animations and blur, desktop services like bluetooth, networks, media players and notifications, launchers, a lock screen, greeter and polkit agent, and hyprland's workspaces, monitors and windows. a check against every quickshell type comes next. [the roadmap](docs/site/roadmap.html) shows each phase, and [the features page](docs/site/features.html) goes through every quickshell type
 
 ### ai disclosure
 

@@ -36,8 +36,15 @@ commands:
 const TEMPLATE_MANIFEST: &str = include_str!("../template/Cargo.toml.template");
 const TEMPLATE_MAIN: &str = include_str!("../template/src/main.rs");
 
-/// The template's dependency line, which `--path` replaces.
-const FROM_CRATES_IO: &str = "crabshell = \"0.1\"";
+/// The template's dependency line, which `--path` replaces. It names this
+/// release, so a version bump that misses the template fails a test.
+const FROM_CRATES_IO: &str = concat!(
+  "crabshell = \"",
+  env!("CARGO_PKG_VERSION_MAJOR"),
+  ".",
+  env!("CARGO_PKG_VERSION_MINOR"),
+  "\""
+);
 
 /// What the command line asks for.
 #[derive(Debug, PartialEq)]

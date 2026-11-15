@@ -117,7 +117,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-crabshell = "0.1"
+crabshell = "0.2"
 
 [profile.dev]
 opt-level = 1
