@@ -13,7 +13,7 @@ use serde::de::{Deserialize, Deserializer, IgnoredAny, SeqAccess, Visitor};
 use zbus::message::Flags;
 use zbus::{Connection, Message, Signature, Type};
 
-use super::{CLOSED, NOTIFICATIONS_PATH, Notification, Service, Timeout, Urgency};
+use super::{CloseReason, NOTIFICATIONS_PATH, Notification, Service, Timeout, Urgency};
 
 /// The most bytes kept of a summary and of a body. With every other
 /// cap, 256 notifications stay within a few MiB however apps fill them.
@@ -87,7 +87,7 @@ pub(super) async fn answer(service: &Rc<Service>, connection: &Connection, call:
       Err(_) => refuse(INVALID_ARGS, "not a notification"),
     },
     (Some(NOTIFICATIONS_PATH), "CloseNotification") => match body.deserialize::<u32>() {
-      Ok(id) if service.close(&[id], CLOSED) => reply.build(&()),
+      Ok(id) if service.close(&[id], CloseReason::CloseRequested) => reply.build(&()),
       _ => refuse(INVALID_ARGS, "no such notification"),
     },
     (Some(NOTIFICATIONS_PATH), "GetCapabilities") => reply.build(&CAPABILITIES.as_slice()),

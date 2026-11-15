@@ -16,6 +16,7 @@ mod tests;
 
 use std::cell::RefCell;
 use std::future::poll_fn;
+use std::panic::{self, AssertUnwindSafe, Location};
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Once;
@@ -23,7 +24,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use calloop::RegistrationToken;
 use calloop::timer::TimeoutAction;
-use crabshell_reactive::{ReadSignal, Signal};
+use crabshell_reactive::{Owner, ReadSignal, Signal};
 use crabshell_ui::{Cx, IconSource};
 use zbus::export::futures_core::Stream;
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
@@ -33,6 +34,7 @@ use zbus::{Connection, Message, MessageStream};
 use crate::Shared;
 use crate::dbus::BUS;
 use crate::dbus::set_changed;
+use crate::lines::panic_message;
 
 const NOTIFICATIONS: &str = "org.freedesktop.Notifications";
 const NOTIFICATIONS_PATH: &str = "/org/freedesktop/Notifications";
@@ -47,10 +49,30 @@ const MAX_KEPT: usize = 256;
 /// The most pixel bytes the history keeps: 128 pictures of 128 px.
 const MAX_PIXELS_KEPT: usize = 8 * 1024 * 1024;
 
-/// Why a notification closed, as `NotificationClosed` tells its app.
-const EXPIRED: u32 = 1;
-const DISMISSED: u32 = 2;
-const CLOSED: u32 = 3;
+/// Why a notification closed, from [`Notifications::on_closed`]. Its app
+/// hears the same in `NotificationClosed`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseReason {
+  /// It went by itself: a transient one's popup timed out, or it was the
+  /// oldest when the history was full.
+  Expired,
+  /// The user dismissed it, cleared them all, or picked one of its
+  /// actions.
+  Dismissed,
+  /// Its app took it back.
+  CloseRequested,
+}
+
+impl CloseReason {
+  /// Its number in `NotificationClosed`.
+  fn code(self) -> u32 {
+    match self {
+      CloseReason::Expired => 1,
+      CloseReason::Dismissed => 2,
+      CloseReason::CloseRequested => 3,
+    }
+  }
+}
 
 /// How urgent a notification is, from its `urgency` hint.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -125,6 +147,9 @@ pub struct Notifications {
   service: Option<Rc<Service>>,
   list: ReadSignal<Vec<Notification>>,
   popups: ReadSignal<Vec<Notification>>,
+  /// The asking context's owner, which [`on_closed`](Self::on_closed)'s
+  /// handlers live under.
+  owner: Owner,
 }
 
 impl Notifications {
@@ -147,7 +172,7 @@ impl Notifications {
   /// tells its app. An unknown `id` is ignored.
   pub fn dismiss(&self, id: u32) {
     if let Some(service) = &self.service {
-      service.close(&[id], DISMISSED);
+      service.close(&[id], CloseReason::Dismissed);
     }
   }
 
@@ -167,8 +192,54 @@ impl Notifications {
       let history = state.as_ref().map(|state| state.history.as_slice());
       let ids: Vec<u32> = history.unwrap_or_default().iter().map(|n| n.id).collect();
       drop(state);
-      service.close(&ids, DISMISSED);
+      service.close(&ids, CloseReason::Dismissed);
     }
+  }
+
+  /// Calls `handler` with each notification that leaves the history and
+  /// why, as Quickshell's `Notification.closed`, for as long as the
+  /// context `cx.notifications()` was called on lives. It runs on the
+  /// main thread once the lists no longer show it. A popup that times out
+  /// stays in the history, so it hasn't closed, unless it is transient.
+  ///
+  /// If it panics, that is logged with where `on_closed` was called, and
+  /// it isn't called again. Called on a handle whose context went, it
+  /// logs that and does nothing.
+  #[track_caller]
+  pub fn on_closed(&self, handler: impl Fn(&Notification, CloseReason) + 'static) {
+    let at = Location::caller();
+    if self.owner.is_disposed() {
+      return tracing::warn!(
+        "notifications on_closed (called at {at}) on a context that is gone does nothing"
+      );
+    }
+    if let Some(service) = &self.service {
+      let id = service.listen(Rc::new(handler), at);
+      // Dropped with the asking context's owner, which takes the handler away.
+      self.owner.signal(Unlisten(Rc::clone(service), id));
+    }
+  }
+}
+
+/// What `on_closed` calls.
+type CloseHandler = Rc<dyn Fn(&Notification, CloseReason)>;
+
+/// A config's handler of closed notifications, from `on_closed`.
+#[derive(Clone)]
+struct Listener {
+  id: u64,
+  handler: CloseHandler,
+  /// Where `on_closed` was called, for the log if it panics.
+  at: &'static Location<'static>,
+}
+
+/// Takes a listener away when its context's owner drops this.
+struct Unlisten(Rc<Service>, u64);
+
+impl Drop for Unlisten {
+  fn drop(&mut self) {
+    // Dropped outside the borrow: the handler may hold a `Notifications`.
+    drop(self.0.unlisten(self.1));
   }
 }
 
@@ -183,6 +254,7 @@ pub(crate) fn notifications(cx: &Cx) -> Notifications {
       service: None,
       list: cx.signal(Vec::new()).read_only(),
       popups: cx.signal(Vec::new()).read_only(),
+      owner: cx.owner(),
     };
   };
   let (list, popups) = service.start();
@@ -190,6 +262,7 @@ pub(crate) fn notifications(cx: &Cx) -> Notifications {
     service: Some(service),
     list,
     popups,
+    owner: cx.owner(),
   }
 }
 
@@ -215,6 +288,10 @@ struct State {
   next_id: u32,
   /// The expiry timer, while a popup waits to expire.
   timer: Option<RegistrationToken>,
+  /// The config's close handlers, in the order given.
+  listeners: Vec<Listener>,
+  /// The id the next listener gets.
+  next_listener: u64,
 }
 
 impl State {
@@ -234,7 +311,7 @@ impl State {
 /// A signal for the apps, sent in order.
 enum Event {
   /// `NotificationClosed`: the id and why.
-  Closed(u32, u32),
+  Closed(u32, CloseReason),
   /// `ActionInvoked`: the id and the action's key.
   Invoked(u32, String),
 }
@@ -264,6 +341,8 @@ impl Service {
       showing: Vec::new(),
       next_id: 1,
       timer: None,
+      listeners: Vec::new(),
+      next_listener: 0,
     });
     match self.shared.config.session_bus.clone() {
       Some(address) => self.shared.spawn(run(Rc::clone(self), address)),
@@ -315,11 +394,7 @@ impl Service {
         None => state.showing.insert(0, (id, expires)),
       }
       let excess = state.history.len().saturating_sub(MAX_KEPT);
-      let dropped: Vec<Event> = state
-        .history
-        .drain(..excess)
-        .map(|old| Event::Closed(old.id, EXPIRED))
-        .collect();
+      let dropped: Vec<Notification> = state.history.drain(..excess).collect();
       let history = &state.history;
       state
         .showing
@@ -327,20 +402,18 @@ impl Service {
       keep_pixels_within(&mut state.history, MAX_PIXELS_KEPT);
       (id, dropped)
     };
-    self.emit(dropped);
-    self.changed();
+    self.closed(Vec::new(), dropped, CloseReason::Expired);
     id
   }
 
   /// Takes `ids` away and tells their apps `reason`. Returns whether any
   /// was kept.
-  fn close(self: &Rc<Self>, ids: &[u32], reason: u32) -> bool {
-    let events = self.take(ids, reason);
-    if events.is_empty() {
+  fn close(self: &Rc<Self>, ids: &[u32], reason: CloseReason) -> bool {
+    let taken = self.take(ids);
+    if taken.is_empty() {
       return false;
     }
-    self.emit(events);
-    self.changed();
+    self.closed(Vec::new(), taken, reason);
     true
   }
 
@@ -355,33 +428,91 @@ impl Service {
     let Some(resident) = resident else {
       return tracing::warn!(id, key, "no such notification action");
     };
-    let mut events = vec![Event::Invoked(id, key.to_owned())];
-    if !resident {
-      events.extend(self.take(&[id], DISMISSED));
-    }
-    self.emit(events);
-    self.changed();
+    let events = vec![Event::Invoked(id, key.to_owned())];
+    let taken = if resident {
+      Vec::new()
+    } else {
+      self.take(&[id])
+    };
+    self.closed(events, taken, CloseReason::Dismissed);
   }
 
-  /// Takes `ids` out of the history and the popups, and returns the
-  /// signals that say so.
-  fn take(&self, ids: &[u32], reason: u32) -> Vec<Event> {
+  /// Takes `ids` out of the history and the popups, and returns those
+  /// that were kept, oldest first.
+  fn take(&self, ids: &[u32]) -> Vec<Notification> {
     let mut state = self.state.borrow_mut();
     let Some(state) = state.as_mut() else {
       return Vec::new();
     };
-    let taken: Vec<u32> = state
-      .history
-      .iter()
-      .map(|kept| kept.id)
-      .filter(|id| ids.contains(id))
-      .collect();
-    state.history.retain(|kept| !taken.contains(&kept.id));
-    state.showing.retain(|(id, _)| !taken.contains(id));
-    taken
+    let (taken, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut state.history)
       .into_iter()
-      .map(|id| Event::Closed(id, reason))
-      .collect()
+      .partition(|kept| ids.contains(&kept.id));
+    state.history = kept;
+    state.showing.retain(|(id, _)| !ids.contains(id));
+    taken
+  }
+
+  /// Tells the apps `events`, then that `closed` went for `reason`, shows
+  /// the lists without them, and then calls the config's handlers.
+  fn closed(
+    self: &Rc<Self>,
+    mut events: Vec<Event>,
+    closed: Vec<Notification>,
+    reason: CloseReason,
+  ) {
+    events.extend(closed.iter().map(|gone| Event::Closed(gone.id, reason)));
+    self.emit(events);
+    self.changed();
+    self.deliver(&closed, reason);
+  }
+
+  /// Adds a config's close handler. Its id.
+  fn listen(&self, handler: CloseHandler, at: &'static Location<'static>) -> u64 {
+    let mut state = self.state.borrow_mut();
+    let state = state
+      .as_mut()
+      .expect("invariant: started by cx.notifications()");
+    state.next_listener += 1;
+    let id = state.next_listener;
+    state.listeners.push(Listener { id, handler, at });
+    id
+  }
+
+  /// Takes a handler away, handing it back to drop outside the borrow.
+  fn unlisten(&self, id: u64) -> Option<Listener> {
+    let mut state = self.state.borrow_mut();
+    let listeners = &mut state.as_mut()?.listeners;
+    let index = listeners.iter().position(|listener| listener.id == id)?;
+    Some(listeners.remove(index))
+  }
+
+  fn listening(&self, id: u64) -> bool {
+    let state = self.state.borrow();
+    let mut listeners = state.iter().flat_map(|state| &state.listeners);
+    listeners.any(|listener| listener.id == id)
+  }
+
+  /// Hands each of `closed` to the config's handlers, with nothing
+  /// borrowed, since a handler may call the service. A handler that
+  /// panics is logged with where `on_closed` was called, and taken away.
+  fn deliver(&self, closed: &[Notification], reason: CloseReason) {
+    let listeners = match self.state.borrow().as_ref() {
+      Some(state) if !closed.is_empty() => state.listeners.clone(),
+      _ => return,
+    };
+    for gone in closed {
+      for Listener { id, handler, at } in &listeners {
+        // A handler before this one may have taken this one's context.
+        if !self.listening(*id) {
+          continue;
+        }
+        if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| handler(gone, reason))) {
+          let message = panic_message(payload.as_ref());
+          tracing::error!("notifications on_closed (called at {at}) panicked: {message}");
+          drop(self.unlisten(*id));
+        }
+      }
+    }
   }
 
   /// The timer's tick: takes the expired popups away, and the transient
@@ -411,9 +542,8 @@ impl Service {
         .filter(|id| expired.iter().any(|(gone, _)| gone == id))
         .collect::<Vec<_>>()
     };
-    let events = self.take(&transient, EXPIRED);
-    self.emit(events);
-    self.changed();
+    let taken = self.take(&transient);
+    self.closed(Vec::new(), taken, CloseReason::Expired);
     TimeoutAction::Drop
   }
 
@@ -472,7 +602,7 @@ impl Service {
         let (path, interface) = (NOTIFICATIONS_PATH, NOTIFICATIONS);
         let sent = match &event {
           Event::Closed(id, reason) => {
-            let body = (*id, *reason);
+            let body = (*id, reason.code());
             let signal = "NotificationClosed";
             let emit = connection.emit_signal(None::<&str>, path, interface, signal, &body);
             emit.await

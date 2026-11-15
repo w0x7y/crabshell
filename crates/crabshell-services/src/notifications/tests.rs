@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::future::poll_fn;
 use std::path::PathBuf;
@@ -14,8 +14,8 @@ use zbus::{Connection, MessageStream, Structure, Variant};
 
 use super::server::{RawImage, icon, image_pixels};
 use super::{
-  MAX_KEPT, NOTIFICATIONS, NOTIFICATIONS_PATH, Notification, Notifications, Service, Timeout,
-  Urgency, keep_pixels_within,
+  CloseReason, MAX_KEPT, NOTIFICATIONS, NOTIFICATIONS_PATH, Notification, Notifications, Service,
+  Timeout, Urgency, keep_pixels_within,
 };
 use crate::testing::{Harness, PrivateBus, capture_logs, offline};
 use crate::{Config, ServicesExt};
@@ -154,6 +154,20 @@ fn listen(shell: &mut Harness, bus: &PrivateBus) -> Rc<RefCell<Vec<String>>> {
   heard
 }
 
+/// What `on_closed` hears from `notifications`, as each summary and why.
+fn closes(notifications: &Notifications) -> Rc<RefCell<Vec<(String, CloseReason)>>> {
+  let heard: Rc<RefCell<Vec<_>>> = Rc::default();
+  let sink = Rc::clone(&heard);
+  notifications.on_closed(move |gone, reason| {
+    sink.borrow_mut().push((gone.summary.clone(), reason));
+  });
+  heard
+}
+
+fn heard(summary: &str, reason: CloseReason) -> (String, CloseReason) {
+  (summary.to_owned(), reason)
+}
+
 fn ids(signal: ReadSignal<Vec<Notification>>) -> Vec<u32> {
   signal.get_untracked().iter().map(|n| n.id).collect()
 }
@@ -258,8 +272,13 @@ fn close_notification_takes_it_away_with_reason_3_and_refuses_an_unknown_id() {
   let bus = PrivateBus::start();
   let (mut shell, notifications, app) = serve(&bus, online(&bus));
   let heard = listen(&mut shell, &bus);
+  let closed = closes(&notifications);
   let id = notify(&mut shell, &app, note("hello")).expect("an id");
   call(&mut shell, &app, "CloseNotification", id).expect("closed");
+  assert_eq!(
+    *closed.borrow(),
+    [self::heard("hello", CloseReason::CloseRequested)]
+  );
   assert_eq!(ids(notifications.list()), [0u32; 0]);
   assert_eq!(ids(notifications.popups()), [0u32; 0]);
   wait_for(&mut shell, "the signal", || !heard.borrow().is_empty());
@@ -306,6 +325,146 @@ fn dismissing_invoking_and_clearing_tell_the_app() {
       format!("NotificationClosed {fourth} 2"),
     ]
   );
+}
+
+#[test]
+fn close_handlers_hear_each_notification_that_goes_and_why() {
+  let config = Config {
+    popup_timeout: Duration::from_millis(50),
+    ..offline()
+  };
+  let mut shell = Harness::new(config);
+  let notifications = shell.cx.notifications();
+  let server = service(&notifications);
+  let closed = closes(&notifications);
+  let list = notifications.list();
+  let shown = Rc::new(Cell::new(false));
+  let seen = Rc::clone(&shown);
+  notifications.on_closed(move |gone, _| {
+    let still = list.get_untracked().iter().any(|kept| kept.id == gone.id);
+    seen.set(seen.get() || still);
+  });
+  let mut picked = sample("picked");
+  picked.actions = vec![("default".into(), "Open".into())];
+  let picked = server.notify(0, picked);
+  let dismissed = server.notify(0, sample("dismissed"));
+  let mut transient = sample("transient");
+  transient.transient = true;
+  server.notify(0, transient);
+  let kept = server.notify(0, sample("kept"));
+
+  notifications.invoke(picked, "default");
+  notifications.dismiss(dismissed);
+  assert_eq!(
+    *closed.borrow(),
+    [
+      heard("picked", CloseReason::Dismissed),
+      heard("dismissed", CloseReason::Dismissed)
+    ]
+  );
+  wait_for(&mut shell, "the transient one to expire", || {
+    closed.borrow().len() == 3
+  });
+  assert_eq!(closed.borrow()[2], heard("transient", CloseReason::Expired));
+  // Its popup expired too, but it stays in the history.
+  shell.run_until(Instant::now() + Duration::from_millis(100));
+  assert_eq!(closed.borrow().len(), 3);
+  assert_eq!(ids(notifications.list()), [kept]);
+  notifications.clear();
+  assert_eq!(closed.borrow()[3], heard("kept", CloseReason::Dismissed));
+
+  // The oldest goes when the history is full.
+  for n in 0..=MAX_KEPT {
+    server.notify(0, sample(&n.to_string()));
+  }
+  assert_eq!(closed.borrow().len(), 5);
+  assert_eq!(closed.borrow()[4], heard("0", CloseReason::Expired));
+  assert!(
+    !shown.get(),
+    "a handler runs once the list no longer shows it"
+  );
+}
+
+#[test]
+fn a_panicking_close_handler_is_logged_and_taken_away_and_the_rest_run_on() {
+  let shell = Harness::new(offline());
+  let notifications = shell.cx.notifications();
+  let server = service(&notifications);
+  let first = server.notify(0, sample("first"));
+  let second = server.notify(0, sample("second"));
+  let panics = Rc::new(Cell::new(0));
+  let counted = Rc::clone(&panics);
+  notifications.on_closed(move |gone, _| {
+    counted.set(counted.get() + 1);
+    panic!("bad close of {}", gone.summary);
+  });
+  let closed = closes(&notifications);
+  let inner = notifications.clone();
+  notifications.on_closed(move |gone, _| {
+    // Nothing of the service is borrowed while a handler runs.
+    if gone.id == first {
+      inner.dismiss(second);
+    }
+  });
+  let logs = capture_logs(|| notifications.dismiss(first));
+  let at =
+    "notifications on_closed (called at crates/crabshell-services/src/notifications/tests.rs:";
+  assert!(logs.contains(at), "{logs}");
+  assert!(logs.contains("panicked: bad close of first"), "{logs}");
+  assert_eq!(
+    panics.get(),
+    1,
+    "a handler that panicked isn't called again"
+  );
+  assert_eq!(
+    *closed.borrow(),
+    [
+      heard("first", CloseReason::Dismissed),
+      heard("second", CloseReason::Dismissed)
+    ]
+  );
+  assert_eq!(ids(notifications.list()), [0u32; 0]);
+}
+
+#[test]
+fn a_close_handler_goes_with_its_context() {
+  let shell = Harness::new(offline());
+  let notifications = shell.cx.notifications();
+  let server = service(&notifications);
+  let id = server.notify(0, sample("hello"));
+  let nodes = Runtime::current().node_count();
+  let child = shell.cx.child();
+  let from_child = child.notifications();
+  let closed = closes(&from_child);
+  child.owner().dispose();
+  assert_eq!(Runtime::current().node_count(), nodes);
+  assert_eq!(Rc::strong_count(&closed), 1, "the handler was dropped");
+  notifications.dismiss(id);
+  assert_eq!(*closed.borrow(), []);
+
+  let logs = capture_logs(|| from_child.on_closed(|_, _| {}));
+  assert!(
+    logs.contains("on a context that is gone does nothing"),
+    "{logs}"
+  );
+  let listeners = || {
+    server
+      .state
+      .borrow()
+      .as_ref()
+      .map_or(0, |state| state.listeners.len())
+  };
+  assert_eq!(listeners(), 0);
+
+  // A handler that ends another's context first keeps it from running.
+  let child = shell.cx.child();
+  let owner = child.owner();
+  notifications.on_closed(move |_, _| owner.dispose());
+  let late = closes(&child.notifications());
+  let id = server.notify(0, sample("late"));
+  notifications.dismiss(id);
+  assert_eq!(*late.borrow(), []);
+  assert_eq!(listeners(), 1);
 }
 
 #[test]

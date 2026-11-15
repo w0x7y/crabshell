@@ -68,7 +68,7 @@ pub use greetd::{GreetMessage, GreetState, Greetd};
 pub use hyprland::{Hyprland, HyprlandEvent, HyprlandMonitor, HyprlandToplevel, HyprlandWorkspace};
 pub use mpris::{LoopStatus, Mpris, PlaybackStatus, Player};
 pub use network::{Network, NetworkDevice, NetworkKind, NetworkState, WifiNetwork};
-pub use notifications::{Notification, Notifications, Timeout, Urgency};
+pub use notifications::{CloseReason, Notification, Notifications, Timeout, Urgency};
 pub use pam::{Pam, PamMessage, PamResult, PamState};
 pub use polkit::{AuthRequest, AuthState, PolkitAgent};
 pub use power::{

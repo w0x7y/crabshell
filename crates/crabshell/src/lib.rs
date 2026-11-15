@@ -86,14 +86,14 @@ pub mod prelude {
   pub use crabshell_reactive::{Effect, Memo, ReadSignal, Signal, untrack};
   pub use crabshell_services::{
     AudioNode, AudioStream, AuthRequest, AuthState, BatteryState, Bluetooth, BluetoothAdapter,
-    BluetoothAdapterState, BluetoothDevice, BluetoothDeviceState, DesktopAction, DesktopEntries,
-    DesktopEntry, DeviceKind, FileView, GreetMessage, GreetState, Greetd, Hyprland, HyprlandEvent,
-    HyprlandMonitor, HyprlandToplevel, HyprlandWorkspace, IntoCommand, LoopStatus, Mpris, Network,
-    NetworkDevice, NetworkKind, NetworkState, Notification, Notifications, Pam, PamMessage,
-    PamResult, PamState, PerformanceDegradation, PlaybackStatus, Player, PolkitAgent, PowerDevice,
-    PowerProfile, PowerProfiles, Precision, Process, ServicesExt, Sink, Socket, Sway, SwayEvent,
-    SwayEventKind, SwayOutput, Timeout, Tray, TrayCategory, TrayHost, TrayItem, TrayMenu,
-    TrayStatus, UPower, Urgency, WifiNetwork, Workspace,
+    BluetoothAdapterState, BluetoothDevice, BluetoothDeviceState, CloseReason, DesktopAction,
+    DesktopEntries, DesktopEntry, DeviceKind, FileView, GreetMessage, GreetState, Greetd, Hyprland,
+    HyprlandEvent, HyprlandMonitor, HyprlandToplevel, HyprlandWorkspace, IntoCommand, LoopStatus,
+    Mpris, Network, NetworkDevice, NetworkKind, NetworkState, Notification, Notifications, Pam,
+    PamMessage, PamResult, PamState, PerformanceDegradation, PlaybackStatus, Player, PolkitAgent,
+    PowerDevice, PowerProfile, PowerProfiles, Precision, Process, ServicesExt, Sink, Socket, Sway,
+    SwayEvent, SwayEventKind, SwayOutput, Timeout, Tray, TrayCategory, TrayHost, TrayItem,
+    TrayMenu, TrayStatus, UPower, Urgency, WifiNetwork, Workspace,
   };
   pub use crabshell_ui::{
     Adjust, Align, Anchors, Animate, Border, Button, CaptureSource, Color, Column, Cx, Easing,
