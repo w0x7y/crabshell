@@ -18,6 +18,7 @@ mod images;
 mod repaint;
 mod shapes;
 mod theme;
+mod transform;
 
 use std::io;
 use std::path::{Path, PathBuf};

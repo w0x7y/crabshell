@@ -8,12 +8,12 @@
 
 use cosmic_text::{FontSystem, SwashCache, SwashContent, SwashImage};
 use crabshell_ui::{
-  CaptureView, Color, Content, Gradient, GradientShape, IconView, ImageView, InputView, NodeView,
-  Rect, Shadow, Size, Style, TextSystem, TextView, WindowView,
+  Affine, CaptureView, Color, Content, Gradient, GradientShape, IconView, ImageView, InputView,
+  NodeView, Rect, Shadow, Size, Style, TextSystem, TextView, WindowView,
 };
 use tiny_skia::{
-  FillRule, GradientStop, LinearGradient, Mask, Paint, PathBuilder, Pixmap, PixmapMut, PixmapPaint,
-  RadialGradient, Shader, SpreadMode, Transform,
+  FillRule, FilterQuality, GradientStop, LinearGradient, Mask, Paint, PathBuilder, Pixmap,
+  PixmapMut, PixmapPaint, RadialGradient, Shader, SpreadMode, Transform,
 };
 
 use crate::damage::{BufferAge, DamageHistory, PixelRect};
@@ -28,6 +28,15 @@ const TILE: u32 = 64;
 /// How many glyph images cosmic-text's cache may hold after a draw before
 /// it is cleared. A bar needs a few hundred; the cache never shrinks itself.
 const GLYPH_CACHE_LIMIT: usize = 2048;
+
+/// The most pixels a transformed layer may hold, 16 MiB. Only a widget
+/// shrunk to a sliver of its size, so that a tile shows much of it, comes
+/// near; past this it isn't drawn.
+const LAYER_LIMIT: u64 = 1 << 22;
+
+/// Buffer pixels a transformed layer reaches past what it samples, so the
+/// edges where tiny-skia cuts its curves stay out of the picture.
+const LAYER_MARGIN: f32 = 2.0;
 
 /// How a buffer stores each pixel, as `wl_shm` names the formats. Both are
 /// 32 bits per pixel with premultiplied alpha.
@@ -73,7 +82,7 @@ pub struct Renderer {
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(not(test), allow(dead_code, reason = "only tests read it"))]
 struct Work {
-  /// Pixels of opacity layers allocated.
+  /// Pixels of opacity, clip and transform layers allocated.
   layer_pixels: u64,
   /// Nodes drawn.
   nodes: u64,
@@ -395,7 +404,9 @@ impl Painter<'_> {
     if opacity == 0.0 {
       return;
     }
-    if opacity < 1.0 {
+    if let Some(transform) = node.transform() {
+      self.transformed(pixmap, node, &style, transform, opacity);
+    } else if opacity < 1.0 {
       // The layer covers only what the subtree paints in this area.
       let Some(mut layer) = Pixmap::new(width, height) else {
         return;
@@ -418,6 +429,95 @@ impl Painter<'_> {
     } else {
       self.node_contents(pixmap, node, &style);
     }
+  }
+
+  /// Draws `node` and everything inside it into a layer in its own
+  /// coordinates, then blends that in through its `transform`, filtered
+  /// bilinearly, at `opacity`: one layer for both. The layer covers only
+  /// what lands in this pixmap, in the node's own buffer pixels, so a
+  /// pixel is always drawn the same way in the same tile.
+  fn transformed(
+    &mut self,
+    pixmap: &mut PixmapMut<'_>,
+    node: NodeView<'_>,
+    style: &Style,
+    transform: Affine,
+    opacity: f32,
+  ) {
+    let Affine {
+      sx,
+      ky,
+      kx,
+      sy,
+      tx,
+      ty,
+    } = transform;
+    let Grid {
+      scale, left, top, ..
+    } = self.grid;
+    // From the node's own buffer pixels to its parent's.
+    let device = Transform::from_scale(scale, scale)
+      .pre_concat(Transform::from_row(sx, ky, kx, sy, tx, ty))
+      .pre_scale(1.0 / scale, 1.0 / scale);
+    let to_pixmap = device.post_translate(-left, -top);
+    let Some(back) = to_pixmap.invert() else {
+      return;
+    };
+    let inner = node.inner_bounds();
+    let shown = tiny_skia::Rect::from_xywh(0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32)
+      .and_then(|rect| rect.transform(back));
+    let drawn = tiny_skia::Rect::from_xywh(
+      inner.x * scale,
+      inner.y * scale,
+      inner.width * scale,
+      inner.height * scale,
+    );
+    let Some(area) = shown
+      .zip(drawn)
+      .and_then(|(shown, drawn)| shown.intersect(&drawn))
+      .and_then(|area| area.outset(LAYER_MARGIN, LAYER_MARGIN))
+      .and_then(|area| area.round_out())
+    else {
+      return;
+    };
+    let pixels = u64::from(area.width()) * u64::from(area.height());
+    if pixels > LAYER_LIMIT {
+      tracing::debug!(
+        "{} is transformed into a layer too large to draw",
+        node.path()
+      );
+      return;
+    }
+    let Some(mut layer) = Pixmap::new(area.width(), area.height()) else {
+      return;
+    };
+    self.work.layer_pixels += pixels;
+    let (x, y) = (area.x() as f32, area.y() as f32);
+    let mut inner = Painter {
+      grid: Grid {
+        left: x,
+        top: y,
+        ..self.grid
+      },
+      glyphs: &mut *self.glyphs,
+      icons: &mut *self.icons,
+      fonts: &mut *self.fonts,
+      work: &mut *self.work,
+    };
+    inner.node_contents(&mut layer.as_mut(), node, style);
+    let paint = PixmapPaint {
+      opacity,
+      quality: FilterQuality::Bilinear,
+      ..PixmapPaint::default()
+    };
+    pixmap.draw_pixmap(
+      0,
+      0,
+      layer.as_ref(),
+      &paint,
+      to_pixmap.pre_translate(x, y),
+      None,
+    );
   }
 
   fn node_contents(&mut self, pixmap: &mut PixmapMut<'_>, node: NodeView<'_>, style: &Style) {

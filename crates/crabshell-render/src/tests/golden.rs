@@ -1,5 +1,5 @@
-//! Whole windows drawn at scales 1, 1.5 and 2 and compared with golden
-//! images.
+//! Whole windows drawn at scales 1, 1.5 and 2, or at all five, and
+//! compared with golden images.
 
 use std::rc::Rc;
 
@@ -12,6 +12,14 @@ use super::{Scene, assert_golden, fixture};
 
 const SCALES: [(f32, &str); 3] = [(1.0, "1x"), (1.5, "1.5x"), (2.0, "2x")];
 
+const ALL_SCALES: [(f32, &str); 5] = [
+  (1.0, "1x"),
+  (1.25, "1.25x"),
+  (1.5, "1.5x"),
+  (1.75, "1.75x"),
+  (2.0, "2x"),
+];
+
 const BAR: Style = Style::new()
   .background(Color::hex("#1e1e2e"))
   .color(Color::hex("#cdd6f4"));
@@ -19,7 +27,18 @@ const BAR: Style = Style::new()
 /// Draws the window `build` makes at each scale and checks it against
 /// `<name>@<scale>.png`.
 fn check(name: &str, width: f32, height: f32, build: impl Fn(&Scene) -> crabshell_ui::PanelWindow) {
-  for (scale, suffix) in SCALES {
+  check_at(&SCALES, name, width, height, build);
+}
+
+/// [`check`] at each of `scales`.
+fn check_at(
+  scales: &[(f32, &str)],
+  name: &str,
+  width: f32,
+  height: f32,
+  build: impl Fn(&Scene) -> crabshell_ui::PanelWindow,
+) {
+  for &(scale, suffix) in scales {
     let mut scene = Scene::new();
     let panel = build(&scene);
     let window: Window = scene.window(panel, width, height);
@@ -447,4 +466,69 @@ fn a_field_draws_only_inside_its_content_box() {
       assert_eq!(&buffer.pixels[at..at + 3], &background, "pixel {x},{y}");
     }
   }
+}
+
+/// A rounded card with a border and text, moved, scaled and turned; a
+/// turned pair of boxes at half opacity, drawn as one layer; and a turned
+/// clip, which cuts its children along its turned corners.
+#[test]
+fn transforms() {
+  check_fonts();
+  const CARD: Style = Style::new()
+    .background(Color::hex("#45475a"))
+    .border(2.0, Color::hex("#fab387"))
+    .radius(6.0)
+    .padding(4, 8);
+  check_at(&ALL_SCALES, "transforms", 330.0, 64.0, |scene| {
+    scene.panel().style(BAR).child(
+      Row::new()
+        .padding(10, 14)
+        .gap(18)
+        .align(Align::Center)
+        // Half a pixel off the grid, so it is filtered.
+        .child(
+          Row::new()
+            .style(CARD.translate(3.5, -6.0))
+            .child(Text::new("moved")),
+        )
+        .child(Row::new().style(CARD.scale(1.4)).child(Text::new("big")))
+        .child(
+          Row::new()
+            .style(CARD.rotate(20.0))
+            .child(Text::new("turned")),
+        )
+        .child(
+          Stack::new()
+            .style(Style::new().opacity(0.5).rotate(-15.0))
+            .child(
+              Row::new().style(
+                Style::new()
+                  .background(Color::hex("#89b4fa"))
+                  .padding(10, 12),
+              ),
+            )
+            .child(Row::new().padding(4, 4).align(Align::Start).child(
+              Row::new().style(Style::new().background(Color::hex("#f9e2af")).padding(4, 4)),
+            )),
+        )
+        .child(
+          Row::new()
+            .style(
+              CARD
+                .padding(0, 0)
+                .width(40.0)
+                .height(30.0)
+                .clip(true)
+                .rotate(30.0),
+            )
+            .child(
+              Row::new().style(
+                Style::new()
+                  .background(Color::hex("#f38ba8"))
+                  .padding(20, 40),
+              ),
+            ),
+        ),
+    )
+  });
 }
