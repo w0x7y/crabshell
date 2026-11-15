@@ -627,23 +627,29 @@ impl Window {
   /// Lays the window out at its size, measuring text with `text`, and
   /// records the areas that moved or changed as damage.
   ///
-  /// Then it writes each moved widget's `geometry` signal and runs the
-  /// effects that read one, which may change the layout, and lays out
+  /// Then it writes each moved widget's `geometry` signal, tells lists
+  /// their rows' sizes and runs the effects that follow, which may change the layout, and lays out
   /// again, until nothing moves or 8 layouts have run.
   pub fn layout(&self, text: &mut TextSystem) {
     for _ in 0..GEOMETRY_ROUNDS {
-      let moved = {
+      let (moved, measured) = {
         let mut tree = borrow(&self.tree);
         tree.layout(text);
-        std::mem::take(&mut tree.geometry)
+        (
+          std::mem::take(&mut tree.geometry),
+          std::mem::take(&mut tree.measured),
+        )
       };
       // Nothing new to tell, so no effects run here.
-      if moved.is_empty() {
+      if moved.is_empty() && measured.is_empty() {
         return;
       }
       // Written with the tree released, so an effect may lay it out.
       for (signal, rect) in moved {
         signal.try_set(rect);
+      }
+      for (measure, size) in measured {
+        measure(size);
       }
       Runtime::current().flush();
       if !self.needs_layout() {

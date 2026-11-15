@@ -12,6 +12,8 @@
 //! its final width, and records as damage every node that moved, appeared
 //! or changed.
 
+use std::rc::Rc;
+
 use cosmic_text::FontSystem;
 use taffy::prelude::{TaffyGridLine, TaffyGridSpan};
 use taffy::{
@@ -414,6 +416,13 @@ impl Tree {
     {
       node.written = Some(rect);
       self.geometry.push((signal, rect));
+    }
+    let size = crate::Size::new(rect.width, rect.height);
+    if let Some(measure) = &node.measure
+      && node.measured != Some(size)
+    {
+      node.measured = Some(size);
+      self.measured.push((Rc::clone(measure), size));
     }
     node.clips = clips;
     node.rect = Some(rect);

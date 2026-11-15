@@ -406,6 +406,9 @@ impl Tree {
     let Some(mut written) = scroll.current() else {
       return;
     };
+    if let Some(shifts) = &scroll.shifts {
+      shifts.set(0.0);
+    }
     scroll.motion.generation += 1;
     let generation = scroll.motion.generation;
     let mut previous: Option<Instant> = None;
@@ -450,6 +453,9 @@ impl Tree {
       let Some(offset) = scroll.current() else {
         return Change::None;
       };
+      if let Some(shifts) = &scroll.shifts {
+        *written += shifts.take();
+      }
       // A write from outside, or content that shrank under it, stops it.
       if offset != *written {
         return scroll.stop_overshoot();

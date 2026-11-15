@@ -12,7 +12,7 @@ use std::time::Duration;
 use crabshell_reactive::{Memo, Signal};
 
 use crate::cx::Cx;
-use crate::geometry::{Point, Rect};
+use crate::geometry::{Point, Rect, Size};
 use crate::input::{CursorShape, Drag, DragValue, DropTarget, Handler, Handlers, Wheel};
 use crate::keyboard::KeyEvent;
 use crate::keyed::{self, KeyedList, KeyedMount};
@@ -80,7 +80,14 @@ pub(crate) struct Common {
   pub(crate) style: Option<Prop<Style>>,
   pub(crate) visible: Option<Prop<bool>>,
   pub(crate) geometry: Option<Signal<Rect>>,
+  /// Told the widget's size after each layout that changes it, with the
+  /// tree released. Lists measure their rows with it; configs have
+  /// `geometry`.
+  pub(crate) measure: Option<Measure>,
 }
+
+/// What a list runs with a row's size after a layout changes it.
+pub(crate) type Measure = Rc<dyn Fn(Size)>;
 
 /// One entry of a container's child list: a single widget, or a keyed list
 /// that grows and shrinks.

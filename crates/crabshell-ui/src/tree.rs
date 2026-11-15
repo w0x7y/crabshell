@@ -10,7 +10,7 @@
 //! before the borrow and handlers after it, and user closures and values
 //! live in the reactive runtime rather than here, so the runtime drops them.
 
-use std::cell::{RefCell, RefMut};
+use std::cell::{Cell, RefCell, RefMut};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 
@@ -33,7 +33,7 @@ use crate::text::TextNode;
 use crate::text_input::InputNode;
 use crate::timer::Timer;
 use crate::widgets::{
-  Align, Element, ElementChild, ElementKind, Fit, GridProps, IconSource, Justify,
+  Align, Element, ElementChild, ElementKind, Fit, GridProps, IconSource, Justify, Measure,
 };
 use crate::window::{
   Anchors, DEFAULT_NAMESPACE, Hints, KeyboardFocus, Layer, Margins, Output, PanelWindow, Window,
@@ -69,6 +69,8 @@ pub(crate) struct Tree {
   /// Rectangles the last layout moved, for the window to write to their
   /// widgets' `geometry` signals once the tree is released.
   pub(crate) geometry: Vec<(Signal<Rect>, Rect)>,
+  /// The sizes to tell widgets' `measure` once the tree is released.
+  pub(crate) measured: Vec<(Measure, Size)>,
   /// Widgets shown again since the last layout, which gives the focus to
   /// a field in them that asks for it.
   pub(crate) shown_since_layout: Vec<NodeId>,
@@ -158,6 +160,10 @@ pub(crate) struct Node {
   /// What `geometry` was last written, so a layout that moves nothing
   /// writes nothing.
   pub(crate) written: Option<Rect>,
+  /// Told the size after a layout that changes it.
+  pub(crate) measure: Option<Measure>,
+  /// The size `measure` was last told.
+  pub(crate) measured: Option<Size>,
 }
 
 pub(crate) enum NodeKind {
@@ -225,6 +231,8 @@ pub(crate) struct ScrollNode {
   /// before the start, above it past the end.
   pub(crate) overshoot: f32,
   pub(crate) motion: Motion,
+  /// What a list moved the offset by since a motion last looked.
+  pub(crate) shifts: Option<Rc<Cell<f32>>>,
 }
 
 pub(crate) struct ImageNode {
@@ -379,6 +387,8 @@ impl Node {
       slides: 0,
       geometry: None,
       written: None,
+      measure: None,
+      measured: None,
     }
   }
 
@@ -494,6 +504,7 @@ impl Tree {
       floating: None,
       captures: Vec::new(),
       geometry: Vec::new(),
+      measured: Vec::new(),
       shown_since_layout: Vec::new(),
     }
   }
@@ -736,6 +747,7 @@ impl Tree {
         overshoots: true,
         overshoot: 0.0,
         motion: Motion::default(),
+        shifts: props.shifts.take(),
       })),
       ElementKind::Image(_) => NodeKind::Image(ImageNode {
         source: None,
@@ -778,6 +790,7 @@ impl Tree {
     anchor.set(self.this.clone(), id);
     if let Some(node) = self.node_mut(id) {
       node.geometry = common.geometry;
+      node.measure = common.measure;
     }
 
     self.bind_opt(id, common.style, "style", set_style);

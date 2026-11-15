@@ -19,6 +19,7 @@ mod keyboard;
 mod keyed;
 mod kinetic;
 mod layout;
+mod lists;
 mod lock;
 mod menu;
 mod placement;

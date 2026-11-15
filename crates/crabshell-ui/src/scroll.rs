@@ -1,11 +1,15 @@
 //! [`ScrollView`], a box that shows part of a taller child, and
 //! [`ListView`], a scrolling list that builds only the rows in view.
 
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::hash::Hash;
+use std::rc::Rc;
 
 use crabshell_reactive::{Memo, Signal, untrack};
 
 use crate::cx::Cx;
+use crate::geometry::Size;
 use crate::prop::{IntoProp, Prop};
 use crate::style::Style;
 use crate::widgets::{
@@ -28,6 +32,9 @@ pub(crate) struct ScrollProps {
   pub(crate) kinetic: Option<Prop<bool>>,
   pub(crate) overshoot: Option<Prop<bool>>,
   pub(crate) scroll_bar: Option<Prop<Option<Style>>>,
+  /// What a list moved the offset by to keep the rows shown still, which
+  /// a fling takes as its own motion rather than a write that stops it.
+  pub(crate) shifts: Option<Rc<Cell<f32>>>,
 }
 
 /// A box that shows part of its child, which may be taller, and scrolls
@@ -56,6 +63,7 @@ impl ScrollView {
         kinetic: None,
         overshoot: None,
         scroll_bar: None,
+        shifts: None,
       },
       common: Common::default(),
       child: Box::new(child),
@@ -136,12 +144,18 @@ impl Widget for ScrollView {
   }
 }
 
-/// A scrolling list of rows of one height that builds only the rows in
-/// view, so a list of thousands costs what a screenful does. Offsets are
-/// `f32`, which stays exact to about 16 million pixels: some 700,000 rows
-/// of 24 pixels. It follows a
-/// list of items as [`children_keyed`](Column::children_keyed) does: each
-/// row is kept while its item's key stays in the list.
+/// A scrolling list that builds only the rows in view, so a list of
+/// thousands costs what a screenful does. Offsets are `f32`, which stays
+/// exact to about 16 million pixels: some 700,000 rows of 24 pixels. It
+/// follows a list of items as [`children_keyed`](Column::children_keyed)
+/// does: each row is kept while its item's key stays in the list.
+///
+/// Rows may differ in height. Each is at least
+/// [`row_height`](Self::row_height) tall and grows to fit its content,
+/// and its height, measured once it is laid out, is kept by its key. A row
+/// not built yet counts as `row_height`, so set it near the usual row's
+/// height. A row that starts above the view grows upward, so the rows
+/// shown stay where they are.
 ///
 /// ```
 /// use crabshell_ui::{ListView, Text};
@@ -176,7 +190,7 @@ struct ListProps {
 }
 
 impl ListView {
-  /// The default row height and list height, in logical pixels.
+  /// The default row height, in logical pixels.
   pub const DEFAULT_ROW_HEIGHT: u32 = 24;
   /// The default height of the list, in logical pixels.
   pub const DEFAULT_HEIGHT: u32 = 240;
@@ -209,7 +223,8 @@ impl ListView {
     }
   }
 
-  /// Sets every row's height in logical pixels.
+  /// Sets the height in logical pixels that each row has at least, and
+  /// that a row not yet built counts as. 24 by default.
   pub fn row_height(mut self, height: impl IntoProp<u32>) -> ListView {
     self.props.row_height = Some(height.into_prop());
     self
@@ -222,7 +237,9 @@ impl ListView {
   }
 
   /// Keeps the row at this index in view, scrolling as little as needed
-  /// whenever it changes. `None` scrolls nothing.
+  /// whenever it changes. A row not built yet is found by `row_height`,
+  /// then shown whole once it is measured. `None`, or an index past the
+  /// end, scrolls nothing.
   pub fn current(mut self, index: impl IntoProp<Option<usize>>) -> ListView {
     self.props.current = Some(index.into_prop());
     self
@@ -296,11 +313,49 @@ impl Widget for Built {
   }
 }
 
+/// What a list knows of its rows' lengths.
+struct Lengths<K> {
+  /// Each item's index, by key; a repeated key keeps the first.
+  index: HashMap<K, usize>,
+  /// Each item's measured length, by index, once its row was laid out.
+  measured: Vec<Option<f32>>,
+  /// Rows measured since the last look: their index and length.
+  pending: Vec<(usize, f32)>,
+  /// A current row scrolled to by the estimate, shown again once it is
+  /// measured.
+  seek: Option<usize>,
+}
+
+/// Where each row starts if a row not measured is `estimate` long, and
+/// where the last ends.
+fn starts(measured: &[Option<f32>], estimate: f32) -> Vec<f32> {
+  let mut starts = Vec::with_capacity(measured.len() + 1);
+  let mut at = 0.0;
+  starts.push(at);
+  for length in measured {
+    at += length.unwrap_or(estimate);
+    starts.push(at);
+  }
+  starts
+}
+
+/// The offset that shows `start..end` in a view `viewport` long at `now`,
+/// scrolling as little as it can.
+fn keep_in_view(start: f32, end: f32, viewport: f32, now: f32) -> f32 {
+  if start < now {
+    start
+  } else if end > now + viewport {
+    end - viewport
+  } else {
+    now
+  }
+}
+
 fn build<T, K, W>(
   cx: &Cx,
   props: ListProps,
   mut items: impl FnMut() -> Vec<T> + 'static,
-  mut key: impl FnMut(&T) -> K + 'static,
+  key: impl FnMut(&T) -> K + 'static,
   mut view: impl FnMut(&Cx, Memo<T>) -> W + 'static,
 ) -> Element
 where
@@ -320,6 +375,7 @@ where
   } = props;
   let offset = offset.unwrap_or_else(|| cx.signal(0.0));
   let row_height = cx.memo(prop_fn(row_height, ListView::DEFAULT_ROW_HEIGHT));
+  let estimate = move || row_height.get().max(1) as f32;
   let height = cx.memo(prop_fn(height, ListView::DEFAULT_HEIGHT));
   let style = style.map(Prop::shared);
   // The height rows show in: the list's, less its padding and border.
@@ -333,13 +389,53 @@ where
       (height.get() as f32 - insets).max(0.0)
     })
   };
+  // Shared by the list, its keyed rows and each row, which never call it
+  // inside one another.
+  let key = Rc::new(RefCell::new(key));
+  let lengths = Rc::new(RefCell::new(Lengths {
+    index: HashMap::new(),
+    measured: Vec::new(),
+    pending: Vec::new(),
+    seek: None,
+  }));
+  // Set whenever `measured` changes, and whenever a row is measured.
+  let remeasure = cx.signal(());
+  let measured = cx.signal(());
   let all = cx.signal(Vec::<T>::new());
-  cx.effect(move || all.set(items()));
+  {
+    let (key, lengths) = (Rc::clone(&key), Rc::clone(&lengths));
+    cx.effect(move || {
+      let list = items();
+      let keys: Vec<K> = list.iter().map(|item| (key.borrow_mut())(item)).collect();
+      let mut lengths = lengths.borrow_mut();
+      let old = std::mem::take(&mut lengths.measured);
+      let mut index = HashMap::with_capacity(keys.len());
+      let mut measured = Vec::with_capacity(keys.len());
+      for (at, item_key) in keys.into_iter().enumerate() {
+        measured.push(lengths.index.get(&item_key).and_then(|&was| old[was]));
+        index.entry(item_key).or_insert(at);
+      }
+      lengths.index = index;
+      lengths.measured = measured;
+      // Measured against the old indexes.
+      lengths.pending.clear();
+      drop(lengths);
+      all.set(list);
+      remeasure.set(());
+    });
+  }
   let count = cx.memo(move || all.with(Vec::len));
+  let starts = {
+    let lengths = Rc::clone(&lengths);
+    cx.memo(move || {
+      remeasure.get();
+      starts(&lengths.borrow().measured, estimate())
+    })
+  };
+  let total = move || starts.with(|starts| starts.last().copied().unwrap_or(0.0));
   // The offset as the scroll view shows it: past either end, that end.
   let shown = move || {
-    let total = count.get() as f32 * row_height.get().max(1) as f32;
-    let most = (total - inner.get()).max(0.0);
+    let most = (total() - inner.get()).max(0.0);
     let offset = offset.get();
     if offset.is_nan() {
       0.0
@@ -350,40 +446,99 @@ where
   // The rows in view, and one more each side so a short scroll shows no
   // gap before the next layout.
   let range = cx.memo(move || {
-    let row = row_height.get().max(1) as f32;
     let top = shown();
-    let first = ((top / row).floor() as usize).saturating_sub(1);
-    let last = (((top + inner.get()) / row).ceil() as usize + 1).min(count.get());
-    first..last.max(first)
+    let bottom = top + inner.get();
+    starts.with(|starts| {
+      let rows = starts.len() - 1;
+      let first = starts
+        .partition_point(|&start| start <= top)
+        .saturating_sub(2);
+      let last = (starts.partition_point(|&start| start < bottom) + 1).min(rows);
+      first..last.max(first)
+    })
   });
-  if let Some(current) = current {
-    let current = current.shared();
+  // Rows measured: a row that starts above the view grows or shrinks
+  // upward, so the rows shown stay where they are.
+  let shifts = Rc::new(Cell::new(0.0));
+  {
+    let lengths = Rc::clone(&lengths);
+    let shifts = Rc::clone(&shifts);
     cx.effect(move || {
-      let Some(index) = current() else {
+      measured.get();
+      let (old, top, estimate) = untrack(|| (starts.get(), shown(), estimate()));
+      let mut lengths = lengths.borrow_mut();
+      let mut changed = false;
+      let mut shift = 0.0;
+      for (at, length) in std::mem::take(&mut lengths.pending) {
+        let Some(slot) = lengths.measured.get_mut(at) else {
+          continue;
+        };
+        if *slot == Some(length) {
+          continue;
+        }
+        if old[at] < top {
+          shift += length - slot.unwrap_or(estimate);
+        }
+        *slot = Some(length);
+        changed = true;
+      }
+      let seek = lengths
+        .seek
+        .filter(|&at| lengths.measured.get(at).is_some_and(Option::is_some));
+      if seek.is_some() {
+        lengths.seek = None;
+      }
+      drop(lengths);
+      if !changed {
         return;
-      };
-      let row = row_height.get() as f32;
-      let (top, bottom) = (index as f32 * row, (index + 1) as f32 * row);
-      let viewport = inner.get();
-      let now = untrack(shown);
-      let next = if top < now {
-        top
-      } else if bottom > now + viewport {
-        bottom - viewport
-      } else {
-        now
-      };
-      if next != now {
-        offset.set(next);
+      }
+      remeasure.set(());
+      if shift != 0.0 {
+        // A fling goes on from the moved offset.
+        shifts.set(shifts.get() + shift);
+        offset.set(top + shift);
+      }
+      if let Some(at) = seek {
+        untrack(|| {
+          let (start, end) = starts.with(|starts| (starts[at], starts[at + 1]));
+          let now = shown();
+          let next = keep_in_view(start, end, inner.get(), now);
+          if next != now {
+            offset.set(next);
+          }
+        });
       }
     });
   }
+  if let Some(current) = current {
+    let current = current.shared();
+    let lengths = Rc::clone(&lengths);
+    cx.effect(move || {
+      let index = current();
+      // A change of estimate or height shows the row again.
+      row_height.get();
+      let viewport = inner.get();
+      let Some(index) = index.filter(|&index| index < untrack(|| count.get())) else {
+        lengths.borrow_mut().seek = None;
+        return;
+      };
+      let (start, end) = untrack(|| starts.with(|starts| (starts[index], starts[index + 1])));
+      let now = untrack(shown);
+      let next = keep_in_view(start, end, viewport, now);
+      if next != now {
+        offset.set(next);
+      }
+      let mut lengths = lengths.borrow_mut();
+      let unmeasured = lengths.measured.get(index).is_some_and(Option::is_none);
+      lengths.seek = unmeasured.then_some(index);
+    });
+  }
   let rows = Column::new()
-    .style(move || Style::new().height(count.get() as f32 * row_height.get() as f32))
-    .child(
-      Stack::new()
-        .style(move || Style::new().height(range.get().start as f32 * row_height.get() as f32)),
-    )
+    .style(move || Style::new().height(total()))
+    .child(Stack::new().style(move || {
+      let first = starts.with(|starts| starts[range.get().start]);
+      Style::new().height(first).shrink(0.0)
+    }))
     .children_keyed(
       move || {
         let range = range.get();
@@ -392,14 +547,31 @@ where
           all[range.start.min(end)..end].to_vec()
         })
       },
-      move |item| key(item),
+      {
+        let key = Rc::clone(&key);
+        move |item| (key.borrow_mut())(item)
+      },
       move |cx, item| {
-        Stack::new()
-          .style(move || Style::new().height(row_height.get() as f32))
-          .child(view(cx, item))
+        let own = (key.borrow_mut())(&item.get_untracked());
+        let lengths = Rc::clone(&lengths);
+        let measure = move |size: Size| {
+          let mut lengths = lengths.borrow_mut();
+          if let Some(&at) = lengths.index.get(&own) {
+            lengths.pending.push((at, size.height));
+            drop(lengths);
+            measured.set(());
+          }
+        };
+        let row = Stack::new()
+          .style(move || Style::new().min_height(row_height.get() as f32).shrink(0.0))
+          .child(view(cx, item));
+        let mut row = Box::new(row).into_element();
+        row.common.measure = Some(Rc::new(measure));
+        Built(Some(row))
       },
     );
   let mut scroll = ScrollView::new(rows).offset(offset);
+  scroll.scroll.shifts = Some(shifts);
   if let Some(bar) = scroll_bar {
     scroll = scroll.scroll_bar(bar);
   }
