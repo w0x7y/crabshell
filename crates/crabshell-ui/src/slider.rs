@@ -270,6 +270,10 @@ fn build(cx: &Cx, props: SliderProps) -> Button {
     max: cx.memo(shared_or(max, 1.0)),
     step,
   };
+  if let Some(dragging) = dragging {
+    // Kept under the slider's context, so it drops when the slider goes.
+    cx.signal(LetGo(dragging));
+  }
   let vertical = cx.memo(shared_or(vertical, false));
   let style = shared_style(style);
   let fill_style = shared_style(fill_style);
@@ -370,6 +374,18 @@ fn build(cx: &Cx, props: SliderProps) -> Button {
     button = button.enabled(enabled);
   }
   button
+}
+
+/// Writes `false` to a slider's `dragging` signal when the slider goes
+/// while held, as no drag `End` comes then.
+struct LetGo(Signal<bool>);
+
+impl Drop for LetGo {
+  fn drop(&mut self) {
+    if untrack(|| self.0.try_get()) == Some(true) {
+      self.0.try_set(false);
+    }
+  }
 }
 
 /// What one orientation of a slider is drawn from.

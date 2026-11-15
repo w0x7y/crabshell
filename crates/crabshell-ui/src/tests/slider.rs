@@ -235,3 +235,36 @@ fn dropping_a_slider_frees_everything_it_made() {
   // The two signals the test made outlive the window.
   assert_eq!(h.runtime.node_count(), before + 2);
 }
+
+#[test]
+fn a_slider_removed_mid_drag_writes_dragging_false() {
+  let mut h = Harness::new();
+  let value = h.cx.signal(0.0);
+  let dragging = h.cx.signal(false);
+  let shown = h.cx.signal(true);
+  let writes = Counter::default();
+  let w = writes.clone();
+  h.cx.effect(move || {
+    dragging.get();
+    w.hit();
+  });
+  let row = Row::new().align(Align::Start).children_keyed(
+    move || if shown.get() { vec![()] } else { Vec::new() },
+    |_| (),
+    move |_, _| pixels_slider(value).dragging(dragging),
+  );
+  let window = h.window(h.panel().child(row), 200.0, 40.0);
+  press(&window, 60.0, 8.0);
+  h.frame(&window);
+  assert!(dragging.get());
+  shown.set(false);
+  h.frame(&window);
+  assert!(!dragging.get(), "it went while held");
+  assert_eq!(writes.get(), 3);
+  // A slider that goes while not held writes nothing.
+  shown.set(true);
+  h.frame(&window);
+  shown.set(false);
+  h.frame(&window);
+  assert_eq!(writes.get(), 3);
+}
