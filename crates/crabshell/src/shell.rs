@@ -14,7 +14,8 @@ use crabshell_reactive::{Owner, ReadSignal, Runtime, Signal};
 use crabshell_services::Sway;
 use crabshell_ui::{Color, Cx, FloatingWindow, IntoProp, Lock, Output, SessionLock, Window};
 use crabshell_wayland::{
-  Event, EventLoop, LoopSignal, Platform, Toplevel, WindowId, Windowset, WindowsetProjection,
+  Event, EventLoop, LoopSignal, OutputInfo, Platform, Toplevel, WindowId, Windowset,
+  WindowsetProjection,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -180,7 +181,9 @@ impl Shell {
     // Nothing starts here: each service connects when root first asks.
     crabshell_services::provide(&cx, &event_loop.handle());
     let state = Rc::new(RefCell::new(PerOutput::new()));
+    let outputs = cx.signal(event_loop.platform().outputs().cloned().collect::<Vec<_>>());
     cx.provide(Service {
+      outputs: outputs.read_only(),
       persisted: Rc::new(Persisted::new(cx.owner(), saved)),
       per_output: Rc::clone(&state),
       idle: idle_inserter(&event_loop),
@@ -194,9 +197,10 @@ impl Shell {
       toplevels: Cell::new(None),
       window_manager: Cell::new(None),
     });
-    event_loop
-      .platform()
-      .on_event(move |platform, event| match event {
+    event_loop.platform().on_event(move |platform, event| {
+      // First, so a per_output closure finds its output listed.
+      set_if_changed(outputs, &platform.outputs().cloned().collect::<Vec<_>>());
+      match event {
         Event::OutputAdded(output) => {
           per_output::added(&state, &mut Shown(platform), &output.name);
         }
@@ -213,7 +217,8 @@ impl Shell {
         Event::WindowClosed(window) => {
           per_output::closed(&state, &mut Shown(platform), *window);
         }
-      });
+      }
+    });
     let mut shell = Shell {
       event_loop,
       started: Instant::now(),
@@ -416,6 +421,8 @@ impl Drop for Shell {
 /// What the shell keeps in the root context's services, so `cx` can reach
 /// the platform from anywhere.
 struct Service {
+  /// What `cx.outputs` hands out, kept as the platform's list.
+  outputs: ReadSignal<Vec<OutputInfo>>,
   /// What `cx.persist` hands out, and saves on reload.
   persisted: Rc<Persisted>,
   per_output: Rc<RefCell<PerOutput<WindowId>>>,
@@ -712,6 +719,30 @@ pub trait ShellExt {
   #[track_caller]
   fn per_output<W: IntoPanels>(&self, f: impl Fn(&Cx, &Output) -> W + 'static);
 
+  /// Every output the compositor announced, in the order they came, as
+  /// Quickshell's `Quickshell.screens`: each one's name, description,
+  /// make and model, place and size in logical pixels, scale, physical
+  /// size and transform. It changes as an output comes, goes or tells
+  /// something new, such as a scale the user set, so a binding that reads
+  /// it follows. An output is listed before `per_output` builds for it.
+  /// Every caller shares one list, which lives as long as the shell.
+  ///
+  /// ```no_run
+  /// use crabshell::prelude::*;
+  ///
+  /// fn bar(cx: &Cx, output: &Output) -> PanelWindow {
+  ///     let outputs = cx.outputs();
+  ///     let name = output.name();
+  ///     PanelWindow::new(output).child(Text::new(move || {
+  ///         outputs.with(|all| match all.iter().find(|info| info.name == name) {
+  ///             Some(info) => format!("{} at {}", info.model, info.fractional_scale),
+  ///             None => String::new(),
+  ///         })
+  ///     }))
+  /// }
+  /// ```
+  fn outputs(&self) -> ReadSignal<Vec<OutputInfo>>;
+
   /// Shows `window`, a floating window, for as long as this context
   /// lives: when its owner is disposed, the window goes. Its `visible`
   /// shows and hides it meanwhile.
@@ -930,6 +961,16 @@ impl ShellExt for Cx {
         .collect();
       per_output::existing(&state, &mut Shown(platform), builder, &outputs);
     });
+  }
+
+  fn outputs(&self) -> ReadSignal<Vec<OutputInfo>> {
+    match self.service::<Service>() {
+      Some(service) => service.outputs,
+      None => {
+        tracing::error!("cx.outputs needs the shell crabshell::run starts; the list stays empty");
+        self.signal(Vec::new()).read_only()
+      }
+    }
   }
 
   fn floating(&self, window: FloatingWindow) {

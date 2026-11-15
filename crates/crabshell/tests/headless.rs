@@ -1874,6 +1874,104 @@ fn cx_window_manager_lists_sways_workspaces_and_switches_them() {
   assert_eq!(runtime.node_count(), before, "everything it made is freed");
 }
 
+#[test]
+#[ignore = "needs headless Sway"]
+fn cx_outputs_lists_each_output_and_follows_its_changes() {
+  use std::cell::{Cell, RefCell};
+  use std::rc::Rc;
+
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let runtime = Runtime::current();
+  runtime.flush();
+  let before = runtime.node_count();
+  let kept: Rc<Cell<Option<ReadSignal<Vec<OutputInfo>>>>> = Rc::default();
+  // What each bar's builder found of its own output as it built.
+  let found: Rc<RefCell<Vec<Option<OutputInfo>>>> = Rc::default();
+  let (hold, saw) = (Rc::clone(&kept), Rc::clone(&found));
+  let mut shell = Shell::new(sway.connect(), move |cx| {
+    let saw = Rc::clone(&saw);
+    cx.per_output(move |cx, output| {
+      let name = output.name();
+      let all = cx.outputs().get_untracked();
+      saw
+        .borrow_mut()
+        .push(all.into_iter().find(|info| info.name == name));
+      counter::bar(cx, output)
+    });
+    hold.set(Some(cx.outputs()));
+  })
+  .expect("the root closure runs");
+  let outputs = kept.take().expect("the root ran");
+  assert!(
+    shell.cx().outputs() == outputs,
+    "every caller shares one list"
+  );
+  let named = |name: &str| {
+    let all = outputs.get_untracked();
+    all.into_iter().find(|info| info.name == name)
+  };
+  run_until(&mut shell, "HEADLESS-1's bar", |platform| {
+    shown_on(platform, "HEADLESS-1").is_some()
+  });
+  let one = named("HEADLESS-1").expect("listed");
+  assert_eq!((one.x, one.y, one.width, one.height), (0, 0, 1920, 1080));
+  assert_eq!((one.scale, one.fractional_scale), (1, 1.0));
+  assert_eq!(*found.borrow(), [Some(one)], "its bar's builder found it");
+
+  // A binding that reads the list follows a new scale.
+  let watcher = shell.cx().child();
+  let scales = Rc::new(RefCell::new(Vec::new()));
+  let seen = Rc::clone(&scales);
+  watcher.effect(move || {
+    let all = outputs.get();
+    seen.borrow_mut().push(
+      all
+        .iter()
+        .map(|info| info.fractional_scale)
+        .collect::<Vec<_>>(),
+    );
+  });
+  runtime.flush();
+  sway.msg(&["output", "HEADLESS-1", "scale", "1.5"]);
+  run_until(&mut shell, "HEADLESS-1 at 1.5", |_| {
+    named("HEADLESS-1").is_some_and(|info| (info.fractional_scale, info.width) == (1.5, 1280))
+  });
+  runtime.flush();
+  assert_eq!(scales.borrow().last(), Some(&vec![1.5]));
+
+  // An output that comes is listed after the first, and one that goes
+  // leaves the list.
+  sway.msg(&["create_output"]);
+  run_until(&mut shell, "HEADLESS-2's bar", |platform| {
+    shown_on(platform, "HEADLESS-2").is_some()
+  });
+  let names = || -> Vec<String> {
+    let all = outputs.get_untracked();
+    all.into_iter().map(|info| info.name).collect()
+  };
+  assert_eq!(names(), ["HEADLESS-1", "HEADLESS-2"]);
+  assert_eq!(found.borrow().len(), 2);
+  assert!(found.borrow()[1].is_some(), "HEADLESS-2's builder found it");
+  sway.msg(&["output", "HEADLESS-2", "unplug"]);
+  run_until(&mut shell, "HEADLESS-2 to go", |_| {
+    names() == ["HEADLESS-1"]
+  });
+  settle(&mut shell);
+  runtime.flush();
+  let runs = scales.borrow().len();
+  // A scale already in effect changes nothing, so nothing reruns.
+  sway.msg(&["output", "HEADLESS-1", "scale", "1.5"]);
+  settle(&mut shell);
+  runtime.flush();
+  assert_eq!(scales.borrow().len(), runs, "{:?}", scales.borrow());
+  watcher.owner().dispose();
+
+  drop(shell);
+  runtime.flush();
+  assert_eq!(runtime.node_count(), before, "everything it made is freed");
+}
+
 /// 500 apps: the example's names, numbered.
 fn many_apps() -> Vec<String> {
   (0..500)

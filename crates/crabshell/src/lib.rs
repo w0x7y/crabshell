@@ -102,5 +102,5 @@ pub mod prelude {
     Modifiers, Output, Padding, PanelWindow, PopupWindow, Region, Row, ScreencopyView, ScrollView,
     SessionLock, Shadow, Size, Spacer, Stack, Style, Text, TextInput, Transition, Widget,
   };
-  pub use crabshell_wayland::{Toplevel, Windowset, WindowsetProjection};
+  pub use crabshell_wayland::{OutputInfo, Toplevel, Windowset, WindowsetProjection};
 }
