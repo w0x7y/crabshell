@@ -1,16 +1,16 @@
-//! Pointer input: hit testing, hover and pressed state, drags, double
-//! clicks, scrolling and calling button handlers.
+//! Pointer input: hit testing, hover and pressed state, drags, long
+//! presses, double clicks, scrolling and calling button handlers.
 //!
 //! The platform turns `wl_pointer` events into calls on [`Window`]. Handlers
 //! run after the window's tree is released, inside `catch_unwind`, so a
 //! panicking handler is logged and disabled and the bar keeps running.
 
 use std::any::Any;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::panic::{self, AssertUnwindSafe};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::OnceLock;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crabshell_reactive::{Signal, untrack};
 
@@ -30,6 +30,10 @@ const VALUE120_PER_STEP: i32 = 120;
 /// How far a held left button moves before it drags, in logical pixels:
 /// Qt's `startDragDistance`.
 const DRAG_THRESHOLD: f32 = 10.0;
+
+/// How long the left button is held for a long press: Qt's
+/// `pressAndHoldInterval`.
+const LONG_PRESS: Duration = Duration::from_millis(800);
 
 /// The most time between two clicks of a double click, in milliseconds:
 /// Qt's `mouseDoubleClickInterval`.
@@ -66,6 +70,7 @@ pub(crate) struct Handlers {
   pub(crate) press: Option<ClickHandler>,
   pub(crate) release: Option<ClickHandler>,
   pub(crate) double_click: Option<ClickHandler>,
+  pub(crate) long_press: Option<ClickHandler>,
   pub(crate) right_click: Option<ClickHandler>,
   pub(crate) middle_click: Option<ClickHandler>,
   pub(crate) back: Option<ClickHandler>,
@@ -258,6 +263,8 @@ struct Press {
   start: Point,
   /// A drag started.
   dragging: bool,
+  /// The long press ran, so the release doesn't click.
+  long_pressed: bool,
 }
 
 /// Where the pointer is and what it is doing.
@@ -651,15 +658,20 @@ impl Tree {
       last: at,
       start,
       dragging: false,
+      long_pressed: false,
     }));
     if button != PointerButton::Left {
       return Vec::new();
     }
     self.press_field(id);
     let mut calls: Vec<Call> = self.call(id, Action::Press).into_iter().collect();
+    if self.has(id, |h| h.long_press.is_some()) {
+      self.arm_long_press(id);
+    }
     // Nothing waits on the threshold, so a slider moves from the press.
-    let only_drags =
-      |h: &Handlers| h.drag.is_some() && h.click.is_none() && h.double_click.is_none();
+    let only_drags = |h: &Handlers| {
+      h.drag.is_some() && h.click.is_none() && h.double_click.is_none() && h.long_press.is_none()
+    };
     if self.has(id, only_drags) {
       calls.extend(self.start_drag(at));
     }
@@ -682,7 +694,7 @@ impl Tree {
       }
       return calls;
     }
-    if self.pointer.hovered != Some(press.id) {
+    if press.long_pressed || self.pointer.hovered != Some(press.id) {
       return calls;
     }
     let action = match button {
@@ -714,11 +726,12 @@ impl Tree {
     }
   }
 
-  /// Lets go of the held button: its pressed style ends, and its drag
-  /// with an `End`.
+  /// Lets go of the held button: its pressed style and long press end,
+  /// and its drag with an `End`.
   fn end_press(&mut self) -> Option<Call> {
     let press = self.pointer.pressed?;
     self.set_pressed(None);
+    self.stop_long_press(press.id);
     if press.dragging {
       self.drag_call(press, DragPhase::End, press.last)
     } else {
@@ -727,7 +740,7 @@ impl Tree {
   }
 
   /// What a move to `at` does to a held left button: start a drag past
-  /// the threshold, or move one.
+  /// the threshold, which also stops a long press, or move one.
   fn drag_motion(&mut self, at: Point) -> Vec<Call> {
     let Some(press) = self.pointer.pressed.as_mut() else {
       return Vec::new();
@@ -743,7 +756,11 @@ impl Tree {
         .into_iter()
         .collect();
     }
-    if distance(press.at, at) > DRAG_THRESHOLD && self.has(press.id, |h| h.drag.is_some()) {
+    if distance(press.at, at) <= DRAG_THRESHOLD {
+      return Vec::new();
+    }
+    self.stop_long_press(press.id);
+    if self.has(press.id, |h| h.drag.is_some()) {
       self.start_drag(at)
     } else {
       Vec::new()
@@ -757,6 +774,7 @@ impl Tree {
     };
     press.dragging = true;
     let press = *press;
+    self.stop_long_press(press.id);
     self
       .drag_call(press, DragPhase::Start, at)
       .into_iter()
@@ -774,6 +792,45 @@ impl Tree {
       size: Size::new(rect.width, rect.height),
     };
     self.call(press.id, Action::Drag(drag))
+  }
+
+  /// Arms button `id`'s long press, from now. Each button keeps one
+  /// timer, made at its first long press and freed with the button.
+  fn arm_long_press(&mut self, id: NodeId) {
+    let tree = self.this.clone();
+    let Some(Node { cx, kind, .. }) = self.node_mut(id) else {
+      return;
+    };
+    let NodeKind::Button(button) = kind else {
+      return;
+    };
+    match button.long_press {
+      Some(timer) => timer.restart(),
+      None => {
+        let timer = cx.after(LONG_PRESS, move || long_press_fired(&tree, id));
+        button.long_press = Some(timer);
+      }
+    }
+  }
+
+  fn stop_long_press(&self, id: NodeId) {
+    if let Some(NodeKind::Button(button)) = self.node(id).map(|node| &node.kind)
+      && let Some(timer) = button.long_press
+    {
+      timer.stop();
+    }
+  }
+
+  /// Button `id`'s long press, if it is still held, without a drag.
+  fn long_press(&mut self, id: NodeId) -> Option<Call> {
+    let press = self.pointer.pressed.as_mut().filter(|press| {
+      press.id == id
+        && press.button == PointerButton::Left
+        && !press.dragging
+        && !press.long_pressed
+    })?;
+    press.long_pressed = true;
+    self.call(id, Action::LongPress)
   }
 
   /// The pointer left: a drag ends, a held button lets go without a
@@ -952,6 +1009,22 @@ impl Tree {
   }
 }
 
+/// Runs button `id`'s long press, its timer having fired.
+fn long_press_fired(tree: &Weak<RefCell<Tree>>, id: NodeId) {
+  let Some(tree) = tree.upgrade() else {
+    return;
+  };
+  // Timers fire from the loop, never while a tree is borrowed.
+  let Ok(mut borrowed) = tree.try_borrow_mut() else {
+    return;
+  };
+  let call = borrowed.long_press(id);
+  drop(borrowed);
+  if let Some(call) = call {
+    call.run();
+  }
+}
+
 /// `point`, in the coordinates of `node`'s parent, in the node's own:
 /// moved back through its transform. `None` for a transform that squashes
 /// it flat, as a scale of 0 does, which nothing can point at.
@@ -976,6 +1049,7 @@ enum Action {
   Press,
   Release,
   DoubleClick,
+  LongPress,
   RightClick,
   MiddleClick,
   Back,
@@ -1014,6 +1088,7 @@ impl Call {
           Action::Press => plain(&h.press, "on_press"),
           Action::Release => plain(&h.release, "on_release"),
           Action::DoubleClick => plain(&h.double_click, "on_double_click"),
+          Action::LongPress => plain(&h.long_press, "on_long_press"),
           Action::RightClick => plain(&h.right_click, "on_right_click"),
           Action::MiddleClick => plain(&h.middle_click, "on_middle_click"),
           Action::Back => plain(&h.back, "on_back"),

@@ -30,6 +30,7 @@ use crate::screencopy::CaptureNode;
 use crate::style::{Padding, Style};
 use crate::text::TextNode;
 use crate::text_input::InputNode;
+use crate::timer::Timer;
 use crate::widgets::{
   Align, Element, ElementChild, ElementKind, Fit, GridProps, IconSource, Justify,
 };
@@ -226,6 +227,8 @@ pub(crate) struct ButtonNode {
   pub(crate) position_signal: Option<Signal<Option<Point>>>,
   /// The cursor over it.
   pub(crate) cursor: CursorShape,
+  /// Its long press, made the first time it is held.
+  pub(crate) long_press: Option<Timer>,
   pub(crate) hovered: bool,
   pub(crate) pressed: bool,
   /// Focused while its window has the keyboard.
@@ -708,6 +711,7 @@ impl Tree {
         hover_signal: props.hovered,
         position_signal: props.position,
         cursor: CursorShape::Pointer,
+        long_press: None,
         hovered: false,
         pressed: false,
         focused: false,

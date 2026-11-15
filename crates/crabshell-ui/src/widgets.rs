@@ -859,7 +859,8 @@ impl Button {
   }
 
   /// Runs `handler` when the left button is pressed and released over this
-  /// button, unless that ended a drag or made a double click.
+  /// button, unless that ended a drag or a long press, or made a double
+  /// click.
   pub fn on_click(mut self, handler: impl Fn(&Cx) + 'static) -> Button {
     self.button.handlers.click = Some(Rc::new(Handler::new(handler)));
     self
@@ -874,12 +875,21 @@ impl Button {
     self
   }
 
+  /// Runs `handler` once the left button has been held on this button for
+  /// 800 ms without moving 10 logical pixels, as Qt's press and hold. The
+  /// release after it doesn't click, though moving on can still drag.
+  pub fn on_long_press(mut self, handler: impl Fn(&Cx) + 'static) -> Button {
+    self.button.handlers.long_press = Some(Rc::new(Handler::new(handler)));
+    self
+  }
+
   /// Runs `handler` as the left button drags this button: a
   /// [`DragPhase::Start`](crate::DragPhase::Start) once it moves 10
   /// logical pixels from where it went down, a `Move` for each motion
   /// after, and an `End` when it comes up or the pointer leaves the
-  /// window. A button with no `on_click` or `on_double_click` starts at
-  /// the press instead, so a slider moves from the first touch.
+  /// window. A button with no `on_click`, `on_double_click` or
+  /// `on_long_press` starts at the press instead, so a slider moves from
+  /// the first touch.
   ///
   /// While it drags, the button gets every motion, even outside itself or
   /// the window, stays hovered, and doesn't click.

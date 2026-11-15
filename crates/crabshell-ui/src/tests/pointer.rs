@@ -1,15 +1,17 @@
-//! Pointer input added in Phase 15: release, double click, drag, the
-//! position signal, both scroll axes, side buttons and cursors.
+//! Pointer input added in Phase 15: release, double click, long press,
+//! drag, the position signal, both scroll axes, side buttons and
+//! cursors.
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use crabshell_reactive::Signal;
 
 use super::{Counter, Harness, capture_logs, lift, rect_at, wheel};
 use crate::{
   Align, Button, Color, CursorShape, Drag, DragPhase, Icon, Point, PointerButton, Row,
-  ScrollSource, Size, Stack, Style, TextInput, Wheel, WheelAxis, Window,
+  ScrollSource, Size, Stack, Style, TextInput, Wheel, WheelAxis, Window, fire_timers, next_timer,
 };
 
 const NORMAL: Style = Style::new().background(Color::rgb(1, 1, 1));
@@ -121,6 +123,102 @@ fn without_a_double_click_handler_both_clicks_click() {
   click_at(&window, 0);
   click_at(&window, 100);
   assert_eq!(clicks.get(), 2);
+}
+
+#[test]
+fn holding_runs_the_long_press_and_the_release_doesnt_click() {
+  let mut h = Harness::new();
+  let log = log();
+  let window = one(
+    &mut h,
+    Button::new(square())
+      .on_click(note(&log, "click"))
+      .on_long_press(note(&log, "long"))
+      .on_release(note(&log, "release")),
+  );
+  window.pointer_motion(Point::new(10.0, 10.0));
+  assert_eq!(next_timer(), None, "nothing is armed before a press");
+  window.pointer_button(PointerButton::Left, true);
+  let due = next_timer().expect("the long press is armed");
+  let wait = due.saturating_duration_since(Instant::now());
+  assert!(wait > Duration::from_millis(700) && wait <= Duration::from_millis(800));
+  fire_timers(due - Duration::from_millis(1));
+  assert!(log.borrow().is_empty());
+  fire_timers(due);
+  assert_eq!(*log.borrow(), ["long"]);
+  assert_eq!(next_timer(), None);
+  window.pointer_button(PointerButton::Left, false);
+  assert_eq!(*log.borrow(), ["long", "release"]);
+
+  // A release before 800 ms clicks, and stops the timer.
+  window.pointer_button(PointerButton::Left, true);
+  assert!(next_timer().is_some());
+  window.pointer_button(PointerButton::Left, false);
+  assert_eq!(next_timer(), None, "nothing is armed after the release");
+  fire_timers(Instant::now() + Duration::from_secs(2));
+  assert_eq!(*log.borrow(), ["long", "release", "release", "click"]);
+}
+
+#[test]
+fn moving_past_the_threshold_or_leaving_stops_a_long_press() {
+  let mut h = Harness::new();
+  let longs = Counter::default();
+  let counted = longs.clone();
+  let window = one(
+    &mut h,
+    Button::new(square()).on_long_press(move |_| counted.hit()),
+  );
+  window.pointer_motion(Point::new(5.0, 5.0));
+  window.pointer_button(PointerButton::Left, true);
+  // 10 pixels is still a hold.
+  window.pointer_motion(Point::new(11.0, 13.0));
+  assert!(next_timer().is_some());
+  window.pointer_motion(Point::new(16.0, 5.0));
+  assert_eq!(next_timer(), None);
+  window.pointer_button(PointerButton::Left, false);
+
+  window.pointer_motion(Point::new(5.0, 5.0));
+  window.pointer_button(PointerButton::Left, true);
+  window.pointer_leave();
+  assert_eq!(next_timer(), None);
+  fire_timers(Instant::now() + Duration::from_secs(2));
+  assert_eq!(longs.get(), 0);
+}
+
+#[test]
+fn a_button_without_a_long_press_arms_nothing() {
+  let mut h = Harness::new();
+  let window = one(&mut h, Button::new(square()).on_click(|_| {}));
+  window.pointer_motion(Point::new(10.0, 10.0));
+  window.pointer_button(PointerButton::Left, true);
+  assert_eq!(next_timer(), None);
+  window.pointer_button(PointerButton::Left, false);
+}
+
+#[test]
+fn a_button_removed_while_held_never_runs_its_long_press() {
+  let mut h = Harness::new();
+  let shown = h.cx.signal(true);
+  let longs = Counter::default();
+  let counted = longs.clone();
+  let row = Row::new().align(Align::Start).children_keyed(
+    move || if shown.get() { vec![()] } else { Vec::new() },
+    |_| (),
+    move |_, _| {
+      let counted = counted.clone();
+      Button::new(square()).on_long_press(move |_| counted.hit())
+    },
+  );
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+  window.pointer_motion(Point::new(10.0, 10.0));
+  window.pointer_button(PointerButton::Left, true);
+  assert!(next_timer().is_some());
+  shown.set(false);
+  h.frame(&window);
+  assert_eq!(next_timer(), None, "its timer went with it");
+  fire_timers(Instant::now() + Duration::from_secs(2));
+  window.pointer_button(PointerButton::Left, false);
+  assert_eq!(longs.get(), 0);
 }
 
 /// A button that keeps every drag it gets.
@@ -277,6 +375,32 @@ fn a_panicking_drag_handler_is_logged_and_the_rest_runs_on() {
   );
   assert_eq!(logs.matches("drag failure").count(), 1, "{logs}");
   assert_eq!(clicks.get(), 1);
+}
+
+#[test]
+fn a_panicking_long_press_is_logged_and_the_shell_runs_on() {
+  let mut h = Harness::new();
+  let clicks = Counter::default();
+  let counted = clicks.clone();
+  let window = one(
+    &mut h,
+    Button::new(square())
+      .on_long_press(|_| panic!("long failure"))
+      .on_click(move |_| counted.hit()),
+  );
+  let logs = capture_logs(|| {
+    window.pointer_motion(Point::new(5.0, 5.0));
+    window.pointer_button(PointerButton::Left, true);
+    fire_timers(Instant::now() + Duration::from_secs(1));
+    window.pointer_button(PointerButton::Left, false);
+    window.pointer_button(PointerButton::Left, true);
+    window.pointer_button(PointerButton::Left, false);
+  });
+  assert!(
+    logs.contains("handler PanelWindow[DP-1]/Row/Button[0].on_long_press panicked and is disabled"),
+    "{logs}"
+  );
+  assert_eq!(clicks.get(), 1, "the second press clicks");
 }
 
 #[test]
