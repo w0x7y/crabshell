@@ -59,10 +59,11 @@ impl Audio {
   /// changes on screen: while the meter records, libpulse's thread and the
   /// shell wake 25 times a second. The signal is set only when a peak
   /// changes, so silence repaints nothing. A sink's or a stream's meter
-  /// records only while something plays, and never keeps a device awake;
-  /// a source's records all the time, as any recording of a microphone
-  /// does. Nothing records until a config asks for a meter, and it stops
-  /// when the context that asked goes.
+  /// records only while something plays, is corked while nothing does,
+  /// and never keeps a device awake; a source's records all the time,
+  /// as any recording of a microphone does. Nothing records until a
+  /// config asks for a meter, and it stops when the context that asked
+  /// goes.
   ///
   /// On PipeWire a sink's peaks come before its volume; a source's and a
   /// stream's come after their own volume, as a recording of them would.
@@ -198,8 +199,28 @@ pub(super) struct Meter {
   /// `None` once the server ended it, or if it didn't open. Either way it
   /// isn't tried again until its source changes.
   stream: Option<Recording>,
-  /// While quiet, its peaks are 0 and what it reads is dropped.
+  /// While quiet, its peaks are 0, its stream is corked and what it
+  /// still reads is dropped.
   quiet: bool,
+  /// Whether its stream is corked, as last asked of the server.
+  corked: bool,
+}
+
+impl Meter {
+  /// Corks the stream while quiet, so even a server that sends an idle
+  /// sink's silence sends nothing, and uncorks it after. A stream the
+  /// server is still making is corked once it is made.
+  fn cork(&mut self) {
+    let Some(Recording(stream)) = self.stream.as_mut() else {
+      return;
+    };
+    // libpulse makes no operation for a stream that isn't ready, and the
+    // binding panics on that.
+    if self.corked != self.quiet && stream.get_state() == State::Ready {
+      drop(stream.set_corked_state(self.quiet, None));
+      self.corked = self.quiet;
+    }
+  }
 }
 
 /// A record stream whose callbacks are cleared before it drops: libpulse
@@ -275,13 +296,14 @@ impl Pulse {
         Some(meter) => meter,
         None => match context.as_mut().filter(|_| ready) {
           Some(context) => {
-            let stream = open(context, &source, id, &self.sender, self.generation);
+            let stream = open(context, &source, id, &self.sender, self.generation, quiet);
             self.meters.push(Meter {
               id,
               peaks,
               source,
               stream,
               quiet,
+              corked: quiet,
             });
             self.meters.last_mut().expect("the meter just pushed")
           }
@@ -289,6 +311,7 @@ impl Pulse {
         },
       };
       meter.quiet = quiet;
+      meter.cork();
       if quiet && meter.stream.is_some() {
         let channels = usize::from(meter.source.map.len());
         set_changed(meter.peaks, vec![0.0; channels]);
@@ -325,7 +348,7 @@ impl Pulse {
   }
 
   /// Closes meter `id` if the server ended its stream, as when its source
-  /// goes.
+  /// goes, and corks or uncorks it once the server made it.
   pub(super) fn on_meter_state(&mut self, id: u64) {
     let _lock = Locked::new(&mut self.mainloop);
     let Some(meter) = self.meters.iter_mut().find(|meter| meter.id == id) else {
@@ -341,6 +364,7 @@ impl Pulse {
       meter.stream = None;
       set_changed(meter.peaks, Vec::new());
     }
+    meter.cork();
   }
 
   /// Ends each closing stream the server has now made or refused.
@@ -361,14 +385,15 @@ pub(super) fn close_all(meters: &mut Vec<Meter>, closing: &mut Vec<Recording>) {
   }
 }
 
-/// Starts recording peaks from `source`, under the mainloop's lock.
-/// `None`, logged, if the server or libpulse refused.
+/// Starts recording peaks from `source`, `corked` or not, under the
+/// mainloop's lock. `None`, logged, if the server or libpulse refused.
 fn open(
   context: &mut Context,
   source: &Source,
   id: u64,
   sender: &Arc<Sender<Message>>,
   generation: u32,
+  corked: bool,
 ) -> Option<Recording> {
   let spec = Spec {
     format: Format::FLOAT32NE,
@@ -396,6 +421,9 @@ fn open(
     fragsize: frame,
   };
   let mut flags = FlagSet::PEAK_DETECT | FlagSet::ADJUST_LATENCY | FlagSet::DONT_MOVE;
+  if corked {
+    flags |= FlagSet::START_CORKED;
+  }
   if source.passive {
     flags |= FlagSet::DONT_INHIBIT_AUTO_SUSPEND;
   }

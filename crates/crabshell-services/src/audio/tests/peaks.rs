@@ -32,6 +32,14 @@ fn open(shell: &Harness) -> usize {
   pulse.as_ref().map_or(0, |pulse| pulse.meters.len())
 }
 
+/// Whether a `CREATE_RECORD_STREAM` asks for its stream corked: the flag
+/// after the monitor's name and the buffer's maximum length.
+fn starts_corked(rest: &[u8]) -> bool {
+  let name = rest.windows(9).position(|w| w == b".monitor\0");
+  let flag = name.expect("a monitor's name") + 9 + 5;
+  rest[flag] == b'1'
+}
+
 /// How many streams of closed meters wait for the server.
 fn closing(shell: &Harness) -> usize {
   let service = shell.service();
@@ -77,6 +85,7 @@ fn nothing_records_until_a_meter_asks_and_then_once_its_sink_is_there() {
   let (command, rest) = &sent[0];
   assert_eq!(*command, CREATE_RECORD_STREAM);
   assert!(String::from_utf8_lossy(rest).contains("headphones.monitor"));
+  assert!(!starts_corked(rest), "the sink plays");
   // 32-bit floats, as many channels as the sink, 25 a second.
   let float = if cfg!(target_endian = "little") { 5 } else { 6 };
   let spec = [b'a', float, 2, 0, 0, 0, 25];
@@ -168,7 +177,9 @@ fn a_meter_does_not_follow_the_peaks_it_sets() {
   let peaks = shell.cx.audio().peaks(move || sink("speakers"));
   runtime.flush();
   assert_eq!(peaks.get_untracked(), [0.0, 0.0]);
-  assert_eq!(recorded(&mut client).len(), 1);
+  let sent = client.commands();
+  assert_eq!(sent.len(), 1);
+  assert!(starts_corked(&sent[0].1), "idle, so corked from the start");
   // As peaks arrive.
   let peaks = shell.service().meters.borrow()[0].peaks;
   peaks.set(vec![0.5, 0.5]);

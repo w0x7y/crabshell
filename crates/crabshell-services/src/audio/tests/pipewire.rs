@@ -392,11 +392,26 @@ fn a_sink_meter_falls_silent_when_playing_stops_and_keeps_nothing_awake() {
   });
   stop(tone);
   shell.run_until(|_| near(&peaks.get_untracked(), &[0.0, 0.0]));
+  // Corked, so a server that sends an idle sink's silence, as PulseAudio
+  // does, sends none.
+  let corked = || {
+    server
+      .pactl(&["list", "source-outputs"])
+      .contains("Corked: yes")
+  };
+  shell.run_until(|_| corked());
   shell.run_for(Duration::from_millis(500));
   let switches = libpulse_switches();
   // One wakeup: the one that ends the run.
   assert_eq!(shell.run_for(Duration::from_secs(2)), 1);
   assert_eq!(libpulse_switches(), switches, "libpulse's thread slept");
+  // It records again once the sink plays.
+  let tone = server.play_square(0.25, 0.5);
+  shell.run_until(|_| {
+    server.link();
+    near(&peaks.get_untracked(), &[0.25, 0.5])
+  });
+  stop(tone);
 }
 
 #[test]
