@@ -314,10 +314,7 @@ impl Tree {
   /// Changes a button's hover or pressed state, noting when that needs a
   /// layout.
   fn set_button_state(&mut self, id: NodeId, f: impl FnOnce(&mut ButtonNode)) {
-    if matches!(
-      self.update_button_style(id, f),
-      Change::Layout | Change::Place
-    ) {
+    if self.update_button_style(id, f) == Change::Layout {
       self.pointer.caused_layout = true;
     }
   }

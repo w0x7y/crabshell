@@ -335,3 +335,68 @@ fn a_click_in_a_moved_field_puts_the_caret_under_the_pointer() {
   });
   assert_eq!(text.get(), "!abcdef");
 }
+
+/// Runs the platform's loop at 60 Hz with a still pointer for up to five
+/// seconds: ticks the clock, then lays out or places the window if it
+/// asks. Returns how many frames had anything to do.
+fn busy_frames(h: &mut Harness, window: &Window) -> u32 {
+  let start = Instant::now();
+  let mut busy = 0;
+  for frame in 0..300 {
+    let moving = crate::animating();
+    if moving {
+      advance_animations(start + Duration::from_millis(frame * 16));
+    }
+    h.runtime.flush();
+    let dirty = window.needs_layout();
+    if dirty {
+      window.layout(&mut h.text);
+    }
+    if moving || dirty {
+      busy += 1;
+    }
+  }
+  busy
+}
+
+#[test]
+fn a_fading_hover_transform_settles_under_a_still_pointer() {
+  const FADE: Transition = Transition::new(100).easing(Easing::Linear);
+  // The fade on the button's own style, on the hover style, and a lift
+  // near the edge.
+  let cases = [
+    (
+      Style::new().transition(FADE),
+      Style::new().scale(0.5),
+      Point::new(12.0, 12.0),
+    ),
+    (
+      Style::new(),
+      Style::new().scale(0.5).transition(FADE),
+      Point::new(12.0, 12.0),
+    ),
+    (
+      Style::new().transition(FADE),
+      Style::new().translate(0.0, -2.0),
+      Point::new(20.0, 29.0),
+    ),
+  ];
+  for (base, hover, at) in cases {
+    let mut h = Harness::new();
+    let row = Row::new().align(Align::Start).padding(10, 10).child(
+      Button::new(Icon::new("x").size(20))
+        .style(base)
+        .hover_style(hover),
+    );
+    let window = h.window(h.panel().child(row), 200.0, 60.0);
+    window.pointer_motion(at);
+    let busy = busy_frames(&mut h, &window);
+    assert!(busy < 30, "{hover:?}: still busy after {busy} frames");
+    assert!(!crate::animating(), "{hover:?}: the clock stops");
+    assert_eq!(
+      shown(&window, &[0, 0]).merge(Style::new()),
+      base.merge(hover),
+      "{hover:?}: it stays hovered"
+    );
+  }
+}

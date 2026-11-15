@@ -46,11 +46,12 @@ impl Tree {
   pub(crate) fn layout(&mut self, text: &mut TextSystem) {
     let root = self.root;
     // Only a transform changed: nothing moves in the layout, so taffy
-    // isn't asked again.
+    // isn't asked again. Nor is the pointer: a hover transform that moves
+    // its button off a still pointer would unhover it, move it back and
+    // hover it again for as long as the pointer stays.
     if self.needs_place && !self.needs_layout {
       self.place(root, Point::default(), &mut Vec::new(), text.font_system());
       self.needs_place = false;
-      self.pointer_after_layout();
       return;
     }
     self.sync(root, Parent::Flex, Font::DEFAULT, text);
