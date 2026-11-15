@@ -17,7 +17,7 @@ use crabshell_ui::Cx;
 use zbus::{Array, Connection, Message, ObjectPath, OwnedObjectPath, Variant};
 
 pub use saved::SavedConnection;
-use saved::SavedConnections;
+use saved::{SAVED, SETTINGS, SETTINGS_PATH, SavedConnections};
 
 use crate::Shared;
 use crate::dbus::{self, CALL_TIMEOUT, Daemon, OBJECT_MANAGER, PROPERTIES, Props, set_changed};
@@ -344,18 +344,10 @@ impl Network {
   /// Connects through a saved connection NetworkManager picks, and for
   /// an open network with none, through a new one.
   fn activate(&self, network: &WifiNetwork, device: ObjectPath<'static>, at: ObjectPath<'static>) {
-    let Some(service) = &self.service else {
+    let Some((shared, connection)) = self.bus("ActivateConnection") else {
       return;
     };
-    let connection = service
-      .state
-      .borrow()
-      .as_ref()
-      .and_then(|s| s.connection.clone());
-    let Some(connection) = connection else {
-      return tracing::info!("NetworkManager isn't running; nothing sent");
-    };
-    let (shared, open) = (Rc::clone(&service.shared), !network.secured);
+    let (spawner, open) = (Rc::clone(&shared), !network.secured);
     let ssid = network.ssid.clone().into_bytes();
     let ssid = self
       .service
@@ -366,7 +358,7 @@ impl Network {
         Some(self::ssid(object.access_point.as_ref()?))
       })
       .unwrap_or(ssid);
-    service.shared.spawn(async move {
+    spawner.spawn(async move {
       let pick = ObjectPath::from_static_str_unchecked("/");
       let body = (pick, &device, &at);
       let call = connection.call_method(Some(NM), NM_PATH, Some(NM), "ActivateConnection", &body);
@@ -407,30 +399,69 @@ impl Network {
     self.saved_connections
   }
 
+  /// Deletes the saved connection `uuid` names, so NetworkManager
+  /// forgets that network. A refusal is logged.
+  pub fn forget(&self, uuid: &str) {
+    self.call_saved(uuid, "Delete");
+  }
+
+  /// Takes the secrets, such as a Wi-Fi password, out of the saved
+  /// connection `uuid` names, so NetworkManager asks for them next time.
+  /// A refusal is logged.
+  pub fn clear_secrets(&self, uuid: &str) {
+    self.call_saved(uuid, "ClearSecrets");
+  }
+
+  /// Calls `method` on the saved connection `uuid` names, and logs a
+  /// refusal.
+  fn call_saved(&self, uuid: &str, method: &'static str) {
+    let Some((shared, connection)) = self.bus(method) else {
+      return;
+    };
+    let (spawner, uuid) = (Rc::clone(&shared), uuid.to_owned());
+    spawner.spawn(async move {
+      let called = async {
+        let find = "GetConnectionByUuid";
+        let call = connection.call_method(Some(NM), SETTINGS_PATH, Some(SETTINGS), find, &uuid);
+        let reply = shared.timeout(CALL_TIMEOUT, call).await?;
+        let path = reply.body().deserialize::<OwnedObjectPath>()?;
+        let call = connection.call_method(Some(NM), path.as_str(), Some(SAVED), method, &());
+        shared.timeout(CALL_TIMEOUT, call).await.map(drop)
+      };
+      if let Err(error) = called.await {
+        tracing::warn!(%error, uuid, method, "NetworkManager refused it");
+      }
+    });
+  }
+
   /// Calls `method` on NetworkManager's object at `path`, and logs a
   /// refusal, without the body.
   fn call<B>(&self, path: &str, interface: &'static str, method: &'static str, body: B)
   where
     B: serde::Serialize + zbus::DynamicType + 'static,
   {
-    let Some(service) = &self.service else {
+    let Some((shared, connection)) = self.bus(method) else {
       return;
     };
-    let Some(connection) = service
-      .state
-      .borrow()
-      .as_ref()
-      .and_then(|state| state.connection.clone())
-    else {
-      return tracing::info!(method, "NetworkManager isn't running; nothing sent");
-    };
-    let (shared, path) = (Rc::clone(&service.shared), path.to_owned());
-    service.shared.spawn(async move {
+    let (spawner, path) = (Rc::clone(&shared), path.to_owned());
+    spawner.spawn(async move {
       let call = connection.call_method(Some(NM), path.as_str(), Some(interface), method, &body);
       if let Err(error) = shared.timeout(CALL_TIMEOUT, call).await {
         tracing::warn!(%error, path, method, "NetworkManager refused it");
       }
     });
+  }
+
+  /// What a call to `method` goes through, or `None`, which is logged,
+  /// while NetworkManager isn't running.
+  fn bus(&self, method: &str) -> Option<(Rc<Shared>, Connection)> {
+    let service = self.service.as_ref()?;
+    let state = service.state.borrow();
+    let Some(connection) = state.as_ref().and_then(|state| state.connection.clone()) else {
+      tracing::info!(method, "NetworkManager isn't running; nothing sent");
+      return None;
+    };
+    Some((Rc::clone(&service.shared), connection))
   }
 }
 

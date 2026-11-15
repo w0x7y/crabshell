@@ -854,6 +854,7 @@ fn an_idle_networkmanager_wakes_nothing_and_none_at_all_is_quiet() {
   let logs = capture_logs(|| {
     let network = shell.cx.network();
     assert_eq!(network.saved_connections().get_untracked(), []);
+    network.forget(HOME_UUID);
     network.disconnect(WLAN);
     assert_eq!(
       shell.run_until(Instant::now() + Duration::from_millis(200)),
@@ -1156,8 +1157,8 @@ fn dock_shown() -> SavedConnection {
   }
 }
 
-/// Has `nm` list and read the saved connections in `saved`, as
-/// NetworkManager's settings service does.
+/// Has `nm` list, read, find, delete and clear the saved connections in
+/// `saved`, as NetworkManager's settings service does.
 fn serve_saved(nm: &FakeService, saved: &Saved) {
   let listed = Rc::clone(saved);
   nm.on("ListConnections", move |call| {
@@ -1170,6 +1171,24 @@ fn serve_saved(nm: &FakeService, saved: &Saved) {
     let path = call.header().path()?.to_string();
     reply(call, read.borrow().get(&path)?)
   });
+  let found = Rc::clone(saved);
+  nm.on("GetConnectionByUuid", move |call| {
+    let uuid: String = call.body().deserialize().ok()?;
+    let saved = found.borrow();
+    let path = saved.iter().find_map(|(path, settings)| {
+      let wanted = crate::dbus::text(&settings["connection"], "uuid") == uuid;
+      wanted.then(|| path.clone())
+    });
+    let Some(path) = path else {
+      let name = "org.freedesktop.NetworkManager.Settings.InvalidConnection";
+      let error = zbus::Message::error(&call.header(), name);
+      return Some(error.build(&("no connection with the UUID",)));
+    };
+    reply(call, &ObjectPath::try_from(path).ok()?)
+  });
+  for method in ["Delete", "ClearSecrets"] {
+    nm.on(method, |call| reply(call, &()));
+  }
 }
 
 /// The three saved connections, served by `nm`.
@@ -1283,6 +1302,42 @@ fn home_saved_renamed() -> HashMap<String, crate::dbus::Props> {
     .expect("a connection group")
     .insert("id".to_owned(), id);
   home
+}
+
+#[test]
+fn forget_and_clear_secrets_find_the_connection_by_its_uuid() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let nm = fake_nm(&mut shell, &bus);
+  let _saved = saved(&nm);
+  let network = shell.cx.network();
+  let devices = network.devices();
+  wait_for(&mut shell, "the devices", || {
+    !devices.get_untracked().is_empty()
+  });
+
+  let logs = capture_logs(|| {
+    network.forget(HOME_UUID);
+    network.clear_secrets(VPN_UUID);
+    network.forget("no-such-uuid");
+    let calls = Rc::clone(&nm.calls);
+    wait_for(&mut shell, "every call", || calls.borrow().len() == 5);
+    shell.run_until(Instant::now() + Duration::from_millis(100));
+  });
+  let mut calls = nm.calls.borrow().clone();
+  calls.sort();
+  assert_eq!(
+    calls,
+    [
+      format!("ClearSecrets {VPN_SAVED}"),
+      format!("Delete {HOME_SAVED}"),
+      format!("GetConnectionByUuid {SETTINGS_PATH}"),
+      format!("GetConnectionByUuid {SETTINGS_PATH}"),
+      format!("GetConnectionByUuid {SETTINGS_PATH}"),
+    ]
+  );
+  assert!(logs.contains("InvalidConnection"), "{logs}");
+  assert_eq!(logs.matches("refused").count(), 1, "{logs}");
 }
 
 #[test]

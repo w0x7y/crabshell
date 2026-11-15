@@ -32,7 +32,8 @@ const MAX_SETTINGS: usize = 1024 * 1024;
 /// before.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SavedConnection {
-  /// What names it for good.
+  /// What names it for good, as [`forget`](super::Network::forget) and
+  /// [`clear_secrets`](super::Network::clear_secrets) take.
   pub uuid: String,
   /// Its name, often the Wi-Fi network's.
   pub id: String,
