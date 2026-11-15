@@ -8,7 +8,7 @@ use crabshell_reactive::Runtime;
 
 use super::fake::{CREATE_RECORD_STREAM, Client, FakePulse};
 use super::{
-  Harness, NORM, NOTHING, connect, connected, logs_of, node_info, one_at_a_time, stream_info,
+  Harness, NORM, NOTHING, connect, connected, info, logs_of, node_info, one_at_a_time, stream_info,
 };
 use crate::ServicesExt;
 use crate::audio::{Event, NodeInfo, PeakTarget, StreamInfo};
@@ -125,6 +125,26 @@ fn a_meter_follows_its_target_and_closes_with_its_context() {
   assert!(shell.service().meters.borrow().is_empty());
   assert_eq!(runtime.node_count(), before);
   assert_eq!(peaks.try_get(), None);
+}
+
+#[test]
+fn a_meter_on_the_default_sink_stays_through_a_volume_step() {
+  let _one = one_at_a_time();
+  let (_fake, shell, mut client) = with_nodes("meter-stays");
+  let runtime = Runtime::current();
+  let audio = shell.cx.audio();
+  let default = audio.default_sink();
+  let peaks = audio.peaks(move || default.get().map(|s| PeakTarget::Sink(s.name)));
+  shell.send(Event::Info(Some(info(3, 50, false))));
+  runtime.flush();
+  assert_eq!(recorded(&mut client).len(), 1);
+  shell.service().meters.borrow()[0].peaks.set(vec![0.5, 0.5]);
+  // The default sink's volume and mute change, but not its name.
+  shell.send(Event::Info(Some(info(3, 55, false))));
+  shell.send(Event::Info(Some(info(3, 55, true))));
+  runtime.flush();
+  assert_eq!(recorded(&mut client), Vec::<String>::new(), "not reopened");
+  assert_eq!(peaks.get_untracked(), [0.5, 0.5], "not blanked");
 }
 
 #[test]

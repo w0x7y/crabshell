@@ -74,18 +74,22 @@ impl Audio {
     };
     let peaks = self.owner.signal(Vec::new());
     let target = target.into_prop().shared();
-    // Each run's scope holds the meter it opened, so a new target or the
-    // owner going closes it.
-    self.owner.effect_scoped(move |scope| {
+    // A memo, so a closure that reads a sink's volume moves the meter only
+    // when the target itself changes.
+    let target = self.owner.memo(move || {
       let chosen = panic::catch_unwind(AssertUnwindSafe(|| target()));
-      let target = chosen.unwrap_or_else(|payload| {
+      chosen.unwrap_or_else(|payload| {
         let message = panic_message(payload.as_ref());
         tracing::error!(
           "cx.audio().peaks (called at {at}) panicked choosing its target: {message}"
         );
         None
-      });
-      if let Some(target) = target {
+      })
+    });
+    // Each run's scope holds the meter it opened, so a new target or the
+    // owner going closes it.
+    self.owner.effect_scoped(move |scope| {
+      if let Some(target) = target.get() {
         let id = service.meter(target, peaks);
         scope.signal(Unmeter(Rc::clone(&service), id));
       }
