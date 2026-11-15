@@ -1363,14 +1363,15 @@ fn at_most_256_saved_connections_are_read_the_first_by_number() {
 }
 
 #[test]
-fn settings_past_1_mib_and_replies_past_64_kib_are_left_out() {
+fn settings_past_1_mib_kept_and_replies_past_64_kib_are_left_out() {
   let bus = PrivateBus::start();
   let mut shell = Harness::new(online(&bus));
   let nm = fake_nm(&mut shell, &bus);
-  // Each with a certificate of 60,000 bytes inside, as 802.1X may keep,
-  // and the third's too big.
+  // Each with a certificate of 8,000 bytes inside, as 802.1X may keep,
+  // which takes about 250 KiB once each byte is a JSON number. The
+  // third's reply is too big.
   let saved = (1..=21).map(|n| {
-    let size = if n == 3 { 70_000 } else { 60_000 };
+    let size = if n == 3 { 70_000 } else { 8_000 };
     let cert = ("ca-cert", Variant::from(vec![b'x'; size]));
     let about = about(&format!("c{n}"), &format!("uuid-{n}"), "802-11-wireless");
     let groups = vec![about, ("802-1x", vec![cert])];
@@ -1387,14 +1388,63 @@ fn settings_past_1_mib_and_replies_past_64_kib_are_left_out() {
   let list = list.get_untracked();
   assert_eq!(list.len(), 20, "the big one left out");
   assert_eq!(list[2].id, "c4");
-  // 17 replies of 60,148 bytes fit in 1 MiB, and an 18th doesn't.
+  assert!(weight(&list) <= 1024 * 1024, "{} bytes kept", weight(&list));
+  // Four fit in 1 MiB, and a fifth doesn't.
   let kept = list.iter().take_while(|saved| !saved.settings.is_null());
-  assert_eq!(kept.count(), 17, "{logs}");
-  assert_eq!(list[16].settings["802-1x"]["ca-cert"][59_999], 120);
-  assert!(list[17..].iter().all(|saved| saved.settings.is_null()));
+  assert_eq!(kept.count(), 4, "{logs}");
+  assert_eq!(list[3].settings["802-1x"]["ca-cert"][7_999], 120);
+  assert!(list[4..].iter().all(|saved| saved.settings.is_null()));
   assert_eq!(list[19].uuid, "uuid-21", "still listed");
   assert!(logs.contains("too big"), "{logs}");
   assert!(logs.contains("past 1 MiB"), "{logs}");
+}
+
+#[test]
+fn names_count_toward_the_1_mib_too() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let nm = fake_nm(&mut shell, &bus);
+  // Names of 5,000 bytes each, 1.25 MiB of them over 256 connections.
+  let saved = (1..=256).map(|n| {
+    let id = format!("{n:x<5000}");
+    let about = about(&id, &format!("uuid-{n}"), "vpn");
+    (format!("{SETTINGS_PATH}/{n}"), settings(vec![about]))
+  });
+  let saved = Rc::new(RefCell::new(saved.collect::<BTreeMap<_, _>>()));
+  serve_saved(&nm, &saved);
+  let list = shell.cx.network().saved_connections();
+  let logs = capture_logs(|| {
+    wait_for(&mut shell, "the saved connections", || {
+      !list.get_untracked().is_empty()
+    });
+  });
+  let list = list.get_untracked();
+  assert!(weight(&list) <= 1024 * 1024, "{} bytes kept", weight(&list));
+  assert!(list.len() < 256, "{}", list.len());
+  assert_eq!(list[0].uuid, "uuid-1", "the first kept");
+  assert!(logs.contains("left out"), "{logs}");
+}
+
+/// About the memory `list` keeps: each connection and its strings, and
+/// each JSON value, string and key in its settings.
+fn weight(list: &[SavedConnection]) -> usize {
+  use serde_json::Value;
+
+  fn json(value: &Value) -> usize {
+    let inside = match value {
+      Value::String(text) => text.len(),
+      Value::Array(items) => items.iter().map(json).sum(),
+      Value::Object(entries) => entries
+        .iter()
+        .map(|(key, value)| size_of::<String>() + key.len() + json(value))
+        .sum(),
+      _ => 0,
+    };
+    size_of::<Value>() + inside
+  }
+  let strings = |saved: &SavedConnection| saved.uuid.len() + saved.id.len() + saved.kind.len();
+  let each = |saved| size_of::<SavedConnection>() + strings(saved) + json(&saved.settings);
+  list.iter().map(each).sum()
 }
 
 #[test]
@@ -1419,8 +1469,17 @@ fn dbus_values_read_as_plain_json() {
     (structure, json!([1, "two", [3]])),
   ];
   for (value, expected) in values {
-    assert_eq!(json(&value), expected, "{value:?}");
+    assert_eq!(json(&value, &mut 0), expected, "{value:?}");
   }
+
+  // What each keeps: a value each, and the bytes of strings and keys.
+  let node = size_of::<serde_json::Value>();
+  let mut cost = 0;
+  json(&Variant::from(HashMap::from([("ab", "xyz")])), &mut cost);
+  assert_eq!(cost, 2 * node + size_of::<String>() + 2 + 3);
+  let mut cost = 0;
+  json(&Variant::Variant(Box::new(Variant::from(7u32))), &mut cost);
+  assert_eq!(cost, node, "the variant around it costs nothing");
 }
 
 #[test]

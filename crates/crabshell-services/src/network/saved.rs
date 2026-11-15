@@ -24,9 +24,10 @@ const MAX_SAVED: usize = 256;
 /// The biggest reply a saved connection may come in; one with 802.1X
 /// certificates inside is about 10 KiB.
 const MAX_REPLY: usize = 64 * 1024;
-/// The most reply bytes whose settings are kept, over every saved
-/// connection.
-const MAX_SETTINGS: usize = 1024 * 1024;
+/// About the most memory the list keeps: every connection's own strings,
+/// and the settings that fit. A byte is one byte in a reply and a whole
+/// JSON value once read, so this counts what is kept, not what came.
+const MAX_KEPT: usize = 1024 * 1024;
 
 /// A connection NetworkManager saved, as for a Wi-Fi network joined
 /// before.
@@ -44,38 +45,54 @@ pub struct SavedConnection {
   /// Its settings by group and name, such as `settings["ipv4"]["method"]`,
   /// without secrets, which NetworkManager never hands out with them. A
   /// byte array, such as an SSID, is an array of numbers. `null` for one
-  /// whose settings didn't fit in the 1 MiB kept for them all.
+  /// whose settings didn't fit in the 1 MiB kept for the whole list.
   pub settings: Json,
 }
 
 impl SavedConnection {
-  /// One from NetworkManager's `settings`, keeping them if `keep`.
-  fn new(settings: &HashMap<String, Props>, keep: bool) -> SavedConnection {
+  /// One named from NetworkManager's `settings`, without them yet.
+  fn named(settings: &HashMap<String, Props>) -> SavedConnection {
     let about = settings.get("connection");
     let text = |name| about.map_or(String::new(), |props| dbus::text(props, name));
-    let groups = settings.iter().map(|(group, props)| {
-      let props = props
-        .iter()
-        .map(|(name, value)| (name.clone(), json(value)));
-      (group.clone(), Json::Object(props.collect()))
-    });
     SavedConnection {
       uuid: text("uuid"),
       id: text("id"),
       kind: text("type"),
-      settings: if keep {
-        Json::Object(groups.collect())
-      } else {
-        Json::Null
-      },
+      settings: Json::Null,
     }
   }
+
+  /// About the memory it takes without its settings.
+  fn weight(&self) -> usize {
+    size_of::<SavedConnection>() + self.uuid.len() + self.id.len() + self.kind.len()
+  }
+}
+
+/// NetworkManager's `settings` as a JSON object of groups, adding about
+/// the memory it takes to `cost`.
+fn settings_json(settings: &HashMap<String, Props>, cost: &mut usize) -> Json {
+  let mut groups = serde_json::Map::new();
+  for (group, props) in settings {
+    let mut entries = serde_json::Map::new();
+    for (name, value) in props {
+      *cost += size_of::<String>() + name.len();
+      entries.insert(name.clone(), json(value, cost));
+    }
+    *cost += size_of::<String>() + group.len() + size_of::<Json>();
+    groups.insert(group.clone(), Json::Object(entries));
+  }
+  *cost += size_of::<Json>();
+  Json::Object(groups)
 }
 
 /// `value` as JSON: a dictionary as an object, an array or a structure
 /// as an array. A file descriptor, or a number JSON can't hold, is `null`.
-pub(super) fn json(value: &Variant<'_>) -> Json {
-  match value {
+/// Adds about the memory the JSON takes to `cost`: each value, and each
+/// string's and key's bytes.
+pub(super) fn json(value: &Variant<'_>, cost: &mut usize) -> Json {
+  let node = match value {
+    // A variant inside a variant is the value it holds.
+    Variant::Variant(inner) => return json(inner, cost),
     Variant::U8(n) => Json::from(*n),
     Variant::Bool(b) => Json::from(*b),
     Variant::I16(n) => Json::from(*n),
@@ -85,24 +102,36 @@ pub(super) fn json(value: &Variant<'_>) -> Json {
     Variant::I64(n) => Json::from(*n),
     Variant::U64(n) => Json::from(*n),
     Variant::F64(n) => Json::from(*n),
-    Variant::Str(text) => Json::from(text.as_str()),
-    Variant::Signature(signature) => Json::from(signature.to_string()),
-    Variant::ObjectPath(path) => Json::from(path.as_str()),
-    Variant::Variant(inner) => json(inner),
-    Variant::Array(array) => array.inner().iter().map(json).collect(),
-    Variant::Structure(structure) => structure.fields().iter().map(json).collect(),
+    Variant::Str(text) => text_json(text.as_str().to_owned(), cost),
+    Variant::Signature(signature) => text_json(signature.to_string(), cost),
+    Variant::ObjectPath(path) => text_json(path.as_str().to_owned(), cost),
+    Variant::Array(array) => array.inner().iter().map(|item| json(item, cost)).collect(),
+    Variant::Structure(structure) => {
+      let fields = structure.fields().iter();
+      fields.map(|field| json(field, cost)).collect()
+    }
     Variant::Dict(dict) => {
-      let entries = dict.iter().map(|(key, value)| {
+      let mut entries = serde_json::Map::new();
+      for (key, value) in dict.iter() {
         let key = match key {
           Variant::Str(text) => text.as_str().to_owned(),
-          key => json(key).to_string(),
+          key => json(key, &mut 0).to_string(),
         };
-        (key, json(value))
-      });
-      Json::Object(entries.collect())
+        *cost += size_of::<String>() + key.len();
+        entries.insert(key, json(value, cost));
+      }
+      Json::Object(entries)
     }
     Variant::Fd(_) => Json::Null,
-  }
+  };
+  *cost += size_of::<Json>();
+  node
+}
+
+/// `text` as JSON, adding its bytes to `cost`.
+fn text_json(text: String, cost: &mut usize) -> Json {
+  *cost += text.len();
+  Json::String(text)
 }
 
 /// The saved connections for one shell, followed from the first ask.
@@ -180,7 +209,8 @@ impl Daemon for SavedConnections {
     };
     // By number, so the cap keeps the oldest, the same every time.
     paths.sort_by(|a, b| by_number(a.as_str(), b.as_str()));
-    let (mut list, mut room, mut left_out) = (Vec::new(), MAX_SETTINGS, 0);
+    let (mut list, mut room) = (Vec::new(), MAX_KEPT);
+    let (mut without_settings, mut left_out) = (0, 0);
     for path in paths.iter().take(MAX_SAVED).map(|path| path.as_str()) {
       let call = connection.call_method(Some(NM), path, Some(SAVED), "GetSettings", &());
       let reply = match shared.timeout(CALL_TIMEOUT, call).await {
@@ -207,16 +237,23 @@ impl Daemon for SavedConnections {
         );
         continue;
       };
-      let keep = body.len() <= room;
-      if keep {
-        room -= body.len();
-      } else {
+      let mut saved = SavedConnection::named(&settings);
+      let Some(left) = room.checked_sub(saved.weight()) else {
         left_out += 1;
+        continue;
+      };
+      room = left;
+      let mut cost = 0;
+      let json = settings_json(&settings, &mut cost);
+      match room.checked_sub(cost) {
+        Some(left) => (room, saved.settings) = (left, json),
+        None => without_settings += 1,
       }
-      list.push(SavedConnection::new(&settings, keep));
+      list.push(saved);
     }
-    if left_out > 0 {
-      tracing::warn!(left_out, "saved connections' settings past 1 MiB left out");
+    if without_settings + left_out > 0 {
+      let what = "saved connections past 1 MiB listed without settings, or left out";
+      tracing::warn!(without_settings, left_out, "{what}");
     }
     if self.generation.get() == generation {
       set_changed(self.list, list);
