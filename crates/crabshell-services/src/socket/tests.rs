@@ -89,6 +89,40 @@ fn it_passes_on_each_line_and_the_rest_when_the_other_end_closes() {
 }
 
 #[test]
+fn on_split_splits_at_its_marker_and_an_empty_one_passes_on_each_read() {
+  let server = Server::new();
+  let mut shell = Harness::new(offline());
+  let (pieces, chunks) = (
+    Rc::new(RefCell::new(Vec::new())),
+    Rc::new(RefCell::new(Vec::new())),
+  );
+  let kept = Rc::clone(&pieces);
+  let _split = shell
+    .cx
+    .socket(server.path())
+    .on_split("\r\n", move |piece| {
+      kept.borrow_mut().push(piece.to_owned())
+    });
+  let kept = Rc::clone(&chunks);
+  let _chunked = shell
+    .cx
+    .socket(server.path())
+    .on_split("", move |chunk| kept.borrow_mut().push(chunk.to_owned()));
+  let (mut split, mut chunked) = (server.accept(), server.accept());
+
+  split.write_all(b"one\r").unwrap();
+  chunked.write_all(b"ab").unwrap();
+  run(&mut shell, 50);
+  split.write_all(b"\ntwo\nstill\r\nlast").unwrap();
+  chunked.write_all(b"c\nd").unwrap();
+  run(&mut shell, 50);
+  drop((split, chunked));
+  run(&mut shell, 50);
+  assert_eq!(*pieces.borrow(), ["one", "two\nstill", "last"]);
+  assert_eq!(*chunks.borrow(), ["ab", "c\nd"]);
+}
+
+#[test]
 fn writes_reach_the_other_end_even_past_its_buffer() {
   let server = Server::new();
   let mut shell = Harness::new(offline());

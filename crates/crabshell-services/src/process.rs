@@ -21,7 +21,7 @@ use crabshell_reactive::{ReadSignal, Signal, untrack};
 use crabshell_ui::Cx;
 use rustix::process::{Pid, PidfdFlags, Signal as Kill, kill_process_group, pidfd_open};
 
-use crate::lines::{Lines, panic_message};
+use crate::lines::{Lines, decode, panic_message};
 use crate::{Shared, spawn};
 
 /// The most of each output kept in [`Process::stdout`] and
@@ -139,8 +139,11 @@ struct State {
   /// nothing is to start: writes and closes have no run to wait for.
   ran: bool,
   on_line: Option<OnLine>,
-  /// Where `on_line` was set, for the log if it panics.
-  at: Option<&'static Location<'static>>,
+  /// Which method set `on_line` and where, for the log if it panics.
+  at: Option<(&'static str, &'static Location<'static>)>,
+  /// Where `on_line` splits, for the next run's lines. Only read once a
+  /// handler set it.
+  marker: String,
 }
 
 /// What a config does with each line.
@@ -287,9 +290,28 @@ impl Process {
   /// program and where `on_line` was called, and it isn't called again.
   #[track_caller]
   pub fn on_line(self, on_line: impl Fn(&str) + 'static) -> Process {
+    self.handle("on_line", "\n", Rc::new(on_line))
+  }
+
+  /// Like [`on_line`](Self::on_line), with lines that end at `marker`
+  /// instead of `\n`, such as `"\0"` for `find -print0`, as Quickshell's
+  /// `SplitParser`. An empty `marker` passes on each read as it comes, up
+  /// to 64 KiB, keeping a character the read cut off for the next. It
+  /// replaces `on_line`, and what waits is split at the new marker.
+  #[track_caller]
+  pub fn on_split(self, marker: &str, on_split: impl Fn(&str) + 'static) -> Process {
+    self.handle("on_split", marker, Rc::new(on_split))
+  }
+
+  #[track_caller]
+  fn handle(self, name: &'static str, marker: &str, handler: OnLine) -> Process {
     let mut state = self.inner.state.borrow_mut();
-    state.on_line = Some(Rc::new(on_line));
-    state.at = Some(Location::caller());
+    state.on_line = Some(handler);
+    state.at = Some((name, Location::caller()));
+    marker.clone_into(&mut state.marker);
+    if let Some(run) = state.run.as_mut() {
+      run.lines.set_marker(marker);
+    }
     drop(state);
     self
   }
@@ -431,7 +453,7 @@ impl Inner {
       stdin,
       outbox: input,
       writer: None,
-      lines: Lines::default(),
+      lines: Lines::new(&self.state.borrow().marker),
     };
     for (which, stream) in [(Which::Out, out), (Which::Err, err)] {
       let Ok(fd) = stream.as_fd().try_clone_to_owned() else {
@@ -568,9 +590,11 @@ impl Inner {
         return;
       }
       if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| on_line(&line))) {
-        let at = at.map_or_else(String::new, |at| format!(" (called at {at})"));
+        let (name, at) = at.map_or(("on_line", String::new()), |(name, at)| {
+          (name, format!(" (called at {at})"))
+        });
         let message = panic_message(payload.as_ref());
-        tracing::error!("process {program} on_line{at} panicked: {message}");
+        tracing::error!("process {program} {name}{at} panicked: {message}");
         let mut state = self.state.borrow_mut();
         // Unless it set a new one meanwhile.
         if state
@@ -828,38 +852,6 @@ impl Run {
     output.kept += text.len();
     (text, lines)
   }
-}
-
-/// The text `bytes` holds, with bad bytes replaced, leaving in `bytes`
-/// the start of a character cut off at its end.
-fn decode(bytes: &mut Vec<u8>) -> String {
-  let mut text = String::new();
-  let mut rest: &[u8] = bytes;
-  loop {
-    match std::str::from_utf8(rest) {
-      Ok(valid) => {
-        text.push_str(valid);
-        rest = &[];
-        break;
-      }
-      Err(error) => {
-        let (valid, after) = rest.split_at(error.valid_up_to());
-        text.push_str(&String::from_utf8_lossy(valid));
-        match error.error_len() {
-          Some(bad) => {
-            text.push('\u{fffd}');
-            rest = &after[bad..];
-          }
-          None => {
-            rest = after;
-            break;
-          }
-        }
-      }
-    }
-  }
-  *bytes = rest.to_vec();
-  text
 }
 
 /// Sets `signal` unless it holds `value` or is gone. The read is

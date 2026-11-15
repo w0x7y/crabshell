@@ -8,8 +8,9 @@ use std::time::{Duration, Instant};
 
 use crabshell_reactive::Runtime;
 
-use super::{MAX_OUTPUT, Process, decode};
+use super::{MAX_OUTPUT, Process};
 use crate::ServicesExt;
+use crate::lines::decode;
 use crate::testing::{Harness, capture_logs, offline};
 
 fn sh(script: &str) -> Command {
@@ -87,6 +88,29 @@ fn on_line_gets_each_line_and_the_rest_at_the_end() {
     .on_line(move |line| kept.borrow_mut().push(line.to_owned()));
   finish(&mut shell, &process);
   assert_eq!(*lines.borrow(), ["a", "", "b", "last"]);
+}
+
+#[test]
+fn on_split_splits_at_its_marker_and_an_empty_one_passes_on_each_read() {
+  let mut shell = Harness::new(offline());
+  let (pieces, chunks) = (
+    Rc::new(RefCell::new(Vec::new())),
+    Rc::new(RefCell::new(Vec::new())),
+  );
+  let kept = Rc::clone(&pieces);
+  let split = shell
+    .cx
+    .process(|| sh("printf 'a\\0b\\nc\\0'; sleep 0.1; printf '\\0last'"))
+    .on_split("\0", move |piece| kept.borrow_mut().push(piece.to_owned()));
+  let kept = Rc::clone(&chunks);
+  let chunked = shell
+    .cx
+    .process(|| sh("printf 'one'; sleep 0.1; printf 'two\\n'"))
+    .on_split("", move |chunk| kept.borrow_mut().push(chunk.to_owned()));
+  finish(&mut shell, &split);
+  finish(&mut shell, &chunked);
+  assert_eq!(*pieces.borrow(), ["a", "b\nc", "", "last"]);
+  assert_eq!(*chunks.borrow(), ["one", "two\n"]);
 }
 
 #[test]

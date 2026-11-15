@@ -58,8 +58,8 @@ type OnLine = Rc<dyn Fn(&str)>;
 struct State {
   connection: Option<Connection>,
   on_line: Option<OnLine>,
-  /// Where `on_line` was set, for the log if it panics.
-  at: Option<&'static Location<'static>>,
+  /// Which method set `on_line` and where, for the log if it panics.
+  at: Option<(&'static str, &'static Location<'static>)>,
   lines: Lines,
   /// Counts connects and closes the config asked for, so lines read
   /// before one aren't passed on after it.
@@ -128,9 +128,25 @@ impl Socket {
   /// again; the socket stays open.
   #[track_caller]
   pub fn on_line(self, on_line: impl Fn(&str) + 'static) -> Socket {
+    self.handle("on_line", "\n", Rc::new(on_line))
+  }
+
+  /// Like [`on_line`](Self::on_line), with lines that end at `marker`
+  /// instead of `\n`, such as `"\0"` or `"\r\n"`, as Quickshell's
+  /// `SplitParser`. An empty `marker` passes on each read as it comes, up
+  /// to 64 KiB, keeping a character the read cut off for the next. It
+  /// replaces `on_line`, and what waits is split at the new marker.
+  #[track_caller]
+  pub fn on_split(self, marker: &str, on_split: impl Fn(&str) + 'static) -> Socket {
+    self.handle("on_split", marker, Rc::new(on_split))
+  }
+
+  #[track_caller]
+  fn handle(self, name: &'static str, marker: &str, handler: OnLine) -> Socket {
     let mut state = self.inner.state.borrow_mut();
-    state.on_line = Some(Rc::new(on_line));
-    state.at = Some(Location::caller());
+    state.on_line = Some(handler);
+    state.at = Some((name, Location::caller()));
+    state.lines.set_marker(marker);
     drop(state);
     self
   }
@@ -189,7 +205,7 @@ impl Inner {
       return;
     };
     let mut state = self.state.borrow_mut();
-    state.lines = Lines::default();
+    state.lines.reset();
     state.serial += 1;
     state.connection = Some(Connection {
       stream,
@@ -252,9 +268,11 @@ impl Inner {
       }
       if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| on_line(&line))) {
         let path = self.path.display();
-        let at = at.map_or_else(String::new, |at| format!(" (called at {at})"));
+        let (name, at) = at.map_or(("on_line", String::new()), |(name, at)| {
+          (name, format!(" (called at {at})"))
+        });
         let message = panic_message(payload.as_ref());
-        tracing::error!("socket {path} on_line{at} panicked: {message}");
+        tracing::error!("socket {path} {name}{at} panicked: {message}");
         let mut state = self.state.borrow_mut();
         // Unless it set a new one meanwhile.
         if state
@@ -355,7 +373,7 @@ impl Inner {
   fn end(&self, asked: bool) {
     let connection = {
       let mut state = self.state.borrow_mut();
-      state.lines = Lines::default();
+      state.lines.reset();
       if asked {
         state.serial += 1;
       }
