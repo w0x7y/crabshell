@@ -63,7 +63,7 @@ pub use bluetooth::{
 };
 pub use clock::Precision;
 pub use desktop_entries::{DesktopAction, DesktopEntries, DesktopEntry};
-pub use file::FileView;
+pub use file::{FileError, FileErrorKind, FileView};
 pub use greetd::{GreetMessage, GreetState, Greetd};
 pub use hyprland::{Hyprland, HyprlandEvent, HyprlandMonitor, HyprlandToplevel, HyprlandWorkspace};
 pub use mpris::{LoopStatus, Mpris, PlaybackStatus, Player};

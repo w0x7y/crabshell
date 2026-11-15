@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crabshell_reactive::Runtime;
 use serde::{Deserialize, Deserializer, Serialize};
 
-use super::MAX_FILE;
+use super::{FileErrorKind, FileView, MAX_FILE};
 use crate::ServicesExt;
 use crate::testing::{Harness, capture_logs, offline};
 
@@ -72,6 +72,74 @@ fn a_missing_or_bad_file_reads_as_none_logged_once() {
     assert_eq!(view.text().get_untracked(), None);
   });
   assert!(logs.contains("over 16 MiB"), "{logs}");
+}
+
+/// The kind of read error `view` shows, if any.
+fn kind(view: &FileView) -> Option<FileErrorKind> {
+  view.error().get_untracked().map(|error| error.kind)
+}
+
+#[test]
+fn a_read_error_says_why_and_is_cleared_by_a_read_or_a_write() {
+  let dir = Dir::new();
+  let path = dir.join("note");
+  let shell = Harness::new(offline());
+  let view = shell.cx.file_view(&path);
+  let error = view.error().get_untracked().expect("an error");
+  assert_eq!(error.kind, FileErrorKind::NotFound);
+  assert!(error.message.contains("No such file"), "{error:?}");
+
+  std::fs::write(&path, "hi").unwrap();
+  view.inner.reread();
+  assert_eq!(view.error().get_untracked(), None);
+  assert_eq!(view.text().get_untracked().as_deref(), Some("hi"));
+
+  std::fs::remove_file(&path).unwrap();
+  view.inner.reread();
+  assert_eq!(kind(&view), Some(FileErrorKind::NotFound));
+  view.write("back");
+  assert_eq!(view.error().get_untracked(), None, "a write that worked");
+}
+
+#[test]
+fn each_kind_of_read_error_is_told_apart_and_a_pipe_never_blocks() {
+  let dir = Dir::new();
+  let shell = Harness::new(offline());
+  std::fs::create_dir(dir.join("sub")).unwrap();
+  assert_eq!(
+    kind(&shell.cx.file_view(dir.join("sub"))),
+    Some(FileErrorKind::NotAFile)
+  );
+  let made = std::process::Command::new("mkfifo")
+    .arg(dir.join("pipe"))
+    .status()
+    .unwrap();
+  assert!(made.success());
+  // Opening a pipe with no writer would wait for one.
+  assert_eq!(
+    kind(&shell.cx.file_view(dir.join("pipe"))),
+    Some(FileErrorKind::NotAFile)
+  );
+  std::fs::write(dir.join("binary"), b"\xff").unwrap();
+  let binary = shell.cx.file_view(dir.join("binary"));
+  assert_eq!(kind(&binary), Some(FileErrorKind::Other));
+  assert!(
+    binary
+      .error()
+      .get_untracked()
+      .unwrap()
+      .message
+      .contains("UTF-8")
+  );
+  // Root reads anything.
+  if rustix::process::getuid().as_raw() != 0 {
+    std::fs::write(dir.join("secret"), "x").unwrap();
+    std::fs::set_permissions(dir.join("secret"), std::fs::Permissions::from_mode(0o000)).unwrap();
+    assert_eq!(
+      kind(&shell.cx.file_view(dir.join("secret"))),
+      Some(FileErrorKind::PermissionDenied)
+    );
+  }
 }
 
 #[test]

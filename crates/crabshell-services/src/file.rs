@@ -133,22 +133,65 @@ pub struct FileView {
   inner: Rc<ViewInner>,
 }
 
+/// Why a file can't be read, from [`FileView::error`], as Quickshell's
+/// `FileViewError`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileError {
+  /// What kind of failure it is.
+  pub kind: FileErrorKind,
+  /// What the system said, such as `No such file or directory (os error
+  /// 2)`, or the shell, such as `it isn't UTF-8`.
+  pub message: String,
+}
+
+/// The kinds of [`FileError`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileErrorKind {
+  /// Nothing is at the path.
+  NotFound,
+  /// The shell may not read it.
+  PermissionDenied,
+  /// Something is there, but it isn't a regular file, such as a directory
+  /// or a pipe.
+  NotAFile,
+  /// Anything else, such as a file that isn't UTF-8 or is over 16 MiB.
+  Other,
+}
+
+impl FileError {
+  fn new(kind: FileErrorKind, message: &str) -> FileError {
+    let message = message.to_owned();
+    FileError { kind, message }
+  }
+}
+
+impl From<std::io::Error> for FileError {
+  fn from(error: std::io::Error) -> FileError {
+    let kind = match error.kind() {
+      ErrorKind::NotFound => FileErrorKind::NotFound,
+      ErrorKind::PermissionDenied => FileErrorKind::PermissionDenied,
+      ErrorKind::IsADirectory => FileErrorKind::NotAFile,
+      _ => FileErrorKind::Other,
+    };
+    FileError::new(kind, &error.to_string())
+  }
+}
+
 struct ViewInner {
   path: PathBuf,
   follow: RefCell<Option<Rc<Follow>>>,
-  /// Lives under the opening context's owner.
+  /// These live under the opening context's owner.
   text: Signal<Option<String>>,
-  /// The last error logged, so a file that stays missing logs once.
-  logged: RefCell<Option<ErrorKind>>,
+  error: Signal<Option<FileError>>,
 }
 
 /// `cx.file_view(path)`.
 pub(crate) fn file_view(cx: &Cx, path: PathBuf) -> FileView {
   let inner = Rc::new(ViewInner {
     text: cx.signal(None),
+    error: cx.signal(None),
     follow: RefCell::new(None),
     path,
-    logged: RefCell::new(None),
   });
   inner.reread();
   if let Some(files) = cx.service::<Files>() {
@@ -168,8 +211,16 @@ pub(crate) fn file_view(cx: &Cx, path: PathBuf) -> FileView {
 impl FileView {
   /// The file's text, or `None` while it is missing, can't be read, isn't
   /// UTF-8, or is over 16 MiB, each logged once until it reads again.
+  /// [`error`](Self::error) says why.
   pub fn text(&self) -> ReadSignal<Option<String>> {
     self.inner.text.read_only()
+  }
+
+  /// Why the last read failed, or `None` once a read or a
+  /// [`write`](Self::write) worked. A pipe, a directory or a device is
+  /// [`NotAFile`](FileErrorKind::NotAFile) and never opened.
+  pub fn error(&self) -> ReadSignal<Option<FileError>> {
+    self.inner.error.read_only()
   }
 
   /// Replaces the file's text, through a new file beside it renamed over
@@ -180,7 +231,10 @@ impl FileView {
   pub fn write(&self, text: impl AsRef<str>) {
     let text = text.as_ref();
     match write_whole(&self.inner.path, text.as_bytes()) {
-      Ok(()) => set(self.inner.text, Some(text.to_owned())),
+      Ok(()) => {
+        set(self.inner.text, Some(text.to_owned()));
+        set(self.inner.error, None);
+      }
       Err(error) => {
         let path = self.inner.path.display();
         tracing::warn!(%path, %error, "couldn't write the file");
@@ -192,20 +246,19 @@ impl FileView {
 impl ViewInner {
   /// Reads the file again and shows what it holds now.
   fn reread(&self) {
-    let text = match read_text(&self.path) {
-      Ok(text) => {
-        self.logged.replace(None);
-        Some(text)
-      }
+    let (text, error) = match read_text(&self.path) {
+      Ok(text) => (Some(text), None),
       Err(error) => {
-        if self.logged.replace(Some(error.kind())) != Some(error.kind()) {
+        // Once, while the same error stays.
+        if untrack(|| self.error.try_with(|old| old.as_ref() != Some(&error))) == Some(true) {
           let path = self.path.display();
-          tracing::info!(%path, %error, "can't read the file");
+          tracing::info!(%path, error = error.message, "can't read the file");
         }
-        None
+        (None, Some(error))
       }
     };
     set(self.text, text);
+    set(self.error, error);
   }
 }
 
@@ -270,7 +323,7 @@ where
     let text = match read_text(&self.path) {
       Ok(text) => text,
       Err(error) => {
-        self.log_once(format!("can't read the file: {error}"));
+        self.log_once(format!("can't read the file: {}", error.message));
         return;
       }
     };
@@ -336,15 +389,20 @@ where
 }
 
 /// The whole of `path` as UTF-8, up to [`MAX_FILE`].
-fn read_text(path: &Path) -> std::io::Result<String> {
+fn read_text(path: &Path) -> Result<String, FileError> {
+  // Checked before the open, which on a pipe waits for a writer.
+  // shortcut: a pipe swapped in between the two still blocks the open;
+  // open with O_NONBLOCK if that ever matters.
+  if !std::fs::metadata(path)?.is_file() {
+    return Err(FileError::new(FileErrorKind::NotAFile, "it isn't a file"));
+  }
   let file = std::fs::File::open(path)?;
   let mut bytes = Vec::new();
   file.take(MAX_FILE + 1).read_to_end(&mut bytes)?;
   if bytes.len() as u64 > MAX_FILE {
-    return Err(std::io::Error::other("it is over 16 MiB"));
+    return Err(FileError::new(FileErrorKind::Other, "it is over 16 MiB"));
   }
-  String::from_utf8(bytes)
-    .map_err(|_| std::io::Error::new(ErrorKind::InvalidData, "it isn't UTF-8"))
+  String::from_utf8(bytes).map_err(|_| FileError::new(FileErrorKind::Other, "it isn't UTF-8"))
 }
 
 /// Replaces the file at `path` with `bytes` through a new file beside it,
