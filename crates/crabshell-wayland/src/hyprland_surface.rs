@@ -68,6 +68,47 @@ impl Default for Shown {
   }
 }
 
+/// What a surface last told Hyprland, and the size and scale its visible
+/// mask was cut at.
+#[derive(Debug, Default)]
+pub(crate) struct Told {
+  pub(crate) shown: Shown,
+  cut: Option<((u32, u32), Scale)>,
+}
+
+impl Told {
+  /// Whether the visible mask was cut at another size or scale than
+  /// these, or nothing was told yet.
+  pub(crate) fn outdated(&self, size: (u32, u32), scale: Scale) -> bool {
+    self.cut != Some((size, scale))
+  }
+
+  /// Takes a window's `opacity` and `mask`, cut at `size` and `scale`, as
+  /// told. Returns what was told before when that changed, for
+  /// [`requests`], and `None` when there is nothing to send.
+  pub(crate) fn take(
+    &mut self,
+    opacity: f32,
+    mask: Option<Region>,
+    size: (u32, u32),
+    scale: Scale,
+  ) -> Option<Shown> {
+    self.cut = Some((size, scale));
+    let wanted = Shown {
+      opacity,
+      visible: mask.and_then(|region| buffer_rects(&region, size, scale)),
+    };
+    (wanted != self.shown).then(|| std::mem::replace(&mut self.shown, wanted))
+  }
+
+  /// The visible region couldn't be sent, so Hyprland still has `before`;
+  /// it is cut and sent again next turn, as a mask is.
+  pub(crate) fn unsent_visible(&mut self, before: Option<Vec<[i32; 4]>>) {
+    self.shown.visible = before;
+    self.cut = None;
+  }
+}
+
 /// A request to a surface's Hyprland object.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Request {
@@ -144,28 +185,22 @@ impl Surface {
     let Some(size) = self.size else {
       return false;
     };
-    let scale = self.frames.scale;
-    self.hyprland_cut = Some((size, scale));
-    let wanted = Shown {
-      opacity: window.compositor_opacity(),
-      visible: window
-        .visible_mask()
-        .and_then(|region| buffer_rects(&region, size, scale)),
-    };
-    if wanted == self.hyprland_shown {
+    let (opacity, mask) = (window.compositor_opacity(), window.visible_mask());
+    let told = &mut self.hyprland_told;
+    let Some(before) = told.take(opacity, mask, size, self.frames.scale) else {
       return false;
-    }
-    let sent = std::mem::replace(&mut self.hyprland_shown, wanted.clone());
+    };
     let Some(version) = hyprland.version(registry, qh) else {
       return false;
     };
+    let wanted = &told.shown;
     if version < 2 && wanted.visible.is_some() && !std::mem::replace(&mut hyprland.warned, true) {
       tracing::warn!(
         "the compositor's hyprland-surface-v1 is version 1, which has no visible regions, so \
          windows' visible_mask does nothing"
       );
     }
-    let requests = requests(&sent, &wanted, version);
+    let requests = requests(&before, wanted, version);
     let Some(manager) = hyprland.manager.as_ref().filter(|_| !requests.is_empty()) else {
       return false;
     };
@@ -173,6 +208,7 @@ impl Surface {
     let object = self
       .hyprland
       .get_or_insert_with(|| HyprlandSurface(manager.get_hyprland_surface(&surface, qh, ())));
+    let mut sent = false;
     for request in requests {
       match request {
         Request::Opacity(opacity) => object.0.set_opacity(f64::from(opacity)),
@@ -184,17 +220,24 @@ impl Surface {
             }
             object.0.set_visible_region(Some(region.wl_region()));
           }
-          Err(error) => tracing::warn!(%error, "couldn't create a region for a visible mask"),
+          Err(error) => {
+            tracing::warn!(%error, "couldn't create a region for a visible mask");
+            self.hyprland_told.unsent_visible(before.visible.clone());
+            continue;
+          }
         },
       }
+      sent = true;
     }
-    true
+    sent
   }
 
   /// Whether the visible mask was cut at another size or scale than the
   /// surface's, or nothing was sent at all.
   pub(crate) fn hyprland_outdated(&self) -> bool {
-    self.size.is_some() && self.hyprland_cut != self.size.map(|size| (size, self.frames.scale))
+    let scale = self.frames.scale;
+    let told = &self.hyprland_told;
+    self.size.is_some_and(|size| told.outdated(size, scale))
   }
 }
 

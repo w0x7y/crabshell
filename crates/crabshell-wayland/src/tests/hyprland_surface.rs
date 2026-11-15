@@ -2,7 +2,7 @@
 
 use crabshell_ui::Region;
 
-use crate::hyprland_surface::{Request, Shown, buffer_rects, requests};
+use crate::hyprland_surface::{Request, Shown, Told, buffer_rects, requests};
 use crate::scale::Scale;
 
 #[test]
@@ -122,5 +122,73 @@ fn version_1_gets_no_visible_regions() {
   assert_eq!(
     requests(&Shown::default(), &both, 1),
     [Request::Opacity(0.25)]
+  );
+}
+
+#[test]
+fn a_surface_asking_only_for_the_defaults_tells_hyprland_nothing() {
+  let mut told = Told::default();
+  assert!(
+    told.outdated((200, 30), Scale::Integer(1)),
+    "nothing told yet"
+  );
+  // Nothing to send, so no object is made.
+  assert_eq!(told.take(1.0, None, (200, 30), Scale::Integer(1)), None);
+  assert!(!told.outdated((200, 30), Scale::Integer(1)));
+  // A new size or scale with no mask to cut again tells nothing either.
+  assert!(told.outdated((300, 30), Scale::Integer(1)));
+  assert!(told.outdated((200, 30), Scale::Fractional(180)));
+  assert_eq!(
+    told.take(1.0, None, (300, 30), Scale::Fractional(180)),
+    None
+  );
+}
+
+#[test]
+fn a_visible_mask_is_told_again_at_a_new_size_or_scale() {
+  let mut told = Told::default();
+  let mask = Some(Region::rect(0, 0, 1000, 30));
+  let at = |size, scale, told: &mut Told| {
+    let before = told.take(1.0, mask.clone(), size, scale);
+    (before.is_some(), told.shown.visible.clone())
+  };
+  assert_eq!(
+    at((200, 30), Scale::Integer(1), &mut told),
+    (true, Some(vec![[0, 0, 200, 30]]))
+  );
+  assert_eq!(
+    told.take(1.0, mask.clone(), (200, 30), Scale::Integer(1)),
+    None,
+    "told once"
+  );
+  assert_eq!(
+    at((300, 30), Scale::Integer(1), &mut told),
+    (true, Some(vec![[0, 0, 300, 30]]))
+  );
+  assert_eq!(
+    at((300, 30), Scale::Fractional(180), &mut told),
+    (true, Some(vec![[0, 0, 450, 45]]))
+  );
+}
+
+#[test]
+fn a_visible_region_that_couldnt_be_made_is_told_again() {
+  let mut told = Told::default();
+  let mask = Some(Region::rect(0, 0, 10, 10));
+  let before = told
+    .take(0.5, mask.clone(), (200, 30), Scale::Integer(1))
+    .expect("a change");
+  told.unsent_visible(before.visible);
+  assert_eq!(told.shown.visible, None, "Hyprland still has none");
+  assert!(
+    told.outdated((200, 30), Scale::Integer(1)),
+    "tried next turn"
+  );
+  let before = told
+    .take(0.5, mask, (200, 30), Scale::Integer(1))
+    .expect("the region again");
+  assert_eq!(
+    requests(&before, &told.shown, 2),
+    [Request::Visible(Some(vec![[0, 0, 11, 11]]))]
   );
 }

@@ -198,10 +198,8 @@ pub(crate) struct Surface {
   /// Hyprland's object, once the window asked for a compositor opacity
   /// or a visible mask.
   pub(crate) hyprland: Option<crate::hyprland_surface::HyprlandSurface>,
-  /// What Hyprland was last told.
-  pub(crate) hyprland_shown: crate::hyprland_surface::Shown,
-  /// The size and scale the visible mask was last cut at.
-  pub(crate) hyprland_cut: Option<((u32, u32), Scale)>,
+  /// What Hyprland was last told, and the size and scale it was cut at.
+  pub(crate) hyprland_told: crate::hyprland_surface::Told,
 }
 
 impl Surface {
@@ -232,8 +230,7 @@ impl Surface {
       inhibitor: None,
       shortcuts_inhibitor: None,
       hyprland: None,
-      hyprland_shown: crate::hyprland_surface::Shown::default(),
-      hyprland_cut: None,
+      hyprland_told: crate::hyprland_surface::Told::default(),
     }
   }
 
