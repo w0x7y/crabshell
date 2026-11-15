@@ -69,7 +69,7 @@ pub use hyprland::{Hyprland, HyprlandEvent, HyprlandMonitor, HyprlandToplevel, H
 pub use mpris::{LoopStatus, Mpris, PlaybackStatus, Player};
 pub use network::{Network, NetworkDevice, NetworkKind, NetworkState, WifiNetwork};
 pub use notifications::{CloseReason, Notification, Notifications, Timeout, Urgency};
-pub use pam::{Pam, PamMessage, PamResult, PamState};
+pub use pam::{Pam, PamError, PamMessage, PamResult, PamState};
 pub use polkit::{AuthRequest, AuthState, PolkitAgent};
 pub use power::{
   BatteryState, DeviceKind, PerformanceDegradation, PowerDevice, PowerProfile, PowerProfiles,

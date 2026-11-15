@@ -53,9 +53,38 @@ pub enum PamResult {
   Success,
   /// PAM refused the answers, as for a wrong password.
   Failure,
-  /// Something else went wrong, such as an unknown service or user. The
-  /// text says what.
-  Error(String),
+  /// Something kept PAM from deciding, such as an unknown user.
+  Error {
+    /// Where it went wrong.
+    kind: PamError,
+    /// What went wrong, in PAM's words or the shell's.
+    message: String,
+  },
+}
+
+impl PamResult {
+  pub(crate) fn error(kind: PamError, message: impl Into<String>) -> PamResult {
+    let message = message.into();
+    PamResult::Error { kind, message }
+  }
+}
+
+/// Where an attempt that ended in [`PamResult::Error`] went wrong.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PamError {
+  /// It never began: libpam refused to start the service, a service or
+  /// user name held a NUL, or the shell's own user isn't in
+  /// `/etc/passwd`.
+  StartFailed,
+  /// PAM couldn't try the answers, which isn't the user failing to
+  /// authenticate: `pam_authenticate` returned an error but
+  /// `PAM_AUTH_ERR`, which is [`Failure`](PamResult::Failure), and
+  /// `PAM_CONV_ERR`, such as `PAM_USER_UNKNOWN`, `PAM_AUTHINFO_UNAVAIL`
+  /// or `PAM_MAXTRIES`.
+  TryAuthFailed,
+  /// The shell's side failed: it refused PAM an answer, as one with a
+  /// NUL, or the attempt ended without a result.
+  InternalError,
 }
 
 /// A line PAM sent during an attempt, from [`Pam::messages`], cut to
@@ -278,7 +307,7 @@ impl Inner {
       .spawn(move || {
         let result = match user.map_or_else(own_user, Ok) {
           Ok(user) => backend.authenticate(&service, &user, &talk),
-          Err(error) => PamResult::Error(error),
+          Err(error) => PamResult::error(PamError::StartFailed, error),
         };
         // Refused when the attempt was aborted meanwhile.
         let _ = talk.events.send(Event::Done(result));
@@ -314,9 +343,10 @@ impl Inner {
       }
       Arrived::Msg(Event::Done(result)) => self.finish(result),
       // The thread ended before its result, as when it panicked.
-      Arrived::Closed => self.finish(PamResult::Error(String::from(
+      Arrived::Closed => self.finish(PamResult::error(
+        PamError::InternalError,
         "the attempt ended without a result",
-      ))),
+      )),
     }
   }
 
@@ -389,14 +419,14 @@ impl Backend for LibPam {
   fn authenticate(&self, service: &str, user: &str, talk: &Talk) -> PamResult {
     // libpam takes C strings, and nonstick panics on a NUL.
     if service.contains('\0') || user.contains('\0') {
-      return PamResult::Error(String::from("a service or user name with a NUL"));
+      return PamResult::error(PamError::StartFailed, "a service or user name with a NUL");
     }
     let built = TransactionBuilder::new_with_service(service)
       .username(user)
       .build(Adapter(talk).into_conversation());
     let mut transaction = match built {
       Ok(transaction) => transaction,
-      Err(error) => return PamResult::Error(error.to_string()),
+      Err(error) => return PamResult::error(PamError::StartFailed, error.to_string()),
     };
     match transaction.authenticate(AuthnFlags::empty()) {
       Ok(()) => {
@@ -407,10 +437,20 @@ impl Backend for LibPam {
         }
         PamResult::Success
       }
-      Err(ErrorCode::AuthenticationError) => PamResult::Failure,
-      Err(error) => PamResult::Error(error.to_string()),
+      Err(error) => tried(error),
     }
   }
+}
+
+/// What `pam_authenticate` failing with `error` means.
+fn tried(error: ErrorCode) -> PamResult {
+  let kind = match error {
+    ErrorCode::AuthenticationError => return PamResult::Failure,
+    // Only the shell's conversation fails so: it refused an answer.
+    ErrorCode::ConversationError => PamError::InternalError,
+    _ => PamError::TryAuthFailed,
+  };
+  PamResult::error(kind, error.to_string())
 }
 
 /// libpam's questions and messages, through an attempt's [`Talk`]. It runs

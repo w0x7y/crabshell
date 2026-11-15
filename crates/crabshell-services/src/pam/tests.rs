@@ -7,8 +7,8 @@ use crabshell_reactive::Runtime;
 use nonstick::{ConversationAdapter, ErrorCode};
 
 use super::{
-  Adapter, LibPam, MAX_MESSAGES, Pam, PamMessage, PamResult, PamState, Secret, Talk, own_user,
-  user_name, wipe,
+  Adapter, LibPam, MAX_MESSAGES, Pam, PamError, PamMessage, PamResult, PamState, Secret, Talk,
+  own_user, tried, user_name, wipe,
 };
 use crate::ServicesExt;
 use crate::testing::{FakePam, Harness, Step, capture_logs, offline};
@@ -49,7 +49,7 @@ fn logged(log: &Log, line: &str) -> bool {
   log.lock().unwrap().iter().any(|logged| logged == line)
 }
 
-const REFUSED: &str = "ended Error(\"refused\")";
+const REFUSED: &str = "ended Error { kind: InternalError, message: \"refused\" }";
 
 /// Runs the loop until `ready`, for up to 5 s.
 fn wait(shell: &mut Harness, what: &str, ready: impl Fn() -> bool) {
@@ -246,6 +246,43 @@ fn wipe_zeroes_the_whole_buffer() {
 }
 
 #[test]
+fn pam_authenticate_failing_otherwise_than_on_the_answers_is_a_failed_try() {
+  assert_eq!(tried(ErrorCode::AuthenticationError), PamResult::Failure);
+  let kind = |error| match tried(error) {
+    PamResult::Error { kind, .. } => Some(kind),
+    _ => None,
+  };
+  // The rest of what pam_authenticate(3) may return, and what else a
+  // module might.
+  for error in [
+    ErrorCode::AuthInfoUnavailable,
+    ErrorCode::MaxTries,
+    ErrorCode::UserUnknown,
+    ErrorCode::CredentialsInsufficient,
+    ErrorCode::Abort,
+    ErrorCode::SystemError,
+  ] {
+    assert_eq!(kind(error), Some(PamError::TryAuthFailed), "{error:?}");
+  }
+  // The shell's own conversation refused an answer.
+  let refused = kind(ErrorCode::ConversationError);
+  assert_eq!(refused, Some(PamError::InternalError));
+}
+
+#[test]
+fn an_attempt_that_ends_without_a_result_is_an_internal_error() {
+  let (mut shell, _) = shell(vec![Step::Panic]);
+  let pam = shell.cx.pam("lock");
+  pam.start(Some("alice"));
+  wait(&mut shell, "result", || done(&pam));
+  let PamState::Done(PamResult::Error { kind, message }) = state(&pam) else {
+    panic!("{:?}", state(&pam));
+  };
+  assert_eq!(kind, PamError::InternalError);
+  assert!(message.contains("without a result"), "{message}");
+}
+
+#[test]
 fn an_answer_with_a_nul_is_refused_before_libpam() {
   let (events, _channel) = calloop::channel::channel();
   let (answers, inbox) = mpsc::channel();
@@ -353,9 +390,10 @@ fn a_service_or_user_with_a_nul_is_refused_before_libpam() {
     let pam = shell.cx.pam(service);
     pam.start(Some(user));
     wait(&mut shell, "result", || done(&pam));
-    let PamState::Done(PamResult::Error(error)) = state(&pam) else {
+    let PamState::Done(PamResult::Error { kind, message }) = state(&pam) else {
       panic!("{:?}", state(&pam));
     };
-    assert!(error.contains("NUL"), "{error}");
+    assert_eq!(kind, PamError::StartFailed);
+    assert!(message.contains("NUL"), "{message}");
   }
 }

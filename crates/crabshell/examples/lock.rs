@@ -72,7 +72,7 @@ pub fn lock_screen(cx: &Cx, locked: Signal<bool>, service: &str) {
             locked.set(false);
           }
           PamResult::Failure => notice.set(String::from("Wrong password")),
-          PamResult::Error(error) => notice.set(error),
+          PamResult::Error { message, .. } => notice.set(message),
         }
       }
       _ => {}

@@ -15,7 +15,7 @@ use calloop::futures::Scheduler;
 use crabshell_reactive::Runtime;
 use crabshell_ui::Cx;
 
-use crate::{Config, PamMessage, PamResult};
+use crate::{Config, PamError, PamMessage, PamResult};
 
 /// What a shell gives the services, with no compositor: a loop and a root
 /// context.
@@ -138,6 +138,8 @@ pub(crate) enum Step {
   Ask(String, bool, &'static str),
   Info(String),
   Error(String),
+  /// Panics, as a backend with a bug might.
+  Panic,
 }
 
 impl FakePam {
@@ -153,12 +155,13 @@ impl crate::pam::Backend for FakePam {
       for step in &self.script {
         match step {
           Step::Ask(question, visible, wanted) => match talk.ask(question.as_ref(), *visible) {
-            None => return PamResult::Error(String::from("refused")),
+            None => return PamResult::error(PamError::InternalError, "refused"),
             Some(answer) if answer.bytes() != wanted.as_bytes() => return PamResult::Failure,
             Some(_) => {}
           },
           Step::Info(text) => talk.tell(PamMessage::Info, text.as_ref()),
           Step::Error(text) => talk.tell(PamMessage::Error, text.as_ref()),
+          Step::Panic => panic!("the fake PAM panicked"),
         }
       }
       PamResult::Success
