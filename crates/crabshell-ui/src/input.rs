@@ -479,6 +479,21 @@ impl Tree {
       .try_fold(point, |point, &id| local(self.node(id)?, point))
   }
 
+  /// The smallest rectangle covering where `rect`, in the coordinates
+  /// node `id`'s rectangle is in, is drawn in the window: through the
+  /// transforms of the node and its ancestors.
+  pub(crate) fn window_rect(&self, id: NodeId, rect: Rect) -> Rect {
+    let mut rect = rect;
+    let mut at = Some(id);
+    while let Some(current) = at {
+      if let Some(transform) = self.node(current).and_then(|node| node.transform) {
+        rect = transform.map_rect(rect);
+      }
+      at = self.taffy.parent(current);
+    }
+    rect
+  }
+
   /// A click on button `id`, as from the keyboard.
   pub(crate) fn click(&self, id: NodeId) -> Option<Call> {
     self.call(id, Action::Click)

@@ -483,3 +483,31 @@ fn a_button_moved_out_of_its_parents_box_is_hit_where_it_is_drawn() {
     Point::new(button.x - 3.0, middle)
   ));
 }
+
+#[test]
+fn a_moved_field_tells_the_input_method_where_its_caret_is_drawn() {
+  let mut h = Harness::new();
+  let text = h.cx.signal(String::from("abc"));
+  let field = |moved: bool| {
+    let style = Style::new().width(100.0);
+    Row::new().child(
+      crate::TextInput::new(text)
+        .style(if moved {
+          style.translate(100.0, 0.0)
+        } else {
+          style
+        })
+        .focus(true),
+    )
+  };
+  let plain = h.window(h.panel().child(field(false)), 300.0, 30.0);
+  let moved = h.window(h.panel().child(field(true)), 300.0, 30.0);
+  plain.keyboard_enter();
+  moved.keyboard_enter();
+  let caret = |window: &Window| window.field().expect("a focused field").caret;
+  let (plain, moved) = (caret(&plain), caret(&moved));
+  assert_eq!(
+    moved,
+    Rect::new(plain.x + 100.0, plain.y, plain.width, plain.height)
+  );
+}

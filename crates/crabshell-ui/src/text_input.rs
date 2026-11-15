@@ -156,7 +156,7 @@ impl Window {
       text: input.edit.text.clone(),
       cursor: input.edit.cursor,
       anchor: input.edit.anchor.unwrap_or(input.edit.cursor),
-      caret: input.caret,
+      caret: tree.window_rect(id, input.caret),
     })
   }
 
