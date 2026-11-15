@@ -24,6 +24,7 @@ const NM_PATH: &str = "/org/freedesktop/NetworkManager";
 const ROOT: &str = "/org/freedesktop";
 const DEVICE: &str = "org.freedesktop.NetworkManager.Device";
 const WIRELESS: &str = "org.freedesktop.NetworkManager.Device.Wireless";
+const WIRED: &str = "org.freedesktop.NetworkManager.Device.Wired";
 const ACCESS_POINT: &str = "org.freedesktop.NetworkManager.AccessPoint";
 const ACTIVE: &str = "org.freedesktop.NetworkManager.Connection.Active";
 
@@ -40,11 +41,17 @@ const LOOPBACK: u32 = 32;
 /// NetworkManager's `State` for a device it doesn't manage, left out.
 const UNMANAGED: u32 = 10;
 const ACTIVATED: u32 = 100;
+const FAILED: u32 = 120;
 /// The `Flags` bit for an access point that asks for a key, as WEP does.
 const PRIVACY: u32 = 0x1;
-/// The WPA and RSN key managements that ask for a key: a password,
-/// 802.1X, SAE and Suite B 192.
-const KEY_MGMT_KEYED: u32 = 0x100 | 0x200 | 0x400 | 0x2000;
+/// The key managements in an access point's `WpaFlags` and `RsnFlags`,
+/// from NetworkManager's `NM80211ApSecurityFlags`.
+const KEY_MGMT_PSK: u32 = 0x100;
+const KEY_MGMT_802_1X: u32 = 0x200;
+const KEY_MGMT_SAE: u32 = 0x400;
+/// Enhanced Open, and its transition mode.
+const KEY_MGMT_OWE: u32 = 0x800 | 0x1000;
+const KEY_MGMT_SUITE_B_192: u32 = 0x2000;
 /// The most objects kept, so a flood can't take the memory.
 const MAX_OBJECTS: usize = 4096;
 
@@ -67,10 +74,91 @@ pub enum NetworkState {
   /// On its way to connected: from preparing to waiting on secondary
   /// connections.
   Connecting,
-  /// Ready but not connected, going down, or failed to connect.
+  /// Going down, as when told to disconnect or before connecting
+  /// elsewhere.
+  Disconnecting,
+  /// Ready but not connected, or failed to connect.
   Disconnected,
   /// Not ready, as with Wi-Fi off or no cable in, or a state not known.
   Unavailable,
+}
+
+/// How far the host reaches, from NetworkManager's `Connectivity`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Connectivity {
+  /// Not known: NetworkManager isn't running, its checks are off, or
+  /// they haven't run yet.
+  Unknown,
+  /// On no network at all.
+  None,
+  /// Behind a captive portal, which wants a sign-in in a browser first.
+  Portal,
+  /// On a network, but not reaching the internet.
+  Limited,
+  /// Reaching the internet.
+  Full,
+}
+
+/// Why a device's last try to connect failed, from the reason
+/// NetworkManager gave with its `Failed` state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectionFailReason {
+  /// It needed secrets, such as a Wi-Fi password, and got none.
+  NoSecrets,
+  /// The Wi-Fi supplicant failed, or its settings did.
+  WifiClientFailed,
+  /// The Wi-Fi supplicant disconnected.
+  WifiClientDisconnected,
+  /// The Wi-Fi network took too long to let it in, as with a wrong
+  /// password.
+  WifiAuthTimeout,
+  /// The Wi-Fi network wasn't found.
+  WifiNetworkLost,
+  /// Any other reason, such as DHCP getting no address.
+  Unknown,
+}
+
+/// What a Wi-Fi device does, from NetworkManager's `NM80211Mode`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WifiMode {
+  /// Not known, and for a device that isn't Wi-Fi.
+  Unknown,
+  /// Part of an ad-hoc network, with no access point.
+  AdHoc,
+  /// A station that joins networks, the usual mode.
+  Station,
+  /// An access point of its own, as a hotspot.
+  AccessPoint,
+  /// An 802.11s mesh point.
+  Mesh,
+}
+
+/// How a Wi-Fi network is secured, from its access point's flags.
+///
+/// Dynamic WEP and LEAP look the same as WEP from an access point, so
+/// all three show as [`Wep`](Self::Wep).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WifiSecurity {
+  /// No encryption.
+  Open,
+  /// WEP.
+  Wep,
+  /// WPA with a password.
+  WpaPsk,
+  /// WPA with 802.1X, as an enterprise network.
+  WpaEap,
+  /// WPA2 with a password.
+  Wpa2Psk,
+  /// WPA2 with 802.1X.
+  Wpa2Eap,
+  /// WPA3 with a password, also for a network that takes WPA2's too.
+  Sae,
+  /// Enhanced Open: encrypted, with no password.
+  Owe,
+  /// WPA3 Enterprise's 192-bit mode.
+  Wpa3SuiteB192,
+  /// Flags this doesn't know.
+  Unknown,
 }
 
 /// A network device NetworkManager manages, other than loopback.
@@ -86,14 +174,30 @@ pub struct NetworkDevice {
   pub state: NetworkState,
   /// The name of its active connection, or `""`.
   pub connection: String,
+  /// Why its last try to connect failed, kept until it tries again.
+  /// `None` if it hasn't failed since the shell started following it.
+  pub fail_reason: Option<ConnectionFailReason>,
+  /// What it does, for a Wi-Fi device; `Unknown` for any other.
+  pub wifi_mode: WifiMode,
+  /// For a wired device, its link's speed in Mb/s; 0 when not known, and
+  /// for any other device.
+  pub link_speed: u32,
+  /// For a wired device, whether a cable is in; `false` for any other.
+  pub has_link: bool,
 }
 
 impl NetworkDevice {
-  fn from_props(path: String, props: &Props, objects: &BTreeMap<String, Object>) -> NetworkDevice {
+  fn from_props(path: String, object: &Object, objects: &BTreeMap<String, Object>) -> Option<Self> {
+    let props = object.device.as_ref()?;
     let connection = dbus::get::<&ObjectPath>(props, "ActiveConnection")
       .and_then(|at| objects.get(at.as_str())?.active.as_ref())
       .map_or(String::new(), |active| dbus::text(active, "Id"));
-    NetworkDevice {
+    let wifi_mode = object
+      .wireless
+      .as_ref()
+      .and_then(|w| dbus::get::<u32>(w, "Mode"));
+    let wired = object.wired.as_ref();
+    Some(NetworkDevice {
       path,
       interface: dbus::text(props, "Interface"),
       kind: match dbus::get::<u32>(props, "DeviceType") {
@@ -104,11 +208,22 @@ impl NetworkDevice {
       state: match dbus::get::<u32>(props, "State") {
         Some(ACTIVATED) => NetworkState::Connected,
         Some(40..=90) => NetworkState::Connecting,
-        Some(30 | 110 | 120) => NetworkState::Disconnected,
+        Some(110) => NetworkState::Disconnecting,
+        Some(30 | FAILED) => NetworkState::Disconnected,
         _ => NetworkState::Unavailable,
       },
       connection,
-    }
+      fail_reason: object.failure,
+      wifi_mode: match wifi_mode {
+        Some(1) => WifiMode::AdHoc,
+        Some(2) => WifiMode::Station,
+        Some(3) => WifiMode::AccessPoint,
+        Some(4) => WifiMode::Mesh,
+        _ => WifiMode::Unknown,
+      },
+      link_speed: wired.and_then(|w| dbus::get(w, "Speed")).unwrap_or(0),
+      has_link: wired.and_then(|w| dbus::get(w, "Carrier")).unwrap_or(false),
+    })
   }
 }
 
@@ -120,8 +235,11 @@ pub struct WifiNetwork {
   pub ssid: String,
   /// How strong its strongest access point is, from 0 to 100.
   pub strength: u8,
-  /// Whether it asks for a key.
+  /// Whether it asks for a key: any [`security`](Self::security) but
+  /// `Open`, `Owe` and `Unknown`.
   pub secured: bool,
+  /// How its strongest access point is secured.
+  pub security: WifiSecurity,
   /// Whether the device is connected to it, through any of its access
   /// points.
   pub connected: bool,
@@ -137,6 +255,7 @@ pub struct WifiNetwork {
 pub struct Network {
   service: Option<Rc<NetworkService>>,
   wifi_enabled: ReadSignal<bool>,
+  connectivity: ReadSignal<Connectivity>,
   devices: ReadSignal<Vec<NetworkDevice>>,
   wifi_networks: ReadSignal<Vec<WifiNetwork>>,
 }
@@ -145,6 +264,12 @@ impl Network {
   /// Whether Wi-Fi is on. `false` while NetworkManager isn't running.
   pub fn wifi_enabled(&self) -> ReadSignal<bool> {
     self.wifi_enabled
+  }
+
+  /// How far the host reaches, from NetworkManager's own checks.
+  /// `Unknown` while it isn't running.
+  pub fn connectivity(&self) -> ReadSignal<Connectivity> {
+    self.connectivity
   }
 
   /// Every device but loopback and those NetworkManager doesn't manage,
@@ -299,6 +424,7 @@ pub(crate) fn network(cx: &Cx) -> Network {
     return Network {
       service: None,
       wifi_enabled: cx.signal(false).read_only(),
+      connectivity: cx.signal(Connectivity::Unknown).read_only(),
       devices: cx.signal(Vec::new()).read_only(),
       wifi_networks: cx.signal(Vec::new()).read_only(),
     };
@@ -314,6 +440,7 @@ pub(crate) struct NetworkService {
 
 struct State {
   wifi_enabled: Signal<bool>,
+  connectivity: Signal<Connectivity>,
   devices: Signal<Vec<NetworkDevice>>,
   wifi_networks: Signal<Vec<WifiNetwork>>,
   /// NetworkManager's objects that this service reads, by path.
@@ -323,15 +450,32 @@ struct State {
   generation: u64,
 }
 
+impl State {
+  /// The handle a config gets.
+  fn network(&self, service: &Rc<NetworkService>) -> Network {
+    Network {
+      service: Some(Rc::clone(service)),
+      wifi_enabled: self.wifi_enabled.read_only(),
+      connectivity: self.connectivity.read_only(),
+      devices: self.devices.read_only(),
+      wifi_networks: self.wifi_networks.read_only(),
+    }
+  }
+}
+
 /// The interfaces this service reads on one of NetworkManager's objects.
-/// An object is kept while it has one other than `wireless`.
+/// An object is kept while it has one other than `wireless` and `wired`.
 #[derive(Default)]
 struct Object {
   manager: Option<Props>,
   device: Option<Props>,
   wireless: Option<Props>,
+  wired: Option<Props>,
   access_point: Option<Props>,
   active: Option<Props>,
+  /// A device's last failure, which its `StateReason` forgets as it moves
+  /// on.
+  failure: Option<ConnectionFailReason>,
 }
 
 impl Object {
@@ -342,6 +486,7 @@ impl Object {
       NM => Some(&mut self.manager),
       DEVICE => Some(&mut self.device),
       WIRELESS => Some(&mut self.wireless),
+      WIRED => Some(&mut self.wired),
       ACCESS_POINT => Some(&mut self.access_point),
       ACTIVE => Some(&mut self.active),
       _ => None,
@@ -353,6 +498,37 @@ impl Object {
       || self.device.is_some()
       || self.access_point.is_some()
       || self.active.is_some()
+  }
+
+  /// Notes a device's failure from its `StateReason`, and forgets it once
+  /// the device tries again.
+  fn note_failure(&mut self) {
+    let Some(device) = &self.device else {
+      return;
+    };
+    // `(uu)`, the state and the reason the device went into it.
+    let reason = device.get("StateReason");
+    let reason = reason.and_then(|reason| <(u32, u32)>::try_from(&**reason).ok());
+    if let Some((FAILED, reason)) = reason {
+      self.failure = Some(fail_reason(reason));
+    }
+    if let Some(40..=ACTIVATED) = dbus::get::<u32>(device, "State") {
+      self.failure = None;
+    }
+  }
+}
+
+/// What NetworkManager's `NMDeviceStateReason` `reason` says about a
+/// failure.
+fn fail_reason(reason: u32) -> ConnectionFailReason {
+  match reason {
+    7 => ConnectionFailReason::NoSecrets,
+    8 => ConnectionFailReason::WifiClientDisconnected,
+    // The supplicant's settings failed, or the supplicant did.
+    9 | 10 => ConnectionFailReason::WifiClientFailed,
+    11 => ConnectionFailReason::WifiAuthTimeout,
+    53 => ConnectionFailReason::WifiNetworkLost,
+    _ => ConnectionFailReason::Unknown,
   }
 }
 
@@ -398,18 +574,46 @@ fn add(objects: &mut BTreeMap<String, Object>, path: String, interfaces: HashMap
       *slot = Some(props);
     }
   }
+  object.note_failure();
   if object.kept() {
     objects.insert(path, object);
   }
 }
 
-/// Whether the access point `point` asks for a key: WEP, or WPA with a
-/// password, 802.1X or SAE. Enhanced Open (OWE) encrypts without one.
-fn secured(point: &Props) -> bool {
+/// How the access point `point` is secured, from the strongest key
+/// management it offers: RSN's before WPA's, a password before 802.1X,
+/// as one will do, and SAE before a WPA2 password. Enhanced Open comes
+/// after those, and then WEP, whose privacy bit is all that marks it.
+fn security(point: &Props) -> WifiSecurity {
   let flags = |name| dbus::get::<u32>(point, name).unwrap_or(0);
-  let keyed = (flags("WpaFlags") | flags("RsnFlags")) & KEY_MGMT_KEYED != 0;
-  let wep = flags("Flags") & PRIVACY != 0 && flags("WpaFlags") == 0 && flags("RsnFlags") == 0;
-  keyed || wep
+  let (wpa, rsn) = (flags("WpaFlags"), flags("RsnFlags"));
+  let strongest_first = [
+    (rsn, KEY_MGMT_SUITE_B_192, WifiSecurity::Wpa3SuiteB192),
+    (rsn, KEY_MGMT_SAE, WifiSecurity::Sae),
+    (rsn, KEY_MGMT_PSK, WifiSecurity::Wpa2Psk),
+    (rsn, KEY_MGMT_802_1X, WifiSecurity::Wpa2Eap),
+    (wpa, KEY_MGMT_PSK, WifiSecurity::WpaPsk),
+    (wpa, KEY_MGMT_802_1X, WifiSecurity::WpaEap),
+    (rsn, KEY_MGMT_OWE, WifiSecurity::Owe),
+  ];
+  let offered = strongest_first
+    .into_iter()
+    .find(|(flags, key, _)| flags & key != 0);
+  match offered {
+    Some((_, _, security)) => security,
+    None if wpa != 0 || rsn != 0 => WifiSecurity::Unknown,
+    None if flags("Flags") & PRIVACY != 0 => WifiSecurity::Wep,
+    None => WifiSecurity::Open,
+  }
+}
+
+/// Whether a network secured as `security` asks for a key. Enhanced
+/// Open encrypts without one.
+fn secured(security: WifiSecurity) -> bool {
+  !matches!(
+    security,
+    WifiSecurity::Open | WifiSecurity::Owe | WifiSecurity::Unknown
+  )
 }
 
 /// The properties this service reads, by interface: a change to any
@@ -417,12 +621,13 @@ fn secured(point: &Props) -> bool {
 /// nothing new.
 fn read(interface: &str, name: &str) -> bool {
   match interface {
-    NM => name == "WirelessEnabled",
+    NM => matches!(name, "WirelessEnabled" | "Connectivity"),
     DEVICE => matches!(
       name,
-      "Interface" | "DeviceType" | "State" | "ActiveConnection"
+      "Interface" | "DeviceType" | "State" | "StateReason" | "ActiveConnection"
     ),
-    WIRELESS => matches!(name, "AccessPoints" | "ActiveAccessPoint"),
+    WIRELESS => matches!(name, "AccessPoints" | "ActiveAccessPoint" | "Mode"),
+    WIRED => matches!(name, "Speed" | "Carrier"),
     ACCESS_POINT => matches!(
       name,
       "Ssid" | "Strength" | "Flags" | "WpaFlags" | "RsnFlags"
@@ -455,10 +660,12 @@ fn wifi_networks(objects: &BTreeMap<String, Object>) -> Vec<WifiNetwork> {
       if ssid.iter().all(|byte| *byte == 0) {
         continue;
       }
+      let security = self::security(point);
       let network = WifiNetwork {
         ssid: String::from_utf8_lossy(&ssid).into_owned(),
         strength: dbus::get::<u8>(point, "Strength").unwrap_or(0).min(100),
-        secured: secured(point),
+        secured: secured(security),
+        security,
         connected: on && active == Some(at),
         device: path.clone(),
         access_point: at.to_owned(),
@@ -496,24 +703,20 @@ impl NetworkService {
 
   fn start(self: &Rc<Self>) -> Network {
     if let Some(state) = &*self.state.borrow() {
-      return Network {
-        service: Some(Rc::clone(self)),
-        wifi_enabled: state.wifi_enabled.read_only(),
-        devices: state.devices.read_only(),
-        wifi_networks: state.wifi_networks.read_only(),
-      };
+      return state.network(self);
     }
     let root = &self.shared.root;
-    let wifi_enabled = root.signal(false);
-    let (devices, wifi_networks) = (root.signal(Vec::new()), root.signal(Vec::new()));
-    *self.state.borrow_mut() = Some(State {
-      wifi_enabled,
-      devices,
-      wifi_networks,
+    let state = State {
+      wifi_enabled: root.signal(false),
+      connectivity: root.signal(Connectivity::Unknown),
+      devices: root.signal(Vec::new()),
+      wifi_networks: root.signal(Vec::new()),
       objects: BTreeMap::new(),
       connection: None,
       generation: 0,
-    });
+    };
+    let network = state.network(self);
+    *self.state.borrow_mut() = Some(state);
     match self.shared.config.system_bus.clone() {
       Some(address) => {
         let follow = dbus::follow(Rc::clone(&self.shared), Rc::clone(self), address);
@@ -521,24 +724,27 @@ impl NetworkService {
       }
       None => tracing::info!("no system bus, so there is no networking"),
     }
-    Network {
-      service: Some(Rc::clone(self)),
-      wifi_enabled: wifi_enabled.read_only(),
-      devices: devices.read_only(),
-      wifi_networks: wifi_networks.read_only(),
-    }
+    network
   }
 
-  /// Shows Wi-Fi, the devices and the networks as they are now. Each is
-  /// set only if it changed, since a scan changes much that none shows.
+  /// Shows Wi-Fi, connectivity, the devices and the networks as they are
+  /// now. Each is set only if it changed, since a scan changes much that
+  /// none shows.
   fn publish(&self) {
     // Set apart from the borrow, since effects may ask for more.
     let shown = self.state.borrow().as_ref().map(|state| {
       let objects = &state.objects;
-      let enabled = objects
+      let manager = objects
         .get(NM_PATH)
-        .and_then(|object| dbus::get(object.manager.as_ref()?, "WirelessEnabled"))
-        .unwrap_or(false);
+        .and_then(|object| object.manager.as_ref());
+      let enabled = manager.and_then(|props| dbus::get(props, "WirelessEnabled"));
+      let connectivity = match manager.and_then(|props| dbus::get::<u32>(props, "Connectivity")) {
+        Some(1) => Connectivity::None,
+        Some(2) => Connectivity::Portal,
+        Some(3) => Connectivity::Limited,
+        Some(4) => Connectivity::Full,
+        _ => Connectivity::Unknown,
+      };
       let mut devices = objects
         .iter()
         .filter_map(|(path, object)| {
@@ -548,24 +754,30 @@ impl NetworkService {
           if kind == Some(LOOPBACK) || state == Some(UNMANAGED) {
             return None;
           }
-          Some(NetworkDevice::from_props(path.clone(), props, objects))
+          NetworkDevice::from_props(path.clone(), object, objects)
         })
         .collect::<Vec<_>>();
       devices.sort_by(|a, b| by_number(&a.path, &b.path));
       devices.truncate(MAX_DEVICES);
-      let shown = (enabled, devices, wifi_networks(objects));
-      (
+      let shown = (
+        enabled.unwrap_or(false),
+        connectivity,
+        devices,
+        wifi_networks(objects),
+      );
+      let signals = (
         state.wifi_enabled,
+        state.connectivity,
         state.devices,
         state.wifi_networks,
-        shown,
-      )
+      );
+      (signals, shown)
     });
-    if let Some((enabled_signal, devices_signal, networks_signal, shown)) = shown {
-      let (enabled, devices, networks) = shown;
-      set_changed(enabled_signal, enabled);
-      set_changed(devices_signal, devices);
-      set_changed(networks_signal, networks);
+    if let Some((signals, shown)) = shown {
+      set_changed(signals.0, shown.0);
+      set_changed(signals.1, shown.1);
+      set_changed(signals.2, shown.2);
+      set_changed(signals.3, shown.3);
     }
   }
 }
@@ -581,7 +793,7 @@ impl Daemon for NetworkService {
       "type='signal',sender='{NM}',path='{ROOT}',interface='{OBJECT_MANAGER}'"
     )];
     rules.extend(
-      [NM, DEVICE, WIRELESS, ACCESS_POINT, ACTIVE].map(|interface| {
+      [NM, DEVICE, WIRELESS, WIRED, ACCESS_POINT, ACTIVE].map(|interface| {
         format!(
           "type='signal',sender='{NM}',interface='{PROPERTIES}',member='PropertiesChanged',\
          arg0='{interface}'"
@@ -658,11 +870,13 @@ impl Daemon for NetworkService {
     if let Some((path, interface, changed, dropped)) = dbus::properties_changed(message) {
       {
         let mut state = self.state.borrow_mut();
-        let props = state
+        let object = state
           .as_mut()
-          .and_then(|state| state.objects.get_mut(&path))
-          .and_then(|object| object.slot(&interface)?.as_mut());
-        let Some(props) = props else {
+          .and_then(|state| state.objects.get_mut(&path));
+        let Some(object) = object else {
+          return;
+        };
+        let Some(props) = object.slot(&interface).and_then(Option::as_mut) else {
           return;
         };
         let shown = changed
@@ -670,6 +884,7 @@ impl Daemon for NetworkService {
           .chain(&dropped)
           .any(|name| read(&interface, name));
         dbus::apply(props, changed, dropped);
+        object.note_failure();
         if !shown {
           return;
         }

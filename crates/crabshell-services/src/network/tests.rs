@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 use zbus::{ObjectPath, OwnedObjectPath, OwnedVariant, Variant};
 
 use super::{
-  ACCESS_POINT, ACTIVE, DEVICE, NM, NM_PATH, NetworkDevice, NetworkKind, NetworkState, WIRELESS,
-  WifiNetwork,
+  ACCESS_POINT, ACTIVE, ConnectionFailReason, Connectivity, DEVICE, NM, NM_PATH, NetworkDevice,
+  NetworkKind, NetworkState, WIRED, WIRELESS, WifiMode, WifiNetwork, WifiSecurity,
 };
 use crate::dbus::OBJECT_MANAGER;
 use crate::testing::{FakeService, Harness, PrivateBus, capture_logs, offline, reply};
@@ -54,6 +54,7 @@ fn device(interface: &'static str, kind: u32, state: u32, active: &str) -> Props
     ("Interface", Variant::from(interface)),
     ("DeviceType", Variant::from(kind)),
     ("State", Variant::from(state)),
+    ("StateReason", Variant::from((state, 0u32))),
     ("ActiveConnection", path(active)),
     ("Managed", Variant::from(state != 10)),
   ]
@@ -72,6 +73,15 @@ fn access_point(ssid: &[u8], strength: u8, (flags, wpa, rsn): (u32, u32, u32)) -
   ]
 }
 
+/// A cable's `Speed` in Mb/s and its `Carrier`.
+fn wired(speed: u32, carrier: bool) -> Props {
+  vec![
+    ("Speed", Variant::from(speed)),
+    ("Carrier", Variant::from(carrier)),
+    ("HwAddress", Variant::from("52:54:00:12:34:56")),
+  ]
+}
+
 /// WPA2 with a pre-shared key, as `RsnFlags` says it.
 const WPA2: (u32, u32, u32) = (1, 0, 0x188);
 
@@ -85,6 +95,7 @@ fn fake_nm(shell: &mut Harness, bus: &PrivateBus) -> FakeService {
     NM,
     &[
       ("WirelessEnabled", Variant::from(true)),
+      ("Connectivity", Variant::from(4u32)),
       ("Version", Variant::from("1.52.0")),
     ],
   );
@@ -102,11 +113,13 @@ fn fake_nm(shell: &mut Harness, bus: &PrivateBus) -> FakeService {
         paths(&[HOME, HOME_FAR, LIBRARY, HIDDEN, CAFE]),
       ),
       ("ActiveAccessPoint", path(HOME)),
+      ("Mode", Variant::from(2u32)),
       ("LastScan", Variant::from(1000i64)),
     ],
   );
   nm.add(HOME_CONNECTION, ACTIVE, &[("Id", Variant::from("home"))]);
   nm.add(ETH, DEVICE, &device("eth0", 1, 20, "/"));
+  nm.add(ETH, WIRED, &wired(0, false));
   nm.add(BRIDGE, DEVICE, &device("virbr0", 13, 10, "/"));
   nm.add(HOME, ACCESS_POINT, &access_point(b"home", 70, WPA2));
   nm.add(HOME_FAR, ACCESS_POINT, &access_point(b"home", 40, WPA2));
@@ -131,6 +144,10 @@ fn wlan() -> NetworkDevice {
     kind: NetworkKind::Wifi,
     state: NetworkState::Connected,
     connection: "home".into(),
+    fail_reason: None,
+    wifi_mode: WifiMode::Station,
+    link_speed: 0,
+    has_link: false,
   }
 }
 
@@ -141,6 +158,10 @@ fn eth() -> NetworkDevice {
     kind: NetworkKind::Ethernet,
     state: NetworkState::Unavailable,
     connection: "".into(),
+    fail_reason: None,
+    wifi_mode: WifiMode::Unknown,
+    link_speed: 0,
+    has_link: false,
   }
 }
 
@@ -149,6 +170,7 @@ fn home() -> WifiNetwork {
     ssid: "home".into(),
     strength: 70,
     secured: true,
+    security: WifiSecurity::Wpa2Psk,
     connected: true,
     device: WLAN.into(),
     access_point: HOME.into(),
@@ -160,6 +182,7 @@ fn library() -> WifiNetwork {
     ssid: "library".into(),
     strength: 85,
     secured: false,
+    security: WifiSecurity::Open,
     connected: false,
     access_point: LIBRARY.into(),
     ..home()
@@ -170,6 +193,7 @@ fn cafe() -> WifiNetwork {
   WifiNetwork {
     ssid: "caf\u{fffd}".into(),
     strength: 55,
+    security: WifiSecurity::Wep,
     connected: false,
     access_point: CAFE.into(),
     ..home()
@@ -229,6 +253,7 @@ fn devices_show_without_loopback_or_unmanaged_ones() {
   });
   assert_eq!(devices.get_untracked(), [wlan(), eth()]);
   assert!(network.wifi_enabled().get_untracked());
+  assert_eq!(network.connectivity().get_untracked(), Connectivity::Full);
 }
 
 #[test]
@@ -315,6 +340,12 @@ fn property_changes_show() {
     &[("WirelessEnabled", Variant::from(false))],
   );
   wait_for(&mut shell, "Wi-Fi off", || !enabled.get_untracked());
+  let portal = [("Connectivity", Variant::from(2u32))];
+  nm.set(&mut shell, NM_PATH, NM, &portal);
+  let connectivity = network.connectivity();
+  wait_for(&mut shell, "a captive portal", || {
+    connectivity.get_untracked() == Connectivity::Portal
+  });
 
   nm.set(
     &mut shell,
@@ -343,6 +374,31 @@ fn property_changes_show() {
     devices.get_untracked()[0].connection == "home 2"
   });
 
+  let hotspot = [("Mode", Variant::from(3u32))];
+  nm.set(&mut shell, WLAN, WIRELESS, &hotspot);
+  wait_for(&mut shell, "a hotspot", || {
+    devices.get_untracked()[0].wifi_mode == WifiMode::AccessPoint
+  });
+  let plugged = [
+    ("Carrier", Variant::from(true)),
+    ("Speed", Variant::from(1000u32)),
+  ];
+  nm.set(&mut shell, ETH, WIRED, &plugged);
+  wait_for(&mut shell, "a cable in", || {
+    devices.get_untracked()[1].has_link
+  });
+  assert_eq!(devices.get_untracked()[1].link_speed, 1000);
+
+  nm.set(
+    &mut shell,
+    WLAN,
+    DEVICE,
+    &[("State", Variant::from(110u32))],
+  );
+  wait_for(&mut shell, "disconnecting", || {
+    devices.get_untracked()[0].state == NetworkState::Disconnecting
+  });
+
   nm.set(
     &mut shell,
     WLAN,
@@ -356,7 +412,12 @@ fn property_changes_show() {
     devices.get_untracked()[0].state == NetworkState::Disconnected
   });
   assert_eq!(devices.get_untracked()[0].connection, "");
-  assert_eq!(devices.get_untracked()[1], eth(), "the rest stays");
+  let eth = NetworkDevice {
+    link_speed: 1000,
+    has_link: true,
+    ..eth()
+  };
+  assert_eq!(devices.get_untracked()[1], eth, "the rest stays");
 }
 
 #[test]
@@ -391,8 +452,10 @@ fn a_change_nothing_shows_sets_nothing() {
   nm.set(&mut shell, HOME_FAR, ACCESS_POINT, &weaker);
   let scanned = [("LastScan", Variant::from(2000i64))];
   nm.set(&mut shell, WLAN, WIRELESS, &scanned);
-  let online = [("Connectivity", Variant::from(4u32))];
-  nm.set(&mut shell, NM_PATH, NM, &online);
+  let version = [("Version", Variant::from("1.52.1"))];
+  nm.set(&mut shell, NM_PATH, NM, &version);
+  let address = [("HwAddress", Variant::from("52:54:00:12:34:57"))];
+  nm.set(&mut shell, ETH, WIRED, &address);
   // Then one that shows, sent after them, so they have arrived.
   let fainter = [("Strength", Variant::from(50u8))];
   nm.set(&mut shell, CAFE, ACCESS_POINT, &fainter);
@@ -518,11 +581,13 @@ fn networkmanager_leaving_empties_everything_and_coming_back_fills_it() {
     networks.get_untracked().len() == 3
   });
 
+  let connectivity = network.connectivity();
   nm.leave(&mut shell);
   wait_for(&mut shell, "nothing", || {
     devices.get_untracked().is_empty()
       && networks.get_untracked().is_empty()
       && !enabled.get_untracked()
+      && connectivity.get_untracked() == Connectivity::Unknown
   });
 
   let _again = fake_nm(&mut shell, &bus);
@@ -530,6 +595,7 @@ fn networkmanager_leaving_empties_everything_and_coming_back_fills_it() {
     devices.get_untracked() == [wlan(), eth()]
       && networks.get_untracked() == [library(), home(), cafe()]
       && enabled.get_untracked()
+      && connectivity.get_untracked() == Connectivity::Full
   });
 }
 
@@ -602,7 +668,14 @@ fn wrong_types_read_as_defaults_and_ssids_are_cut_to_32_bytes() {
   let bus = PrivateBus::start();
   let mut shell = Harness::new(online(&bus));
   let nm = fake_nm(&mut shell, &bus);
-  nm.add(NM_PATH, NM, &[("WirelessEnabled", Variant::from("yes"))]);
+  nm.add(
+    NM_PATH,
+    NM,
+    &[
+      ("WirelessEnabled", Variant::from("yes")),
+      ("Connectivity", Variant::from("full")),
+    ],
+  );
   nm.add(
     ETH,
     DEVICE,
@@ -610,9 +683,15 @@ fn wrong_types_read_as_defaults_and_ssids_are_cut_to_32_bytes() {
       ("Interface", Variant::from(7u32)),
       ("DeviceType", Variant::from("ethernet")),
       ("State", Variant::from("up")),
+      ("StateReason", Variant::from((120u32, "no-secrets"))),
       ("ActiveConnection", Variant::from(HOME_CONNECTION)),
     ],
   );
+  let wired = [
+    ("Speed", Variant::from(-1i32)),
+    ("Carrier", Variant::from(1u32)),
+  ];
+  nm.add(ETH, WIRED, &wired);
   nm.add(
     HOME,
     ACCESS_POINT,
@@ -639,6 +718,10 @@ fn wrong_types_read_as_defaults_and_ssids_are_cut_to_32_bytes() {
     networks.get_untracked().len() == 3
   });
   assert!(!enabled.get_untracked());
+  assert_eq!(
+    network.connectivity().get_untracked(),
+    Connectivity::Unknown
+  );
   let expected = NetworkDevice {
     interface: "".into(),
     kind: NetworkKind::Other,
@@ -769,14 +852,14 @@ fn only_what_networking_reads_is_asked_of_the_bus() {
   use crate::dbus::Daemon;
 
   let rules = super::NetworkService::rules();
-  assert_eq!(rules.len(), 6, "{rules:?}");
+  assert_eq!(rules.len(), 7, "{rules:?}");
   assert!(
     rules
       .iter()
       .all(|rule| rule.contains(&format!("sender='{NM}'")))
   );
   assert!(rules[0].contains(&format!("interface='{OBJECT_MANAGER}'")));
-  let read = [NM, DEVICE, WIRELESS, ACCESS_POINT, ACTIVE];
+  let read = [NM, DEVICE, WIRELESS, WIRED, ACCESS_POINT, ACTIVE];
   for (rule, interface) in rules[1..].iter().zip(read) {
     assert!(rule.contains(&format!("arg0='{interface}'")), "{rule}");
   }
@@ -826,21 +909,108 @@ fn an_open_network_with_no_saved_connection_gets_a_new_one() {
   assert!(logs.contains("no saved connection"), "{logs}");
 }
 
+/// An access point's properties as the service keeps them, from
+/// `Flags`, `WpaFlags` and `RsnFlags`.
+fn point_props(flags: (u32, u32, u32)) -> crate::dbus::Props {
+  let point = access_point(b"ap", 60, flags);
+  let owned = point
+    .into_iter()
+    .map(|(k, v)| (k.to_owned(), v.try_to_owned()));
+  owned.map(|(k, v)| (k, v.expect("owned"))).collect()
+}
+
 #[test]
-fn enhanced_open_networks_are_open() {
-  // RSN with OWE key management and CCMP, but no key to ask for.
-  let owe = access_point(b"owe", 60, (1, 0, 0x888));
-  assert!(!super::secured(
-    &owe
-      .into_iter()
-      .map(|(k, v)| (k.to_owned(), v.try_to_owned().expect("owned")))
-      .collect()
-  ));
-  let sae = access_point(b"sae", 60, (1, 0, 0x488));
-  assert!(super::secured(
-    &sae
-      .into_iter()
-      .map(|(k, v)| (k.to_owned(), v.try_to_owned().expect("owned")))
-      .collect()
-  ));
+fn security_comes_from_the_strongest_key_management() {
+  use WifiSecurity::*;
+
+  let flags = [
+    ((0, 0, 0), Open, false),
+    ((1, 0, 0), Wep, true),
+    // TKIP and PSK on WPA.
+    ((1, 0x144, 0), WpaPsk, true),
+    ((1, 0x244, 0), WpaEap, true),
+    // WPA and WPA2 mixed reads as WPA2.
+    ((1, 0x144, 0x188), Wpa2Psk, true),
+    ((1, 0, 0x288), Wpa2Eap, true),
+    // PSK beside 802.1X: a password will do.
+    ((1, 0, 0x388), Wpa2Psk, true),
+    ((1, 0, 0x488), Sae, true),
+    // WPA2 and WPA3 transition: SAE before PSK.
+    ((1, 0, 0x588), Sae, true),
+    ((1, 0, 0x2288), Wpa3SuiteB192, true),
+    // Enhanced Open, and the open side of its transition mode.
+    ((1, 0, 0x888), Owe, false),
+    ((0, 0, 0x1000), Owe, false),
+    // RSN with no key management known.
+    ((1, 0, 0x88), Unknown, false),
+  ];
+  for (flags, security, secured) in flags {
+    let props = point_props(flags);
+    assert_eq!(super::security(&props), security, "{flags:x?}");
+    assert_eq!(super::secured(security), secured, "{security:?}");
+  }
+}
+
+#[test]
+fn failure_reasons_follow_networkmanagers_numbers() {
+  use ConnectionFailReason::*;
+
+  let reasons = [
+    (7, NoSecrets),
+    (8, WifiClientDisconnected),
+    (9, WifiClientFailed),
+    (10, WifiClientFailed),
+    (11, WifiAuthTimeout),
+    (53, WifiNetworkLost),
+    // A DHCP failure, and none given.
+    (17, Unknown),
+    (0, Unknown),
+  ];
+  for (reason, expected) in reasons {
+    assert_eq!(super::fail_reason(reason), expected, "{reason}");
+  }
+}
+
+#[test]
+fn a_failure_shows_until_the_next_try() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let nm = fake_nm(&mut shell, &bus);
+  let devices = shell.cx.network().devices();
+  wait_for(&mut shell, "the devices", || {
+    !devices.get_untracked().is_empty()
+  });
+  let state = |state: u32, reason: u32| {
+    [
+      ("State", Variant::from(state)),
+      ("StateReason", Variant::from((state, reason))),
+    ]
+  };
+  let wlan = || devices.get_untracked()[0].clone();
+
+  // No password: NetworkManager asks for secrets nobody gives.
+  nm.set(&mut shell, WLAN, DEVICE, &state(120, 7));
+  wait_for(&mut shell, "the failure", || {
+    wlan().fail_reason == Some(ConnectionFailReason::NoSecrets)
+  });
+  assert_eq!(wlan().state, NetworkState::Disconnected);
+  // It moves on to disconnected with no reason, and the failure stays.
+  nm.set(&mut shell, WLAN, DEVICE, &state(30, 0));
+  nm.set(&mut shell, WLAN, WIRELESS, &[("Mode", Variant::from(0u32))]);
+  wait_for(&mut shell, "the later change", || {
+    wlan().wifi_mode == WifiMode::Unknown
+  });
+  assert_eq!(wlan().fail_reason, Some(ConnectionFailReason::NoSecrets));
+
+  nm.set(&mut shell, WLAN, DEVICE, &state(40, 0));
+  wait_for(&mut shell, "the next try", || {
+    wlan().state == NetworkState::Connecting
+  });
+  assert_eq!(wlan().fail_reason, None);
+
+  nm.set(&mut shell, WLAN, DEVICE, &state(120, 53));
+  wait_for(&mut shell, "a network gone", || {
+    wlan().fail_reason == Some(ConnectionFailReason::WifiNetworkLost)
+  });
+  assert_eq!(devices.get_untracked()[1].fail_reason, None, "only its own");
 }
