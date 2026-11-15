@@ -1,5 +1,7 @@
 //! Animations: easing, the clock, and values that follow their target.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use super::{Harness, capture_logs};
@@ -489,6 +491,60 @@ fn a_panicking_target_is_logged_with_its_call_site_and_only_that_animation_stops
   assert!(!broken.running().get());
 }
 
+#[test]
+fn a_panicking_lerp_is_logged_and_running_ends() {
+  let h = Harness::new();
+  let target = h.cx.signal(Fragile(0.0));
+  let moving = h.cx.animation(move || target.get(), LINEAR);
+  target.set(Fragile(100.0));
+  h.runtime.flush();
+  assert!(moving.running().get());
+  let logs = capture_logs(|| {
+    advance_animations(Instant::now());
+  });
+  assert!(logs.contains("animation cx.animation at "), "{logs}");
+  assert!(logs.contains("panicked and stops: lerp failure"), "{logs}");
+  assert!(
+    !moving.running().get(),
+    "an effect waiting on it still runs"
+  );
+  assert!(!animating());
+}
+
+#[test]
+fn a_delayed_animation_writes_nothing_while_it_waits() {
+  let h = Harness::new();
+  let target = h.cx.signal(0.0_f32);
+  let moving = h.cx.animate(move || target.get(), LINEAR.delay(50));
+  let reads = Rc::new(Cell::new(0));
+  let counted = Rc::clone(&reads);
+  h.cx.effect(move || {
+    moving.get();
+    counted.set(counted.get() + 1);
+  });
+  target.set(10.0);
+  h.runtime.flush();
+  let start = Instant::now();
+  advance_animations(start);
+  h.runtime.flush();
+  let before = reads.get();
+  advance_animations(start + Duration::from_millis(20));
+  advance_animations(start + Duration::from_millis(40));
+  h.runtime.flush();
+  assert_eq!(reads.get(), before, "no reader reruns during the delay");
+  advance_animations(start + Duration::from_millis(100));
+  h.runtime.flush();
+  assert!(reads.get() > before);
+}
+
+#[test]
+fn expo_curves_end_exactly_at_0_and_1() {
+  for easing in [Easing::InExpo, Easing::OutExpo, Easing::InOutExpo] {
+    assert_eq!(easing.value_at(0.0), 0.0, "{easing:?}");
+    assert_eq!(easing.value_at(1.0), 1.0, "{easing:?}");
+  }
+}
+
 /// Ticks the clock at `ms` past `start`, returning whether it still runs.
 fn tick(start: Instant, ms: u64) -> bool {
   advance_animations(start + Duration::from_millis(ms))
@@ -958,8 +1014,13 @@ mod fades {
     window.pointer_motion(Point::new(10.0, 10.0));
     let start = Instant::now();
     advance_animations(start);
+    window.take_damage();
     advance_animations(start + Duration::from_millis(40));
     assert_eq!(background(&window), Some(Color::rgb(0, 0, 0)), "waiting");
+    assert!(
+      window.take_damage().is_empty(),
+      "nothing repaints while it waits"
+    );
     advance_animations(start + Duration::from_millis(100));
     assert_eq!(background(&window), Some(Color::rgb(100, 50, 0)));
   }

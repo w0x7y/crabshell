@@ -246,6 +246,12 @@ impl Transition {
     self.ms == 0 && self.delay == 0
   }
 
+  /// Whether an animation that started at `start` is still waiting out
+  /// its delay at `now`, so nothing it moves has changed yet.
+  pub(crate) fn waiting(self, start: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(start) < Duration::from_millis(self.delay.into())
+  }
+
   /// How far along an animation that started at `start` is at `now`,
   /// eased, and whether it has ended. It stays at 0 through the delay.
   pub(crate) fn progress(self, start: Instant, now: Instant) -> (f32, bool) {
@@ -590,6 +596,7 @@ impl Cx {
       set_changed(running, true);
       let generation = Rc::clone(&generation);
       let mut started = start_time();
+      let step_label = Rc::clone(&label);
       start(
         Rc::clone(&label),
         Box::new(move |now| {
@@ -597,8 +604,19 @@ impl Cx {
             return false;
           }
           let begun = *started.get_or_insert(now);
+          if transition.waiting(begun, now) {
+            // The value is still `from`; setting it would rerun its readers.
+            return true;
+          }
           let (t, ended) = transition.progress(begun, now);
-          let next = if ended { to.clone() } else { from.lerp(&to, t) };
+          // `lerp` and `clone` may be a config's own; a panic ends the
+          // animation with `running` false, so whatever waits on it runs.
+          let Some(next) = guarded(&step_label, || {
+            if ended { to.clone() } else { from.lerp(&to, t) }
+          }) else {
+            running.try_set(false);
+            return false;
+          };
           // A value whose owner is gone stops its animation.
           let kept = value.try_set(next);
           if ended {

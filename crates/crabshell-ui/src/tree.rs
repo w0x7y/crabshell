@@ -953,8 +953,10 @@ impl Tree {
           return true;
         };
         let begun = *started.get_or_insert(now);
+        let waiting = transition.waiting(begun, now);
         let (t, ended) = transition.progress(begun, now);
-        let change = tree.update(id, |node| {
+        let mut mine = false;
+        tree.update(id, |node| {
           if node
             .fade
             .as_ref()
@@ -962,14 +964,18 @@ impl Tree {
           {
             return Change::None;
           }
+          mine = true;
           if ended {
             node.fade = None;
+          } else if waiting {
+            // Nothing on screen changes until the delay is over.
+            return Change::None;
           } else if let Some(fade) = &mut node.fade {
             fade.t = t;
           }
           Change::Paint
         });
-        change == Change::Paint && !ended
+        mine && !ended
       }),
     );
   }
