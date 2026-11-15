@@ -8,7 +8,7 @@ use crabshell::prelude::*;
 const BAR: Style = Style::new()
   .background(Color::rgb(0x1e, 0x1e, 0x2e))
   .color(Color::rgb(0xcd, 0xd6, 0xf4));
-const WS: Style = Style::new().padding(2, 8).radius(4.0).width(28.0);
+const WS: Style = Style::new().padding(2, 8).radius(4.0);
 const WS_FOCUSED: Style = WS.background(Color::rgb(0x45, 0x47, 0x5a));
 const WS_URGENT: Style = WS.background(Color::rgb(0xf3, 0x8b, 0xa8));
 
