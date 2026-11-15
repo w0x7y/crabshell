@@ -712,12 +712,36 @@ impl Platform {
     if self.global_shortcuts.shortcuts.flushed() {
       self.runtime.flush();
     }
-    self.take_popups();
-    self
-      .windows
-      .remove_where(|entry| entry.window.wants_close());
-    self.create_surfaces();
-    self.update_toplevels();
+    // The windows that draw, whose live views may ask for their next
+    // frame.
+    let mut drawn = Vec::new();
+    for pass in 0..PASSES {
+      if pass > 0 && !self.left_work() {
+        break;
+      }
+      self.take_popups();
+      self
+        .windows
+        .remove_where(|entry| entry.window.wants_close());
+      self.create_surfaces();
+      self.update_toplevels();
+      self.lay_out_and_draw(&mut drawn);
+    }
+    self.update_focus_grabs();
+    self.sync_captures();
+    self.paced_captures(&drawn);
+    self.sync_text_inputs();
+    self.tick_animations();
+    self.arm_timers();
+    self.commit_windowsets();
+    if let Err(error) = self.connection.flush() {
+      tracing::warn!(%error, "couldn't flush the Wayland connection");
+    }
+  }
+
+  /// One pass over the windows: applies changed settings, lays out what
+  /// needs it and draws what can, adding each window drawn to `drawn`.
+  fn lay_out_and_draw(&mut self, drawn: &mut Vec<WindowId>) {
     let Platform {
       windows,
       pointers,
@@ -734,9 +758,6 @@ impl Platform {
       seats,
       ..
     } = self;
-    // The windows that draw, whose live views may ask for their next
-    // frame.
-    let mut drawn = Vec::new();
     for entry in windows.entries.iter_mut() {
       if entry.surface.is_some() && entry.window.take_surface_changed() {
         let config = entry.window.surface();
@@ -806,16 +827,32 @@ impl Platform {
         }
       }
     }
-    self.update_focus_grabs();
-    self.sync_captures();
-    self.paced_captures(&drawn);
-    self.sync_text_inputs();
-    self.tick_animations();
-    self.arm_timers();
-    self.commit_windowsets();
-    if let Err(error) = self.connection.flush() {
-      tracing::warn!(%error, "couldn't flush the Wayland connection");
+  }
+
+  /// Whether the last pass's layouts left work for another: a layout
+  /// writes `geometry` and flushes, and the effects that run may lay out
+  /// or repaint a window already passed, change its settings, open or
+  /// close a popup, or change a lock, all of which nothing would wake the
+  /// loop for. New popups are taken here, and a lock that changed is
+  /// acted on and flushed, as at the start of the iteration.
+  fn left_work(&mut self) -> bool {
+    let mut work = self.update_locks();
+    if work {
+      self.runtime.flush();
     }
+    let before = self.windows.entries.len();
+    self.take_popups();
+    work |= self.windows.entries.len() != before;
+    work
+      || self.windows.entries.iter().any(|entry| {
+        let window = &entry.window;
+        window.wants_close()
+          || entry.surface.as_ref().is_some_and(|surface| {
+            window.surface_changed()
+              || surface.frames.pacing.configured()
+                && (window.needs_layout() || surface.frames.pacing.should_draw(window.has_damage()))
+          })
+      })
   }
 
   /// Creates layer surfaces for panels whose output is known, and popups
@@ -953,3 +990,8 @@ fn refused(entry: &mut Entry<Surface, WlOutput>, config: &crabshell_ui::SurfaceC
     }
   }
 }
+
+/// The most passes over the windows one iteration makes while layouts
+/// leave work, so a `geometry` feedback that never settles waits for the
+/// next event instead of spinning.
+const PASSES: usize = 4;

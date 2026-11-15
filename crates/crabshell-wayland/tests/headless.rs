@@ -3946,3 +3946,131 @@ fn timers_wake_the_loop_only_while_one_runs() {
   assert!(woke >= Duration::from_millis(1450), "woken after {woke:?}");
   sleeps_through(&mut event_loop, Duration::from_secs(1));
 }
+
+/// The width of the box an overlay sizes from the bar's geometry, and
+/// whether the overlay waits for a layout.
+fn follower(platform: &Platform, id: WindowId) -> (f32, bool) {
+  let (_, window) = platform
+    .windows()
+    .find(|(held, _)| *held == id)
+    .expect("the overlay is held");
+  let view = window.view();
+  let row = view
+    .root()
+    .children()
+    .next()
+    .expect("the overlay has a row");
+  let follower = row.children().next().expect("the row holds the box");
+  (follower.rect().width, window.needs_layout())
+}
+
+/// An overlay along the top of `output`, 10 pixels tall.
+fn overlay(output: &str) -> PanelWindow {
+  PanelWindow::new(&Output::new(output))
+    .anchors(Edge::Top | Edge::Left | Edge::Right)
+    .height(10)
+    .exclusive_zone(0)
+    .layer(Layer::Overlay)
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_window_laid_out_from_another_windows_geometry_catches_up_in_the_same_iteration() {
+  follow_the_bar(true);
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_window_whose_margins_follow_another_windows_geometry_sends_them_in_the_same_iteration() {
+  follow_the_bar(false);
+}
+
+/// A bar whose icon's rectangle an overlay before it follows: with
+/// `sized`, by laying out a box that wide, and always by its margins.
+/// Nothing else wakes the loop, so the iteration whose flush moves the
+/// icon must also catch the overlays up.
+fn follow_the_bar(sized: bool) {
+  let sway = Sway::start();
+  let runtime = Runtime::current();
+  let cx = Cx::new(runtime.new_owner());
+  let rect = cx.signal(Rect::default());
+  let size = cx.signal(10);
+  let mut event_loop = sway.connect();
+  let ids = Rc::new(RefCell::new(None));
+  let built = Rc::clone(&ids);
+  event_loop
+    .platform()
+    .on_event(move |platform: &mut Platform, event| {
+      if let Event::OutputAdded(output) = event {
+        // The overlays come first, so the loop has passed them before the
+        // bar's layout writes the rectangle they follow.
+        let boxed = sized.then(|| {
+          overlay(&output.name).child(Row::new().align(Align::Start).child(
+            crabshell_ui::Stack::new().style(move || {
+              Style::new()
+                .background(Color::rgb(200, 0, 0))
+                .width(rect.get().right())
+                .height(4.0)
+            }),
+          ))
+        });
+        let moved = overlay(&output.name)
+          .margins(move || Margins {
+            left: rect.get().right() as i32,
+            ..Margins::all(0)
+          })
+          .style(Style::new().background(Color::rgb(0, 0, 200)));
+        let bar = PanelWindow::new(&Output::new(&output.name))
+          .anchors(Edge::Top | Edge::Left | Edge::Right)
+          .height(30)
+          .child(
+            Row::new().align(Align::Start).child(
+              crabshell_ui::Icon::new("x")
+                .size(move || size.get())
+                .geometry(rect),
+            ),
+          );
+        let boxed = boxed.map(|boxed| platform.add_window(Window::new(&cx, boxed)));
+        let moved = platform.add_window(Window::new(&cx, moved));
+        let bar = platform.add_window(Window::new(&cx, bar));
+        *built.borrow_mut() = Some((boxed, moved, bar));
+      }
+    });
+  run_until(&mut event_loop, "every window's first frame", |platform| {
+    ids.borrow().is_some_and(|(boxed, moved, bar)| {
+      boxed.iter().chain([&moved, &bar]).all(|id| {
+        platform
+          .window_info(*id)
+          .is_some_and(|info| info.commits > 0)
+      })
+    })
+  });
+  settle(&mut event_loop);
+  let (boxed, moved, _) = ids.borrow().expect("every window was built");
+  if let Some(boxed) = boxed {
+    assert_eq!(follower(event_loop.platform(), boxed), (10.0, false));
+  }
+  let width = |platform: &Platform| {
+    let info = platform.window_info(moved).expect("the overlay is held");
+    info.size.expect("the overlay was configured").0
+  };
+  let before = width(event_loop.platform());
+
+  size.set(30);
+  event_loop
+    .dispatch(Some(Duration::ZERO))
+    .expect("the connection works");
+  let platform = event_loop.platform();
+  if let Some(boxed) = boxed {
+    assert_eq!(follower(platform, boxed), (30.0, false));
+  }
+  let (_, window) = platform
+    .windows()
+    .find(|(held, _)| *held == moved)
+    .expect("the overlay is held");
+  assert!(!window.surface_changed(), "its margins were sent");
+  // Sway answers them with a size 20 pixels narrower.
+  run_until(&mut event_loop, "the overlay's new size", |platform| {
+    width(platform) == before - 20
+  });
+}

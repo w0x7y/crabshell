@@ -594,6 +594,13 @@ impl Window {
     std::mem::take(&mut borrow(&self.tree).surface.changed)
   }
 
+  /// Whether the settings changed since the last
+  /// [`take_surface_changed`](Self::take_surface_changed), leaving that
+  /// to tell.
+  pub fn surface_changed(&self) -> bool {
+    self.tree.borrow().surface.changed
+  }
+
   /// The window's size in logical pixels: the size the compositor gave a
   /// panel, or the size a popup's content wants within any limit, from
   /// its last layout.
