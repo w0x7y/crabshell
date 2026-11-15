@@ -273,8 +273,8 @@ impl Tree {
     Some(typed)
   }
 
-  /// The buttons and fields in the order they are laid out: depth first,
-  /// in child order.
+  /// The enabled buttons and the fields in the order they are laid out:
+  /// depth first, in child order.
   fn focusable(&self) -> Vec<NodeId> {
     let mut found = Vec::new();
     let mut pending = vec![self.root];
@@ -284,7 +284,11 @@ impl Tree {
         continue;
       }
       if let Some(node) = self.node(id)
-        && matches!(node.kind, NodeKind::Button(_) | NodeKind::Input(_))
+        && match &node.kind {
+          NodeKind::Button(button) => button.enabled,
+          NodeKind::Input(_) => true,
+          _ => false,
+        }
       {
         found.push(id);
       }

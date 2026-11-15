@@ -1,6 +1,6 @@
 //! Pointer input added in Phase 15: release, double click, long press,
-//! drag, the position signal, both scroll axes, side buttons and
-//! cursors.
+//! drag, the position signal, both scroll axes, side buttons, cursors,
+//! `enabled` and focus from code.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -10,8 +10,9 @@ use crabshell_reactive::Signal;
 
 use super::{Counter, Harness, capture_logs, lift, rect_at, wheel};
 use crate::{
-  Align, Button, Color, CursorShape, Drag, DragPhase, Icon, Point, PointerButton, Row,
-  ScrollSource, Size, Stack, Style, TextInput, Wheel, WheelAxis, Window, fire_timers, next_timer,
+  Align, Button, Color, CursorShape, Drag, DragPhase, Icon, Key, KeyEvent, Modifiers, Point,
+  PointerButton, Row, ScrollSource, Size, Stack, Style, TextInput, Wheel, WheelAxis, Window,
+  fire_timers, next_timer,
 };
 
 const NORMAL: Style = Style::new().background(Color::rgb(1, 1, 1));
@@ -555,5 +556,135 @@ fn a_button_sets_its_cursor_and_a_field_keeps_the_i_beam() {
   assert_eq!(
     window.pointer_motion(Point::new(field.x + 5.0, 5.0)),
     CursorShape::Text
+  );
+}
+
+fn key(key: Key) -> KeyEvent {
+  KeyEvent {
+    key,
+    text: None,
+    modifiers: Modifiers::default(),
+    repeat: false,
+  }
+}
+
+#[test]
+fn a_disabled_button_lets_the_pointer_through_and_runs_nothing() {
+  let mut h = Harness::new();
+  let enabled = h.cx.signal(false);
+  let log = log();
+  let hovered = h.cx.signal(false);
+  let at = h.cx.signal(None);
+  let inner = Button::new(square())
+    .enabled(move || enabled.get())
+    .style(NORMAL)
+    .hover_style(HOVER)
+    .cursor(CursorShape::Grab)
+    .hovered(hovered)
+    .pointer_position(at)
+    .on_click(note(&log, "inner"))
+    .on_scroll(|_, _| panic!("a disabled button scrolled"));
+  let row = Row::new()
+    .align(Align::Start)
+    .child(Button::new(Row::new().child(square()).child(inner)).on_click(note(&log, "outer")));
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+  window.keyboard_enter();
+  // The outer button takes the pointer, its cursor and the click.
+  assert_eq!(
+    window.pointer_motion(Point::new(25.0, 5.0)),
+    CursorShape::Pointer
+  );
+  assert_eq!(background(&window, &[0, 0, 0, 1]), NORMAL.background);
+  assert_eq!((hovered.get_untracked(), at.get_untracked()), (false, None));
+  click_at(&window, 0);
+  window.pointer_scroll(wheel(120));
+  assert_eq!(*log.borrow(), ["outer"]);
+  // Tab skips it.
+  window.key(&key(Key::Tab));
+  window.key(&key(Key::Tab));
+  assert_eq!(
+    window.focused().as_deref(),
+    Some("PanelWindow[DP-1]/Row/Button[0]")
+  );
+
+  // Turned on, it takes the pointer under it at once.
+  enabled.set(true);
+  h.frame(&window);
+  assert_eq!(window.cursor(), CursorShape::Grab);
+  assert_eq!(background(&window, &[0, 0, 0, 1]), HOVER.background);
+  assert!(hovered.get_untracked());
+  assert_eq!(at.get_untracked(), Some(Point::new(5.0, 5.0)));
+}
+
+#[test]
+fn turning_a_button_off_ends_its_drag_press_and_focus() {
+  let mut h = Harness::new();
+  let enabled = h.cx.signal(true);
+  let drags = Rc::new(RefCell::new(Vec::new()));
+  let log = log();
+  let window = one(
+    &mut h,
+    Button::new(square())
+      .enabled(move || enabled.get())
+      .focus(true)
+      .on_click(note(&log, "click"))
+      .on_release(note(&log, "release"))
+      .on_drag(dragged(&drags)),
+  );
+  window.keyboard_enter();
+  assert_eq!(
+    window.focused().as_deref(),
+    Some("PanelWindow[DP-1]/Row/Button[0]")
+  );
+  window.pointer_motion(Point::new(5.0, 5.0));
+  window.pointer_button(PointerButton::Left, true);
+  window.pointer_motion(Point::new(18.0, 5.0));
+  enabled.set(false);
+  h.frame(&window);
+  let phases: Vec<DragPhase> = drags.borrow().iter().map(|drag| drag.phase).collect();
+  assert_eq!(phases, [DragPhase::Start, DragPhase::End]);
+  assert_eq!(window.focused(), None);
+  // Its release and Enter do nothing now.
+  window.pointer_button(PointerButton::Left, false);
+  window.key(&key(Key::Enter));
+  assert!(log.borrow().is_empty());
+  assert_eq!(drags.borrow().len(), 2);
+}
+
+#[test]
+fn focus_from_code_takes_the_focus_unless_disabled() {
+  let mut h = Harness::new();
+  let first = h.cx.signal(false);
+  let second = h.cx.signal(false);
+  let clicks = Counter::default();
+  let counted = clicks.clone();
+  let row = Row::new()
+    .align(Align::Start)
+    .child(
+      Button::new(square())
+        .focus(move || first.get())
+        .on_click(move |_| counted.hit()),
+    )
+    .child(
+      Button::new(square())
+        .enabled(false)
+        .focus(move || second.get()),
+    );
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+  window.keyboard_enter();
+  assert_eq!(window.focused(), None);
+  first.set(true);
+  h.frame(&window);
+  assert_eq!(
+    window.focused().as_deref(),
+    Some("PanelWindow[DP-1]/Row/Button[0]")
+  );
+  window.key(&key(Key::Enter));
+  assert_eq!(clicks.get(), 1);
+  second.set(true);
+  h.frame(&window);
+  assert_eq!(
+    window.focused().as_deref(),
+    Some("PanelWindow[DP-1]/Row/Button[0]")
   );
 }

@@ -225,6 +225,8 @@ pub(crate) struct ButtonNode {
   /// Written with where the pointer is while it is over the button or
   /// dragging it.
   pub(crate) position_signal: Option<Signal<Option<Point>>>,
+  /// Off, the pointer passes through it and Tab skips it.
+  pub(crate) enabled: bool,
   /// The cursor over it.
   pub(crate) cursor: CursorShape,
   /// Its long press, made the first time it is held.
@@ -710,6 +712,7 @@ impl Tree {
         handlers: cx.signal(std::mem::take(&mut props.handlers)),
         hover_signal: props.hovered,
         position_signal: props.position,
+        enabled: true,
         cursor: CursorShape::Pointer,
         long_press: None,
         hovered: false,
@@ -883,6 +886,15 @@ impl Tree {
         self.bind_opt(id, props.cursor, "cursor", |tree, id, value| {
           if let Some(NodeKind::Button(button)) = tree.node_mut(id).map(|node| &mut node.kind) {
             button.cursor = value;
+          }
+        });
+        // Before `focus`, so a button made disabled never takes it.
+        if let Some(enabled) = props.enabled {
+          self.bind_enabled(id, enabled);
+        }
+        self.bind_opt(id, props.focus, "focus", |tree, id, value| {
+          if value && tree.enabled(id) {
+            tree.focus(Some(id));
           }
         });
       }

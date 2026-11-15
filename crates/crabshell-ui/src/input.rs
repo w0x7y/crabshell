@@ -17,6 +17,7 @@ use crabshell_reactive::{Signal, untrack};
 use crate::cx::Cx;
 use crate::geometry::{Point, Rect, Size};
 use crate::keyboard::KeyHandler;
+use crate::prop::{Prop, PropKind};
 use crate::scroll::PIXELS_PER_NOTCH;
 use crate::tree::{ButtonNode, Change, Node, NodeId, NodeKind, Tree, borrow};
 use crate::window::Window;
@@ -148,7 +149,8 @@ pub enum DragPhase {
   Start,
   /// The pointer moved while dragging.
   Move,
-  /// The drag ended: the button came up or the pointer left the window.
+  /// The drag ended: the button came up, the pointer left the window, or
+  /// the button was disabled.
   End,
 }
 
@@ -433,10 +435,11 @@ fn distance(a: Point, b: Point) -> f32 {
 }
 
 impl Tree {
-  /// The deepest button or field under `point`, in the coordinates of
-  /// `id`'s parent, in `id`'s subtree, with the nodes on the way down to
-  /// it, itself included, pushed onto `path`. Children drawn later are on
-  /// top, so they are tried first.
+  /// The deepest enabled button or field under `point`, in the
+  /// coordinates of `id`'s parent, in `id`'s subtree, with the nodes on
+  /// the way down to it, itself included, pushed onto `path`. Children
+  /// drawn later are on top, so they are tried first. A disabled button
+  /// lets the pointer through to what is around it.
   fn hit(&self, id: NodeId, point: Point, path: &mut Vec<NodeId>) -> Option<NodeId> {
     let node = self.node(id)?;
     let point = local(node, point)?;
@@ -468,7 +471,12 @@ impl Tree {
     {
       return Some(hit);
     }
-    if rect.contains(point) && matches!(node.kind, NodeKind::Button(_) | NodeKind::Input(_)) {
+    let takes = match &node.kind {
+      NodeKind::Button(button) => button.enabled,
+      NodeKind::Input(_) => true,
+      _ => false,
+    };
+    if rect.contains(point) && takes {
       return Some(id);
     }
     path.pop();
@@ -546,7 +554,7 @@ impl Tree {
     }
   }
 
-  /// The buttons on `path` and what `pick` takes from each.
+  /// The enabled buttons on `path` and what `pick` takes from each.
   fn path_buttons<T>(
     &self,
     path: &[NodeId],
@@ -555,7 +563,7 @@ impl Tree {
     path
       .iter()
       .filter_map(|&id| match &self.node(id)?.kind {
-        NodeKind::Button(button) => Some((id, pick(button)?)),
+        NodeKind::Button(button) if button.enabled => Some((id, pick(button)?)),
         _ => None,
       })
       .collect()
@@ -841,6 +849,69 @@ impl Tree {
     self.set_hovered(None, &[]);
     self.set_positions(&[], None);
     calls
+  }
+
+  /// Turns button `id` on or off. Turned off, its press and drag end, the
+  /// drag with an `End` that is returned, and it loses the focus and the
+  /// pointer.
+  pub(crate) fn set_enabled(&mut self, id: NodeId, enabled: bool) -> Vec<Call> {
+    let Some(NodeKind::Button(button)) = self.node_mut(id).map(|node| &mut node.kind) else {
+      return Vec::new();
+    };
+    if std::mem::replace(&mut button.enabled, enabled) == enabled {
+      return Vec::new();
+    }
+    let mut calls = Vec::new();
+    if !enabled {
+      if self.pointer.pressed.is_some_and(|press| press.id == id) {
+        calls.extend(self.end_press());
+      }
+      if self.keyboard.focused == Some(id) {
+        self.focus(None);
+      }
+    }
+    if let Some(at) = self.pointer.position {
+      self.hover_at(at);
+    }
+    calls
+  }
+
+  /// Binds button `id`'s `enabled`. Unlike other bindings it may run a
+  /// handler: the `End` of a drag it cuts short.
+  pub(crate) fn bind_enabled(&mut self, id: NodeId, prop: Prop<bool>) {
+    let mut compute = match prop.0 {
+      // Nothing is held while the button is made.
+      PropKind::Value(enabled) => {
+        self.set_enabled(id, enabled);
+        return;
+      }
+      PropKind::Binding(compute) => compute,
+    };
+    let Some(node) = self.node(id) else {
+      return;
+    };
+    let label = format!("{}.enabled", node.path);
+    let tree = self.this.clone();
+    node
+      .cx
+      .effect(move || {
+        let enabled = compute();
+        let Some(tree) = tree.upgrade() else {
+          return;
+        };
+        let calls = borrow(&tree).set_enabled(id, enabled);
+        // What the handler reads doesn't rerun this binding.
+        untrack(|| run_all(calls));
+      })
+      .named(label);
+  }
+
+  /// Whether button `id` is enabled. Anything else counts as enabled.
+  pub(crate) fn enabled(&self, id: NodeId) -> bool {
+    match self.node(id).map(|node| &node.kind) {
+      Some(NodeKind::Button(button)) => button.enabled,
+      _ => true,
+    }
   }
 
   fn scroll(&mut self, wheel: Wheel) -> Option<Scrolled> {

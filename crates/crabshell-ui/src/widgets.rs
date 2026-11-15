@@ -167,6 +167,8 @@ pub(crate) struct ButtonProps {
   pub(crate) focus_style: Option<Prop<Style>>,
   pub(crate) hovered: Option<Signal<bool>>,
   pub(crate) position: Option<Signal<Option<Point>>>,
+  pub(crate) enabled: Option<Prop<bool>>,
+  pub(crate) focus: Option<Prop<bool>>,
   pub(crate) cursor: Option<Prop<CursorShape>>,
   pub(crate) handlers: Handlers,
 }
@@ -795,6 +797,8 @@ impl Button {
         focus_style: None,
         hovered: None,
         position: None,
+        enabled: None,
+        focus: None,
         cursor: None,
         handlers: Handlers::default(),
       },
@@ -886,10 +890,10 @@ impl Button {
   /// Runs `handler` as the left button drags this button: a
   /// [`DragPhase::Start`](crate::DragPhase::Start) once it moves 10
   /// logical pixels from where it went down, a `Move` for each motion
-  /// after, and an `End` when it comes up or the pointer leaves the
-  /// window. A button with no `on_click`, `on_double_click` or
-  /// `on_long_press` starts at the press instead, so a slider moves from
-  /// the first touch.
+  /// after, and an `End` when it comes up, the pointer leaves the window,
+  /// or the button is disabled. A button with no `on_click`,
+  /// `on_double_click` or `on_long_press` starts at the press instead, so
+  /// a slider moves from the first touch.
   ///
   /// While it drags, the button gets every motion, even outside itself or
   /// the window, stays hovered, and doesn't click.
@@ -950,6 +954,25 @@ impl Button {
   /// leaves. It is written only on a change.
   pub fn pointer_position(mut self, position: Signal<Option<Point>>) -> Button {
     self.button.position = Some(position);
+    self
+  }
+
+  /// Turns the button on or off; it is on by default. Off, none of its
+  /// handlers run, it shows no hover, pressed or focus style and the
+  /// default cursor, and Tab skips it. The pointer passes through it to
+  /// the button around it, as through a disabled Qt `MouseArea`. Turning
+  /// it off while it is held lets go, ending a drag with its `End`, and
+  /// drops its focus.
+  pub fn enabled(mut self, enabled: impl IntoProp<bool>) -> Button {
+    self.button.enabled = Some(enabled.into_prop());
+    self
+  }
+
+  /// Takes the keyboard focus whenever this turns true, as
+  /// [`TextInput::focus`](crate::TextInput::focus) does. Tab and a field
+  /// may take it away again.
+  pub fn focus(mut self, focus: impl IntoProp<bool>) -> Button {
+    self.button.focus = Some(focus.into_prop());
     self
   }
 
