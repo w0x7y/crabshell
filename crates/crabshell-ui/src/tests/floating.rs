@@ -231,3 +231,41 @@ fn a_floating_window_can_inhibit_shortcuts_and_grab_focus_too() {
   assert_eq!(window.shortcuts_inhibited(), Some(inhibited));
   assert_eq!(window.focus_grab(), Some(grabbed));
 }
+
+#[test]
+fn a_floating_window_takes_a_compositor_opacity_and_visible_mask_too() {
+  let mut h = Harness::new();
+  let faded = h.cx.signal(false);
+  let window = build(
+    &mut h,
+    FloatingWindow::new()
+      .compositor_opacity(move || if faded.get() { 0.5 } else { 1.0 })
+      .visible_mask(move || faded.get().then(|| crate::Region::rect(0, 0, 50, 50))),
+  );
+  assert_eq!(
+    (window.compositor_opacity(), window.visible_mask()),
+    (1.0, None)
+  );
+  window.take_surface_changed();
+  faded.set(true);
+  h.frame(&window);
+  assert!(window.take_surface_changed());
+  assert_eq!(window.compositor_opacity(), 0.5);
+  assert_eq!(
+    window.visible_mask(),
+    Some(crate::Region::rect(0, 0, 50, 50))
+  );
+
+  let logs = capture_logs(|| {
+    let floating = FloatingWindow::new()
+      .compositor_opacity(|| -> f32 { panic!("no opacity") })
+      .visible_mask(|| -> Option<crate::Region> { panic!("no mask") });
+    assert_eq!(build(&mut h, floating).compositor_opacity(), 1.0);
+  });
+  for name in ["compositor_opacity", "visible_mask"] {
+    assert!(
+      logs.contains(&format!("FloatingWindow.{name} panicked and is disabled")),
+      "{logs}"
+    );
+  }
+}

@@ -310,6 +310,51 @@ fn a_popup_takes_a_mask() {
 }
 
 #[test]
+fn a_popup_takes_a_compositor_opacity_and_visible_mask() {
+  let mut h = Harness::new();
+  let faded = h.cx.signal(true);
+  let window = opener(&mut h, move |_| {
+    PopupWindow::new()
+      .compositor_opacity(move || if faded.get() { 2.0 } else { 0.5 })
+      .visible_mask(move || faded.get().then(|| crate::Region::rect(0, 0, 10, 10)))
+      .child(square())
+  });
+  let popup = open(&mut h, &window);
+  assert!(popup.take_surface_changed());
+  assert_eq!(popup.compositor_opacity(), 1.0, "clamped");
+  assert_eq!(
+    popup.visible_mask(),
+    Some(crate::Region::rect(0, 0, 10, 10))
+  );
+  faded.set(false);
+  h.frame(&popup);
+  assert!(popup.take_surface_changed());
+  assert_eq!(popup.compositor_opacity(), 0.5);
+  assert_eq!(popup.visible_mask(), None);
+
+  // Either panicking is logged with its path, and the popup opens.
+  let window = opener(&mut h, |_| {
+    PopupWindow::new()
+      .compositor_opacity(|| -> f32 { panic!("no opacity") })
+      .visible_mask(|| -> Option<crate::Region> { panic!("no mask") })
+      .child(square())
+  });
+  let logs = capture_logs(|| {
+    let popup = open(&mut h, &window);
+    assert_eq!(popup.size(), Size::new(20.0, 20.0));
+    assert_eq!(popup.compositor_opacity(), 1.0);
+  });
+  for name in ["compositor_opacity", "visible_mask"] {
+    assert!(
+      logs.contains(&format!(
+        "PanelWindow[DP-1]/Row/Button[0]/PopupWindow.{name} panicked and is disabled"
+      )),
+      "{logs}"
+    );
+  }
+}
+
+#[test]
 fn all_adjustments_include_resizing_as_in_quickshell() {
   use crate::Adjust;
 

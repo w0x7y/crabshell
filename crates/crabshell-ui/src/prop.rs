@@ -80,6 +80,7 @@ value_props!(
   bool,
   u32,
   i32,
+  f32,
   String,
   Style,
   Align,

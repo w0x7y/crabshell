@@ -470,3 +470,109 @@ fn the_signals_the_compositor_writes_reach_the_window() {
     (None, None)
   );
 }
+
+#[test]
+fn a_compositor_opacity_reaches_the_window_and_a_change_is_reported() {
+  let mut h = Harness::new();
+  let faded = h.cx.signal(true);
+  let panel = h
+    .panel()
+    .compositor_opacity(move || if faded.get() { 0.5 } else { 1.0 });
+  let window = h.window(panel, 200.0, 30.0);
+  assert_eq!(window.compositor_opacity(), 0.5);
+  assert!(window.take_surface_changed());
+
+  faded.set(false);
+  h.frame(&window);
+  assert!(window.take_surface_changed());
+  assert_eq!(window.compositor_opacity(), 1.0);
+  assert_eq!(
+    h.window(h.panel(), 200.0, 30.0).compositor_opacity(),
+    1.0,
+    "opaque by default"
+  );
+  let set_once = h.panel().compositor_opacity(0.25);
+  assert_eq!(h.window(set_once, 200.0, 30.0).compositor_opacity(), 0.25);
+}
+
+#[test]
+fn a_compositor_opacity_outside_0_to_1_is_clamped_and_logged_once() {
+  let mut h = Harness::new();
+  let asked = h.cx.signal(1.5_f32);
+  let logs = capture_logs(|| {
+    let window = h.window(
+      h.panel().compositor_opacity(move || asked.get()),
+      200.0,
+      30.0,
+    );
+    assert_eq!(window.compositor_opacity(), 1.0);
+    asked.set(-0.5);
+    h.frame(&window);
+    assert_eq!(window.compositor_opacity(), 0.0);
+    // NaN can't be clamped; it shows the window as painted.
+    asked.set(f32::NAN);
+    h.frame(&window);
+    assert_eq!(window.compositor_opacity(), 1.0);
+    asked.set(0.25);
+    h.frame(&window);
+    assert_eq!(window.compositor_opacity(), 0.25);
+  });
+  assert_eq!(
+    logs
+      .matches("PanelWindow[DP-1].compositor_opacity of 1.5 is outside 0 to 1")
+      .count(),
+    1,
+    "{logs}"
+  );
+  assert_eq!(logs.matches("compositor_opacity of").count(), 1, "{logs}");
+}
+
+#[test]
+fn a_visible_mask_reaches_the_window_and_a_change_is_reported() {
+  let mut h = Harness::new();
+  let drawn = h.cx.signal(true);
+  let panel = h
+    .panel()
+    .visible_mask(move || drawn.get().then(|| Region::rect(0, 0, 100, 30)));
+  let window = h.window(panel, 200.0, 30.0);
+  assert_eq!(window.visible_mask(), Some(Region::rect(0, 0, 100, 30)));
+  assert!(window.take_surface_changed());
+
+  drawn.set(false);
+  h.frame(&window);
+  assert!(window.take_surface_changed());
+  assert_eq!(window.visible_mask(), None);
+  assert_eq!(
+    h.window(h.panel(), 200.0, 30.0).visible_mask(),
+    None,
+    "the whole window by default"
+  );
+}
+
+#[test]
+fn a_panicking_compositor_opacity_or_visible_mask_is_logged_with_its_path() {
+  let mut h = Harness::new();
+  let label = h.cx.signal(String::from("one"));
+  let logs = capture_logs(|| {
+    let panel = h
+      .panel()
+      .compositor_opacity(|| -> f32 { panic!("no opacity") })
+      .visible_mask(|| -> Option<Region> { panic!("no mask") })
+      .child(Text::new(move || label.get()));
+    let window = h.window(panel, 200.0, 30.0);
+    assert_eq!(window.compositor_opacity(), 1.0);
+    assert_eq!(window.visible_mask(), None);
+    // The rest of the window goes on.
+    label.set(String::from("two"));
+    h.runtime.flush();
+    assert!(window.needs_layout());
+  });
+  for name in ["compositor_opacity", "visible_mask"] {
+    assert!(
+      logs.contains(&format!(
+        "PanelWindow[DP-1].{name} panicked and is disabled"
+      )),
+      "{logs}"
+    );
+  }
+}

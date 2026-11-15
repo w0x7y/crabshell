@@ -206,6 +206,12 @@ pub(crate) struct Surface {
   pub(crate) shortcuts_inhibited: Option<Signal<bool>>,
   /// Shared by the windows in one focus grab.
   pub(crate) focus_grab: Option<Signal<bool>>,
+  /// The opacity the compositor shows the window at, within 0 to 1.
+  pub(crate) compositor_opacity: f32,
+  /// Whether a value outside 0 to 1 was logged, which happens once.
+  pub(crate) opacity_logged: bool,
+  /// The part the compositor is told holds anything to see.
+  pub(crate) visible_mask: Option<Region>,
   /// Something changed since the platform last read the settings.
   pub(crate) changed: bool,
 }
@@ -227,6 +233,9 @@ impl Default for Surface {
       inhibit_shortcuts: false,
       shortcuts_inhibited: None,
       focus_grab: None,
+      compositor_opacity: 1.0,
+      opacity_logged: false,
+      visible_mask: None,
       changed: false,
     }
   }
@@ -450,19 +459,46 @@ impl Tree {
     self.surface.changed = true;
   }
 
-  /// Binds what a panel or floating window asks of the compositor: its
-  /// input mask, blur region, whether it inhibits idle and shortcuts, and
-  /// the signals the platform writes.
+  /// Binds what a window asks of the compositor: its input mask, opacity,
+  /// visible mask, blur region, whether it inhibits idle and shortcuts,
+  /// and the signals the platform writes.
   pub(crate) fn bind_compositor_hints(&mut self, hints: Hints) {
     let Hints {
       mask,
+      compositor_opacity,
+      visible_mask,
       blur,
       inhibit_idle,
       inhibit_shortcuts,
       shortcuts_inhibited,
       focus_grab,
     } = hints;
-    self.bind_mask(mask);
+    self.bind_opt(self.root, mask, "mask", |tree, _, value| {
+      tree.surface.set(|s| &mut s.mask, value);
+    });
+    self.bind_opt(
+      self.root,
+      compositor_opacity,
+      "compositor_opacity",
+      |tree, id, asked| {
+        // Hyprland ends the connection on a value outside 0 to 1.
+        let opacity = if asked.is_nan() {
+          1.0
+        } else {
+          asked.clamp(0.0, 1.0)
+        };
+        if opacity != asked && !std::mem::replace(&mut tree.surface.opacity_logged, true) {
+          let path = tree.node(id).map_or("", |node| &node.path);
+          tracing::warn!(
+            "{path}.compositor_opacity of {asked} is outside 0 to 1, so {opacity} is used"
+          );
+        }
+        tree.surface.set(|s| &mut s.compositor_opacity, opacity);
+      },
+    );
+    self.bind_opt(self.root, visible_mask, "visible_mask", |tree, _, value| {
+      tree.surface.set(|s| &mut s.visible_mask, value);
+    });
     self.bind_opt(self.root, blur, "blur", |tree, _, value| {
       tree.surface.set(|s| &mut s.blur, value);
     });
@@ -477,14 +513,6 @@ impl Tree {
     );
     self.surface.shortcuts_inhibited = shortcuts_inhibited;
     self.surface.focus_grab = focus_grab;
-  }
-
-  /// Binds the window's input mask, as a panel's, floating window's or
-  /// popup's.
-  pub(crate) fn bind_mask(&mut self, mask: Option<Prop<Option<Region>>>) {
-    self.bind_opt(self.root, mask, "mask", |tree, _, value| {
-      tree.surface.set(|s| &mut s.mask, value);
-    });
   }
 
   /// Applies the root's style and adds its child, as a panel's or a

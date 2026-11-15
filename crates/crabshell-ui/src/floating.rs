@@ -175,6 +175,23 @@ impl FloatingWindow {
     self
   }
 
+  /// Sets the opacity the compositor shows the whole window at, blur
+  /// included, as
+  /// [`PanelWindow::compositor_opacity`](crate::PanelWindow::compositor_opacity)
+  /// does.
+  pub fn compositor_opacity(mut self, opacity: impl IntoProp<f32>) -> FloatingWindow {
+    self.hints.compositor_opacity = Some(opacity.into_prop());
+    self
+  }
+
+  /// Tells the compositor which part of the window holds anything to
+  /// see, as [`PanelWindow::visible_mask`](crate::PanelWindow::visible_mask)
+  /// does.
+  pub fn visible_mask(mut self, region: impl IntoProp<Option<Region>>) -> FloatingWindow {
+    self.hints.visible_mask = Some(region.into_prop());
+    self
+  }
+
   /// Runs `handler` when the user or compositor asks the window to close,
   /// as with a title bar's close button. Without one, the window hides
   /// until `visible` turns false and true again.

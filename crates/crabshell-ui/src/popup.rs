@@ -15,7 +15,7 @@ use crate::region::Region;
 use crate::style::Style;
 use crate::tree::{PopupState, Tree, borrow};
 use crate::widgets::Widget;
-use crate::window::{Anchors, Window};
+use crate::window::{Anchors, Hints, Window};
 
 /// A popup: a window next to the widget that opened it, sized to fit its
 /// one child. Open one with [`Cx::open_popup`].
@@ -34,7 +34,7 @@ pub struct PopupWindow {
   edges: Option<Prop<Anchors>>,
   gravity: Option<Prop<Anchors>>,
   adjustment: Option<Prop<Adjust>>,
-  mask: Option<Prop<Option<Region>>>,
+  hints: Hints,
 }
 
 /// How a popup may move or shrink to stay on its output, combined with
@@ -145,7 +145,24 @@ impl PopupWindow {
   /// below, but over another program it closes the popup, as any click
   /// outside does.
   pub fn mask(mut self, mask: impl IntoProp<Option<Region>>) -> PopupWindow {
-    self.mask = Some(mask.into_prop());
+    self.hints.mask = Some(mask.into_prop());
+    self
+  }
+
+  /// Sets the opacity the compositor shows the whole popup at, blur
+  /// included, as
+  /// [`PanelWindow::compositor_opacity`](crate::PanelWindow::compositor_opacity)
+  /// does.
+  pub fn compositor_opacity(mut self, opacity: impl IntoProp<f32>) -> PopupWindow {
+    self.hints.compositor_opacity = Some(opacity.into_prop());
+    self
+  }
+
+  /// Tells the compositor which part of the popup holds anything to see,
+  /// as [`PanelWindow::visible_mask`](crate::PanelWindow::visible_mask)
+  /// does.
+  pub fn visible_mask(mut self, region: impl IntoProp<Option<Region>>) -> PopupWindow {
+    self.hints.visible_mask = Some(region.into_prop());
     self
   }
 }
@@ -192,7 +209,7 @@ impl Cx {
         (
           popup.style,
           child,
-          (popup.edges, popup.gravity, popup.adjustment, popup.mask),
+          (popup.edges, popup.gravity, popup.adjustment, popup.hints),
         )
       })
     }));
@@ -224,7 +241,7 @@ impl Cx {
     {
       let mut tree = borrow(&popup);
       tree.mount_root(style, child);
-      let (edges, gravity, adjustment, mask) = placement;
+      let (edges, gravity, adjustment, hints) = placement;
       let root = tree.root;
       tree.bind_opt(root, edges, "edges", |tree, _, value| {
         if let Some(popup) = tree.popup.as_mut() {
@@ -241,7 +258,7 @@ impl Cx {
           popup.placement.adjustment = Some(value);
         }
       });
-      tree.bind_mask(mask);
+      tree.bind_compositor_hints(hints);
     }
     borrow(&tree).popups.push(Window { tree: popup, owner });
   }

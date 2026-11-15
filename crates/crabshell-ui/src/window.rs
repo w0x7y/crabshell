@@ -362,6 +362,31 @@ impl PanelWindow {
     self
   }
 
+  /// Sets the opacity the compositor shows the whole window at, from 0.0,
+  /// unseen, to 1.0, the default. It fades the blur behind the window
+  /// along with its pixels. A style's `opacity` is different: Crabshell
+  /// paints that into the window's pixels, and a blur behind them stays
+  /// as strong. A value outside 0.0 to 1.0 is clamped and NaN reads as
+  /// 1.0, logged once with the window's path. It needs Hyprland's
+  /// `hyprland-surface-v1`, from Hyprland 0.47; without it, that is
+  /// logged once and the window shows as painted.
+  pub fn compositor_opacity(mut self, opacity: impl IntoProp<f32>) -> PanelWindow {
+    self.hints.compositor_opacity = Some(opacity.into_prop());
+    self
+  }
+
+  /// Tells the compositor which part of the window holds anything to
+  /// see, so it can skip drawing the rest, which helps most when the
+  /// window is blurred. It is only a hint, and it must cover every pixel
+  /// that isn't fully transparent: what it leaves out may not show.
+  /// `None`, the default, is the whole window, and so is a region with
+  /// nothing inside the window. It needs version 2 of Hyprland's
+  /// `hyprland-surface-v1`; without it, that is logged once.
+  pub fn visible_mask(mut self, region: impl IntoProp<Option<Region>>) -> PanelWindow {
+    self.hints.visible_mask = Some(region.into_prop());
+    self
+  }
+
   /// Runs `handler` for each key the window gets that its focused button
   /// didn't use. It returns `true` when it used the key; otherwise Tab,
   /// Enter and Space do what they do by default. The window gets keys
@@ -385,11 +410,14 @@ impl PanelWindow {
   }
 }
 
-/// What a panel or floating window asks of the compositor besides its
-/// layer-shell or toplevel settings.
+/// What a window asks of the compositor besides its layer-shell, toplevel
+/// or popup settings. A popup sets only its mask, compositor opacity and
+/// visible mask.
 #[derive(Default)]
 pub(crate) struct Hints {
   pub(crate) mask: Option<Prop<Option<Region>>>,
+  pub(crate) compositor_opacity: Option<Prop<f32>>,
+  pub(crate) visible_mask: Option<Prop<Option<Region>>>,
   pub(crate) blur: Option<Prop<Option<Region>>>,
   pub(crate) inhibit_idle: Option<Prop<bool>>,
   pub(crate) inhibit_shortcuts: Option<Prop<bool>>,
@@ -545,6 +573,18 @@ impl Window {
   /// windows given the same one share a grab.
   pub fn focus_grab(&self) -> Option<Signal<bool>> {
     self.tree.borrow().surface.focus_grab
+  }
+
+  /// The opacity the window asks the compositor to show it at, as its
+  /// `compositor_opacity` property says: always from 0.0 to 1.0.
+  pub fn compositor_opacity(&self) -> f32 {
+    self.tree.borrow().surface.compositor_opacity
+  }
+
+  /// The part of the window it tells the compositor holds anything to
+  /// see, as its `visible_mask` property says; `None` is all of it.
+  pub fn visible_mask(&self) -> Option<Region> {
+    self.tree.borrow().surface.visible_mask.clone()
   }
 
   /// Whether the settings in [`surface`](Self::surface) changed since the
