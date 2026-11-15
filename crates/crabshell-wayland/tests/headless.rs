@@ -4286,3 +4286,117 @@ fn a_double_click_side_buttons_and_a_sideways_swipe_reach_their_buttons() {
     ]
   );
 }
+
+/// A bottom bar of three 100-pixel chips 10 apart, keyed by number, that
+/// slide aside as one goes, with a trash target after them that takes a
+/// chip dropped on it, and whether a drop waits over the trash.
+fn chips_bar(cx: &Cx, output: &str, chips: Signal<Vec<u32>>, over: Signal<bool>) -> Window {
+  let size = Style::new()
+    .width(100.0)
+    .height(30.0)
+    .background(Color::hex("#89b4fa"));
+  let panel = PanelWindow::new(&Output::new(output))
+    .anchors(Edge::Bottom | Edge::Left | Edge::Right)
+    .height(40)
+    .style(Style::new().background(Color::hex("#1e1e2e")))
+    .child(
+      Row::new()
+        .gap(10)
+        .align(Align::Start)
+        .children_keyed(
+          move || chips.get(),
+          |n| *n,
+          move |cx, n| {
+            // The chip follows the pointer while it is dragged.
+            let moved = cx.signal(crabshell_ui::Point::default());
+            Button::new(Spacer::new())
+              .style(move || {
+                let at = moved.get();
+                size.translate(at.x, at.y)
+              })
+              .drag_data(move || Some(n.get()))
+              .on_drag(move |_, drag| {
+                let gone = drag.phase == crabshell_ui::DragPhase::End;
+                moved.set(if gone {
+                  crabshell_ui::Point::default()
+                } else {
+                  crabshell_ui::Point::new(
+                    drag.position.x - drag.start.x,
+                    drag.position.y - drag.start.y,
+                  )
+                });
+              })
+          },
+        )
+        .displaced(Transition::new(150))
+        .child(
+          Button::new(Spacer::new())
+            .style(size.background(Color::hex("#f38ba8")))
+            .drop_hovered(over)
+            .on_drop(move |_, n: u32| chips.update(|chips| chips.retain(|kept| *kept != n))),
+        ),
+    );
+  Window::new(cx, panel)
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_virtual_pointer_drops_a_chip_on_the_trash_and_the_rest_slide_then_sleep() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let mut shell = Shell::new(&sway);
+  let mut pointer = VirtualPointer::new(&sway);
+  shell.wait_for_bar("HEADLESS-1");
+  let cx = Cx::new(shell.runtime.new_owner());
+  let chips = cx.signal(vec![1, 2, 3]);
+  let over = cx.signal(false);
+  let id = shell
+    .event_loop
+    .platform()
+    .add_window(chips_bar(&cx, "HEADLESS-1", chips, over));
+  run_until(&mut shell.event_loop, "the chips' frame", |platform| {
+    platform
+      .window_info(id)
+      .is_some_and(|info| info.commits > 0)
+  });
+  settle(&mut shell.event_loop);
+
+  // Chip 1 is at 0 to 100 and the trash at 330 to 430, 1040 down.
+  pointer.move_to(50, 1055, OUTPUT);
+  pointer.press(VirtualPointer::LEFT);
+  pointer.move_to(200, 1055, OUTPUT);
+  pointer.move_to(380, 1055, OUTPUT);
+  run_until(&mut shell.event_loop, "the drag over the trash", |_| {
+    over.get_untracked()
+  });
+  let commits = shell
+    .event_loop
+    .platform()
+    .window_info(id)
+    .map_or(0, |info| info.commits);
+  pointer.release(VirtualPointer::LEFT);
+  run_until(&mut shell.event_loop, "the drop", |_| {
+    chips.get_untracked() == [2, 3]
+  });
+  assert!(!over.get_untracked(), "the drag ended");
+  run_until(&mut shell.event_loop, "the slide's end", |_| {
+    !crabshell_ui::animating()
+  });
+  settle(&mut shell.event_loop);
+  let platform = shell.event_loop.platform();
+  let slid = platform.window_info(id).map_or(0, |info| info.commits) - commits;
+  assert!(slid > 2, "the slide drew frames as it went: {slid}");
+  let (_, window) = platform
+    .windows()
+    .find(|(held, _)| *held == id)
+    .expect("the chips are held");
+  let view = window.view();
+  let row = view.root().children().next().expect("the bar has a row");
+  let placed: Vec<_> = row
+    .children()
+    .map(|child| (child.rect().x, child.transform()))
+    .collect();
+  assert_eq!(placed, [(0.0, None), (110.0, None), (220.0, None)]);
+  drop(view);
+  sleeps_through(&mut shell.event_loop, Duration::from_secs(2));
+}
