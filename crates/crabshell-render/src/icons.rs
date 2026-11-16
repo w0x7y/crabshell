@@ -7,7 +7,7 @@ use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use crabshell_ui::{CaptureFrame, Fit, IconPixels, IconSource};
+use crabshell_ui::{CaptureFrame, Color, Fit, IconPixels, IconSource, ImageFilters, ImageView};
 use resvg::usvg;
 use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, PixmapRef, Transform};
 
@@ -78,10 +78,12 @@ enum Key {
     size: u32,
     scale: u32,
     side: u32,
+    tint: Option<Color>,
   },
   File {
     path: PathBuf,
     side: u32,
+    tint: Option<Color>,
   },
   /// An image file, scaled to `width` by `height` pixels, as it was when
   /// last modified: a file rewritten in place, or one that appears after a
@@ -92,6 +94,7 @@ enum Key {
     width: u32,
     height: u32,
     fit: Fit,
+    filters: FilterKey,
   },
   /// Raw pixels, by their shared allocation: reading the bytes on every
   /// draw would cost as much as rasterizing them.
@@ -100,7 +103,31 @@ enum Key {
     width: u32,
     height: u32,
     side: u32,
+    tint: Option<Color>,
   },
+}
+
+/// An image's filters as a cache key: the tint and the bits of each
+/// number, the blur's in buffer pixels, since that is what it changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct FilterKey {
+  tint: Option<Color>,
+  numbers: [u32; 4],
+}
+
+impl FilterKey {
+  fn new(filters: &ImageFilters, scale: f32) -> FilterKey {
+    FilterKey {
+      tint: filters.tint,
+      numbers: [
+        filters.brightness,
+        filters.contrast,
+        filters.saturation,
+        filters.blur * scale,
+      ]
+      .map(f32::to_bits),
+    }
+  }
 }
 
 /// Tray pixel data, compared and hashed by its address. The key holds a
@@ -175,15 +202,15 @@ impl Icons {
     self.captures.len()
   }
 
-  /// The icon `source` as a `side` by `side` pixmap, rasterized on first
-  /// use. A name is looked up for `size` logical pixels at `scale`, a whole
-  /// number. `None` if it can't be loaded; that is logged once.
+  /// The icon `source` as a `side` by `side` pixmap painted in `tint`,
+  /// rasterized on first use. A name is looked up for `size` logical
+  /// pixels at `scale`, a whole number. `None` if it can't be loaded; that
+  /// is logged once.
   pub(crate) fn get(
     &mut self,
     source: &IconSource,
-    side: u32,
-    size: u32,
-    scale: u32,
+    (side, size, scale): (u32, u32, u32),
+    tint: Option<Color>,
   ) -> Option<&Pixmap> {
     let key = match source {
       IconSource::Name(name) => Key::Name {
@@ -192,16 +219,19 @@ impl Icons {
         size,
         scale,
         side,
+        tint,
       },
       IconSource::File(path) => Key::File {
         path: path.clone(),
         side,
+        tint,
       },
       IconSource::Pixels(pixels) => Key::Pixels {
         data: Shared(Rc::clone(&pixels.data)),
         width: pixels.width,
         height: pixels.height,
         side,
+        tint,
       },
     };
     if !self.cache.contains_key(&key) {
@@ -213,21 +243,27 @@ impl Icons {
         IconSource::File(path) => rasterize_file(path, side),
         IconSource::Pixels(pixels) => from_argb(pixels).and_then(|image| fit(&image, side)),
       };
-      self.store(key.clone(), rasterized, || describe(source));
+      let tinted = rasterized.map(|mut pixmap| {
+        if let Some(tint) = tint {
+          crate::filters::tint(pixmap.data_mut(), tint);
+        }
+        pixmap
+      });
+      self.store(key.clone(), tinted, || describe(source));
     }
     self.used(&key)
   }
 
-  /// The image file at `path` scaled to `width` by `height` pixels as
-  /// `fit` says, decoded on first use. `None` if it can't be loaded; that
-  /// is logged once.
+  /// `image`'s file scaled to `width` by `height` pixels as its fit says
+  /// and run through its filters at `scale`, decoded on first use. `None`
+  /// if it can't be loaded; that is logged once.
   pub(crate) fn image(
     &mut self,
-    path: &Path,
-    width: u32,
-    height: u32,
-    fit: Fit,
+    image: &ImageView<'_>,
+    (width, height): (u32, u32),
+    scale: f32,
   ) -> Option<&Pixmap> {
+    let path = image.path;
     let modified = std::fs::metadata(path)
       .and_then(|metadata| metadata.modified())
       .ok();
@@ -236,10 +272,12 @@ impl Icons {
       modified,
       width,
       height,
-      fit,
+      fit: image.fit,
+      filters: FilterKey::new(&image.filters, scale),
     };
     if !self.cache.contains_key(&key) {
-      let rasterized = crate::images::rasterize(path, width, height, fit);
+      let rasterized =
+        crate::images::filtered(path, (width, height), image.fit, &image.filters, scale);
       self.store(key.clone(), rasterized, || {
         format!("image {}", path.display())
       });

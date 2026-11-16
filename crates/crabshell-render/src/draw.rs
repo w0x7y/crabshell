@@ -1063,7 +1063,7 @@ impl Painter<'_> {
     let Some((x, y, width, height)) = self.picture_area(pixmap, image.rect) else {
       return;
     };
-    if let Some(pixels) = self.icons.image(image.path, width, height, image.fit) {
+    if let Some(pixels) = self.icons.image(image, (width, height), self.grid.scale) {
       draw_at(pixmap, x, y, pixels);
     }
   }
@@ -1117,7 +1117,8 @@ impl Painter<'_> {
     // Theme directories come in whole scales; 1.5 looks for @2 icons.
     let size = icon.rect.width.round() as u32;
     let theme_scale = scale.ceil().max(1.0) as u32;
-    if let Some(image) = self.icons.get(icon.source, side as u32, size, theme_scale) {
+    let sizes = (side as u32, size, theme_scale);
+    if let Some(image) = self.icons.get(icon.source, sizes, icon.tint) {
       pixmap.draw_pixmap(
         x as i32,
         y as i32,

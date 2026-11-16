@@ -41,17 +41,17 @@ fn past_its_capacity_the_cache_drops_icons_unused_for_16_draws() {
   let mut icons = Icons::new();
   let sources: Vec<IconSource> = (0..=200).map(pixels).collect();
   for source in &sources {
-    icons.get(source, 8, 8, 1);
+    icons.get(source, (8, 8, 1), None);
   }
   icons.end_frame();
   // Fifteen more draws use only one icon: everything was used recently.
   for _ in 1..16 {
-    icons.get(&sources[7], 8, 8, 1);
+    icons.get(&sources[7], (8, 8, 1), None);
     icons.end_frame();
   }
   assert_eq!(icons.cached(), 201);
   // The sixteenth drops the rest.
-  icons.get(&sources[7], 8, 8, 1);
+  icons.get(&sources[7], (8, 8, 1), None);
   icons.end_frame();
   assert_eq!(icons.cached(), 1);
 }
@@ -112,17 +112,17 @@ fn a_failed_icon_dropped_from_the_cache_is_not_logged_again() {
   let others: Vec<IconSource> = (0..=200).map(pixels).collect();
   let mut icons = Icons::new();
   let logs = capture_logs(|| {
-    assert!(icons.get(&bad, 8, 8, 1).is_none());
+    assert!(icons.get(&bad, (8, 8, 1), None).is_none());
     icons.end_frame();
     // Fill the cache past its capacity with other icons and draw them
     // until the failed one is dropped, then ask for it again.
     for _ in 0..17 {
       for other in &others {
-        icons.get(other, 8, 8, 1);
+        icons.get(other, (8, 8, 1), None);
       }
       icons.end_frame();
     }
-    assert!(icons.get(&bad, 8, 8, 1).is_none());
+    assert!(icons.get(&bad, (8, 8, 1), None).is_none());
   });
   assert_eq!(icons.rasterized(), 203);
   assert_eq!(logs.matches("couldn't draw an icon").count(), 1, "{logs}");
@@ -169,7 +169,7 @@ fn rasterize_briefly(
     let mut drawn = false;
     let logs = capture_logs(|| {
       let mut icons = Icons::with_themes(crate::theme::Themes::new(Vec::new()));
-      drawn = icons.get(&source, 16, 16, 1).is_some();
+      drawn = icons.get(&source, (16, 16, 1), None).is_some();
     });
     let _ = sender.send((drawn, logs));
   });
@@ -271,7 +271,10 @@ fn an_svg_image_link_loads_nothing() {
       "{name} returned and drew"
     );
     // Only the red square is drawn; the linked file isn't read.
-    let pixmap = icons.get(&file(&path), 16, 16, 1).expect("drawn").clone();
+    let pixmap = icons
+      .get(&file(&path), (16, 16, 1), None)
+      .expect("drawn")
+      .clone();
     let ink = pixmap
       .pixels()
       .iter()
@@ -361,7 +364,10 @@ fn a_large_png_is_averaged_down_not_point_sampled() {
     let path = directory.join(format!("bar{bar}.png"));
     write_rgba(&path, side as u32, side as u32, &rgba);
     let mut icons = Icons::with_themes(crate::theme::Themes::new(Vec::new()));
-    let pixmap = icons.get(&file(&path), 16, 16, 1).expect("drawn").clone();
+    let pixmap = icons
+      .get(&file(&path), (16, 16, 1), None)
+      .expect("drawn")
+      .clone();
     let row: u32 = (0..16)
       .map(|x| {
         pixmap
@@ -400,7 +406,10 @@ fn halving_rounds_to_the_nearest_value() {
   let path = directory.join("checkerboard.png");
   write_rgba(&path, side, side, &rgba);
   let mut icons = Icons::with_themes(crate::theme::Themes::new(Vec::new()));
-  let pixmap = icons.get(&file(&path), 16, 16, 1).expect("drawn").clone();
+  let pixmap = icons
+    .get(&file(&path), (16, 16, 1), None)
+    .expect("drawn")
+    .clone();
   let center = pixmap.pixel(8, 8).map(|pixel| pixel.alpha());
   assert_eq!(center, Some(255));
 }
@@ -434,12 +443,12 @@ fn tray_pixels_are_cached_by_their_shared_data() {
     })
   };
   let mut icons = Icons::new();
-  icons.get(&source(Rc::clone(&data)), 8, 8, 1);
-  icons.get(&source(Rc::clone(&data)), 8, 8, 1);
+  icons.get(&source(Rc::clone(&data)), (8, 8, 1), None);
+  icons.get(&source(Rc::clone(&data)), (8, 8, 1), None);
   assert_eq!(icons.rasterized(), 1);
   // Equal bytes in another allocation are another icon: the cache doesn't
   // read the bytes to tell.
-  icons.get(&source(Rc::from(&[255, 1, 2, 3][..])), 8, 8, 1);
+  icons.get(&source(Rc::from(&[255, 1, 2, 3][..])), (8, 8, 1), None);
   assert_eq!(icons.rasterized(), 2);
 }
 

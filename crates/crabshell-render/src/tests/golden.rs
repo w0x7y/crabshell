@@ -622,6 +622,75 @@ fn images() {
   });
 }
 
+/// A symbolic icon as it is, and tinted in the theme's text color and in
+/// a translucent red, at 16 and 24.
+#[test]
+fn tinted_icons() {
+  check("tinted_icons", 120.0, 32.0, |scene| {
+    let icon = |size, tint| {
+      Icon::new(fixture("symbolic.svg").as_path())
+        .size(size)
+        .tint(tint)
+    };
+    scene.panel().style(BAR).child(
+      Row::new()
+        .padding(4, 4)
+        .gap(4)
+        .align(Align::Center)
+        .child(icon(16, None))
+        .child(icon(16, Some(Color::hex("#cdd6f4"))))
+        .child(icon(24, Some(Color::hex("#cdd6f4"))))
+        .child(icon(24, Some(Color::rgba(0xf3, 0x8b, 0xa8, 0x80)))),
+    )
+  });
+}
+
+/// The swatches picture as it is, then through each filter: a tint,
+/// brightness 0.5 and 1.5, contrast 0.5 and 2, saturation 0 and 2.
+#[test]
+fn image_filters() {
+  check("image_filters", 296.0, 26.0, |scene| {
+    let image = || Image::new(fixture("swatches.png")).width(32).height(16);
+    scene.panel().style(BAR).child(
+      Row::new()
+        .padding(5, 5)
+        .gap(4)
+        .align(Align::Start)
+        .child(image())
+        .child(image().tint(Color::hex("#cdd6f4")))
+        .child(image().brightness(0.5))
+        .child(image().brightness(1.5))
+        .child(image().contrast(0.5))
+        .child(image().contrast(2.0))
+        .child(image().saturation(0.0))
+        .child(image().saturation(2.0)),
+    )
+  });
+}
+
+/// The stripes blurred by 3 pixels: filled, then contained, whose
+/// letterbox stays clear.
+#[test]
+fn blurred_images() {
+  check("blurred_images", 120.0, 50.0, |scene| {
+    let image = |fit| {
+      Image::new(fixture("stripes.png"))
+        .width(50)
+        .height(40)
+        .fit(fit)
+        .blur(3.0)
+    };
+    scene.panel().style(BAR).child(
+      Row::new()
+        .padding(5, 5)
+        .gap(10)
+        .align(Align::Start)
+        .child(image(Fit::Fill))
+        .child(image(Fit::Contain)),
+    )
+  });
+}
+
 /// Three fields: one focused with "world" selected and the caret before
 /// it, an empty one showing its placeholder, and a password.
 #[test]

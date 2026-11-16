@@ -7,7 +7,7 @@ use std::io::Cursor;
 use std::num::NonZeroU64;
 use std::path::Path;
 
-use crabshell_ui::Fit;
+use crabshell_ui::{Fit, ImageFilters};
 use resvg::usvg;
 use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, PixmapRef, Transform};
 use zune_jpeg::JpegDecoder;
@@ -30,13 +30,60 @@ const MAX_SIDE: u32 = 8192;
 const MAX_PIXELS: u64 = 24_000_000;
 
 /// The file at `path` as a `width` by `height` pixmap, scaled as `fit`
-/// says.
-pub(crate) fn rasterize(path: &Path, width: u32, height: u32, fit: Fit) -> Result<Pixmap, String> {
+/// says, through `filters` at `scale` buffer pixels a logical pixel.
+pub(crate) fn filtered(
+  path: &Path,
+  (width, height): (u32, u32),
+  fit: Fit,
+  filters: &ImageFilters,
+  scale: f32,
+) -> Result<Pixmap, String> {
   if width == 0 || height == 0 {
     return Err(String::from("an image with no pixels"));
   }
-  match decode(path)? {
-    Picture::Svg(tree) => svg(&tree, width, height, fit),
+  finish(&decode(path)?, (width, height), fit, filters, scale)
+}
+
+/// `picture` scaled to `width` by `height` as `fit` says, through
+/// `filters` at `scale`.
+fn finish(
+  picture: &Picture,
+  (width, height): (u32, u32),
+  fit: Fit,
+  filters: &ImageFilters,
+  scale: f32,
+) -> Result<Pixmap, String> {
+  if fit != Fit::Contain || filters.blur == 0.0 {
+    let mut pixmap = draw(picture, width, height, fit)?;
+    crate::filters::apply(&mut pixmap, filters, scale);
+    return Ok(pixmap);
+  }
+  // A contained picture is blurred on its own, in whole pixels, before it
+  // is centered, so its edges blur against themselves, not the clear box.
+  let (x, y) = factors(picture.size(), (width, height), fit);
+  let (source_width, source_height) = picture.size();
+  let inner = (
+    ((source_width * x).round() as u32).clamp(1, width),
+    ((source_height * y).round() as u32).clamp(1, height),
+  );
+  let mut inside = draw(picture, inner.0, inner.1, Fit::Fill)?;
+  crate::filters::apply(&mut inside, filters, scale);
+  let mut pixmap = Pixmap::new(width, height).ok_or("an image with no pixels")?;
+  pixmap.draw_pixmap(
+    ((width - inner.0) / 2) as i32,
+    ((height - inner.1) / 2) as i32,
+    inside.as_ref(),
+    &PixmapPaint::default(),
+    Transform::identity(),
+    None,
+  );
+  Ok(pixmap)
+}
+
+/// `picture` as a `width` by `height` pixmap, scaled as `fit` says.
+fn draw(picture: &Picture, width: u32, height: u32, fit: Fit) -> Result<Pixmap, String> {
+  match picture {
+    Picture::Svg(tree) => svg(tree, width, height, fit),
     Picture::Pixels(image) => scale(image.as_ref(), width, height, fit),
   }
 }
@@ -45,6 +92,16 @@ pub(crate) fn rasterize(path: &Path, width: u32, height: u32, fit: Fit) -> Resul
 pub(crate) enum Picture {
   Pixels(Pixmap),
   Svg(Box<usvg::Tree>),
+}
+
+impl Picture {
+  /// Its width and height, in pixels or the SVG's own units.
+  fn size(&self) -> (f32, f32) {
+    match self {
+      Picture::Pixels(pixmap) => (pixmap.width() as f32, pixmap.height() as f32),
+      Picture::Svg(tree) => (tree.size().width(), tree.size().height()),
+    }
+  }
 }
 
 /// Reads and decodes the file at `path` under the caps. The format comes

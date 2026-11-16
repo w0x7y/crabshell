@@ -1,10 +1,15 @@
 //! Image files: each format, the fit modes and the caps.
 
-use crabshell_ui::Fit;
+use crabshell_ui::{Fit, ImageFilters, ImageView};
 use tiny_skia::Pixmap;
 
 use super::fixture;
-use crate::images::{rasterize, scale};
+use crate::images::{filtered, scale};
+
+/// The file at `path` as a `width` by `height` pixmap, unfiltered.
+fn rasterize(path: &std::path::Path, width: u32, height: u32, fit: Fit) -> Result<Pixmap, String> {
+  filtered(path, (width, height), fit, &ImageFilters::default(), 1.0)
+}
 
 const RED: [u8; 4] = [255, 0, 0, 255];
 const GREEN: [u8; 4] = [0, 255, 0, 255];
@@ -174,6 +179,28 @@ fn an_image_past_the_window_edge_is_cut_not_squashed() {
   assert_eq!(pixel(5, 5), [0, 255], "row 5 is blue");
 }
 
+/// What an `Image` of `path` with `filters` hands the renderer.
+fn view(path: &std::path::Path, fit: Fit, filters: ImageFilters) -> ImageView<'_> {
+  ImageView {
+    id: 0,
+    path,
+    rect: crabshell_ui::Rect::new(0.0, 0.0, 1.0, 1.0),
+    fit,
+    filters,
+    playing: true,
+  }
+}
+
+/// The image file at `path` from `icons`'s cache, unfiltered, at scale 1.
+fn cached<'a>(
+  icons: &'a mut crate::icons::Icons,
+  path: &std::path::Path,
+  size: (u32, u32),
+  fit: Fit,
+) -> Option<&'a Pixmap> {
+  icons.image(&view(path, fit, ImageFilters::default()), size, 1.0)
+}
+
 fn icons() -> crate::icons::Icons {
   crate::icons::Icons::with_themes(crate::theme::Themes::new(Vec::new()))
 }
@@ -192,8 +219,7 @@ fn a_file_rewritten_or_appearing_later_is_read_again() {
   let path = dir.join("cover.png");
   let mut icons = icons();
   let top_left = |icons: &mut crate::icons::Icons| {
-    icons
-      .image(&path, 20, 20, Fit::Fill)
+    cached(icons, &path, (20, 20), Fit::Fill)
       .and_then(|pixmap| pixmap.pixel(0, 0))
       .map(|pixel| [pixel.red(), pixel.blue()])
   };
@@ -211,8 +237,7 @@ fn a_file_rewritten_or_appearing_later_is_read_again() {
     .expect("set the time");
   let pixel = top_left(&mut icons).expect("drawn");
   assert_eq!(pixel, [255, 0]);
-  let bottom = icons
-    .image(&path, 20, 20, Fit::Fill)
+  let bottom = cached(&mut icons, &path, (20, 20), Fit::Fill)
     .and_then(|pixmap| pixmap.pixel(0, 19))
     .map(|pixel| pixel.blue());
   assert_eq!(bottom, Some(255), "the new picture, blue below");
@@ -225,11 +250,11 @@ fn cached_pictures_past_the_byte_budget_are_dropped_once_unused() {
   let path = fixture("stripes.png");
   // 2000 by 2000 is 16 MB a picture; three are past the 32 MB budget.
   for side in [2000, 2001, 2002] {
-    assert!(icons.image(&path, side, 2000, Fit::Fill).is_some());
+    assert!(cached(&mut icons, &path, (side, 2000), Fit::Fill).is_some());
   }
   assert_eq!(icons.cached(), 3);
   for _ in 0..20 {
-    icons.image(&path, 2002, 2000, Fit::Fill);
+    cached(&mut icons, &path, (2002, 2000), Fit::Fill);
     icons.end_frame();
   }
   assert_eq!(icons.cached(), 1);

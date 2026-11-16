@@ -14,6 +14,7 @@ mod colors;
 mod corners;
 mod damage;
 mod dashes;
+mod filters;
 mod glyphs;
 mod golden;
 mod icons;

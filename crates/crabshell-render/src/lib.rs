@@ -80,6 +80,7 @@ mod capture;
 mod colors;
 mod damage;
 mod draw;
+mod filters;
 mod icons;
 mod images;
 mod theme;
