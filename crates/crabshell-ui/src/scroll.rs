@@ -251,8 +251,8 @@ impl ListView {
 
   /// Keeps the row at this index in view, scrolling as little as needed
   /// whenever it changes. A row not built yet is found by `row_height`,
-  /// then shown whole once it is measured. `None`, or an index past the
-  /// end, scrolls nothing.
+  /// then shown whole once it is measured. An index past the end is
+  /// scrolled to once the items reach it; `None` scrolls nothing.
   pub fn current(mut self, index: impl IntoProp<Option<usize>>) -> ListView {
     self.props.current = Some(index.into_prop());
     self
@@ -559,15 +559,22 @@ where
   let current = current.map(Prop::shared);
   if let Some(current) = current.clone() {
     let lengths = Rc::clone(&lengths);
+    let mut asked = None;
     cx.effect(move || {
       let index = current();
-      // A change of estimate or height shows the row again.
-      row_height.get();
-      let viewport = inner.get();
-      let Some(index) = index.filter(|&index| index < untrack(|| count.get())) else {
+      // A change of estimate or height shows the row again, and so do
+      // items that first reach it, but not items that keep it.
+      let ask = (index, row_height.get(), inner.get());
+      let wanted = index.filter(|&index| index < count.get());
+      let fresh = asked.replace((ask, wanted.is_some())) != Some((ask, true));
+      let Some(index) = wanted else {
         lengths.borrow_mut().seek = None;
         return;
       };
+      if !fresh {
+        return;
+      }
+      let viewport = ask.2;
       let (start, end) = untrack(|| starts.with(|starts| (starts[index], starts[index + 1])));
       let now = untrack(shown);
       let next = keep_in_view(start, end, viewport, now);

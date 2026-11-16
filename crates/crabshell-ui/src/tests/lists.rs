@@ -622,3 +622,33 @@ fn a_highlight_that_panics_is_logged_with_the_lists_path_and_the_list_runs_on() 
   assert!(logs.contains("PanelWindow[DP-1]/ListView"), "{logs}");
   assert!(logs.contains("highlight failure"), "{logs}");
 }
+
+#[test]
+fn a_current_row_set_before_the_items_arrive_is_shown_once_they_do() {
+  let mut h = Harness::new();
+  let items = h.cx.signal(Vec::new());
+  let offset = h.cx.signal(0.0);
+  let current = h.cx.signal(Some(50));
+  let window = list(
+    &mut h,
+    items,
+    |_| 20,
+    offset,
+    |list| list.current(move || current.get()),
+  );
+  items.set((0..100).collect());
+  h.frame(&window);
+  assert_eq!(row(&window, 50).map(|rect| rect.bottom()), Some(100.0));
+  // Items that keep it in range don't pull the view back to it.
+  offset.set(0.0);
+  h.frame(&window);
+  items.set((0..90).collect());
+  h.frame(&window);
+  assert_eq!(offset.get(), 0.0);
+  // Out of range and back in, it is shown again.
+  items.set((0..10).collect());
+  h.frame(&window);
+  items.set((0..100).collect());
+  h.frame(&window);
+  assert_eq!(row(&window, 50).map(|rect| rect.bottom()), Some(100.0));
+}
