@@ -19,7 +19,7 @@ use crate::keyed::{self, KeyedList, KeyedMount};
 use crate::prop::{IntoProp, Prop};
 use crate::screencopy::ScreencopyProps;
 use crate::scroll::ScrollProps;
-use crate::style::Style;
+use crate::style::{Color, Style};
 use crate::text_input::InputProps;
 
 /// Something that can be placed in a window: one of this crate's widgets, or
@@ -149,6 +149,7 @@ pub(crate) struct TextProps {
 pub(crate) struct IconProps {
   pub(crate) source: Prop<IconSource>,
   pub(crate) size: Option<Prop<u32>>,
+  pub(crate) tint: Option<Prop<Option<Color>>>,
 }
 
 pub(crate) struct ImageProps {
@@ -156,6 +157,42 @@ pub(crate) struct ImageProps {
   pub(crate) width: Option<Prop<u32>>,
   pub(crate) height: Option<Prop<u32>>,
   pub(crate) fit: Option<Prop<Fit>>,
+  pub(crate) tint: Option<Prop<Option<Color>>>,
+  pub(crate) brightness: Option<Prop<f32>>,
+  pub(crate) contrast: Option<Prop<f32>>,
+  pub(crate) saturation: Option<Prop<f32>>,
+  pub(crate) blur: Option<Prop<f32>>,
+  pub(crate) playing: Option<Prop<bool>>,
+}
+
+/// The filters an [`Image`] is drawn through, for the renderer. Each
+/// number is finite and at least 0, and the default changes nothing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImageFilters {
+  /// The color every pixel is painted in, keeping its alpha.
+  pub tint: Option<Color>,
+  /// Scales each color channel, as CSS's `brightness()`.
+  pub brightness: f32,
+  /// Moves each channel from or toward the middle gray, as CSS's
+  /// `contrast()`.
+  pub contrast: f32,
+  /// Moves each color from or toward its gray, as CSS's `saturate()`.
+  pub saturation: f32,
+  /// A Gaussian blur's standard deviation in logical pixels, as CSS's
+  /// `blur()`.
+  pub blur: f32,
+}
+
+impl Default for ImageFilters {
+  fn default() -> ImageFilters {
+    ImageFilters {
+      tint: None,
+      brightness: 1.0,
+      contrast: 1.0,
+      saturation: 1.0,
+      blur: 0.0,
+    }
+  }
 }
 
 /// How an [`Image`] fills its box when their shapes differ, as CSS's
@@ -737,6 +774,7 @@ impl Icon {
       icon: IconProps {
         source: source.into_prop(),
         size: None,
+        tint: None,
       },
       common: Common::default(),
     }
@@ -748,11 +786,24 @@ impl Icon {
     self
   }
 
+  /// Paints the icon's pixels in `tint`, keeping their alpha, as a
+  /// symbolic icon's color follows the theme. `None`, the default, draws
+  /// it as it is.
+  pub fn tint(mut self, tint: impl IntoProp<Option<Color>>) -> Icon {
+    self.icon.tint = Some(tint.into_prop());
+    self
+  }
+
   style_method!();
 }
 
-/// A picture from a PNG, JPEG, GIF (its first frame), WebP or SVG file,
-/// drawn at a fixed size.
+/// A picture from a PNG, JPEG, GIF, WebP or SVG file, drawn at a fixed
+/// size.
+///
+/// A GIF of more than one frame plays while it is drawn, at its own
+/// delays, looping as the file says. The filters run once on the picture
+/// at the size drawn, and the result is cached, so a filtered image costs
+/// what a plain one does to draw.
 pub struct Image {
   image: ImageProps,
   common: Common,
@@ -771,6 +822,12 @@ impl Image {
         width: None,
         height: None,
         fit: None,
+        tint: None,
+        brightness: None,
+        contrast: None,
+        saturation: None,
+        blur: None,
+        playing: None,
       },
       common: Common::default(),
     }
@@ -791,6 +848,53 @@ impl Image {
   /// Sets how the picture fills the image's box when their shapes differ.
   pub fn fit(mut self, fit: impl IntoProp<Fit>) -> Image {
     self.image.fit = Some(fit.into_prop());
+    self
+  }
+
+  /// Paints the picture's pixels in `tint`, keeping their alpha, as
+  /// [`Icon::tint`] does. `None`, the default, draws it as it is.
+  pub fn tint(mut self, tint: impl IntoProp<Option<Color>>) -> Image {
+    self.image.tint = Some(tint.into_prop());
+    self
+  }
+
+  /// Scales the colors, as CSS's `brightness()`: 1, the default, leaves
+  /// them, 0 is black and 2 twice as bright. A number that isn't finite
+  /// counts as 1, and one below 0 as 0.
+  pub fn brightness(mut self, brightness: impl IntoProp<f32>) -> Image {
+    self.image.brightness = Some(brightness.into_prop());
+    self
+  }
+
+  /// Sets the contrast, as CSS's `contrast()`: 1, the default, leaves the
+  /// colors, 0 is middle gray and more than 1 is stronger. A number that
+  /// isn't finite counts as 1, and one below 0 as 0.
+  pub fn contrast(mut self, contrast: impl IntoProp<f32>) -> Image {
+    self.image.contrast = Some(contrast.into_prop());
+    self
+  }
+
+  /// Sets the saturation, as CSS's `saturate()`: 1, the default, leaves
+  /// the colors, 0 is gray and more than 1 is more vivid. A number that
+  /// isn't finite counts as 1, and one below 0 as 0.
+  pub fn saturation(mut self, saturation: impl IntoProp<f32>) -> Image {
+    self.image.saturation = Some(saturation.into_prop());
+    self
+  }
+
+  /// Blurs the picture, as CSS's `blur()`: the Gaussian's standard
+  /// deviation in logical pixels, 0 by default. Pixels past the picture's
+  /// edge count as its edge pixels, so a blurred picture keeps its edges
+  /// opaque. A number that isn't finite or is below 0 counts as 0.
+  pub fn blur(mut self, blur: impl IntoProp<f32>) -> Image {
+    self.image.blur = Some(blur.into_prop());
+    self
+  }
+
+  /// Whether an animated GIF plays, true by default. False pauses it on
+  /// the frame it shows.
+  pub fn playing(mut self, playing: impl IntoProp<bool>) -> Image {
+    self.image.playing = Some(playing.into_prop());
     self
   }
 

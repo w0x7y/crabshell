@@ -11,7 +11,7 @@ use crate::menu::MenuEntry;
 use crate::popup::Adjust;
 use crate::region::Region;
 use crate::screencopy::CaptureSource;
-use crate::style::Style;
+use crate::style::{Color, Style};
 use crate::widgets::{Align, Fit, IconSource, Justify};
 use crate::window::{Anchors, Edge, KeyboardFocus, Layer, Margins};
 
@@ -138,6 +138,12 @@ impl IntoProp<String> for &str {
 
 impl IntoProp<Option<Region>> for Region {
   fn into_prop(self) -> Prop<Option<Region>> {
+    Prop(PropKind::Value(Some(self)))
+  }
+}
+
+impl IntoProp<Option<Color>> for Color {
+  fn into_prop(self) -> Prop<Option<Color>> {
     Prop(PropKind::Value(Some(self)))
   }
 }

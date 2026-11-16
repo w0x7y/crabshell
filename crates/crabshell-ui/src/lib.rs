@@ -64,6 +64,7 @@ mod edit;
 mod floating;
 mod geometry;
 mod grid_view;
+mod image;
 mod input;
 mod keyboard;
 mod keyed;
@@ -115,8 +116,8 @@ pub use view::{
   CanvasView, CaptureView, Content, IconView, ImageView, InputView, NodeView, TextView, WindowView,
 };
 pub use widgets::{
-  Align, Button, Column, Element, Fit, Grid, Icon, IconPixels, IconSource, Image, Justify, Row,
-  Spacer, Stack, Text, Widget,
+  Align, Button, Column, Element, Fit, Grid, Icon, IconPixels, IconSource, Image, ImageFilters,
+  Justify, Row, Spacer, Stack, Text, Widget,
 };
 pub use window::{
   Anchors, Edge, KeyboardFocus, Layer, Margins, Output, PanelWindow, SurfaceConfig, Window,

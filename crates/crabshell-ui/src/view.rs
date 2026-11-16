@@ -11,7 +11,7 @@ use crate::screencopy::CaptureFrame;
 use crate::style::{Color, Style};
 use crate::text::TextNode;
 use crate::tree::{Node, NodeId, NodeKind, Tree, centered, icon_rect};
-use crate::widgets::{Fit, IconSource};
+use crate::widgets::{Fit, IconSource, ImageFilters};
 
 /// The color text uses when no ancestor sets one.
 const DEFAULT_TEXT_COLOR: Color = Color::rgb(0, 0, 0);
@@ -138,6 +138,7 @@ impl<'a> NodeView<'a> {
         Some(source) => Content::Icon(IconView {
           source,
           rect: icon_rect(self.node.content, icon.size),
+          tint: icon.tint,
         }),
         None => Content::None,
       },
@@ -164,9 +165,12 @@ impl<'a> NodeView<'a> {
       }
       NodeKind::Image(image) => match &image.source {
         Some(path) => Content::Image(ImageView {
+          id: image.id,
           path,
           rect: centered(self.node.content, image.width, image.height),
           fit: image.fit,
+          filters: image.filters,
+          playing: image.playing,
         }),
         None => Content::None,
       },
@@ -291,16 +295,25 @@ pub struct IconView<'a> {
   pub source: &'a IconSource,
   /// Where: a square of the icon's size, centered in the node.
   pub rect: Rect,
+  /// The color its pixels are painted in, keeping their alpha.
+  pub tint: Option<Color>,
 }
 
 /// An image, ready to draw.
 pub struct ImageView<'a> {
+  /// Names the image, so a renderer can keep a GIF's playback and the
+  /// platform repaint it with [`Window::repaint_image`](crate::Window::repaint_image).
+  pub id: u64,
   /// The file to show.
   pub path: &'a Path,
   /// Where: a box of the image's size, centered in the node.
   pub rect: Rect,
   /// How the picture fills the box.
   pub fit: Fit,
+  /// What the picture is drawn through.
+  pub filters: ImageFilters,
+  /// Whether a GIF plays; paused, it stays on its frame.
+  pub playing: bool,
 }
 
 /// A screencopy view's frame, ready to draw.

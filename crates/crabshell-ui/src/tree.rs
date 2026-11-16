@@ -29,12 +29,13 @@ use crate::prop::{IntoProp, Prop, PropKind};
 use crate::region::Region;
 use crate::screencopy::CaptureNode;
 use crate::scrolling::Motion;
-use crate::style::{Padding, Style};
+use crate::style::{Color, Padding, Style};
 use crate::text::TextNode;
 use crate::text_input::InputNode;
 use crate::timer::Timer;
 use crate::widgets::{
-  Align, Element, ElementChild, ElementKind, Fit, GridProps, IconSource, Justify, Measure,
+  Align, Element, ElementChild, ElementKind, Fit, GridProps, IconSource, ImageFilters, Justify,
+  Measure,
 };
 use crate::window::{
   Anchors, DEFAULT_NAMESPACE, Hints, KeyboardFocus, Layer, Margins, Output, PanelWindow, Window,
@@ -67,6 +68,8 @@ pub(crate) struct Tree {
   pub(crate) floating: Option<FloatingState>,
   /// The screencopy views, in the order they were built.
   pub(crate) captures: Vec<NodeId>,
+  /// The images, for the platform to repaint a GIF's next frame by id.
+  pub(crate) images: Vec<NodeId>,
   /// Rectangles the last layout moved, for the window to write to their
   /// widgets' `geometry` signals once the tree is released.
   pub(crate) geometry: Vec<(Signal<Rect>, Rect)>,
@@ -240,16 +243,22 @@ pub(crate) struct ScrollNode {
 }
 
 pub(crate) struct ImageNode {
+  /// Names the image for the renderer's playback of a GIF and the
+  /// platform's repaint of its next frame.
+  pub(crate) id: u64,
   pub(crate) source: Option<PathBuf>,
   pub(crate) width: u32,
   pub(crate) height: u32,
   pub(crate) fit: Fit,
+  pub(crate) filters: ImageFilters,
+  pub(crate) playing: bool,
 }
 
 pub(crate) struct IconNode {
   /// `None` until the icon's binding first runs.
   pub(crate) source: Option<IconSource>,
   pub(crate) size: u32,
+  pub(crate) tint: Option<Color>,
 }
 
 pub(crate) struct ButtonNode {
@@ -508,6 +517,7 @@ impl Tree {
       popup: None,
       floating: None,
       captures: Vec::new(),
+      images: Vec::new(),
       geometry: Vec::new(),
       measured: Vec::new(),
       shown_since_layout: Vec::new(),
@@ -755,17 +765,13 @@ impl Tree {
         shifts: props.shifts.take(),
         moving: props.moving.take(),
       })),
-      ElementKind::Image(_) => NodeKind::Image(ImageNode {
-        source: None,
-        width: crate::Image::DEFAULT_SIZE,
-        height: crate::Image::DEFAULT_SIZE,
-        fit: Fit::default(),
-      }),
+      ElementKind::Image(_) => NodeKind::Image(ImageNode::new()),
       ElementKind::Capture(_) => NodeKind::Capture(CaptureNode::new()),
       ElementKind::Canvas(_) => NodeKind::Canvas(CanvasNode::default()),
       ElementKind::Icon(_) => NodeKind::Icon(IconNode {
         source: None,
         size: crate::Icon::DEFAULT_SIZE,
+        tint: None,
       }),
       ElementKind::Button(props) => NodeKind::Button(Box::new(ButtonNode {
         hover_style: Style::new(),
@@ -927,41 +933,10 @@ impl Tree {
           );
         }
       }
-      ElementKind::Image(props) => {
-        self.bind(id, props.source, "image", |tree, id, value| {
-          tree.update_image(id, |image| match replace(&mut image.source, Some(value)) {
-            // A new picture of the same size only needs a repaint.
-            Change::None => Change::None,
-            _ => Change::Paint,
-          })
-        });
-        self.bind_opt(id, props.width, "width", |tree, id, value| {
-          tree.update_image(id, |image| replace(&mut image.width, value))
-        });
-        self.bind_opt(id, props.height, "height", |tree, id, value| {
-          tree.update_image(id, |image| replace(&mut image.height, value))
-        });
-        self.bind_opt(id, props.fit, "fit", |tree, id, value| {
-          tree.update_image(id, |image| match replace(&mut image.fit, value) {
-            Change::None => Change::None,
-            _ => Change::Paint,
-          })
-        });
-      }
+      ElementKind::Image(props) => self.bind_image(id, props),
       ElementKind::Capture(props) => self.bind_capture(id, props),
       ElementKind::Canvas(paint) => self.bind_canvas(id, paint),
-      ElementKind::Icon(props) => {
-        self.bind(id, props.source, "icon", |tree, id, value| {
-          tree.update_icon(id, |icon| match replace(&mut icon.source, Some(value)) {
-            // A new picture of the same size only needs a repaint.
-            Change::None => Change::None,
-            _ => Change::Paint,
-          })
-        });
-        self.bind_opt(id, props.size, "size", |tree, id, value| {
-          tree.update_icon(id, |icon| replace(&mut icon.size, value))
-        });
-      }
+      ElementKind::Icon(props) => self.bind_icon(id, props),
       ElementKind::Button(props) => {
         self.bind_opt(id, props.hover_style, "hover_style", |tree, id, value| {
           tree.update_button_style(id, |button| button.hover_style = value);
@@ -1104,6 +1079,7 @@ impl Tree {
     }
     self.pointer.forget(&removed);
     self.captures.retain(|node| !removed.contains(node));
+    self.images.retain(|node| !removed.contains(node));
     self.keyboard.forget(&removed);
     for node in removed.into_iter().rev() {
       // `remove` only fails for a node that isn't in the tree.
@@ -1383,14 +1359,14 @@ impl Tree {
     });
   }
 
-  fn update_image(&mut self, id: NodeId, f: impl FnOnce(&mut ImageNode) -> Change) {
+  pub(crate) fn update_image(&mut self, id: NodeId, f: impl FnOnce(&mut ImageNode) -> Change) {
     self.update(id, |node| match &mut node.kind {
       NodeKind::Image(image) => f(image),
       _ => Change::None,
     });
   }
 
-  fn update_icon(&mut self, id: NodeId, f: impl FnOnce(&mut IconNode) -> Change) {
+  pub(crate) fn update_icon(&mut self, id: NodeId, f: impl FnOnce(&mut IconNode) -> Change) {
     self.update(id, |node| match &mut node.kind {
       NodeKind::Icon(icon) => f(icon),
       _ => Change::None,
