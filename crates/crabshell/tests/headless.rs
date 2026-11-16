@@ -643,12 +643,15 @@ fn an_idle_counter_bar_wakes_nothing() {
   );
 }
 
+/// The font file the bundled-font tests read, as a config would bundle it.
+const BUNDLED_FONT: &str = "/usr/share/fonts/dejavu/DejaVuSans.ttf";
+
 #[test]
 #[ignore = "needs headless Sway"]
 fn a_bundled_font_lays_out_the_bar_and_measures_with_it() {
   // Leaked, as `include_bytes!` would keep them.
-  let Ok(bytes) = std::fs::read("/usr/share/fonts/dejavu/DejaVuSans.ttf") else {
-    eprintln!("skipped: no /usr/share/fonts/dejavu/DejaVuSans.ttf");
+  let Ok(bytes) = std::fs::read(BUNDLED_FONT) else {
+    eprintln!("skipped: no {BUNDLED_FONT}");
     return;
   };
   let bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
@@ -781,6 +784,7 @@ fn unplugging_an_output_drops_its_bar_and_frees_its_nodes() {
 #[test]
 #[ignore = "needs headless Sway; measures only with CRABSHELL_MEASURE set"]
 fn measure_the_counter_bar() {
+  run_as_child();
   if std::env::var_os("CRABSHELL_MEASURE").is_none() {
     eprintln!("not measuring: set CRABSHELL_MEASURE=1 to, which takes two minutes");
     return;
@@ -790,6 +794,23 @@ fn measure_the_counter_bar() {
   let counter = ExampleBar::start(&sway, "counter", true, &[]);
   let mut report = format!("counter example, {}\n", measure(&counter));
   drop(counter);
+  // Then the same bar in a font bundled with `add_font`, run as this test
+  // binary, so as a release build only under `cargo test --release`.
+  let bundled = ExampleBar::spawn(
+    &sway,
+    this_as_shell("measure_the_counter_bar"),
+    &[(CHILD, "bundled counter")],
+  );
+  let build = if cfg!(debug_assertions) {
+    "a DEBUG test binary"
+  } else {
+    "the release test binary"
+  };
+  report += &format!(
+    "counter bar in DejaVu Sans bundled with add_font, run from {build}, {}\n",
+    measure(&bundled)
+  );
+  drop(bundled);
   // Then the v0.1 bar, on workspace 1, then switching between 1 and 2. Its
   // tray runs the watcher on a private session bus.
   let server = PrivateServer::start("measure");
@@ -815,6 +836,23 @@ fn measure_the_counter_bar() {
     times.len()
   );
   drop(bar);
+  // Then Phase 17's notes example on the same bus. Its clock shows
+  // seconds, so it never rests a whole second; stopped, it shows what else
+  // wakes it.
+  let notes = ExampleBar::start(
+    &sway,
+    "notes",
+    true,
+    &[
+      ("DBUS_SESSION_BUS_ADDRESS", &bus.address),
+      ("NOTES_NOW", NOTES_NOW),
+    ],
+  );
+  report += &format!(
+    "notes example with its clock stopped and notifications on a private bus, {}\n",
+    measure(&notes)
+  );
+  drop(notes);
   // Then Phase 9's desktop example, with every service it uses running
   // on private buses with no daemons.
   let desktop = Desktop::new("measure-desktop");
@@ -1442,6 +1480,14 @@ fn run_as_child() {
     }),
     // The notes example, whose links panic instead of opening.
     Ok("notes") => crabshell::run(|cx| notes::shell(cx, |_, _| panic!("no browser"))),
+    // The counter bar in a font bundled from bytes, as `include_bytes!`
+    // gives them: fontconfig never starts.
+    Ok("bundled counter") => crabshell::run(|cx| {
+      let bytes = std::fs::read(BUNDLED_FONT).expect("DejaVu Sans is installed");
+      cx.add_font(Box::leak(bytes.into_boxed_slice()));
+      let font = Style::new().font(Font::new("DejaVu Sans", 13.0));
+      cx.per_output(move |cx, output| counter::bar(cx, output).style(font));
+    }),
     // The dashboard example with each of its feeds pinned.
     Ok("dashboard") => crabshell::run(|cx| {
       let art = std::env::var("DASHBOARD_ART").unwrap_or_default();
