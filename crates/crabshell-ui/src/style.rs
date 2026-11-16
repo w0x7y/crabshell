@@ -622,6 +622,20 @@ impl Mask {
   }
 
   /// The alpha of the image file at `path`, stretched over the box.
+  ///
+  /// The path is `&'static str`, so a style holding it can be a `const`.
+  /// For a path made at run time, leak it once, outside any closure: a
+  /// `String::leak` inside a `move || Style` binding leaks again each
+  /// time the binding runs.
+  ///
+  /// ```
+  /// use crabshell_ui::{Mask, Stack, Style};
+  ///
+  /// let home = std::env::var("HOME").unwrap_or_default();
+  /// // Once, here, not in the closure below.
+  /// let face: &'static str = format!("{home}/.face").leak();
+  /// let avatar = Stack::new().style(move || Style::new().mask(Mask::image(face)));
+  /// ```
   pub const fn image(path: &'static str) -> Mask {
     Mask::Image(path)
   }
