@@ -885,9 +885,14 @@ impl TextNode {
   }
 
   /// The index of the link span whose glyph box holds `point`, in the
-  /// coordinates `origin` is in, if the text has an `on_link`.
+  /// coordinates `origin` is in, if the text has an `on_link` that hasn't
+  /// panicked. A panicked one leaves its links plain text, as a drop
+  /// target whose `on_drop` panicked takes nothing more.
   pub(crate) fn link_at(&self, point: Point) -> Option<usize> {
-    self.on_link.as_ref()?;
+    self
+      .on_link
+      .as_ref()
+      .filter(|handler| !handler.disabled())?;
     let (x, y) = (point.x - self.origin.x, point.y - self.origin.y);
     let run = self
       .runs()

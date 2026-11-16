@@ -61,6 +61,13 @@ impl<F> Handler<F> {
   }
 }
 
+impl<F: ?Sized> Handler<F> {
+  /// Whether it panicked once, so it never runs again.
+  pub(crate) fn disabled(&self) -> bool {
+    self.disabled.get()
+  }
+}
+
 pub(crate) type ClickHandler = Rc<Handler<dyn Fn(&Cx)>>;
 type ScrollHandler = Rc<Handler<dyn Fn(&Cx, i32)>>;
 pub(crate) type WheelHandler = Rc<Handler<dyn Fn(&Cx, Wheel)>>;

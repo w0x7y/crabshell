@@ -266,3 +266,23 @@ fn a_link_that_changes_while_held_opens_nothing() {
   click(&window, link, 1000);
   assert_eq!(*opened.borrow(), ["https://two.org"]);
 }
+
+#[test]
+fn a_link_whose_on_link_panicked_lets_the_button_around_it_click() {
+  let mut h = Harness::new();
+  let clicks = Counter::default();
+  let count = clicks.clone();
+  let text = Text::rich(spans()).on_link(|_, _| panic!("no browser"));
+  let button = Button::new(text)
+    .cursor(CursorShape::Crosshair)
+    .on_click(move |_| count.hit());
+  let window = window(&mut h, button);
+  let link = span_point(&window, &[0, 0, 0], 1, 0);
+  capture_logs(|| click(&window, link, 0));
+  assert_eq!(clicks.get(), 0);
+  // Disabled, the link is plain text: the button takes the pointer.
+  window.pointer_motion(link);
+  assert_eq!(window.cursor(), CursorShape::Crosshair);
+  click(&window, link, 1000);
+  assert_eq!(clicks.get(), 1);
+}
