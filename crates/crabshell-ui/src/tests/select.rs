@@ -302,3 +302,21 @@ fn a_selection_runs_across_the_lines_of_a_text() {
   assert_eq!(copied(&window).as_deref(), Some("two"));
   assert_eq!(selection(&window, &[0, 0]).len(), 1, "the first line isn't");
 }
+
+#[test]
+fn shift_click_after_new_text_extends_from_its_start() {
+  let mut h = Harness::new();
+  let words = h.cx.signal(String::from("hello world"));
+  let window = label(&mut h, Text::new(move || words.get()).selectable(true));
+  drag(&window, Point::new(1.0, 10.0), Point::new(190.0, 10.0), 0);
+  assert_eq!(copied(&window).as_deref(), Some("hello world"));
+  words.set(String::from("bye bye bye bye"));
+  h.frame(&window);
+  // Shift and a press at the start: nothing from the old caret on.
+  window.set_modifiers(Modifiers {
+    shift: true,
+    ..Modifiers::default()
+  });
+  click(&window, 1.0, 1000);
+  assert_eq!(copied(&window), None);
+}

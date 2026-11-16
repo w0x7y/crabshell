@@ -881,6 +881,7 @@ impl Tree {
             let changed = text.set_content(value);
             if changed {
               text.anchor = None;
+              text.cursor = 0;
             }
             changed
           })
