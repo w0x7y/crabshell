@@ -1,0 +1,503 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lock screen and logins | Crabshell docs</title>
+    <meta
+      name="description"
+      content="Write a lock screen with the session lock and PAM, a login greeter for greetd, and a polkit authentication dialog."
+    />
+    <script>
+      try {
+        var t = localStorage.getItem("crabshell:theme");
+        if (t === "light" || t === "dark")
+          document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <link rel="icon" href="../logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="../site.css" />
+    <script src="../site.js" defer></script>
+  </head>
+  <body class="docs">
+    <header class="bar">
+      <a class="brand" href="../index.html"
+        ><img src="../logo.svg" alt="" width="20" height="20" />crabshell</a
+      >
+      <a class="ws" href="../docs/index.html">Docs</a>
+    </header>
+    <main>
+      <article>
+        <h1>Lock screen and logins</h1>
+        <p class="lede">
+          A lock screen, a login greeter and a polkit dialog all ask for a
+          password, and Crabshell can be all three. Read the warnings here
+          before you rely on a lock screen you wrote.
+        </p>
+        <h2 id="lock">Lock screen</h2>
+        <p>
+          The session lock tells the compositor to hide everything but your
+          surfaces, and PAM checks the password.
+        </p>
+        <h3 id="session-lock">The session lock</h3>
+        <pre><code class="rs">let locked = cx.signal(false);
+cx.session_lock(
+  SessionLock::new()
+    .locked(move || locked.get())
+    .style(SCREEN)
+    .surface(move |cx, output| lock_surface(cx, output)),
+);</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>locked(bool)</code></td>
+              <td>
+                Locks the session while true. Turning it false is the only way
+                to unlock.
+              </td>
+            </tr>
+            <tr>
+              <td><code>surface(builder)</code></td>
+              <td>
+                Builds the widget that covers one monitor. It runs for every
+                monitor, including one plugged in while locked.
+              </td>
+            </tr>
+            <tr>
+              <td><code>style(style)</code></td>
+              <td>
+                The surfaces' background, and the color and font their text
+                inherits.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          <code>cx.session_lock</code> returns a
+          <code>ReadSignal&lt;bool&gt;</code> that is true while the compositor
+          says the session is locked. If the compositor refuses, as when another
+          program holds the lock, that is logged and the signal stays false. It
+          needs <code>ext-session-lock-v1</code>.
+        </p>
+        <p>
+          The lock surfaces get the keyboard, so a <code>TextInput</code> with
+          <code>focus(true)</code> is ready to type in.
+        </p>
+        <h3 id="stay-locked">Stay locked through a crash</h3>
+        <p>
+          A lock screen that dies leaves the session locked. The compositor
+          keeps the screen covered until a program unlocks it, so your shell
+          must remember it was locked when it comes back.
+        </p>
+        <p>
+          A plain signal forgets on every restart, and
+          <code>cx.persist</code> survives a reload but not a crash. Keep
+          <code>locked</code> in a JSON file under
+          <code>$XDG_RUNTIME_DIR</code>. It survives both, and a reboot clears
+          it.
+        </p>
+        <pre><code class="rs">let locked = match std::env::var_os("XDG_RUNTIME_DIR") {
+  Some(dir) =&gt; cx.json_file(PathBuf::from(dir).join("crabshell/lock.json"), false),
+  None =&gt; cx.signal(false),
+};
+cx.ipc("lock", "on", move |_| {
+  locked.set(true);
+  Ok(String::new())
+});</code></pre>
+        <p>
+          Then <code>crabshell ipc lock on</code> locks, from a key binding or
+          an idle daemon. To lock after five minutes away, use
+          <a href="services.html#idle"><code>cx.idle_monitor</code></a
+          >.
+        </p>
+        <div class="warn">
+          <p>
+            Try a lock screen in a nested compositor before you trust it with
+            your session. If it can't unlock, you need another virtual terminal
+            to recover.
+          </p>
+        </div>
+        <h3 id="pam">PAM</h3>
+        <p>
+          <code>cx.pam(service)</code> checks a password through PAM. The
+          service is the name of a file in <code>/etc/pam.d</code>, such as
+          <code>login</code>.
+        </p>
+        <pre><code class="rs">let pam = cx.pam("login");
+let state = pam.state();</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it gives or does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>start(user)</code></td>
+              <td>
+                Starts an attempt for a user by name, or with
+                <code>None</code> for the user the shell runs as.
+              </td>
+            </tr>
+            <tr>
+              <td><code>respond(text)</code></td>
+              <td>Answers the question PAM asked.</td>
+            </tr>
+            <tr>
+              <td><code>abort()</code></td>
+              <td>Stops the attempt.</td>
+            </tr>
+            <tr>
+              <td><code>state()</code></td>
+              <td>A signal holding a <code>PamState</code>.</td>
+            </tr>
+            <tr>
+              <td><code>messages()</code></td>
+              <td>
+                A signal holding the lines PAM sent during the attempt, each a
+                <code>PamMessage::Info</code> or <code>PamMessage::Error</code>.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <table>
+          <thead>
+            <tr>
+              <th><code>PamState</code></th>
+              <th>What it means</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>Idle</code></td>
+              <td>Nothing is running.</td>
+            </tr>
+            <tr>
+              <td><code>Asking { message, visible }</code></td>
+              <td>
+                PAM asked a question and waits for <code>respond</code>.
+                <code>visible</code> is false for a password.
+              </td>
+            </tr>
+            <tr>
+              <td><code>Busy</code></td>
+              <td>PAM is working.</td>
+            </tr>
+            <tr>
+              <td><code>Done(result)</code></td>
+              <td>
+                The attempt ended with <code>PamResult::Success</code>,
+                <code>Failure</code>, or <code>Error { kind, message }</code>.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          <code>Failure</code> means the password was wrong.
+          <code>Error</code> means PAM couldn't check at all.
+        </p>
+        <h3 id="pam-order">Take the password first</h3>
+        <p>
+          An attempt that ends while PAM waits for an answer counts as a failed
+          login, and with <code>pam_faillock</code> enough of those lock the
+          account. So don't start PAM when the lock screen appears.
+        </p>
+        <p>
+          Take the password into a signal, start PAM when the user presses
+          Enter, and answer the moment PAM asks.
+        </p>
+        <pre><code class="rs">let entry = cx.signal(String::new());
+let waiting = cx.signal(false);   // Enter was pressed before PAM asked
+let notice = cx.signal(String::new());
+{
+  let pam = pam.clone();
+  cx.effect(move || match state.get() {
+    PamState::Asking { .. } if waiting.get_untracked() =&gt; {
+      waiting.set(false);
+      pam.respond(entry.get_untracked());
+      entry.set(String::new());
+    }
+    PamState::Done(result) =&gt; {
+      waiting.set(false);
+      entry.set(String::new());
+      match result {
+        PamResult::Success =&gt; {
+          notice.set(String::new());
+          locked.set(false);
+        }
+        PamResult::Failure =&gt; notice.set(String::from("Wrong password")),
+        PamResult::Error { message, .. } =&gt; notice.set(message),
+      }
+    }
+    _ =&gt; {}
+  });
+}
+let accept = move |_: &amp;Cx, text: &amp;str| match state.get_untracked() {
+  PamState::Asking { .. } =&gt; {
+    pam.respond(text);
+    entry.set(String::new());
+  }
+  PamState::Busy =&gt; {}
+  _ =&gt; {
+    waiting.set(true);
+    pam.start(None);
+  }
+};</code></pre>
+        <p>
+          The surface builder runs once per monitor, so the handler is shared
+          through an <code>Rc</code>.
+        </p>
+        <pre><code class="rs">let accept = std::rc::Rc::new(accept);
+cx.session_lock(
+  SessionLock::new()
+    .locked(move || locked.get())
+    .style(SCREEN)
+    .surface(move |_, _| {
+      let accept = std::rc::Rc::clone(&amp;accept);
+      Column::new()
+        .gap(12)
+        .align(Align::Center)
+        .justify(Justify::Center)
+        .child(Text::new("Locked"))
+        .child(
+          TextInput::new(entry)
+            .password(true)
+            .placeholder("password")
+            .focus(true)
+            .on_accept(move |cx, text| accept(cx, text))
+            .style(FIELD),
+        )
+        .child(Text::new(move || notice.get()).style(NOTICE))
+    }),
+);</code></pre>
+        <p>
+          Every monitor's field shares one <code>entry</code> signal, so any of
+          them can submit it. The answer is never logged. The
+          <a href="examples.html#lock">lock example</a> is the full file.
+        </p>
+        <h2 id="greeter">Greeter</h2>
+        <p>
+          A greeter is the login screen greetd shows before any session exists.
+          greetd starts your shell inside a small compositor, with
+          <code>GREETD_SOCK</code> set, from a line in
+          <code>/etc/greetd/config.toml</code>.
+        </p>
+        <pre><code class="toml">[default_session]
+command = "cage -s -- /usr/local/bin/greeter"</code></pre>
+        <p><code>cx.greetd()</code> talks to it.</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it gives or does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>create_session(user)</code></td>
+              <td>Starts a login for a user.</td>
+            </tr>
+            <tr>
+              <td><code>respond(answer)</code></td>
+              <td>Answers the question greetd asked, such as the password.</td>
+            </tr>
+            <tr>
+              <td><code>start_session(command, env)</code></td>
+              <td>
+                Starts the authenticated session with a command such as
+                <code>["sway"]</code>, and extra environment lines such as
+                <code>XDG_SESSION_TYPE=wayland</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>cancel()</code></td>
+              <td>Ends the login being made.</td>
+            </tr>
+            <tr>
+              <td><code>state()</code></td>
+              <td>A signal holding a <code>GreetState</code>.</td>
+            </tr>
+            <tr>
+              <td><code>messages()</code></td>
+              <td>
+                A signal holding the informative and error lines greetd sent.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          <code>GreetState</code> is <code>Idle</code>, <code>Busy</code>,
+          <code>Asking { message, visible }</code>, <code>Authenticated</code>,
+          <code>Started</code> or <code>Failed { message, auth }</code>.
+          <code>auth</code> is true when the credentials were refused, which the
+          user can try again.
+        </p>
+        <p>One effect drives the flow.</p>
+        <pre><code class="rs">let greetd = cx.greetd();
+let state = greetd.state();
+let user = cx.signal(String::new());
+let notice = cx.signal(String::new());
+{
+  let (greetd, shell) = (greetd.clone(), cx.clone());
+  cx.effect(move || match state.get() {
+    GreetState::Authenticated =&gt; {
+      greetd.start_session(vec!["sway".to_string()], Vec::new());
+    }
+    // The session starts once the greeter is gone.
+    GreetState::Started =&gt; shell.exit(0),
+    GreetState::Failed { message, auth } =&gt; {
+      notice.set(message);
+      // A refused password asks again for the same user.
+      if auth {
+        greetd.create_session(&amp;user.get_untracked());
+      }
+    }
+    _ =&gt; {}
+  });
+}</code></pre>
+        <p>
+          The field's <code>on_accept</code> sends the user name while the state
+          is <code>Idle</code> or <code>Failed</code>, and the answer while it
+          is <code>Asking</code>. Its <code>password</code> follows
+          <code>visible</code>.
+        </p>
+        <pre><code class="rs">TextInput::new(entry)
+  .password(move || matches!(state.get(), GreetState::Asking { visible: false, .. }))
+  .focus(true)
+  .on_accept(accept)</code></pre>
+        <p>
+          greetd joins the session command with spaces and runs it through
+          <code>sh</code>, so quote an entry that has spaces. A greeter is a
+          normal binary. Build it with cargo and install it where greetd's
+          config points. The
+          <a href="examples.html#greeter">greeter example</a> is complete.
+        </p>
+        <h2 id="polkit">Polkit agent</h2>
+        <p>
+          <code>cx.polkit_agent()</code> makes the shell the session's polkit
+          agent, the program that asks for the password when another program
+          needs administrator rights.
+        </p>
+        <pre><code class="rs">let agent = cx.polkit_agent();
+let request = agent.request();</code></pre>
+        <p>
+          <code>request()</code> is a
+          <code>ReadSignal&lt;Option&lt;AuthRequest&gt;&gt;</code>, the request
+          being answered now. One shows at a time, and up to 8 more wait.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th><code>AuthRequest</code> field</th>
+              <th>What it holds</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>action_id</code></td>
+              <td>
+                The action polkit is asked about, such as
+                <code>org.freedesktop.systemd1.manage-units</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>message</code></td>
+              <td>The sentence to show the user.</td>
+            </tr>
+            <tr>
+              <td><code>icon_name</code></td>
+              <td>A themed icon for the action, or empty.</td>
+            </tr>
+            <tr>
+              <td><code>identities</code></td>
+              <td>
+                The users who may answer, by name. The first is the one asked
+                now.
+              </td>
+            </tr>
+            <tr>
+              <td><code>state</code></td>
+              <td>
+                An <code>AuthState</code>: <code>Waiting</code>,
+                <code>Asking { message, visible }</code>, <code>Busy</code> or
+                <code>Failed { message }</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>info</code>, <code>errors</code></td>
+              <td>
+                Lines PAM sent during this try, such as "touch your security
+                key".
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>respond(text)</code></td>
+              <td>
+                Answers the question. After a failure, it starts another try.
+                After the third failure the request goes.
+              </td>
+            </tr>
+            <tr>
+              <td><code>cancel()</code></td>
+              <td>Gives up on the request.</td>
+            </tr>
+            <tr>
+              <td><code>pick_identity(name)</code></td>
+              <td>Asks another of the request's users instead.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Build the dialog in a
+          <a href="reactivity.html#contexts">child context</a> made when
+          <code>request</code> turns <code>Some</code> and disposed when it
+          turns <code>None</code>, with a panel on the overlay layer and
+          <code>KeyboardFocus::Exclusive</code>.
+        </p>
+        <pre><code class="rs">let entry = cx.signal(String::new());
+let prompt = move || match request.get().map(|r| r.state) {
+  Some(AuthState::Asking { message, .. }) =&gt; message,
+  Some(AuthState::Failed { message }) =&gt; message,
+  Some(AuthState::Busy) =&gt; String::from("Checking…"),
+  _ =&gt; String::new(),
+};
+
+Column::new()
+  .gap(10)
+  .child(Text::new(move || request.get().map(|r| r.message).unwrap_or_default()).max_lines(3))
+  .child(Text::new(prompt))
+  .child(
+    TextInput::new(entry)
+      .password(true)
+      .focus(true)
+      .on_accept(move |cx, text| {
+        cx.polkit_agent().respond(text);
+        entry.set(String::new());
+      }),
+  )
+  .child(Button::new(Text::new("Cancel")).on_click(|cx| cx.polkit_agent().cancel()))</code></pre>
+        <p>
+          Only one agent can serve a session. If another is running, polkit
+          refuses the registration, the shell logs it, and no requests arrive.
+        </p>
+      </article>
+    </main>
+  </body>
+</html>

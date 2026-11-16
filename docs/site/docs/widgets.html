@@ -1,0 +1,667 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Widgets | Crabshell docs</title>
+    <meta
+      name="description"
+      content="Every Crabshell widget and its methods: containers, text, buttons, icons, images, text fields, sliders, scrolling lists and more."
+    />
+    <script>
+      try {
+        var t = localStorage.getItem("crabshell:theme");
+        if (t === "light" || t === "dark")
+          document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <link rel="icon" href="../logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="../site.css" />
+    <script src="../site.js" defer></script>
+  </head>
+  <body class="docs">
+    <header class="bar">
+      <a class="brand" href="../index.html"
+        ><img src="../logo.svg" alt="" width="20" height="20" />crabshell</a
+      >
+      <a class="ws" href="../docs/index.html">Docs</a>
+    </header>
+    <main>
+      <article>
+        <h1>Widgets</h1>
+        <p class="lede">
+          Each widget is a value you build with method calls and hand to a
+          parent with <code>child</code>. Unless a table says otherwise, a
+          method takes a value or a closure.
+        </p>
+        <h2 id="common">What every widget takes</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>style(style)</code></td>
+              <td>
+                The widget's <a href="styles.html"><code>Style</code></a
+                >.
+              </td>
+            </tr>
+            <tr>
+              <td><code>visible(bool)</code></td>
+              <td>
+                Whether it shows. Hidden, it frees its space and takes no input,
+                and keeps its bindings and state.
+              </td>
+            </tr>
+            <tr>
+              <td><code>geometry(signal)</code></td>
+              <td>
+                Writes the widget's rectangle to a
+                <code>Signal&lt;Rect&gt;</code> after each layout that moves it,
+                in the window's logical pixels.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          <code>geometry</code> lets one widget follow another. This indicator
+          slides to where a tab ended up.
+        </p>
+        <pre><code class="rs">let tab_rect = cx.signal(Rect::new(0.0, 0.0, 0.0, 0.0));
+let x = cx.animate(move || tab_rect.get().x, Transition::new(200));
+// On the tab:        .geometry(tab_rect)
+// On the indicator:  .style(move || INDICATOR.translate(x.get(), 0.0))</code></pre>
+        <h2 id="row">Row and Column</h2>
+        <p>
+          <code>Row</code> lays its children out left to right and
+          <code>Column</code> top to bottom.
+        </p>
+        <pre><code class="rs">Row::new()
+  .gap(8)
+  .padding(4, 8)
+  .align(Align::Center)
+  .child(Text::new("left"))
+  .child(Spacer::new())
+  .child(Text::new("right"))</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>child(widget)</code></td>
+              <td>Adds one child.</td>
+            </tr>
+            <tr>
+              <td><code>children_keyed(items, key, view)</code></td>
+              <td>
+                Adds a child per item of a changing list. See
+                <a href="reactivity.html#lists">lists</a>.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>exit(duration)</code>, <code>displaced(transition)</code>
+              </td>
+              <td>
+                Animate keyed children that leave or move. See
+                <a href="motion.html#exit">motion</a>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>gap(px)</code></td>
+              <td>Space between children.</td>
+            </tr>
+            <tr>
+              <td><code>padding(vertical, horizontal)</code></td>
+              <td>Space inside the edges. It wins over the style's padding.</td>
+            </tr>
+            <tr>
+              <td><code>align(align)</code></td>
+              <td>
+                Where children sit across the direction:
+                <code>Align::Start</code>, <code>Center</code>,
+                <code>End</code> or <code>Stretch</code>, the default.
+              </td>
+            </tr>
+            <tr>
+              <td><code>justify(justify)</code></td>
+              <td>
+                Where they go along it: <code>Justify::Start</code>, the
+                default, <code>Center</code>, <code>End</code>,
+                <code>SpaceBetween</code>, <code>SpaceAround</code> or
+                <code>SpaceEvenly</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>wrap(bool)</code></td>
+              <td>Starts a new line for children that don't fit.</td>
+            </tr>
+            <tr>
+              <td><code>reverse(bool)</code></td>
+              <td>Runs right to left, or bottom to top.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          A row with a style and no children is this toolkit's plain box, for a
+          dot, a track or a divider.
+        </p>
+        <pre><code class="rs">Row::new().style(Style::new().background(ACCENT).width(18.0).height(18.0).radius(9.0))</code></pre>
+        <h2 id="stack">Stack</h2>
+        <p>
+          <code>Stack</code> draws its children on top of each other, each
+          stretched to the size of the largest. Later children are on top. A
+          child whose style sets <code>left</code>, <code>top</code>,
+          <code>right</code> or <code>bottom</code> is
+          <a href="layout.html#absolute">placed from those edges</a> instead.
+        </p>
+        <pre><code class="rs">Stack::new()
+  .child(Image::new("/usr/share/backgrounds/hills.jpg"))
+  .child(Text::new("on top").style(Style::new().align_self(Align::End)))</code></pre>
+        <h2 id="grid">Grid</h2>
+        <p>
+          <code>Grid</code> places children row by row into equal columns. A
+          child spans cells with <code>Style::new().span(columns, rows)</code>.
+        </p>
+        <pre><code class="rs">Grid::new().columns(7).gap(4).child(day(1)).child(day(2))</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>columns(n)</code></td>
+              <td>How many columns. The default is 1.</td>
+            </tr>
+            <tr>
+              <td>
+                <code>gap(px)</code>, <code>row_gap(px)</code>,
+                <code>column_gap(px)</code>
+              </td>
+              <td>Space between cells.</td>
+            </tr>
+            <tr>
+              <td><code>padding(vertical, horizontal)</code></td>
+              <td>Space inside the edges.</td>
+            </tr>
+            <tr>
+              <td>
+                <code>child</code>, <code>children_keyed</code>,
+                <code>exit</code>, <code>displaced</code>
+              </td>
+              <td>As on a row.</td>
+            </tr>
+          </tbody>
+        </table>
+        <h2 id="spacer">Spacer</h2>
+        <p>
+          <code>Spacer::new()</code> takes the leftover space in a row or
+          column. Several share it equally, or by their styles'
+          <code>grow</code>.
+        </p>
+        <h2 id="text">Text</h2>
+        <pre><code class="rs">Text::new("volume")
+Text::new(move || format!("{}%", volume.get()))
+Text::new(move || title.get()).ellipsis(true)</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>ellipsis(bool)</code></td>
+              <td>Ends text that doesn't fit in "…". Off by default.</td>
+            </tr>
+            <tr>
+              <td><code>max_lines(n)</code></td>
+              <td>
+                Lets the text wrap onto this many lines. The default is 1.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Text is black <code>sans-serif</code> at 13 pixels until a style says
+          otherwise, and takes <code>color</code> and <code>font</code> from the
+          nearest widget above that sets them.
+        </p>
+        <h2 id="button">Button</h2>
+        <p>
+          <code>Button::new(child)</code> is a clickable box that centers one
+          child. It is also how any widget hears the pointer, so wrap a card in
+          one to make it clickable.
+        </p>
+        <pre><code class="rs">Button::new(Text::new("mute"))
+  .style(CHIP)
+  .hover_style(CHIP_HOVER)
+  .on_click(|cx| cx.audio().toggle_mute())</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>hover_style(style)</code></td>
+              <td>Laid over the style while the pointer is over the button.</td>
+            </tr>
+            <tr>
+              <td><code>pressed_style(style)</code></td>
+              <td>Laid over both while it is held.</td>
+            </tr>
+            <tr>
+              <td><code>focus_style(style)</code></td>
+              <td>Laid over the style while it has the keyboard focus.</td>
+            </tr>
+            <tr>
+              <td><code>enabled(bool)</code></td>
+              <td>
+                Off, it runs no handler, shows no state style and lets the
+                pointer through.
+              </td>
+            </tr>
+            <tr>
+              <td><code>cursor(shape)</code></td>
+              <td>
+                The pointer's shape over it. The default is the pointing hand.
+              </td>
+            </tr>
+            <tr>
+              <td><code>focus(bool)</code></td>
+              <td>Takes the keyboard focus whenever it turns true.</td>
+            </tr>
+            <tr>
+              <td><code>hovered(signal)</code></td>
+              <td>
+                Writes to a <code>Signal&lt;bool&gt;</code> whether the pointer
+                is over it or anything inside.
+              </td>
+            </tr>
+            <tr>
+              <td><code>pointer_position(signal)</code></td>
+              <td>
+                Writes the pointer's place to a
+                <code>Signal&lt;Option&lt;Point&gt;&gt;</code>.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Its handlers are on <a href="input.html">Pointer and keyboard</a>.
+        </p>
+        <h2 id="icon">Icon</h2>
+        <p>
+          <code>Icon::new(source)</code> draws an icon as a square. The source
+          is a name from the icon theme, a file path, or an
+          <code>IconSource</code>.
+        </p>
+        <pre><code class="rs">Icon::new("audio-volume-high").size(16)
+Icon::new("audio-volume-high-symbolic").tint(TEXT)
+Icon::new(move || if muted.get() { "audio-volume-muted" } else { "audio-volume-high" })</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>size(px)</code></td>
+              <td>The width and height. The default is 16.</td>
+            </tr>
+            <tr>
+              <td><code>tint(color)</code></td>
+              <td>
+                Paints every pixel in that color and keeps its alpha, for
+                symbolic icons.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Names are looked up in <code>hicolor</code> unless you call
+          <code>cx.set_icon_theme</code>. See
+          <a href="drawing.html#icons">icons</a>.
+        </p>
+        <h2 id="image">Image</h2>
+        <p>
+          <code>Image::new(path)</code> shows a PNG, JPEG, GIF, WebP or SVG file
+          in a box.
+        </p>
+        <pre><code class="rs">Image::new("/home/me/Pictures/hills.jpg").width(320).height(180).fit(Fit::Cover)</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>width(px)</code>, <code>height(px)</code></td>
+              <td>The box the picture is drawn in.</td>
+            </tr>
+            <tr>
+              <td><code>fit(fit)</code></td>
+              <td>
+                <code>Fit::Fill</code>, the default, <code>Contain</code> or
+                <code>Cover</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>tint(color)</code></td>
+              <td>As on an icon.</td>
+            </tr>
+            <tr>
+              <td>
+                <code>brightness(n)</code>, <code>contrast(n)</code>,
+                <code>saturation(n)</code>
+              </td>
+              <td>Filters, where 1 leaves the picture as it is.</td>
+            </tr>
+            <tr>
+              <td><code>blur(px)</code></td>
+              <td>A Gaussian blur.</td>
+            </tr>
+            <tr>
+              <td><code>playing(bool)</code></td>
+              <td>Whether an animated GIF plays.</td>
+            </tr>
+            <tr>
+              <td><code>transition(transition)</code></td>
+              <td>How a new source replaces the old one.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>See <a href="drawing.html#images">images</a>.</p>
+        <h2 id="textinput">TextInput</h2>
+        <p>
+          <code>TextInput::new(text)</code> is a one-line field. It takes the
+          <code>Signal&lt;String&gt;</code> it edits, so typing writes the
+          signal and setting the signal changes the field.
+        </p>
+        <pre><code class="rs">let query = cx.signal(String::new());
+TextInput::new(query)
+  .placeholder("search")
+  .focus(true)
+  .on_accept(move |_cx, text| println!("run {text}"))
+  .style(FIELD)</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>placeholder(text)</code></td>
+              <td>Shown dimmed while the field is empty.</td>
+            </tr>
+            <tr>
+              <td><code>password(bool)</code></td>
+              <td>Shows a dot for each character.</td>
+            </tr>
+            <tr>
+              <td><code>focus(bool)</code></td>
+              <td>Takes the keyboard focus whenever it turns true.</td>
+            </tr>
+            <tr>
+              <td><code>on_accept(handler)</code></td>
+              <td>
+                Runs with <code>&amp;Cx</code> and the text when Enter is
+                pressed.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          The field has a caret, a selection, word movement with Ctrl, the
+          clipboard on Ctrl+C, Ctrl+X and Ctrl+V, and input methods. A password
+          field pastes but never copies. Keys it doesn't use go on to the
+          window's <code>on_key</code>. Its window needs a
+          <a href="windows.html#keyboard-focus">keyboard focus</a>.
+        </p>
+        <h2 id="slider">Slider</h2>
+        <p>
+          <code>Slider::new(value)</code> is a handle on a track. It takes the
+          <code>Signal&lt;f32&gt;</code> it writes.
+        </p>
+        <pre><code class="rs">let volume = cx.signal(50.0_f32);
+Slider::new(volume)
+  .range(0.0, 100.0)
+  .step(1.0)
+  .style(TRACK)
+  .fill_style(FILL)
+  .handle_style(HANDLE)</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>range(min, max)</code></td>
+              <td>The ends. The default is 0 to 1.</td>
+            </tr>
+            <tr>
+              <td><code>step(n)</code></td>
+              <td>What values snap to. 0, the default, doesn't snap.</td>
+            </tr>
+            <tr>
+              <td><code>vertical(bool)</code></td>
+              <td>Runs it bottom to top.</td>
+            </tr>
+            <tr>
+              <td><code>enabled(bool)</code></td>
+              <td>As on a button.</td>
+            </tr>
+            <tr>
+              <td><code>style(style)</code></td>
+              <td>The track, 120 by 4 pixels unless the style sets a size.</td>
+            </tr>
+            <tr>
+              <td><code>fill_style(style)</code></td>
+              <td>The part from the start to the handle.</td>
+            </tr>
+            <tr>
+              <td><code>handle_style(style)</code></td>
+              <td>The handle, 16 by 16 unless the style sets a size.</td>
+            </tr>
+            <tr>
+              <td><code>dragging(signal)</code></td>
+              <td>
+                Writes to a <code>Signal&lt;bool&gt;</code> whether the handle
+                is held.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>A press, a drag, the wheel and the arrow keys all move it.</p>
+        <p>
+          To bind a slider to an outside value such as a sink's volume, copy the
+          outside value in only while <code>dragging</code> is false, and send
+          the slider's value out only when it differs. The
+          <a href="examples.html#control">control example</a> does this.
+        </p>
+        <h2 id="scrollview">ScrollView</h2>
+        <p>
+          <code>ScrollView::new(child)</code> shows part of a child larger than
+          its box. The wheel, the touchpad, a drag and its scroll bar move it.
+        </p>
+        <pre><code class="rs">ScrollView::new(Column::new().children_keyed(items, key, row))
+  .style(Style::new().height(300.0))
+  .scroll_bar(Style::new().background(RAISED).radius(3.0))</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>offset(signal)</code></td>
+              <td>
+                A <code>Signal&lt;f32&gt;</code> holding how far it is scrolled,
+                written both ways.
+              </td>
+            </tr>
+            <tr>
+              <td><code>horizontal(bool)</code></td>
+              <td>Scrolls sideways instead.</td>
+            </tr>
+            <tr>
+              <td><code>kinetic(bool)</code></td>
+              <td>Keeps moving after a fling. On by default.</td>
+            </tr>
+            <tr>
+              <td><code>overshoot(bool)</code></td>
+              <td>
+                Lets a drag pull past an end and spring back. On by default.
+              </td>
+            </tr>
+            <tr>
+              <td><code>scroll_bar(style)</code></td>
+              <td>
+                Draws a handle from the style's <code>background</code>,
+                <code>radius</code> and <code>width</code>. None by default.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <h2 id="listview">ListView</h2>
+        <p>
+          <code>ListView::new(items, key, view)</code> is a scrolling list that
+          builds only the rows in view. It takes the same three closures as
+          <a href="reactivity.html#lists"><code>children_keyed</code></a
+          >.
+        </p>
+        <pre><code class="rs">ListView::new(
+  move || shown.get(),
+  |app| app.clone(),
+  move |_cx, app| Row::new().style(ROW).child(Text::new(move || app.get())),
+)
+.row_height(28)
+.height(280)
+.current(move || Some(picked.get()))
+.highlight(PICKED)</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>row_height(px)</code></td>
+              <td>
+                The least height of a row. A row grows to fit its content.
+              </td>
+            </tr>
+            <tr>
+              <td><code>height(px)</code></td>
+              <td>The height of the list's box.</td>
+            </tr>
+            <tr>
+              <td><code>current(index)</code></td>
+              <td>
+                An <code>Option&lt;usize&gt;</code> naming the row to keep in
+                view.
+              </td>
+            </tr>
+            <tr>
+              <td><code>highlight(style)</code></td>
+              <td>
+                A box behind the current row, which slides over the style's
+                <code>transition</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>horizontal(bool)</code></td>
+              <td>Runs the rows left to right.</td>
+            </tr>
+            <tr>
+              <td>
+                <code>offset</code>, <code>kinetic</code>,
+                <code>overshoot</code>, <code>scroll_bar</code>
+              </td>
+              <td>As on a scroll view.</td>
+            </tr>
+          </tbody>
+        </table>
+        <h2 id="gridview">GridView</h2>
+        <p>
+          <code>GridView::new(items, key, view)</code> lays cells of one size
+          out in as many columns as fit and builds only the rows in view, for an
+          application grid or a wallpaper picker.
+        </p>
+        <pre><code class="rs">GridView::new(move || wallpapers.get(), |path| path.clone(), thumbnail)
+  .cell_size(160, 100)
+  .height(420)</code></pre>
+        <p>
+          It takes <code>cell_size(width, height)</code> and, as a list view
+          does, <code>height</code>, <code>current</code>,
+          <code>highlight</code>, <code>offset</code>, <code>kinetic</code>,
+          <code>overshoot</code> and <code>scroll_bar</code>.
+        </p>
+        <h2 id="canvas">Canvas</h2>
+        <p>
+          <code>Canvas::new(|pen| ...)</code> is a box your closure draws in.
+          See <a href="drawing.html#canvas">Drawing and images</a>.
+        </p>
+        <h2 id="elsewhere">Widgets with pages of their own</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Widget</th>
+              <th>What it is</th>
+              <th>Where</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>Tray</code></td>
+              <td>One icon per tray item, each with its menu</td>
+              <td><a href="services.html#tray">Desktop services</a></td>
+            </tr>
+            <tr>
+              <td><code>Menu</code></td>
+              <td>A list of entries for a popup</td>
+              <td><a href="windows.html#menus">Windows</a></td>
+            </tr>
+            <tr>
+              <td><code>ScreencopyView</code></td>
+              <td>A live picture of a monitor or a window</td>
+              <td>
+                <a href="compositors.html#screencopy"
+                  >Compositors and windows</a
+                >
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </article>
+    </main>
+  </body>
+</html>

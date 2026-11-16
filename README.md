@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/site/logo.svg" width="150" alt="the crabshell logo, a pixel snail shell"></p>
+<p align="center"><img src="docs/site/logo.svg" width="210" alt="the crabshell logo, a pixel hermit crab out of its shell"></p>
 
 # crabshell
 
@@ -63,7 +63,7 @@ every widget property takes a value or a closure. a closure runs again when a si
 
 ### docs
 
-~ [the site](docs/site/index.html), with getting started, writing a config, how it fits together, the roadmap and the features. open it in a browser\
+~ [the site](docs/site/index.html), with getting started and the full docs. open it in a browser\
 ~ [the design doc](docs/design.md), with every decision and every rule settled while building each crate
 
 ### numbers

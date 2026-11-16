@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Windows | Crabshell docs</title>
+    <meta
+      name="description"
+      content="Panels on every monitor, floating windows, popups and menus, input masks, blur and keyboard focus."
+    />
+    <script>
+      try {
+        var t = localStorage.getItem("crabshell:theme");
+        if (t === "light" || t === "dark")
+          document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <link rel="icon" href="../logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="../site.css" />
+    <script src="../site.js" defer></script>
+  </head>
+  <body class="docs">
+    <header class="bar">
+      <a class="brand" href="../index.html"
+        ><img src="../logo.svg" alt="" width="20" height="20" />crabshell</a
+      >
+      <a class="ws" href="../docs/index.html">Docs</a>
+    </header>
+    <main>
+      <article>
+        <h1>Windows</h1>
+        <p class="lede">
+          Crabshell has three kinds of window. Panels belong to a monitor,
+          floating windows are ordinary application windows, and popups hang off
+          a widget.
+        </p>
+        <h2 id="panels">Panels</h2>
+        <p>
+          A <code>PanelWindow</code> is a layer-shell surface on one monitor.
+          Bars, docks, launchers, notification stacks and wallpapers are all
+          panels with different anchors and layers.
+        </p>
+        <pre><code class="rs">PanelWindow::new(output)
+  .anchors(Edge::Top | Edge::Left | Edge::Right)
+  .height(30)
+  .style(BAR)
+  .child(Row::new())</code></pre>
+        <p>
+          Every method takes a value or a closure, unless the table says it
+          takes a signal.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it sets</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>anchors(edges)</code></td>
+              <td>
+                The edges the window sticks to, joined with <code>&#124;</code>.
+                With none, the compositor centers it. Two opposite edges stretch
+                it between them.
+              </td>
+            </tr>
+            <tr>
+              <td><code>width(px)</code>, <code>height(px)</code></td>
+              <td>
+                The size in logical pixels. 0, the default, lets the compositor
+                choose, as it does along an axis anchored on both sides.
+              </td>
+            </tr>
+            <tr>
+              <td><code>exclusive_zone(px)</code></td>
+              <td>
+                The space other windows keep clear along the anchored edge. It
+                defaults to a bar's height or width. 0 reserves nothing, and -1
+                covers other panels.
+              </td>
+            </tr>
+            <tr>
+              <td><code>layer(layer)</code></td>
+              <td>
+                <code>Layer::Background</code>, <code>Bottom</code>,
+                <code>Top</code>, the default, or <code>Overlay</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>margins(margins)</code></td>
+              <td>
+                Space from the anchored edges: <code>Margins::all(8)</code> or
+                <code>Margins::new(top, right, bottom, left)</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>keyboard_focus(focus)</code></td>
+              <td>
+                <code>KeyboardFocus::None</code>, the default,
+                <code>Exclusive</code> or <code>OnDemand</code>. See
+                <a href="#keyboard-focus">keyboard focus</a>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>namespace(name)</code></td>
+              <td>
+                The name compositor rules match on. It defaults to
+                <code>crabshell</code> and is read once.
+              </td>
+            </tr>
+            <tr>
+              <td><code>mask(region)</code></td>
+              <td>
+                The part that takes pointer input. See
+                <a href="#masks">input masks</a>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>blur(region)</code></td>
+              <td>
+                The part the compositor blurs behind. See
+                <a href="#blur">blur</a>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>on_key(handler)</code></td>
+              <td>
+                Keys nothing inside the window used. See
+                <a href="input.html#keys">keys</a>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>style(style)</code></td>
+              <td>The background, and the color and font its text inherits.</td>
+            </tr>
+            <tr>
+              <td><code>child(widget)</code></td>
+              <td>The one widget that fills the window.</td>
+            </tr>
+          </tbody>
+        </table>
+        <table>
+          <thead>
+            <tr>
+              <th>You want</th>
+              <th>Anchors and size</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>A bar across the top</td>
+              <td>
+                <code>Edge::Top | Edge::Left | Edge::Right</code>, a height
+              </td>
+            </tr>
+            <tr>
+              <td>A dock in the middle of the bottom edge</td>
+              <td><code>Edge::Bottom</code>, a width and a height</td>
+            </tr>
+            <tr>
+              <td>A panel in the top right corner</td>
+              <td>
+                <code>Edge::Top | Edge::Right</code>, a width, a height and
+                margins
+              </td>
+            </tr>
+            <tr>
+              <td>A launcher in the middle of the screen</td>
+              <td>
+                No anchors, a width and a height, <code>Layer::Overlay</code>
+              </td>
+            </tr>
+            <tr>
+              <td>A wallpaper or a full-screen overlay</td>
+              <td>All four edges</td>
+            </tr>
+          </tbody>
+        </table>
+        <h2 id="per-output">One function, every monitor</h2>
+        <p>
+          <code>cx.per_output(f)</code> calls <code>f</code> for every monitor
+          that exists now or appears later. When a monitor goes, its windows go
+          with it, along with everything <code>f</code> made.
+          <code>f</code> returns a <code>PanelWindow</code>, or a
+          <code>Vec&lt;PanelWindow&gt;</code> for several windows or none.
+        </p>
+        <pre><code class="rs">crabshell::run(|cx| {
+  cx.per_output(|cx, output| vec![bar(cx, output), toasts(cx, output)]);
+});</code></pre>
+        <p>
+          <code>output.name()</code> is the compositor's name for the monitor,
+          such as <code>DP-1</code>.
+        </p>
+        <pre><code class="rs">cx.per_output(|cx, output| {
+  if output.name() == "eDP-1" { vec![bar(cx, output)] } else { vec![] }
+});</code></pre>
+        <p>
+          Call <code>per_output</code> from the root closure or from inside
+          another <code>per_output</code> function. Called from a plain effect,
+          it adds another set of windows on every run.
+        </p>
+        <p>
+          If <code>f</code> panics for one monitor, the log says so and that
+          monitor gets nothing until it is plugged in again. The others carry
+          on.
+        </p>
+        <h3 id="outputs">The monitors as a signal</h3>
+        <p>
+          <code>cx.outputs()</code> is a
+          <code>ReadSignal&lt;Vec&lt;OutputInfo&gt;&gt;</code> of every monitor,
+          kept current. Each has <code>name</code>, <code>description</code>,
+          <code>make</code>, <code>model</code>, the <code>mode</code> with its
+          <code>width</code>, <code>height</code> and <code>refresh_mhz</code>,
+          the whole <code>scale</code>, the
+          <code>fractional_scale</code> windows draw at, the logical
+          <code>x</code>, <code>y</code>, <code>width</code> and
+          <code>height</code>, <code>width_mm</code>, <code>height_mm</code> and
+          <code>transform</code>.
+        </p>
+        <pre><code class="rs">let outputs = cx.outputs();
+let name = output.name();
+// A wallpaper sized to its monitor.
+let size = cx.memo(move || {
+  outputs.with(|all| {
+    all.iter().find(|info| info.name == name).map(|info| (info.width, info.height))
+  })
+});</code></pre>
+        <h2 id="floating">Floating windows</h2>
+        <p>
+          A <code>FloatingWindow</code> is a window like any application's,
+          placed and decorated by the compositor. Show one with
+          <code>cx.floating</code>.
+        </p>
+        <pre><code class="rs">let about = cx.signal(false);
+cx.floating(
+  FloatingWindow::new()
+    .title("About")
+    .width(320)
+    .height(120)
+    .visible(move || about.get())
+    .on_close(move |_| about.set(false))
+    .style(BOX)
+    .child(Text::new("a shell written in Rust")),
+);</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it sets</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>title(text)</code></td>
+              <td>The title the compositor shows.</td>
+            </tr>
+            <tr>
+              <td><code>width(px)</code>, <code>height(px)</code></td>
+              <td>The size it asks for.</td>
+            </tr>
+            <tr>
+              <td>
+                <code>min_size((w, h))</code>, <code>max_size((w, h))</code>
+              </td>
+              <td>The limits of a resize. 0 leaves a side free.</td>
+            </tr>
+            <tr>
+              <td>
+                <code>maximized(bool)</code>, <code>fullscreen(bool)</code>
+              </td>
+              <td>Whether it asks to fill the screen.</td>
+            </tr>
+            <tr>
+              <td><code>visible(bool)</code></td>
+              <td>Whether it is shown. Hidden, it has no surface.</td>
+            </tr>
+            <tr>
+              <td><code>on_close(handler)</code></td>
+              <td>Runs when the user or the compositor asks it to close.</td>
+            </tr>
+            <tr>
+              <td>
+                <code>style</code>, <code>child</code>, <code>mask</code>,
+                <code>blur</code>
+              </td>
+              <td>As on a panel.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          The window lives as long as the context <code>cx.floating</code> was
+          called on, so keep it for the session and bind <code>visible</code>.
+        </p>
+        <p>
+          A widget inside can let the user move or resize the window. These work
+          only while a pointer button is held, so call them from a button's
+          <code>on_press</code>.
+        </p>
+        <pre><code class="rs">Button::new(Text::new("drag me")).on_press(|cx| cx.start_move())</code></pre>
+        <p>
+          <code>cx.start_resize(Edge::Bottom | Edge::Right)</code> resizes from
+          a corner, and <code>cx.minimize()</code> minimizes.
+        </p>
+        <h2 id="popups">Popups</h2>
+        <p>
+          A <code>PopupWindow</code> opens next to the widget that asked for it
+          and is as large as its content. Open one from an event handler.
+        </p>
+        <pre><code class="rs">Button::new(Text::new("power")).on_click(|cx| {
+  cx.open_popup(|_cx| {
+    PopupWindow::new().style(MENU).child(
+      Column::new()
+        .child(Button::new(Text::new("Lock")).on_click(|cx| {
+          cx.exec_detached(["loginctl", "lock-session"]);
+          cx.close_popup();
+        }))
+        .child(Button::new(Text::new("Suspend")).on_click(|cx| {
+          cx.exec_detached(["systemctl", "suspend"]);
+          cx.close_popup();
+        })),
+    )
+  })
+})</code></pre>
+        <p>
+          The popup closes when its widget goes, on a click outside, or on
+          <code>cx.close_popup()</code>. By default it opens below its widget
+          from a horizontal bar and beside it from a vertical one, and flips or
+          slides to stay on the monitor. Three methods change that, each read
+          when it opens.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it sets</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>edges(edges)</code></td>
+              <td>The edge or corner of the widget the popup hangs from.</td>
+            </tr>
+            <tr>
+              <td><code>gravity(edges)</code></td>
+              <td>Which way it extends from there.</td>
+            </tr>
+            <tr>
+              <td><code>adjustment(adjust)</code></td>
+              <td>
+                How it may move to stay on the monitor:
+                <code>Adjust::FLIP</code>, <code>SLIDE</code>,
+                <code>RESIZE</code>, <code>ALL</code> or <code>NONE</code>, or
+                one axis with <code>FLIP_X</code>, <code>FLIP_Y</code>,
+                <code>SLIDE_X</code>, <code>SLIDE_Y</code>,
+                <code>RESIZE_X</code> and <code>RESIZE_Y</code>, joined with
+                <code>&#124;</code>. The default flips and slides.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          A popup also takes <code>style</code>, <code>child</code> and
+          <code>mask</code>.
+        </p>
+        <h3 id="menus">Menus</h3>
+        <p>
+          <code>Menu</code> is a ready-made list of entries for a popup, with
+          separators, checkmarks, radio marks and submenus. The
+          <a href="services.html#tray">tray</a> uses it, and you can build your
+          own from <code>MenuEntry</code> values.
+        </p>
+        <pre><code class="rs">fn entry(id: i32, label: &amp;str) -&gt; MenuEntry {
+  MenuEntry {
+    id,
+    label: label.to_string(),
+    separator: false,
+    enabled: true,
+    toggle: None,
+    checked: false,
+    submenu: false,
+    children: Vec::new(),
+  }
+}
+
+Button::new(Text::new("sound")).on_right_click(|cx| {
+  let entries = vec![
+    entry(1, "Mute"),
+    MenuEntry { separator: true, ..entry(0, "") },
+    entry(2, "Sound settings"),
+  ];
+  cx.open_popup(move |_cx| {
+    PopupWindow::new().child(Menu::new(entries).on_activate(|cx, id| {
+      if id == 1 {
+        cx.audio().toggle_mute();
+      }
+      cx.close_popup();
+    }))
+  });
+})</code></pre>
+        <p>
+          A <code>MenuEntry</code> is a plain struct with <code>id</code>,
+          <code>label</code>, <code>separator</code>, <code>enabled</code>, a
+          <code>toggle</code> of <code>MenuToggle::Checkmark</code> or
+          <code>Radio</code> with <code>checked</code>, and
+          <code>submenu</code> with <code>children</code>.
+          <code>Menu</code> takes <code>style</code>, <code>item_style</code>,
+          <code>hover_style</code> and <code>separator_style</code>, plus
+          <code>on_activate</code> and <code>on_open_submenu</code> handlers
+          that get the entry's id.
+        </p>
+        <h2 id="keyboard-focus">Keyboard focus</h2>
+        <p>A window gets keys only if it asks for the keyboard.</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Value</th>
+              <th>When the window has the keyboard</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>KeyboardFocus::None</code></td>
+              <td>Never. The default, and right for a bar.</td>
+            </tr>
+            <tr>
+              <td><code>KeyboardFocus::Exclusive</code></td>
+              <td>
+                Always, while it is in the top or overlay layer. Right for a
+                launcher.
+              </td>
+            </tr>
+            <tr>
+              <td><code>KeyboardFocus::OnDemand</code></td>
+              <td>When the user clicks it. It needs layer-shell version 4.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Floating windows take the keyboard as any application window does.
+        </p>
+        <ul>
+          <li>
+            <code>inhibit_shortcuts(bool)</code> asks the compositor to send its
+            own shortcuts to the window while it has the keyboard.
+            <code>shortcuts_inhibited(signal)</code> reports whether it agreed.
+          </li>
+          <li>
+            <code>focus_grab(signal)</code> takes a
+            <code>Signal&lt;bool&gt;</code>. While it is true, the windows given
+            that signal hold the keyboard and pointer, and a click elsewhere
+            writes <code>false</code>. This is how a menu closes when you click
+            away. It needs Hyprland.
+          </li>
+        </ul>
+        <h2 id="masks">Input masks</h2>
+        <p>
+          <code>mask</code> sets which part of a window takes pointer input.
+          Clicks outside it reach whatever is below. <code>None</code>, the
+          default, is the whole window, and <code>Region::empty()</code> lets
+          every click through.
+        </p>
+        <pre><code class="rs">Region::rect(0, 0, 340, 64)               // x, y, width, height
+Region::rect(0, 0, 340, 64).radius(8.0)   // rounded corners
+Region::ellipse(0, 0, 48, 48)
+Region::rect(0, 0, 400, 300).subtract(Region::rect(100, 100, 200, 100))</code></pre>
+        <p>
+          <code>union</code>, <code>subtract</code>, <code>intersect</code> and
+          <code>xor</code> combine regions. A window larger than what it shows,
+          such as a notification stack, masks itself to its content.
+        </p>
+        <pre><code class="rs">.mask(move || {
+  let tall = (popups.with(Vec::len) as u32 * 64).min(400);
+  Some(Region::rect(0, 0, 340, tall))
+})</code></pre>
+        <h2 id="blur">Blur and opacity</h2>
+        <p>
+          <code>blur(region)</code> asks the compositor to blur what is behind
+          that part of the window. Give the window a translucent background.
+        </p>
+        <pre><code class="rs">PanelWindow::new(output)
+  .height(48)
+  .blur(Some(Region::rect(0, 0, u32::MAX, 48)))
+  .style(Style::new().background(Color::rgba(0x1e, 0x1e, 0x2e, 0xd8)))</code></pre>
+        <p>
+          It needs <code>ext-background-effect-v1</code>. Without it the window
+          shows unblurred.
+        </p>
+        <p>
+          Two more hints exist for Hyprland.
+          <code>compositor_opacity(0.0..=1.0)</code> fades the whole window,
+          blur included, where a style's <code>opacity</code> fades only what
+          Crabshell paints. <code>visible_mask(region)</code> names the part of
+          the window that holds anything to see.
+        </p>
+        <h2 id="inhibit-idle">Keeping the screen awake</h2>
+        <p>
+          <code>inhibit_idle(bool)</code> on a panel or a floating window keeps
+          the screen from blanking while it is true and the window shows. To
+          learn when the user is away, see
+          <a href="services.html#idle">idle time</a>.
+        </p>
+        <pre><code class="rs">let awake = cx.signal(false);
+PanelWindow::new(output).inhibit_idle(move || awake.get())</code></pre>
+        <h2 id="show-hide">Showing and hiding</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Way</th>
+              <th>While hidden</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                Keep the window, with transparent content and
+                <code>mask</code> set to <code>Region::empty()</code>
+              </td>
+              <td>
+                The surface stays. Right for something that animates in and out.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                Return an empty <code>Vec</code> from <code>per_output</code>
+              </td>
+              <td>No window, decided when the monitor appears.</td>
+            </tr>
+            <tr>
+              <td>
+                Build it in a
+                <a href="reactivity.html#contexts">child context</a> and dispose
+                the context
+              </td>
+              <td>
+                No window, bindings, timers or programs. Right for a launcher or
+                a dashboard.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          A floating window has <code>visible</code>. A
+          <a href="lock.html">session lock</a> has rules of its own.
+        </p>
+      </article>
+    </main>
+  </body>
+</html>

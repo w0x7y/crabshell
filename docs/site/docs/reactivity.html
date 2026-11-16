@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Signals and effects | Crabshell docs</title>
+    <meta
+      name="description"
+      content="How state works in Crabshell: signals, bindings, memos, effects, keyed lists, contexts and what happens when a closure panics."
+    />
+    <script>
+      try {
+        var t = localStorage.getItem("crabshell:theme");
+        if (t === "light" || t === "dark")
+          document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <link rel="icon" href="../logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="../site.css" />
+    <script src="../site.js" defer></script>
+  </head>
+  <body class="docs">
+    <header class="bar">
+      <a class="brand" href="../index.html"
+        ><img src="../logo.svg" alt="" width="20" height="20" />crabshell</a
+      >
+      <a class="ws" href="../docs/index.html">Docs</a>
+    </header>
+    <main>
+      <article>
+        <h1>Signals and effects</h1>
+        <p class="lede">
+          State lives in signals. A closure that reads a signal runs again when
+          it changes, and only what that closure feeds repaints.
+        </p>
+        <h2 id="signals">Signals</h2>
+        <pre><code class="rs">let count = cx.signal(0_u32);
+
+count.get();                 // a copy of the value
+count.with(|n| *n &gt; 3);      // read by reference, without cloning
+count.set(5);                // replace it
+count.update(|n| *n += 1);   // change it in place</code></pre>
+        <p>
+          A signal is a small <code>Copy</code> handle, so it moves into any
+          number of closures with no <code>clone()</code>.
+          <code>get()</code> clones the value. For a long list, read by
+          reference with <code>with</code>.
+        </p>
+        <pre><code class="rs">let count = workspaces.with(|all| all.len());</code></pre>
+        <p>
+          A <code>ReadSignal&lt;T&gt;</code> is the same handle without
+          <code>set</code> and <code>update</code>. Services hand these out, and
+          <code>signal.read_only()</code> makes one from your own.
+        </p>
+        <h2 id="bindings">Bindings</h2>
+        <p>Every widget property takes a value or a closure.</p>
+        <pre><code class="rs">Text::new("volume")                              // set once
+Text::new(move || format!("{}%", volume.get()))  // a binding</code></pre>
+        <p>
+          A binding runs when the widget is built and again whenever a signal it
+          read changes. What it reads is recorded on every run, so a branch that
+          stops reading a signal stops depending on it.
+        </p>
+        <pre><code class="rs">Text::new(move || {
+  if expanded.get() {
+    title.get()      // read only while expanded
+  } else {
+    String::new()
+  }
+})</code></pre>
+        <p>
+          Each property is its own binding. A changed color repaints one widget.
+          A changed size or text lays the window out again and repaints what
+          moved.
+        </p>
+        <p>
+          A property the widget itself writes, such as a
+          <a href="widgets.html#textinput"><code>TextInput</code></a
+          >'s text, takes a <code>Signal</code> instead.
+        </p>
+        <h2 id="memos">Memos</h2>
+        <pre><code class="rs">let shown = cx.memo(move || {
+  let query = query.get().to_lowercase();
+  apps.iter().filter(|app| app.contains(&amp;query)).cloned().collect::&lt;Vec&lt;_&gt;&gt;()
+});</code></pre>
+        <p>
+          A memo derives a value and is read like a signal. It recomputes only
+          when read after an input changed, and if the new value equals the old
+          one, nothing that reads it runs. Its type needs
+          <code>PartialEq</code>.
+        </p>
+        <p>
+          A signal notifies on every <code>set</code>, even with the value it
+          already holds. Reading it through a memo filters those out.
+        </p>
+        <pre><code class="rs">let open = cx.signal(false);
+let is_open = cx.memo(move || open.get());
+// An effect that reads is_open runs only when the value really flips.</code></pre>
+        <p>A memo must not write signals.</p>
+        <h2 id="effects">Effects</h2>
+        <p>
+          <code>cx.effect</code> runs code now, and again whenever a signal it
+          read changes.
+        </p>
+        <pre><code class="rs">// A new search starts at the top of what it finds.
+cx.effect(move || {
+  shown.get();
+  picked.set(0);
+});</code></pre>
+        <ul>
+          <li>
+            <code>set</code> and <code>update</code> never run anything on the
+            spot. Marked effects run together before the next layout, so five
+            writes in one handler repaint once.
+          </li>
+          <li>
+            Each effect runs at most once per round, in the order the effects
+            were made.
+          </li>
+          <li>
+            An effect that keeps writing a signal it reads is stopped after 100
+            rounds and logged.
+          </li>
+        </ul>
+        <p>
+          <code>get_untracked()</code> and <code>with_untracked()</code> read
+          without subscribing, and <code>untrack(|| ...)</code> does the same
+          for a whole block.
+        </p>
+        <pre><code class="rs">// Send the slider's value to the sink. Only the slider should run this.
+let parent = cx.clone();
+cx.effect(move || {
+  let percent = value.get().round() as u32;
+  let name = sink.with_untracked(|sink| sink.as_ref().map(|sink| sink.name.clone()));
+  if let Some(name) = name {
+    parent.audio().set_sink_volume(&amp;name, percent);
+  }
+});</code></pre>
+        <h2 id="lists">Lists</h2>
+        <pre><code class="rs">Column::new().children_keyed(
+  move || notifications.get(),                 // the items
+  |notification: &amp;Notification| notification.id, // a key for each
+  |cx, notification| {                          // the child for one key
+    Text::new(move || notification.get().summary)
+  },
+)</code></pre>
+        <p>
+          <code>children_keyed</code> builds one child per item of a changing
+          list. The first closure gives the items, the second a key for each,
+          and the third builds the child for a key. That child is kept while its
+          key stays in the list. It gets a context of its own and a
+          <code>Memo&lt;T&gt;</code> holding its item. When the key leaves, the
+          child and everything made in its context are freed. Items need
+          <code>Clone</code> and <code>PartialEq</code>, and a duplicate key is
+          logged and skipped.
+        </p>
+        <p>
+          <code>.exit(duration)</code> and
+          <code>.displaced(transition)</code> animate children that leave or
+          move. See <a href="motion.html#exit">Timers and motion</a>. For long
+          lists, <a href="widgets.html#listview"><code>ListView</code></a> and
+          <a href="widgets.html#gridview"><code>GridView</code></a> build only
+          the rows in view.
+        </p>
+        <h2 id="contexts">Contexts</h2>
+        <p>
+          Everything made with a <code>Cx</code> belongs to it: signals,
+          effects, timers, running programs, windows. When the context goes, all
+          of it is freed.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Where</th>
+              <th>Its context lives until</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>The closure given to <code>crabshell::run</code></td>
+              <td>The shell exits</td>
+            </tr>
+            <tr>
+              <td>The function given to <code>cx.per_output</code></td>
+              <td>That monitor is unplugged</td>
+            </tr>
+            <tr>
+              <td>The third closure of <code>children_keyed</code></td>
+              <td>That key leaves the list</td>
+            </tr>
+            <tr>
+              <td>An event handler such as <code>on_click</code></td>
+              <td>Its widget goes</td>
+            </tr>
+            <tr>
+              <td><code>cx.child()</code></td>
+              <td>You dispose it</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          So a signal made inside <code>per_output</code>'s function is one per
+          monitor, and one made in the root closure is shared.
+        </p>
+        <p>
+          <code>cx.child()</code> makes a context you control, which is how to
+          show something that costs nothing while hidden. Here a panel exists
+          only while <code>open</code> is true.
+        </p>
+        <pre><code class="rs">let shown: Rc&lt;RefCell&lt;Option&lt;Cx&gt;&gt;&gt; = Rc::default();
+let parent = cx.clone();
+cx.effect(move || {
+  if let Some(old) = shown.borrow_mut().take() {
+    old.owner().dispose();
+  }
+  if open.get() {
+    let child = parent.child();
+    untrack(|| child.per_output(move |cx, output| panel(cx, output)));
+    *shown.borrow_mut() = Some(child);
+  }
+});</code></pre>
+        <p>
+          <code>untrack</code> keeps the effect from subscribing to what the
+          panel reads. <code>per_output</code> is called on the child, so its
+          windows go when the child does.
+        </p>
+        <p>
+          Reading a signal whose context is gone panics, and the panic is logged
+          and contained. <code>try_get()</code> returns
+          <code>None</code> instead, and <code>try_set()</code> returns
+          <code>false</code>.
+        </p>
+        <h3 id="shared">One value for the whole shell</h3>
+        <p>
+          <code>cx.provide(value)</code> makes one value of a type reachable
+          from every context, and <code>cx.service::&lt;T&gt;()</code> fetches
+          it. Use it for something the whole shell reads, such as a theme.
+        </p>
+        <pre><code class="rs">struct Theme {
+  accent: Signal&lt;Color&gt;,
+}
+
+crabshell::run(|cx| {
+  let accent = cx.signal(Color::hex("#89b4fa"));
+  cx.provide(Theme { accent });
+  cx.per_output(bar);
+});
+
+fn dot(cx: &amp;Cx) -&gt; Row {
+  let theme = cx.service::&lt;Theme&gt;().expect("the root closure provides the theme");
+  let accent = theme.accent;
+  Row::new().style(move || DOT.background(accent.get()))
+}</code></pre>
+        <h2 id="own-widgets">Widgets of your own</h2>
+        <p>
+          A function that returns a widget is a component. To let an argument
+          take a value or a closure, accept <code>impl IntoProp&lt;T&gt;</code>.
+        </p>
+        <pre><code class="rs">fn chip(label: impl IntoProp&lt;String&gt;, on: impl IntoProp&lt;bool&gt;) -&gt; Button {
+  let on = on.into_prop().shared();
+  Button::new(Text::new(label)).style(move || if on() { CHIP_ON } else { CHIP })
+}
+
+chip("Wi-Fi", true);
+chip("Bluetooth", move || bluetooth_on.get());</code></pre>
+        <p>
+          It passes straight to a widget method of the same type. To read it in
+          your own closure, <code>into_prop().shared()</code> turns it into a
+          function you can call.
+        </p>
+        <h2 id="panics">When a closure panics</h2>
+        <p>
+          Every closure you give the toolkit runs inside
+          <code>catch_unwind</code>. A panic is logged with where it is, and
+          that one closure is disabled.
+        </p>
+        <pre><code>PanelWindow[DP-1]/Row/Button[2]/Text.text panicked and is disabled: index out of bounds: the len is 2 but the index is 5</code></pre>
+        <p>
+          The path reads from the window down. <code>Button[2]</code> is the
+          row's third child and <code>.text</code> the property. The text keeps
+          its last value, and the rest of the shell keeps running.
+        </p>
+        <p>
+          Two panics are not contained. One in the root closure exits with
+          status 1. One inside the toolkit's own drawing or Wayland code ends
+          the process, and <code>crabshell run</code> restarts it.
+        </p>
+      </article>
+    </main>
+  </body>
+</html>

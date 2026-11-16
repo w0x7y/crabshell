@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Styles | Crabshell docs</title>
+    <meta
+      name="description"
+      content="Crabshell&#x27;s Style type: colors, fonts, borders, radii, gradients, shadows, masks, transforms and fades between styles."
+    />
+    <script>
+      try {
+        var t = localStorage.getItem("crabshell:theme");
+        if (t === "light" || t === "dark")
+          document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <link rel="icon" href="../logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="../site.css" />
+    <script src="../site.js" defer></script>
+  </head>
+  <body class="docs">
+    <header class="bar">
+      <a class="brand" href="../index.html"
+        ><img src="../logo.svg" alt="" width="20" height="20" />crabshell</a
+      >
+      <a class="ws" href="../docs/index.html">Docs</a>
+    </header>
+    <main>
+      <article>
+        <h1>Styles</h1>
+        <p class="lede">
+          A <code>Style</code> is a plain value with optional fields. Every
+          method that builds one is a <code>const fn</code>, so a theme is a
+          list of constants.
+        </p>
+        <h2 id="constants">Styles are constants</h2>
+        <pre><code class="rs">const TEXT: Color = Color::hex("#cdd6f4");
+const SURFACE: Color = Color::rgb(0x31, 0x32, 0x44);
+
+const CHIP: Style = Style::new().background(SURFACE).radius(14.0).padding(6, 12);
+const CHIP_ON: Style = CHIP.background(Color::rgb(0x89, 0xb4, 0xfa)).color(Color::rgb(0x1e, 0x1e, 0x2e));</code></pre>
+        <p>
+          A style can start from another, as <code>CHIP_ON</code> starts from
+          <code>CHIP</code>. There are no selectors, classes or cascade. A
+          widget has the one style you give it, and a closure changes it at run
+          time.
+        </p>
+        <pre><code class="rs">Button::new(label).style(move || if on.get() { CHIP_ON } else { CHIP })</code></pre>
+        <p>
+          <code>a.merge(b)</code> lays every field <code>b</code> sets over
+          <code>a</code>. Buttons do this with their hover, pressed and focus
+          styles, so a hover style needs only the fields that change.
+        </p>
+        <pre><code class="rs">const HOVER: Style = Style::new().background(Color::rgb(0x58, 0x5b, 0x70));
+Button::new(label).style(CHIP).hover_style(HOVER)</code></pre>
+        <h2 id="fields">Every field</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Field</th>
+              <th>What it sets</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>background(color)</code></td>
+              <td>A solid fill.</td>
+            </tr>
+            <tr>
+              <td><code>gradient(gradient)</code></td>
+              <td>A gradient fill, over the background.</td>
+            </tr>
+            <tr>
+              <td><code>color(color)</code></td>
+              <td>The text color. Inherited by text inside.</td>
+            </tr>
+            <tr>
+              <td><code>font(font)</code></td>
+              <td>The family, size and weight. Inherited by text inside.</td>
+            </tr>
+            <tr>
+              <td>
+                <code>padding(v, h)</code>, <code>padding_top</code> and the
+                other three
+              </td>
+              <td>Space inside the edges.</td>
+            </tr>
+            <tr>
+              <td>
+                <code>radius(r)</code>, <code>radii(tl, tr, br, bl)</code>
+              </td>
+              <td>Rounded corners, all four or each.</td>
+            </tr>
+            <tr>
+              <td><code>border(width, color)</code></td>
+              <td>A border drawn inside the edge.</td>
+            </tr>
+            <tr>
+              <td><code>border_dash(on, off)</code></td>
+              <td>Dashes the border.</td>
+            </tr>
+            <tr>
+              <td><code>shadow(shadow)</code></td>
+              <td>A shadow behind the box, or behind what it draws.</td>
+            </tr>
+            <tr>
+              <td><code>opacity(0.0..=1.0)</code></td>
+              <td>Fades the widget and everything inside as one layer.</td>
+            </tr>
+            <tr>
+              <td><code>clip(bool)</code></td>
+              <td>
+                Cuts children to the inside of the border and its corners.
+              </td>
+            </tr>
+            <tr>
+              <td><code>mask(mask)</code></td>
+              <td>Keeps the widget only where the mask is opaque.</td>
+            </tr>
+            <tr>
+              <td>
+                <code>width</code>, <code>height</code>, <code>min_width</code>,
+                <code>min_height</code>, <code>max_width</code>,
+                <code>max_height</code>
+              </td>
+              <td><a href="layout.html#sizes">Sizes</a>.</td>
+            </tr>
+            <tr>
+              <td>
+                <code>grow</code>, <code>shrink</code>, <code>basis</code>
+              </td>
+              <td>How it shares space in a row or column.</td>
+            </tr>
+            <tr>
+              <td><code>align_self</code>, <code>justify_self</code></td>
+              <td>Its own place in its parent.</td>
+            </tr>
+            <tr>
+              <td>
+                <code>left</code>, <code>top</code>, <code>right</code>,
+                <code>bottom</code>, <code>z</code>
+              </td>
+              <td>
+                <a href="layout.html#absolute">Absolute positions</a> and
+                stacking order.
+              </td>
+            </tr>
+            <tr>
+              <td><code>span(columns, rows)</code></td>
+              <td>The cells it takes in a grid.</td>
+            </tr>
+            <tr>
+              <td>
+                <code>translate(x, y)</code>, <code>scale(s)</code>,
+                <code>rotate(degrees)</code>, <code>origin(x, y)</code>
+              </td>
+              <td><a href="#transforms">Transforms</a>.</td>
+            </tr>
+            <tr>
+              <td><code>transition(transition)</code></td>
+              <td>
+                How a change to this style <a href="#transitions">fades in</a>.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Only <code>color</code> and <code>font</code> are inherited. A
+          <code>Text</code> uses the nearest ones set above it.
+        </p>
+        <h2 id="colors">Colors</h2>
+        <pre><code class="rs">Color::rgb(0x1e, 0x1e, 0x2e)
+Color::rgba(0x1e, 0x1e, 0x2e, 0xd8)   // alpha from 0 to 255
+Color::hex("#1e1e2e")
+Color::hex("#1e1e2ed8")
+Color::hsl(240.0, 0.21, 0.15)         // hue in degrees, the rest from 0 to 1
+Color::hsla(240.0, 0.21, 0.15, 0.85)</code></pre>
+        <p>
+          All of these are <code>const fn</code>. A badly formed string given to
+          <code>Color::hex</code> in a constant is a compile error. Four more
+          methods derive one color from another.
+        </p>
+        <pre><code class="rs">const ACCENT: Color = Color::hex("#89b4fa");
+const ACCENT_DIM: Color = ACCENT.with_alpha(0.25);
+const ACCENT_HOVER: Color = ACCENT.lighter(0.08);
+const ACCENT_PRESSED: Color = ACCENT.darker(0.08);
+const BLEND: Color = ACCENT.mix(Color::hex("#f38ba8"), 0.5);</code></pre>
+        <p>
+          <code>lighter</code> and <code>darker</code> add to the HSL lightness.
+          <code>mix</code> blends each channel, with 0 giving the first color
+          and 1 the other.
+        </p>
+        <h2 id="fonts">Fonts</h2>
+        <pre><code class="rs">const BODY: Font = Font::new("Inter", 13.0);
+const BOLD: Font = Font::new("Inter", 13.0).weight(700);</code></pre>
+        <p>
+          The family is any name fontconfig knows, including
+          <code>sans-serif</code> and <code>monospace</code>, and the size is in
+          logical pixels. Characters the font lacks come from fontconfig's
+          fallbacks. The shell loads only the font files your styles name.
+        </p>
+        <h2 id="borders">Borders and corners</h2>
+        <pre><code class="rs">const CARD: Style = Style::new()
+  .radius(12.0)
+  .border(1.0, Color::rgba(0xcd, 0xd6, 0xf4, 0x30));
+const TAB: Style = Style::new().radii(8.0, 8.0, 0.0, 0.0);   // top-left, top-right, bottom-right, bottom-left
+const DROP_ZONE: Style = Style::new().border(2.0, ACCENT).border_dash(6.0, 4.0).radius(8.0);
+const DOTTED: Style = DROP_ZONE.border_dash(0.0, 5.0);</code></pre>
+        <p>
+          Each corner is clamped to half the box's shorter side, so
+          <code>radius(999.0)</code> makes a pill.
+          <code>border_dash(on, off)</code> dashes the border, and an
+          <code>on</code> of 0 draws round dots. The background, a clip, a
+          shadow and the pointer's hit area all follow the corners.
+        </p>
+        <h2 id="gradients">Gradients</h2>
+        <pre><code class="rs">Gradient::linear(90.0, from, to)   // along a line: 0 runs bottom to top, 90 left to right
+Gradient::radial(from, to)         // from the middle out to the farthest corner
+Gradient::sweep(0.0, from, to)     // around the middle, clockwise from 12 o'clock</code></pre>
+        <p>
+          <code>.stop(at, color)</code> adds a color between the two ends, at a
+          place from 0 to 1. A gradient holds at most four colors.
+        </p>
+        <pre><code class="rs">const BAR: Style = Style::new().gradient(
+  Gradient::linear(90.0, Color::rgba(0x1e, 0x1e, 0x2e, 0xd8), Color::rgba(0x31, 0x32, 0x44, 0xd8)),
+);
+const RING: Gradient = Gradient::sweep(0.0, GREEN, PEACH).stop(0.5, YELLOW);</code></pre>
+        <h2 id="shadows">Shadows</h2>
+        <pre><code class="rs">const CARD: Style = Style::new()
+  .background(SURFACE)
+  .radius(8.0)
+  .shadow(Shadow::new(0.0, 2.0, 8.0, Color::rgba(0, 0, 0, 0xa0)));</code></pre>
+        <p>
+          <code>Shadow::new(x, y, blur, color)</code> casts the box's shadow,
+          with a blur that works as CSS's <code>box-shadow</code> does.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>spread(px)</code></td>
+              <td>Grows the shadow's shape before it is blurred.</td>
+            </tr>
+            <tr>
+              <td><code>cut_out()</code></td>
+              <td>
+                Leaves the shadow out under the box itself, for a translucent
+                background.
+              </td>
+            </tr>
+            <tr>
+              <td><code>follow_content()</code></td>
+              <td>
+                Casts the shadow from what the widget draws, through its alpha,
+                which puts one behind text or an icon.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <pre><code class="rs">// A title readable over any album art.
+const TITLE: Style = Style::new().shadow(Shadow::new(0.0, 1.0, 4.0, Color::rgba(0, 0, 0, 0xc0)).follow_content());</code></pre>
+        <p>
+          A shadow draws outside its widget, so leave room for it. A window ends
+          at its edge. A content shadow costs a blur each time the content
+          repaints, and one that would reach more than 64 pixels isn't drawn.
+        </p>
+        <h2 id="masks">Opacity, clips and masks</h2>
+        <p>
+          <code>opacity</code> fades a widget and its children as one layer.
+          <code>clip(true)</code> cuts children to the inside of the border. A
+          mask keeps a widget only where the mask is opaque.
+        </p>
+        <pre><code class="rs">Style::new().mask(Mask::ellipse())                       // a round avatar
+Style::new().mask(Mask::gradient(Gradient::linear(90.0, Color::rgba(0, 0, 0, 255), Color::rgba(0, 0, 0, 0))))   // fades out to the right
+Style::new().mask(Mask::image("/usr/share/shapes/squircle.png"))</code></pre>
+        <p>
+          A gradient mask uses only its colors' alpha.
+          <code>Mask::image</code> takes a <code>&amp;'static str</code>, so the
+          style stays a constant. A mask doesn't change where the pointer hits.
+        </p>
+        <h2 id="transforms">Transforms</h2>
+        <pre><code class="rs">SPINNER.rotate(turn.get() * 360.0)
+CARD.translate(0.0, (1.0 - shown.get()) * 80.0).scale(0.9 + 0.1 * shown.get())</code></pre>
+        <p>
+          <code>translate(x, y)</code> moves a widget and everything inside it,
+          <code>scale(s)</code> resizes it and
+          <code>rotate(degrees)</code> turns it clockwise.
+          <code>origin(x, y)</code> is the point it scales and turns around, as
+          fractions of its box, <code>(0.5, 0.5)</code> by default.
+        </p>
+        <p>
+          Transforms change where a widget is drawn and hit, never the layout,
+          so nothing around it moves.
+        </p>
+        <h2 id="transitions">Fades between styles</h2>
+        <p>
+          Give a style a <code>transition</code>, and a change to that style
+          fades in.
+        </p>
+        <pre><code class="rs">const TAB: Style = Style::new().radius(6.0).transition(Transition::new(150));
+const TAB_HOVER: Style = Style::new().background(Color::rgba(0xff, 0xff, 0xff, 0x24));
+
+Button::new(label).style(TAB).hover_style(TAB_HOVER)</code></pre>
+        <p>
+          The hover background now fades in over 150 ms and back out.
+          Backgrounds, gradients, shadows, text colors, borders, radii, opacity
+          and transforms fade. Sizes, padding and fonts change at once.
+          <a href="motion.html#transitions">Timers and motion</a> lists the
+          curves.
+        </p>
+        <h2 id="theme">Keeping a theme tidy</h2>
+        <p>
+          Styles are ordinary constants, so a module of colors and styles is
+          enough.
+        </p>
+        <pre
+          data-file="src/theme.rs"
+        ><code class="rs">use crabshell::prelude::*;
+
+pub const BASE: Color = Color::hex("#1e1e2e");
+pub const TEXT: Color = Color::hex("#cdd6f4");
+pub const ACCENT: Color = Color::hex("#89b4fa");
+
+pub const BAR: Style = Style::new().background(BASE).color(TEXT).font(Font::new("Inter", 13.0));
+pub const CHIP: Style = Style::new().padding(2, 8).radius(4.0);
+pub const CHIP_ON: Style = CHIP.background(ACCENT).color(BASE);</code></pre>
+        <p>
+          For colors taken from a wallpaper at run time, see
+          <a href="system.html#quantize-colors"
+            ><code>cx.quantize_colors</code></a
+          >.
+        </p>
+      </article>
+    </main>
+  </body>
+</html>

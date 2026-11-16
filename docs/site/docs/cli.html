@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>The crabshell command | Crabshell docs</title>
+    <meta
+      name="description"
+      content="The crabshell CLI: init, run, check and ipc, how a reload works, what happens on a crash, and the files and environment variables involved."
+    />
+    <script>
+      try {
+        var t = localStorage.getItem("crabshell:theme");
+        if (t === "light" || t === "dark")
+          document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <link rel="icon" href="../logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="../site.css" />
+    <script src="../site.js" defer></script>
+  </head>
+  <body class="docs">
+    <header class="bar">
+      <a class="brand" href="../index.html"
+        ><img src="../logo.svg" alt="" width="20" height="20" />crabshell</a
+      >
+      <a class="ws" href="../docs/index.html">Docs</a>
+    </header>
+    <main>
+      <article>
+        <h1>The crabshell command</h1>
+        <p class="lede">
+          <code>crabshell</code> creates a config, builds it, runs it, swaps it
+          when you save and restarts it when it crashes.
+        </p>
+        <h2 id="commands">Commands</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Command</th>
+              <th>What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>crabshell init</code></td>
+              <td>
+                Writes the template config to <code>~/.config/crabshell</code>.
+                It refuses if the directory exists.
+              </td>
+            </tr>
+            <tr>
+              <td><code>crabshell init --path DIR</code></td>
+              <td>
+                The same, but the config builds against the Crabshell clone at
+                <code>DIR</code> instead of crates.io.
+              </td>
+            </tr>
+            <tr>
+              <td><code>crabshell run</code></td>
+              <td>
+                Builds the config, starts the shell, rebuilds on every save and
+                restarts the shell if it crashes.
+              </td>
+            </tr>
+            <tr>
+              <td><code>crabshell check</code></td>
+              <td>
+                Runs <code>cargo check</code> on the config and prints the
+                errors.
+              </td>
+            </tr>
+            <tr>
+              <td><code>crabshell ipc</code></td>
+              <td>Lists the functions the running shell offers.</td>
+            </tr>
+            <tr>
+              <td><code>crabshell ipc TARGET FUNCTION [ARGS...]</code></td>
+              <td>Calls one and prints what it returns.</td>
+            </tr>
+            <tr>
+              <td><code>crabshell help</code></td>
+              <td>Shows the usage.</td>
+            </tr>
+          </tbody>
+        </table>
+        <table>
+          <thead>
+            <tr>
+              <th>Exit status</th>
+              <th>Meaning</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>0</td>
+              <td>
+                It worked. For <code>run</code>, the shell ended on purpose or
+                the session is gone.
+              </td>
+            </tr>
+            <tr>
+              <td>1</td>
+              <td>
+                The command failed, and says why. For <code>ipc</code>, the
+                handler returned an error or no shell is running. For
+                <code>check</code>, cargo's own status is passed on.
+              </td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>The command line was wrong. The usage is printed.</td>
+            </tr>
+          </tbody>
+        </table>
+        <h2 id="run">What run does</h2>
+        <ol>
+          <li>
+            It watches <code>Cargo.toml</code> and everything under
+            <code>src/</code>.
+          </li>
+          <li>
+            It runs <code>cargo build</code> in the config directory, with the
+            output in <code>~/.cache/crabshell/target</code>.
+          </li>
+          <li>
+            It starts the built program, which reports <code>ready</code> once
+            every panel has drawn a frame.
+          </li>
+          <li>
+            It sleeps, using about 5 MiB. It wakes once, a minute in, to keep
+            that build as the last one that worked.
+          </li>
+        </ol>
+        <h3 id="reload">On a save</h3>
+        <ol>
+          <li>
+            Once 300 ms pass with no further change, it runs
+            <code>cargo build</code>. Hidden files, editor backups and swap
+            files don't count.
+          </li>
+          <li>
+            If the build fails, the running shell stays up. The compiler's
+            output prints in the terminal, and the first error is sent as a
+            desktop notification.
+          </li>
+          <li>
+            If it succeeds, the shell writes every
+            <a href="system.html#persist"><code>cx.persist</code></a> value to a
+            file and exits.
+          </li>
+          <li>The new shell starts, reads the saved values and draws.</li>
+        </ol>
+        <p>
+          For a one-line edit to the template bar, the build takes 0.7 s and the
+          screen is without a bar for 13 to 19 ms. A build that produces the
+          same program as before doesn't reload.
+        </p>
+        <h3 id="crash">On a crash</h3>
+        <p>
+          If the shell exits with any status but 0 or 2, or dies from a signal,
+          <code>crabshell run</code> starts it again after 1 s. Each further
+          crash doubles the wait, up to 30 s.
+        </p>
+        <p>
+          Three crashes within a minute of a new build make it give up on that
+          build, start the last build that worked and send a notification. That
+          build is the newest one that ran a full minute without crashing. Your
+          next save builds again.
+        </p>
+        <p>
+          If the very first build fails, <code>run</code> starts the last build
+          that worked if there is one, and exits with 1 otherwise.
+        </p>
+        <h3 id="stopping">Stopping</h3>
+        <p>
+          Ctrl-C or SIGTERM stops the shell and then <code>crabshell run</code>.
+          The shell stops every program it started with
+          <code>cx.process</code> and removes its IPC socket.
+        </p>
+        <p>
+          When the compositor exits, the shell exits with status 2.
+          <code>crabshell run</code> takes that as the session ending and stops
+          with status 0.
+        </p>
+        <h2 id="logs">Logs</h2>
+        <p>
+          Everything goes to standard error. Lines from
+          <code>crabshell run</code> itself start with <code>crabshell:</code>,
+          and the shell's lines pass straight through.
+          <code>CRABSHELL_LOG</code> sets how much the shell says.
+        </p>
+        <pre><code class="sh">$ CRABSHELL_LOG=debug crabshell run</code></pre>
+        <p>
+          The levels are <code>error</code>, <code>warn</code>,
+          <code>info</code>, <code>debug</code>, <code>trace</code> and
+          <code>off</code>, and the default is <code>info</code>. At
+          <code>info</code> the shell logs its time to the first frame, each
+          panic with its place in the tree, each service that found nothing to
+          connect to, and each protocol the compositor lacks.
+        </p>
+        <p>
+          Started from your compositor's config, the output goes wherever the
+          compositor's does. To keep it, send it to a file.
+        </p>
+        <pre><code># Sway
+exec ~/.cargo/bin/crabshell run 2&gt;&gt; ~/.cache/crabshell/log</code></pre>
+        <h2 id="files">Files and directories</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Path</th>
+              <th>What it is</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>~/.config/crabshell/</code></td>
+              <td>
+                Your config: <code>Cargo.toml</code> and <code>src/</code>.
+                Follows <code>XDG_CONFIG_HOME</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>~/.cache/crabshell/target/</code></td>
+              <td>
+                Cargo's build output. Safe to delete. Follows
+                <code>XDG_CACHE_HOME</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>~/.cache/crabshell/last-good</code></td>
+              <td>
+                A copy of the newest build that ran for a minute without
+                crashing.
+              </td>
+            </tr>
+            <tr>
+              <td><code>$XDG_RUNTIME_DIR/crabshell/state.json</code></td>
+              <td>
+                The <code>cx.persist</code> values, written for a reload and
+                removed when the new shell has read them.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>$XDG_RUNTIME_DIR/crabshell/control-&lt;pid&gt;.sock</code>
+              </td>
+              <td>
+                How <code>crabshell run</code> and its shell talk. Removed when
+                <code>run</code> ends.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>$XDG_RUNTIME_DIR/crabshell/ipc-&lt;display&gt;.sock</code>
+              </td>
+              <td>
+                Where the shell answers <code>crabshell ipc</code>, named after
+                <code>WAYLAND_DISPLAY</code>. It exists once a config registers
+                a handler.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          The directory under <code>$XDG_RUNTIME_DIR</code> is readable only by
+          you. <code>crabshell run</code> refuses to start without
+          <code>XDG_RUNTIME_DIR</code>.
+        </p>
+        <h2 id="environment">Environment variables</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Variable</th>
+              <th>What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>CRABSHELL_LOG</code></td>
+              <td>The shell's log level.</td>
+            </tr>
+            <tr>
+              <td><code>CARGO</code></td>
+              <td>
+                The cargo that <code>run</code> and <code>check</code> call,
+                when it isn't the one on <code>PATH</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>XDG_CONFIG_HOME</code>, <code>XDG_CACHE_HOME</code></td>
+              <td>Where the config and the build output live.</td>
+            </tr>
+            <tr>
+              <td><code>WAYLAND_DISPLAY</code></td>
+              <td>
+                The compositor the shell connects to, and the name of its IPC
+                socket.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>SWAYSOCK</code>, <code>HYPRLAND_INSTANCE_SIGNATURE</code>
+              </td>
+              <td>How the Sway and Hyprland services find their compositor.</td>
+            </tr>
+            <tr>
+              <td><code>GREETD_SOCK</code></td>
+              <td>How <code>cx.greetd()</code> finds greetd.</td>
+            </tr>
+          </tbody>
+        </table>
+        <h2 id="standalone">Running the shell without the command</h2>
+        <p>
+          The shell is an ordinary program, so <code>cargo run</code> in the
+          config directory starts it, and so does the built binary. It then has
+          no reload and no restart on a crash. A greeter runs this way.
+        </p>
+        <p>
+          <code>crabshell::run</code> exits with status 1 if the root closure
+          panics, and with 2 if there is no compositor, it lacks layer-shell, or
+          the connection is lost.
+        </p>
+        <h2 id="cargo-toml">The template's Cargo.toml</h2>
+        <pre data-file="Cargo.toml"><code class="toml">[package]
+name = "my-shell"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+crabshell = "0.5"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3</code></pre>
+        <p>
+          <code>crabshell run</code> builds with cargo's dev profile. The two
+          profile sections compile every dependency with full optimization,
+          once, and your own crate lightly, so an edit rebuilds in under a
+          second. Keep them.
+        </p>
+        <p>
+          The package name is yours, and so is anything under
+          <code>[dependencies]</code>. The config must build exactly one
+          program.
+        </p>
+      </article>
+    </main>
+  </body>
+</html>

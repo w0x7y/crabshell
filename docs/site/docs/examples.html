@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Examples | Crabshell docs</title>
+    <meta
+      name="description"
+      content="Twelve complete Crabshell shells, each in one file: bars, a launcher, notifications, a control center, a dashboard, a lock screen and a greeter."
+    />
+    <script>
+      try {
+        var t = localStorage.getItem("crabshell:theme");
+        if (t === "light" || t === "dark")
+          document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <link rel="icon" href="../logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="../site.css" />
+    <script src="../site.js" defer></script>
+  </head>
+  <body class="docs">
+    <header class="bar">
+      <a class="brand" href="../index.html"
+        ><img src="../logo.svg" alt="" width="20" height="20" />crabshell</a
+      >
+      <a class="ws" href="../docs/index.html">Docs</a>
+    </header>
+    <main>
+      <article>
+        <h1>Examples</h1>
+        <p class="lede">
+          Twelve complete shells, each in one file. Run one from a clone of the
+          repository, then copy what you need into your own config.
+        </p>
+        <pre><code class="sh">$ git clone https://github.com/w0x7y/crabshell
+$ cd crabshell
+$ cargo run --release -p crabshell --example counter</code></pre>
+        <p>
+          Replace <code>counter</code> with any name below, and stop your own
+          bar first, or the two will stack. The pictures are the test suite's
+          reference screenshots, drawn by Crabshell on a headless Sway.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Example</th>
+              <th>What it is</th>
+              <th>Start here if you want</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><a href="#counter">counter</a></td>
+              <td>A bar with a button that counts</td>
+              <td>The smallest working shell</td>
+            </tr>
+            <tr>
+              <td><a href="#bar">bar</a></td>
+              <td>Workspaces, tray, volume and clock</td>
+              <td>A bar for Sway</td>
+            </tr>
+            <tr>
+              <td><a href="#hyprland">hyprland</a></td>
+              <td>Workspaces and the focused window's title</td>
+              <td>A bar for Hyprland</td>
+            </tr>
+            <tr>
+              <td><a href="#launcher">launcher</a></td>
+              <td>A search field over a filtered list</td>
+              <td>Keyboard input and long lists</td>
+            </tr>
+            <tr>
+              <td><a href="#effects">effects</a></td>
+              <td>Gradients, blur, fades and a sliding indicator</td>
+              <td>Styles that move</td>
+            </tr>
+            <tr>
+              <td><a href="#desktop">desktop</a></td>
+              <td>Media, network, Bluetooth, battery, and toasts</td>
+              <td>The desktop services</td>
+            </tr>
+            <tr>
+              <td><a href="#motion">motion</a></td>
+              <td>A volume display, a spinner, sliding toasts</td>
+              <td>Timers and animation</td>
+            </tr>
+            <tr>
+              <td><a href="#control">control</a></td>
+              <td>A slider, chips, a calendar, a notification list</td>
+              <td>A control center</td>
+            </tr>
+            <tr>
+              <td><a href="#dashboard">dashboard</a></td>
+              <td>A battery ring, a CPU graph, a media card, a wallpaper</td>
+              <td>Drawing and images</td>
+            </tr>
+            <tr>
+              <td><a href="#overview">overview</a></td>
+              <td>Applications, open windows with live pictures</td>
+              <td>An overview or a dock</td>
+            </tr>
+            <tr>
+              <td><a href="#lock">lock</a></td>
+              <td>A lock screen checked by PAM</td>
+              <td>A lock screen</td>
+            </tr>
+            <tr>
+              <td><a href="#greeter">greeter</a></td>
+              <td>A login screen for greetd</td>
+              <td>A greeter</td>
+            </tr>
+          </tbody>
+        </table>
+        <h2 id="counter">counter</h2>
+        <figure class="shot">
+          <img
+            src="../img/counter-clicked.png"
+            width="720"
+            height="30"
+            alt="A dark bar with a button reading clicked once at the left and the monitor's name at the right."
+          />
+        </figure>
+        <p>
+          One panel per monitor, with a button that counts its clicks and the
+          monitor's name at the right. It uses no services, and the count
+          survives a reload.
+        </p>
+        <p>
+          It shows <code>per_output</code>, a signal, a binding,
+          <code>hover_style</code> and
+          <a href="system.html#persist"><code>cx.persist</code></a
+          >, in 46 lines.
+          <a
+            href="https://github.com/w0x7y/crabshell/blob/main/crates/crabshell/examples/counter.rs"
+            >Read the source</a
+          >.
+        </p>
+        <h2 id="bar">bar</h2>
+        <p>
+          Sway's workspaces at the left, and the tray, the volume and the clock
+          at the right. Scroll over the volume to change it and click it to
+          mute. This is the file <code>crabshell init</code> writes, and
+          <a href="first-bar.html">Your first bar</a> builds it line by line.
+        </p>
+        <p>
+          It shows <a href="compositors.html#sway"><code>cx.sway()</code></a
+          >, <code>children_keyed</code>, the
+          <a href="services.html#tray"><code>Tray</code></a> widget,
+          <a href="services.html#audio"><code>cx.audio()</code></a> and
+          <a href="services.html#clock"><code>cx.clock</code></a
+          >.
+          <a
+            href="https://github.com/w0x7y/crabshell/blob/main/crates/crabshell/examples/bar.rs"
+            >Read the source</a
+          >.
+        </p>
+        <h2 id="hyprland">hyprland</h2>
+        <figure class="shot">
+          <img
+            src="../img/hyprland.png"
+            width="720"
+            height="30"
+            alt="A dark bar with workspaces 1 and 2 at the left, 1 highlighted, and a window title at the right."
+          />
+        </figure>
+        <p>
+          A bar for Hyprland, with each monitor's workspaces at the left and the
+          focused window's title at the right. Urgent workspaces turn red,
+          special workspaces are left out, and a click switches.
+        </p>
+        <p>
+          It shows
+          <a href="compositors.html#hyprland"><code>cx.hyprland()</code></a> and
+          how to name a workspace for <code>focus_workspace</code>.
+          <a
+            href="https://github.com/w0x7y/crabshell/blob/main/crates/crabshell/examples/hyprland.rs"
+            >Read the source</a
+          >.
+        </p>
+        <h2 id="launcher">launcher</h2>
+        <figure class="shot">
+          <img
+            src="../img/launcher.png"
+            width="420"
+            height="360"
+            alt="A launcher box with a search field, an about button and a list of applications with the first one picked."
+          />
+        </figure>
+        <p>
+          A box in the middle of every monitor that takes the keyboard. Type to
+          filter, press Up and Down to pick, and Enter to launch. An about
+          button opens a floating window.
+        </p>
+        <p>
+          It shows <code>KeyboardFocus::Exclusive</code>,
+          <a href="widgets.html#textinput"><code>TextInput</code></a
+          >, a window's <a href="input.html#keys"><code>on_key</code></a
+          >, a memo that filters,
+          <a href="widgets.html#listview"><code>ListView</code></a> with
+          <code>current</code>, and a
+          <a href="windows.html#floating"><code>FloatingWindow</code></a
+          >.
+          <a
+            href="https://github.com/w0x7y/crabshell/blob/main/crates/crabshell/examples/launcher.rs"
+            >Read the source</a
+          >.
+        </p>
+        <h2 id="effects">effects</h2>
+        <figure class="shot">
+          <img
+            src="../img/effects.png"
+            width="720"
+            height="48"
+            alt="A bar with a soft gradient, four numbered tabs with an underline beneath the first, and a raised card at the right."
+          />
+        </figure>
+        <p>
+          A translucent gradient bar that asks the compositor to blur what is
+          behind it. Its tabs fade in a hover color, an indicator slides under
+          the picked tab, and a card casts a soft shadow.
+        </p>
+        <p>
+          It shows <a href="styles.html#gradients">gradients</a>,
+          <a href="styles.html#shadows">shadows</a>, a style's
+          <a href="styles.html#transitions"><code>transition</code></a
+          >, <a href="motion.html#animate"><code>cx.animate</code></a> and
+          <a href="windows.html#blur"><code>blur</code></a
+          >.
+          <a
+            href="https://github.com/w0x7y/crabshell/blob/main/crates/crabshell/examples/effects.rs"
+            >Read the source</a
+          >.
+        </p>
+        <h2 id="desktop">desktop</h2>
+        <figure class="shot">
+          <img
+            src="../img/desktop.png"
+            width="720"
+            height="30"
+            alt="The right end of a bar reading stay awake, vol 100%, offline, bt off."
+          />
+        </figure>
+        <p>
+          A bar with what plays, the volume, the network, Bluetooth, the battery
+          and the power profile. A button keeps the screen awake, and an "away"
+          mark shows after five minutes without input. The shell is the
+          notification server here, and new notifications show as toasts.
+        </p>
+        <p>
+          It shows six <a href="services.html">desktop services</a>,
+          <a href="services.html#idle"><code>cx.idle_monitor</code></a
+          >, <code>inhibit_idle</code>, two windows per monitor, and a window
+          <a href="windows.html#masks"><code>mask</code></a> that follows its
+          content.
+          <a
+            href="https://github.com/w0x7y/crabshell/blob/main/crates/crabshell/examples/desktop.rs"
+            >Read the source</a
+          >.
+        </p>
+        <h2 id="motion">motion</h2>
+        <figure class="shot">
+          <img
+            src="../img/motion.png"
+            width="840"
+            height="525"
+            alt="A dark screen with a bar reading idle, a notification at the top right and a volume display at the bottom center."
+          />
+        </figure>
+        <p>
+          A volume display slides up when the volume changes and hides 1.5 s
+          after the last change. A spinner in the bar turns while a program
+          runs, and notifications slide in and out at the top right.
+        </p>
+        <pre><code class="sh">$ crabshell ipc motion run sleep 3
+$ crabshell ipc osd pin</code></pre>
+        <p>
+          It shows <a href="motion.html#timers"><code>cx.after</code></a> as a
+          debounce,
+          <a href="motion.html#animate"><code>cx.animation</code></a> with
+          <code>running()</code>,
+          <a href="motion.html#cycles"><code>cx.cycle</code></a
+          >, <a href="styles.html#transforms">transforms</a>, and
+          <a href="motion.html#exit"><code>exit</code></a> with
+          <code>cx.leaving()</code>.
+          <a
+            href="https://github.com/w0x7y/crabshell/blob/main/crates/crabshell/examples/motion.rs"
+            >Read the source</a
+          >.
+        </p>
+        <h2 id="control">control</h2>
+        <figure class="shot">
+          <img
+            src="../img/control.png"
+            width="384"
+            height="652"
+            alt="A control center panel with a volume slider at 50%, six chips, a calendar for November 2026 with the 16th marked, and a list of notifications."
+          />
+        </figure>
+        <p>
+          A control center in the top right corner, with a volume slider,
+          quick-setting chips that wrap, this month's calendar and the
+          notification history in a list that flings.
+        </p>
+        <p>
+          It shows a <a href="widgets.html#slider"><code>Slider</code></a> bound
+          to an outside value, <a href="layout.html#wrap"><code>wrap</code></a
+          >, a <a href="layout.html#grids"><code>Grid</code></a> with a spanned
+          cell, <code>enabled(false)</code>, and a <code>ListView</code> with
+          <code>highlight</code> and <code>scroll_bar</code>.
+          <a
+            href="https://github.com/w0x7y/crabshell/blob/main/crates/crabshell/examples/control.rs"
+            >Read the source</a
+          >.
+        </p>
+        <h2 id="dashboard">dashboard</h2>
+        <figure class="shot">
+          <img
+            src="../img/dashboard.png"
+            width="630"
+            height="420"
+            alt="A dashboard over a purple wallpaper: a battery ring at 72%, a CPU graph at 27%, and a media card with album art in front of a blurred copy of it."
+          />
+        </figure>
+        <p>
+          A dashboard over the wallpaper. The battery is a ring and the CPU's
+          last minute is a graph, both drawn on a canvas. The media card shows
+          the album art in front of a blurred, darkened copy, and the wallpaper
+          crossfades when you set a new one.
+        </p>
+        <pre><code class="sh">$ WALLPAPER=~/Pictures/hills.jpg cargo run --release -p crabshell --example dashboard
+$ crabshell ipc dashboard toggle
+$ crabshell ipc wallpaper set ~/Pictures/lake.jpg</code></pre>
+        <p>
+          It shows <a href="drawing.html#canvas"><code>Canvas</code></a
+          >, sweep gradients, tinted symbolic icons,
+          <a href="drawing.html#filters">image filters</a>, a gradient
+          <a href="styles.html#masks">mask</a>, a content shadow,
+          <a href="drawing.html#image-transitions">image transitions</a> and
+          sampling <code>/proc</code> on an interval only while shown.
+          <a
+            href="https://github.com/w0x7y/crabshell/blob/main/crates/crabshell/examples/dashboard.rs"
+            >Read the source</a
+          >.
+        </p>
+        <h2 id="overview">overview</h2>
+        <figure class="shot">
+          <img
+            src="../img/overview.png"
+            width="820"
+            height="230"
+            alt="An overview card listing three applications and one open window with a small live picture of it, with two color swatches at the top right."
+          />
+        </figure>
+        <p>
+          An overview that the command line opens and closes. It lists the
+          installed applications with recent ones first, the open windows with a
+          live picture of each, and the wallpaper's main colors. While closed it
+          has no window at all.
+        </p>
+        <pre><code class="sh">$ crabshell ipc overview toggle</code></pre>
+        <p>
+          It shows <a href="system.html#ipc"><code>cx.ipc</code></a
+          >,
+          <a href="system.html#desktop-entries"
+            ><code>cx.desktop_entries()</code></a
+          >, <a href="compositors.html#toplevels"><code>cx.toplevels()</code></a
+          >,
+          <a href="compositors.html#screencopy"><code>ScreencopyView</code></a
+          >, <a href="system.html#process"><code>cx.process</code></a
+          >,
+          <a href="system.html#quantize-colors"
+            ><code>cx.quantize_colors</code></a
+          >, <a href="system.html#json-file"><code>cx.json_file</code></a
+          >, and a <a href="reactivity.html#contexts">child context</a> disposed
+          on close.
+          <a
+            href="https://github.com/w0x7y/crabshell/blob/main/crates/crabshell/examples/overview.rs"
+            >Read the source</a
+          >.
+        </p>
+        <h2 id="lock">lock</h2>
+        <figure class="shot">
+          <img
+            src="../img/lock.png"
+            width="560"
+            height="220"
+            alt="A dark lock screen with the word Locked above a password field."
+          />
+        </figure>
+        <p>
+          A lock screen. Every monitor shows a password field, and Enter checks
+          the password with PAM. Try it in a nested compositor first.
+        </p>
+        <pre><code class="sh">$ crabshell ipc lock on</code></pre>
+        <p>
+          It shows
+          <a href="lock.html#session-lock"><code>cx.session_lock</code></a
+          >, <a href="lock.html#pam"><code>cx.pam</code></a
+          >, a password <code>TextInput</code>, and a lock that
+          <a href="lock.html#stay-locked">survives a crash</a>.
+          <a
+            href="https://github.com/w0x7y/crabshell/blob/main/crates/crabshell/examples/lock.rs"
+            >Read the source</a
+          >.
+        </p>
+        <h2 id="greeter">greeter</h2>
+        <p>
+          A login screen for greetd. One field on every monitor asks for a user
+          name, then for whatever greetd asks. Once the user is authenticated it
+          starts the session and exits. greetd starts it inside a compositor
+          such as cage, so it doesn't run from a terminal like the others.
+        </p>
+        <p>
+          It shows <a href="lock.html#greeter"><code>cx.greetd()</code></a
+          >, a full-screen panel with <code>KeyboardFocus::Exclusive</code>, and
+          <a href="system.html#exit"><code>cx.exit</code></a
+          >.
+          <a
+            href="https://github.com/w0x7y/crabshell/blob/main/crates/crabshell/examples/greeter.rs"
+            >Read the source</a
+          >.
+        </p>
+      </article>
+    </main>
+  </body>
+</html>

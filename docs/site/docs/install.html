@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Install and run | Crabshell docs</title>
+    <meta
+      name="description"
+      content="What Crabshell needs, how to install it, start it with your session and edit a running shell."
+    />
+    <script>
+      try {
+        var t = localStorage.getItem("crabshell:theme");
+        if (t === "light" || t === "dark")
+          document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <link rel="icon" href="../logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="../site.css" />
+    <script src="../site.js" defer></script>
+  </head>
+  <body class="docs">
+    <header class="bar">
+      <a class="brand" href="../index.html"
+        ><img src="../logo.svg" alt="" width="20" height="20" />crabshell</a
+      >
+      <a class="ws" href="../docs/index.html">Docs</a>
+    </header>
+    <main>
+      <article>
+        <h1>Install and run</h1>
+        <p class="lede">
+          Three commands put a bar on every monitor. The first build takes a few
+          minutes, and after that an edit shows in about a second.
+        </p>
+        <h2 id="requirements">What you need</h2>
+        <ul>
+          <li>
+            <strong>Rust 1.99 or newer</strong>, with cargo.
+            <a href="https://rustup.rs">rustup</a> installs both.
+          </li>
+          <li>
+            <strong>A compositor with layer-shell</strong>, such as Sway,
+            Hyprland or labwc. The template bar shows Sway's workspaces. On
+            Hyprland, start from the
+            <a href="examples.html#hyprland">hyprland example</a>.
+          </li>
+          <li><strong>Linux 5.3 or newer.</strong></li>
+          <li>
+            <strong
+              >pkg-config, and the development files of fontconfig, libpulse,
+              libxkbcommon and PAM.</strong
+            >
+            On Debian or Ubuntu:
+          </li>
+        </ul>
+        <pre><code class="sh">$ sudo apt install pkg-config libfontconfig1-dev libpulse-dev libxkbcommon-dev libpam0g-dev</code></pre>
+        <p>
+          Three more are optional. Without one, its part of the bar stays empty.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Program</th>
+              <th>What uses it</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>PulseAudio or pipewire-pulse</td>
+              <td>The volume</td>
+            </tr>
+            <tr>
+              <td>A D-Bus session bus</td>
+              <td>The tray, media players and notifications</td>
+            </tr>
+            <tr>
+              <td>A notification daemon such as mako</td>
+              <td>
+                The note <code>crabshell run</code> sends when an edit doesn't
+                build
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <h2 id="install">Install</h2>
+        <pre><code class="sh">$ cargo install --locked crabshell-cli
+$ crabshell init
+$ crabshell run</code></pre>
+        <ol>
+          <li>
+            <code>cargo install</code> puts the <code>crabshell</code> command
+            in <code>~/.cargo/bin</code>.
+          </li>
+          <li>
+            <code>crabshell init</code> writes a Cargo project to
+            <code>~/.config/crabshell</code>. It refuses if that directory
+            exists, so it never overwrites a config.
+          </li>
+          <li>
+            <code>crabshell run</code> builds the config and starts it. The
+            first build compiles the toolkit, which took just under three
+            minutes on 12 cores.
+          </li>
+        </ol>
+        <p>
+          A bar then shows at the top of every monitor, with Sway's workspaces,
+          the tray, the volume and the clock. Stop any other bar first.
+        </p>
+        <pre><code>~/.config/crabshell/
+├── Cargo.toml
+└── src/
+    └── main.rs</code></pre>
+        <p>
+          Build output goes to <code>~/.cache/crabshell/target</code>.
+          <code>XDG_CONFIG_HOME</code> and <code>XDG_CACHE_HOME</code> move both
+          directories.
+        </p>
+        <h2 id="edit">Edit it while it runs</h2>
+        <p>
+          Leave <code>crabshell run</code> running and change
+          <code>src/main.rs</code>. Each save rebuilds the config and swaps the
+          bar. A one-line edit builds in about 0.7 s, and the screen is without
+          a bar for 13 to 19 ms.
+        </p>
+        <ul>
+          <li>
+            <strong>The edit doesn't build.</strong> The old bar stays. The
+            errors print in the terminal, and the first one arrives as a
+            notification.
+          </li>
+          <li>
+            <strong>The new shell crashes.</strong> It is started again. After
+            three crashes within a minute, <code>crabshell run</code> goes back
+            to the last build that worked.
+          </li>
+          <li>
+            <strong>You only want to check.</strong>
+            <code>crabshell check</code> runs <code>cargo check</code> on the
+            config.
+          </li>
+        </ul>
+        <p>
+          Values kept with
+          <a href="system.html#persist"><code>cx.persist</code></a> survive each
+          swap. rust-analyzer works in <code>~/.config/crabshell</code> as in
+          any Cargo project.
+        </p>
+        <h2 id="autostart">Start it with your session</h2>
+        <pre><code># Sway: ~/.config/sway/config
+exec ~/.cargo/bin/crabshell run
+
+# Hyprland: ~/.config/hypr/hyprland.conf
+exec-once = ~/.cargo/bin/crabshell run</code></pre>
+        <p>
+          <code>crabshell run</code> calls cargo, so cargo must be on the
+          <code>PATH</code> your session starts with. A <code>PATH</code> set
+          only in your shell's startup file isn't enough under a display
+          manager.
+        </p>
+        <h2 id="from-a-clone">Build against a clone</h2>
+        <pre><code class="sh">$ git clone https://github.com/w0x7y/crabshell
+$ cd crabshell
+$ cargo run --release -p crabshell --example launcher</code></pre>
+        <p>
+          The other <a href="examples.html">examples</a> run the same way.
+          <code>crabshell init --path &lt;clone&gt;</code> writes a config that
+          depends on the clone instead of crates.io.
+        </p>
+        <h2 id="update">Update or remove it</h2>
+        <p>
+          Run <code>cargo install --locked crabshell-cli</code> again to update
+          the command, and <code>cargo update</code> in
+          <code>~/.config/crabshell</code> for the newest 0.5 library. To remove
+          everything, run <code>cargo uninstall crabshell-cli</code> and delete
+          <code>~/.config/crabshell</code> and <code>~/.cache/crabshell</code>.
+        </p>
+      </article>
+    </main>
+  </body>
+</html>

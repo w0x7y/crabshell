@@ -1,0 +1,539 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Compositors and windows | Crabshell docs</title>
+    <meta
+      name="description"
+      content="Workspaces on Sway, Hyprland and ext-workspace compositors, other programs&#x27; windows, live window pictures, global shortcuts, and the protocol each feature needs."
+    />
+    <script>
+      try {
+        var t = localStorage.getItem("crabshell:theme");
+        if (t === "light" || t === "dark")
+          document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <link rel="icon" href="../logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="../site.css" />
+    <script src="../site.js" defer></script>
+  </head>
+  <body class="docs">
+    <header class="bar">
+      <a class="brand" href="../index.html"
+        ><img src="../logo.svg" alt="" width="20" height="20" />crabshell</a
+      >
+      <a class="ws" href="../docs/index.html">Docs</a>
+    </header>
+    <main>
+      <article>
+        <h1>Compositors and windows</h1>
+        <p class="lede">
+          Workspaces come three ways: Sway's IPC, Hyprland's IPC and the
+          <code>ext-workspace-v1</code> protocol. Windows and screen pictures
+          come through protocols most wlroots compositors share.
+        </p>
+        <h2 id="which">Which one to use</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Your compositor</th>
+              <th>Workspaces from</th>
+              <th>Other windows from</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Sway, or i3-compatible IPC</td>
+              <td>
+                <a href="#sway"><code>cx.sway()</code></a>
+              </td>
+              <td>
+                <a href="#toplevels"><code>cx.toplevels()</code></a>
+              </td>
+            </tr>
+            <tr>
+              <td>Hyprland</td>
+              <td>
+                <a href="#hyprland"><code>cx.hyprland()</code></a>
+              </td>
+              <td>
+                <code>cx.hyprland().toplevels()</code> or
+                <a href="#toplevels"><code>cx.toplevels()</code></a>
+              </td>
+            </tr>
+            <tr>
+              <td>labwc and others with <code>ext-workspace-v1</code></td>
+              <td>
+                <a href="#window-manager"><code>cx.window_manager()</code></a>
+              </td>
+              <td>
+                <a href="#toplevels"><code>cx.toplevels()</code></a>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Each stays empty and asleep where its compositor isn't running, so one
+          config can serve two compositors.
+        </p>
+        <h2 id="sway">Sway</h2>
+        <pre><code class="rs">let workspaces = cx.sway().workspaces();
+let output_name = output.name();
+
+Row::new().gap(4).children_keyed(
+  move || {
+    workspaces.get().into_iter().filter(|w| w.output == output_name).collect::&lt;Vec&lt;_&gt;&gt;()
+  },
+  |w| w.id,
+  |_cx, ws| {
+    Button::new(Text::new(move || ws.get().name))
+      .style(move || if ws.get().focused { WS_FOCUSED } else { WS })
+      .on_click(move |cx| cx.sway().focus_workspace(&amp;ws.get().name))
+  },
+)</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it gives or does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>workspaces()</code></td>
+              <td>
+                <code>Vec&lt;Workspace&gt;</code>: each with <code>id</code>,
+                <code>name</code>, <code>output</code>, <code>focused</code>,
+                <code>visible</code> and <code>urgent</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>outputs()</code></td>
+              <td>
+                <code>Vec&lt;SwayOutput&gt;</code>: each with <code>name</code>,
+                <code>focused</code>, <code>active</code>,
+                <code>current_workspace</code>, <code>x</code>, <code>y</code>,
+                <code>width</code>, <code>height</code> and <code>scale</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>focus_workspace(name)</code></td>
+              <td>Switches to a workspace.</td>
+            </tr>
+            <tr>
+              <td><code>dispatch(command)</code></td>
+              <td>
+                Runs any Sway command, as <code>swaymsg</code> does. It is sent
+                as written, so quote a name that has spaces.
+              </td>
+            </tr>
+            <tr>
+              <td><code>on_event(kinds, handler)</code></td>
+              <td>
+                Calls <code>handler</code> with each event of the kinds you
+                list.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          The service connects to the socket in <code>$SWAYSOCK</code>. If that
+          is unset or the first connection fails, the lists stay empty. A
+          working connection that drops is retried every 2 s.
+        </p>
+        <p>
+          Sway deletes an empty workspace once it isn't shown. For a fixed set
+          of numbered slots, build them yourself and look each one up in the
+          list.
+        </p>
+        <h3 id="sway-events">Raw events</h3>
+        <p>
+          <code>on_event</code> covers what the lists don't, such as the binding
+          mode or the focused window's title.
+        </p>
+        <pre><code class="rs">let mode = cx.signal(String::from("default"));
+cx.sway().on_event(&amp;[SwayEventKind::Mode], move |event| {
+  // event.data is Sway's JSON for the event.
+  if let Ok(json) = serde_json::from_str::&lt;serde_json::Value&gt;(&amp;event.data) {
+    mode.set(json["change"].as_str().unwrap_or("default").to_owned());
+  }
+});</code></pre>
+        <p>
+          The kinds are <code>Workspace</code>, <code>Output</code>,
+          <code>Mode</code>, <code>Window</code>, <code>BarconfigUpdate</code>,
+          <code>Binding</code>, <code>Shutdown</code>, <code>Tick</code>,
+          <code>BarStateUpdate</code> and <code>Input</code>. Sway is asked only
+          for the kinds some handler wants. The handler lives as long as the
+          context <code>cx.sway()</code> was called on. This example needs
+          <code>serde_json</code> in the config's own <code>Cargo.toml</code>.
+        </p>
+        <h2 id="hyprland">Hyprland</h2>
+        <pre><code class="rs">let hyprland = cx.hyprland();
+let workspaces = hyprland.workspaces();
+let toplevels = hyprland.toplevels();</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it gives or does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>workspaces()</code></td>
+              <td>
+                <code>Vec&lt;HyprlandWorkspace&gt;</code>: each with
+                <code>id</code>, <code>name</code>, <code>monitor</code>,
+                <code>windows</code>, <code>focused</code>,
+                <code>active</code> and <code>urgent</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>monitors()</code></td>
+              <td>
+                <code>Vec&lt;HyprlandMonitor&gt;</code>: each with
+                <code>id</code>, <code>name</code>, <code>description</code>,
+                <code>focused</code>, <code>active_workspace</code>,
+                <code>x</code>, <code>y</code>, <code>width</code>,
+                <code>height</code> and <code>scale</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>toplevels()</code></td>
+              <td>
+                <code>Vec&lt;HyprlandToplevel&gt;</code>: each with
+                <code>address</code>, <code>class</code>, <code>title</code>,
+                <code>workspace</code>, <code>monitor</code>,
+                <code>floating</code>, <code>fullscreen</code>,
+                <code>focused</code> and <code>urgent</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>focus_workspace(target)</code></td>
+              <td>
+                Switches to a workspace, named as <code>2</code> or
+                <code>name:web</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>dispatch(command)</code></td>
+              <td>Sends a raw dispatch.</td>
+            </tr>
+            <tr>
+              <td><code>on_event(handler)</code></td>
+              <td>
+                Calls <code>handler</code> with every raw
+                <code>HyprlandEvent</code>, which has a <code>name</code> and
+                its <code>data</code>. <code>event.parse(n)</code> splits the
+                data into at most <code>n</code> fields.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          A named workspace has an <code>id</code> of <code>None</code>. Special
+          workspaces have names that start with <code>special:</code>. The
+          <a href="examples.html#hyprland">hyprland example</a> is a complete
+          bar.
+        </p>
+        <pre><code class="rs">.on_click(move |_| {
+  let ws = ws.get();
+  let target = match ws.id {
+    Some(id) if id &gt; 0 =&gt; id.to_string(),
+    _ =&gt; format!("name:{}", ws.name),
+  };
+  hyprland.focus_workspace(&amp;target);
+})</code></pre>
+        <div class="warn">
+          <p>
+            **Be careful with <code>dispatch</code>.** When Hyprland's config is
+            Lua, which it can be from 0.55 and always is from 0.57, the command
+            is a Lua expression that runs inside the compositor. Never build one
+            from a window title, a class or a workspace name, since those come
+            from other programs. <code>focus_workspace</code> quotes names for
+            you.
+          </p>
+        </div>
+        <p>
+          The service finds Hyprland's sockets through
+          <code>$HYPRLAND_INSTANCE_SIGNATURE</code>. Without it the lists stay
+          empty, which is logged once.
+        </p>
+        <h2 id="window-manager">Any compositor with ext-workspace</h2>
+        <p>
+          <code>cx.window_manager()</code> reads workspaces through
+          <code>ext-workspace-v1</code>, which labwc supports. It uses the
+          protocol's words. A windowset is a workspace, and a projection is a
+          group of workspaces shown on one or more monitors.
+        </p>
+        <pre><code class="rs">fn workspaces(cx: &amp;Cx, output: &amp;Output) -&gt; Row {
+  let manager = cx.window_manager();
+  let name = output.name();
+  Row::new().children_keyed(
+    move || manager.windowsets_on(&amp;name),
+    |set| set.id,
+    move |_, set| {
+      Button::new(Text::new(move || set.get().name))
+        .on_click(move |_| manager.activate(set.get().id))
+    },
+  )
+}</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it gives or does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>windowsets()</code></td>
+              <td>
+                <code>Vec&lt;Windowset&gt;</code>: each with <code>id</code>,
+                <code>name</code>, <code>active</code>, <code>urgent</code>,
+                <code>hidden</code>, its <code>projection</code>, and
+                <code>can_activate</code>, <code>can_deactivate</code>,
+                <code>can_remove</code> and <code>can_assign</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>projections()</code></td>
+              <td>
+                <code>Vec&lt;WindowsetProjection&gt;</code>: each with
+                <code>id</code>, the <code>outputs</code> it shows on, and
+                <code>can_create</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>windowsets_on(output)</code></td>
+              <td>The workspaces a bar on that monitor should list.</td>
+            </tr>
+            <tr>
+              <td>
+                <code>activate(id)</code>, <code>deactivate(id)</code>,
+                <code>remove(id)</code>
+              </td>
+              <td>
+                Requests about one workspace. The <code>can_</code> fields say
+                which the compositor takes.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>assign(id, projection)</code>,
+                <code>create_windowset(projection, name)</code>
+              </td>
+              <td>Moves a workspace to another group, or makes one.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          <code>WindowManager</code> is a <code>Copy</code> handle. Without the
+          protocol the lists stay empty, and that is logged.
+        </p>
+        <h2 id="toplevels">Other programs' windows</h2>
+        <p>
+          <code>cx.toplevels()</code> lists every window on the desktop, for a
+          taskbar, a window switcher or an overview. It uses
+          <code>wlr-foreign-toplevel-management</code>.
+        </p>
+        <pre><code class="rs">let toplevels = cx.toplevels();
+let list = toplevels.list();
+
+Row::new().children_keyed(
+  move || list.get(),
+  |toplevel: &amp;Toplevel| toplevel.id,
+  move |_cx, toplevel| {
+    Button::new(Text::new(move || toplevel.get().title).ellipsis(true))
+      .style(move || if toplevel.get().activated { TASK_ON } else { TASK })
+      .on_click(move |_| toplevels.activate(toplevel.get().id))
+      .on_middle_click(move |_| toplevels.close(toplevel.get().id))
+  },
+)</code></pre>
+        <p>
+          A <code>Toplevel</code> has <code>id</code>, <code>title</code>,
+          <code>app_id</code>, the <code>outputs</code> it is on,
+          <code>activated</code>, <code>maximized</code>,
+          <code>minimized</code>, <code>fullscreen</code> and its
+          <code>parent</code>. The methods take an id: <code>activate</code>,
+          <code>close</code>, <code>set_maximized(id, bool)</code>,
+          <code>set_minimized(id, bool)</code> and
+          <code>set_fullscreen(id, bool)</code>.
+        </p>
+        <p>
+          For a window's icon, look its <code>app_id</code> up in the
+          <a href="system.html#desktop-entries">desktop entries</a>.
+        </p>
+        <pre><code class="rs">let icon = cx.desktop_entries().lookup(&amp;toplevel.app_id).map(|entry| entry.icon);</code></pre>
+        <h2 id="screencopy">Live pictures of windows and monitors</h2>
+        <p>
+          <code>ScreencopyView</code> shows what a monitor or a window shows,
+          captured by the compositor. Its style gives it a size.
+        </p>
+        <pre><code class="rs">ScreencopyView::new(CaptureSource::Toplevel(id))
+  .live(true)
+  .style(Style::new().width(192.0).height(108.0).radius(4.0))</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>ScreencopyView::new(source)</code></td>
+              <td>
+                <code>CaptureSource::Output(name)</code> for a monitor or
+                <code>CaptureSource::Toplevel(id)</code> for a window, with an
+                id from <code>cx.toplevels()</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>live(bool)</code></td>
+              <td>
+                Off, the default, shows one frame. On, each change to the source
+                brings a new frame.
+              </td>
+            </tr>
+            <tr>
+              <td><code>paint_cursors(bool)</code></td>
+              <td>
+                Whether the pointer is drawn into the picture. Off by default.
+              </td>
+            </tr>
+            <tr>
+              <td><code>fit(fit)</code></td>
+              <td>
+                How the picture fills the box, as on an
+                <a href="drawing.html#images"><code>Image</code></a
+                >.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          A live view of a window that doesn't change wakes nothing. The view
+          draws nothing until its first frame, and keeps the last frame when its
+          source goes. It needs <code>ext-image-copy-capture-v1</code>.
+        </p>
+        <h2 id="global-shortcuts">Global shortcuts</h2>
+        <p>
+          A shell window gets keys only while it has the keyboard. For a key
+          that works anywhere, bind it in the compositor's config to a
+          <a href="system.html#ipc"><code>crabshell ipc</code></a> call.
+        </p>
+        <pre><code># Sway
+bindsym $mod+d exec crabshell ipc launcher toggle</code></pre>
+        <p>
+          On Hyprland,
+          <code>cx.global_shortcut(app_id, name, description)</code> registers a
+          shortcut the compositor binds directly. It returns a
+          <code>ReadSignal&lt;bool&gt;</code> that is true while the key is
+          held, which also makes push-to-talk possible.
+        </p>
+        <pre><code class="rs">let held = cx.global_shortcut("crabshell", "launcher", "Show the launcher");
+cx.effect(move || {
+  if held.get() {
+    open.update(|open| *open = !*open);
+  }
+});</code></pre>
+        <pre><code># hyprland.conf
+bind = SUPER, D, global, crabshell:launcher</code></pre>
+        <p>
+          Pick an app id of your own, since Hyprland drops a program that
+          registers a pair another one holds.
+        </p>
+        <h2 id="protocols">What each feature needs</h2>
+        <p>
+          Crabshell asks for a protocol only when a config uses the feature. A
+          compositor without it gets one log line and an empty result.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Feature</th>
+              <th>Protocol</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>PanelWindow</code></td>
+              <td><code>wlr-layer-shell</code>. Required.</td>
+            </tr>
+            <tr>
+              <td><code>PopupWindow</code>, <code>FloatingWindow</code></td>
+              <td><code>xdg-shell</code></td>
+            </tr>
+            <tr>
+              <td>Sharp drawing at 1.25, 1.5 and 1.75 scale</td>
+              <td>
+                <code>wp-fractional-scale-v1</code> with
+                <code>wp-viewporter</code>. Without them windows draw at the
+                next whole scale.
+              </td>
+            </tr>
+            <tr>
+              <td>Cursor shapes</td>
+              <td><code>wp-cursor-shape-v1</code></td>
+            </tr>
+            <tr>
+              <td>Input methods in text fields</td>
+              <td><code>zwp-text-input-v3</code></td>
+            </tr>
+            <tr>
+              <td><code>blur</code></td>
+              <td><code>ext-background-effect-v1</code></td>
+            </tr>
+            <tr>
+              <td><code>cx.idle_monitor</code>, <code>inhibit_idle</code></td>
+              <td>
+                <code>ext-idle-notify-v1</code>,
+                <code>idle-inhibit-unstable-v1</code>
+              </td>
+            </tr>
+            <tr>
+              <td><code>cx.toplevels()</code></td>
+              <td><code>wlr-foreign-toplevel-management</code></td>
+            </tr>
+            <tr>
+              <td><code>ScreencopyView</code></td>
+              <td>
+                <code>ext-image-copy-capture-v1</code>, with
+                <code>ext-foreign-toplevel-list-v1</code> for windows
+              </td>
+            </tr>
+            <tr>
+              <td><code>cx.session_lock</code></td>
+              <td><code>ext-session-lock-v1</code></td>
+            </tr>
+            <tr>
+              <td><code>cx.window_manager()</code></td>
+              <td><code>ext-workspace-v1</code></td>
+            </tr>
+            <tr>
+              <td><code>inhibit_shortcuts</code></td>
+              <td><code>keyboard-shortcuts-inhibit-unstable-v1</code></td>
+            </tr>
+            <tr>
+              <td><code>cx.global_shortcut</code></td>
+              <td><code>hyprland-global-shortcuts-v1</code></td>
+            </tr>
+            <tr>
+              <td><code>focus_grab</code></td>
+              <td><code>hyprland-focus-grab-v1</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>compositor_opacity</code>, <code>visible_mask</code>
+              </td>
+              <td><code>hyprland-surface-v1</code>, from Hyprland 0.47</td>
+            </tr>
+          </tbody>
+        </table>
+      </article>
+    </main>
+  </body>
+</html>

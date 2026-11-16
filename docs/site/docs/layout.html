@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Layout | Crabshell docs</title>
+    <meta
+      name="description"
+      content="How Crabshell sizes and places widgets: rows and columns, growing and shrinking, grids, absolute positions, wrapping and visibility."
+    />
+    <script>
+      try {
+        var t = localStorage.getItem("crabshell:theme");
+        if (t === "light" || t === "dark")
+          document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <link rel="icon" href="../logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="../site.css" />
+    <script src="../site.js" defer></script>
+  </head>
+  <body class="docs">
+    <header class="bar">
+      <a class="brand" href="../index.html"
+        ><img src="../logo.svg" alt="" width="20" height="20" />crabshell</a
+      >
+      <a class="ws" href="../docs/index.html">Docs</a>
+    </header>
+    <main>
+      <article>
+        <h1>Layout</h1>
+        <p class="lede">
+          Layout is flexbox and grid, the same model as CSS, written as method
+          calls and style fields.
+        </p>
+        <h2 id="basics">The basics</h2>
+        <ul>
+          <li>
+            Every size is in logical pixels. The renderer multiplies by the
+            monitor's scale.
+          </li>
+          <li>
+            A window's child fills the window. A panel anchored left and right
+            gets its width from the compositor.
+          </li>
+          <li>
+            A row or column is as large as its content. Children stretch across
+            it and pack at its start.
+          </li>
+          <li>
+            Content that doesn't fit overflows and still draws.
+            <code>clip(true)</code> in the style cuts it off.
+          </li>
+        </ul>
+        <h2 id="rows-columns">Rows and columns</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Setting</th>
+              <th>In a row</th>
+              <th>In a column</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>gap(8)</code></td>
+              <td>8 pixels between neighbors</td>
+              <td>The same</td>
+            </tr>
+            <tr>
+              <td><code>padding(4, 8)</code></td>
+              <td>4 pixels above and below, 8 at the sides</td>
+              <td>The same</td>
+            </tr>
+            <tr>
+              <td><code>align(...)</code></td>
+              <td>Up and down</td>
+              <td>Left and right</td>
+            </tr>
+            <tr>
+              <td><code>justify(...)</code></td>
+              <td>Left and right</td>
+              <td>Up and down</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          <code>align</code> takes <code>Align::Start</code>,
+          <code>Center</code>, <code>End</code> or <code>Stretch</code>, the
+          default. <code>justify</code> takes <code>Justify::Start</code>,
+          <code>Center</code>, <code>End</code>, <code>SpaceBetween</code>,
+          <code>SpaceAround</code> or <code>SpaceEvenly</code>. To center one
+          thing in a box, use both.
+        </p>
+        <pre><code class="rs">Column::new()
+  .align(Align::Center)
+  .justify(Justify::Center)
+  .child(Text::new("Locked"))</code></pre>
+        <p>
+          A <code>Spacer</code> takes whatever width is left, which pushes
+          things apart.
+        </p>
+        <pre><code class="rs">Row::new()
+  .child(workspaces)
+  .child(Spacer::new())
+  .child(clock)</code></pre>
+        <p>
+          Two spacers share the leftover space, which centers the clock between
+          its neighbors. If the two sides differ in width, that is off the bar's
+          true center. To pin it there, use an
+          <a href="#absolute">absolute position</a>.
+        </p>
+        <pre><code class="rs">Row::new()
+  .child(workspaces)
+  .child(Spacer::new())
+  .child(clock)
+  .child(Spacer::new())
+  .child(tray)</code></pre>
+        <h2 id="sizes">Sizes</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Field</th>
+              <th>What it sets</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>width(px)</code>, <code>height(px)</code></td>
+              <td>A fixed size.</td>
+            </tr>
+            <tr>
+              <td>
+                <code>min_width</code>, <code>min_height</code>,
+                <code>max_width</code>, <code>max_height</code>
+              </td>
+              <td>Limits on a size that follows the content or the space.</td>
+            </tr>
+            <tr>
+              <td><code>grow(n)</code></td>
+              <td>
+                Its share of the leftover space in a row or column. 0 takes
+                none.
+              </td>
+            </tr>
+            <tr>
+              <td><code>shrink(n)</code></td>
+              <td>How much it gives up when room is short. 0 never shrinks.</td>
+            </tr>
+            <tr>
+              <td><code>basis(px)</code></td>
+              <td>The size it starts from before growing or shrinking.</td>
+            </tr>
+          </tbody>
+        </table>
+        <pre><code class="rs">const SIDEBAR: Style = Style::new().width(240.0);
+const CONTENT: Style = Style::new().grow(1.0);
+
+Row::new()
+  .child(Column::new().style(SIDEBAR))
+  .child(Column::new().style(CONTENT))</code></pre>
+        <p>A size can follow a signal like anything else.</p>
+        <pre><code class="rs">Row::new().style(move || FILL.width(2.0 * volume.get() as f32))</code></pre>
+        <h2 id="padding">Padding</h2>
+        <p>
+          <code>padding(vertical, horizontal)</code> in a style sets the space
+          inside a widget's edges, and <code>padding_top</code>,
+          <code>padding_right</code>, <code>padding_bottom</code> and
+          <code>padding_left</code> set one side each. A row's, column's or
+          grid's own <code>padding</code> method wins over its style's.
+        </p>
+        <h2 id="buttons">Buttons center their child</h2>
+        <p>
+          A <code>Button</code> is as large as its child plus its padding, and
+          centers the child. For a list row that should start at the left, give
+          the row the width it should fill.
+        </p>
+        <pre><code class="rs">// The row is as wide as the list less the button's padding, so its text starts at the left.
+const LINE: Style = Style::new().width(314.0);
+
+Button::new(Row::new().style(LINE).child(icon).child(label)).style(ITEM)</code></pre>
+        <h2 id="wrap">Wrapping and reversing</h2>
+        <p>
+          <code>wrap(true)</code> starts a new line for children that don't fit.
+          <code>reverse(true)</code> runs a row right to left or a column bottom
+          to top.
+        </p>
+        <pre><code class="rs">// Chips that flow onto as many lines as they need.
+names.iter().fold(Row::new().wrap(true).gap(8), |row, name| row.child(chip(name)))</code></pre>
+        <h2 id="grids">Grids</h2>
+        <p>
+          <code>Grid</code> places children row by row into equal columns. A
+          child spans cells with <code>span(columns, rows)</code>, and in its
+          cell <code>align_self</code> places it up and down and
+          <code>justify_self</code> left and right.
+        </p>
+        <pre><code class="rs">// A month: seven columns, with the days before the 1st as one empty cell.
+let mut month = Grid::new().columns(7).gap(4);
+if blanks &gt; 0 {
+  month = month.child(Row::new().style(Style::new().span(blanks, 1)));
+}
+for day in 1..=days {
+  month = month.child(Text::new(day.to_string()));
+}</code></pre>
+        <h2 id="absolute">Stacks and absolute positions</h2>
+        <p>
+          A <code>Stack</code> draws its children on top of each other, each
+          stretched to the size of the largest. <code>align_self</code> and
+          <code>justify_self</code> place a child in the cell instead.
+        </p>
+        <pre><code class="rs">Stack::new()
+  .child(album_art)
+  .child(Text::new("2:41").style(Style::new().align_self(Align::End).justify_self(Align::End)))</code></pre>
+        <p>
+          Setting <code>left</code>, <code>top</code>, <code>right</code> or
+          <code>bottom</code> takes a widget out of its parent's flow, as CSS's
+          <code>position: absolute</code> does. It is placed from those edges
+          and no longer adds to the parent's size.
+        </p>
+        <pre><code class="rs">// A badge in the top right corner of an icon.
+const BADGE: Style = Style::new()
+  .top(0.0)
+  .right(0.0)
+  .width(10.0)
+  .height(10.0)
+  .radius(5.0)
+  .background(Color::rgb(0xf3, 0x8b, 0xa8));
+
+Stack::new().child(Icon::new("mail-unread")).child(Row::new().style(BADGE))</code></pre>
+        <p>
+          <code>z(n)</code> orders siblings for drawing and for the pointer,
+          lowest first. Tab order always follows child order.
+        </p>
+        <h2 id="align-self">One child placed differently</h2>
+        <p>
+          <code>align_self</code> overrides the container's
+          <code>align</code> for one child.
+        </p>
+        <pre><code class="rs">Row::new()
+  .align(Align::Center)
+  .child(title)
+  .child(Text::new("beta").style(Style::new().align_self(Align::Start)))</code></pre>
+        <h2 id="visible">Visibility</h2>
+        <p>
+          <code>visible(false)</code> removes a widget from the layout. Its
+          bindings, state and children stay, so showing it again is cheap. To
+          free those too, build it in a
+          <a href="reactivity.html#contexts">child context</a>.
+        </p>
+        <pre><code class="rs">Text::new("away").visible(move || away.get())</code></pre>
+        <h2 id="no-layout">What moves without a layout</h2>
+        <p>
+          <a href="styles.html#transforms"
+            ><code>translate</code>, <code>scale</code> and
+            <code>rotate</code></a
+          >
+          move where a widget is drawn and clicked, never where it is laid out.
+          Use them for motion, since they only repaint.
+        </p>
+        <h2 id="geometry">Reading a widget's place</h2>
+        <p>
+          <code>geometry(signal)</code> on any widget writes its rectangle to a
+          <code>Signal&lt;Rect&gt;</code> after each layout that moves it, in
+          the window's logical pixels, with scroll offsets applied and
+          transforms left out.
+        </p>
+      </article>
+    </main>
+  </body>
+</html>

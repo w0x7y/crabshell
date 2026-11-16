@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Overview | Crabshell docs</title>
+    <meta
+      name="description"
+      content="What a Crabshell config looks like, how it runs, and where each part of the docs lives."
+    />
+    <script>
+      try {
+        var t = localStorage.getItem("crabshell:theme");
+        if (t === "light" || t === "dark")
+          document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <link rel="icon" href="../logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="../site.css" />
+    <script src="../site.js" defer></script>
+  </head>
+  <body class="docs">
+    <header class="bar">
+      <a class="brand" href="../index.html"
+        ><img src="../logo.svg" alt="" width="20" height="20" />crabshell</a
+      >
+      <a class="ws" href="../docs/index.html">Docs</a>
+    </header>
+    <main>
+      <article>
+        <h1>Crabshell docs</h1>
+        <p class="lede">
+          Crabshell is a Rust toolkit for writing a desktop shell on Wayland,
+          from a first bar to launchers, notifications and a lock screen.
+        </p>
+        <h2 id="what-you-write">What you write</h2>
+        <p>
+          A config is a Cargo project in <code>~/.config/crabshell</code>. Its
+          <code>main</code> calls <code>crabshell::run</code> with a closure
+          that builds windows out of widgets. This one puts a bar on every
+          monitor, with a button that counts its clicks.
+        </p>
+        <pre data-file="src/main.rs"><code class="rs">use crabshell::prelude::*;
+
+fn main() {
+  crabshell::run(|cx| cx.per_output(bar));
+}
+
+fn bar(cx: &amp;Cx, output: &amp;Output) -&gt; PanelWindow {
+  let count = cx.signal(0_u32);
+  PanelWindow::new(output)
+    .anchors(Edge::Top | Edge::Left | Edge::Right)
+    .height(30)
+    .child(
+      Row::new()
+        .padding(4, 8)
+        .child(
+          Button::new(Text::new(move || format!("clicked {} times", count.get())))
+            .on_click(move |_| count.update(|n| *n += 1)),
+        )
+        .child(Spacer::new())
+        .child(Text::new(output.name())),
+    )
+}</code></pre>
+        <ul>
+          <li>
+            <strong>Windows hold widgets.</strong> A <code>PanelWindow</code> is
+            a surface on one monitor, and <code>cx.per_output</code> builds one
+            for every monitor, now and later. See
+            <a href="windows.html">Windows</a>.
+          </li>
+          <li>
+            <strong>Widgets are builder calls.</strong> There is no markup
+            language and no macro. See <a href="widgets.html">Widgets</a>.
+          </li>
+          <li>
+            <strong>A property takes a value or a closure.</strong>
+            <code>.height(30)</code> sets it once. A closure runs again when a
+            signal it read changes, and only that widget repaints. See
+            <a href="reactivity.html">Signals and effects</a>.
+          </li>
+          <li>
+            <strong>The desktop arrives as signals.</strong>
+            <code>cx.clock(...)</code>, <code>cx.sway()</code>,
+            <code>cx.audio()</code> and the other
+            <a href="services.html">services</a> hand out signals to read.
+          </li>
+        </ul>
+        <h2 id="how-it-runs">How it runs</h2>
+        <p>
+          The <code>crabshell</code> command builds your config with cargo,
+          starts it and watches your files. On a save it rebuilds and swaps the
+          shell, in about a second for a small edit. A build that fails leaves
+          the old shell running, and a shell that crashes is started again.
+          <a href="cli.html">The crabshell command</a> has the details.
+        </p>
+        <p>
+          Inside the shell everything runs on one thread, and nothing is drawn
+          unless something changed.
+        </p>
+        <h2 id="where-next">Where to go next</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>You want to</th>
+              <th>Read</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Get a bar on screen</td>
+              <td><a href="install.html">Install and run</a></td>
+            </tr>
+            <tr>
+              <td>Understand the template line by line</td>
+              <td><a href="first-bar.html">Your first bar</a></td>
+            </tr>
+            <tr>
+              <td>Start from a finished shell</td>
+              <td><a href="examples.html">Examples</a></td>
+            </tr>
+            <tr>
+              <td>Know when a closure runs again</td>
+              <td><a href="reactivity.html">Signals and effects</a></td>
+            </tr>
+            <tr>
+              <td>Open a launcher, a popup or a floating window</td>
+              <td><a href="windows.html">Windows</a></td>
+            </tr>
+            <tr>
+              <td>Look up a widget</td>
+              <td><a href="widgets.html">Widgets</a></td>
+            </tr>
+            <tr>
+              <td>Size and place things</td>
+              <td><a href="layout.html">Layout</a></td>
+            </tr>
+            <tr>
+              <td>Set colors, fonts, gradients and shadows</td>
+              <td><a href="styles.html">Styles</a></td>
+            </tr>
+            <tr>
+              <td>React to clicks, drags, keys and typing</td>
+              <td><a href="input.html">Pointer and keyboard</a></td>
+            </tr>
+            <tr>
+              <td>Animate, or run something later</td>
+              <td><a href="motion.html">Timers and motion</a></td>
+            </tr>
+            <tr>
+              <td>Draw a graph, a picture or a wallpaper</td>
+              <td><a href="drawing.html">Drawing and images</a></td>
+            </tr>
+            <tr>
+              <td>Show the battery, the network, media or notifications</td>
+              <td><a href="services.html">Desktop services</a></td>
+            </tr>
+            <tr>
+              <td>Show workspaces and other programs' windows</td>
+              <td><a href="compositors.html">Compositors and windows</a></td>
+            </tr>
+            <tr>
+              <td>Run a program, read a file, or script the shell</td>
+              <td><a href="system.html">Programs, files and IPC</a></td>
+            </tr>
+            <tr>
+              <td>Write a lock screen, a greeter or a polkit dialog</td>
+              <td><a href="lock.html">Lock screen and logins</a></td>
+            </tr>
+            <tr>
+              <td>Fix a build error, a panic or a blank screen</td>
+              <td><a href="troubleshooting.html">When something breaks</a></td>
+            </tr>
+          </tbody>
+        </table>
+        <h2 id="runs-on">What it runs on</h2>
+        <p>
+          Crabshell needs a Wayland compositor with layer-shell, such as Sway,
+          Hyprland or labwc. Its test suites run on Sway, and Hyprland is
+          checked by hand. Some features need more from the compositor, and
+          <a href="compositors.html#protocols">this table</a> says which. A
+          feature the compositor lacks logs one line and stays empty.
+        </p>
+        <h2 id="versions">Versions</h2>
+        <p>
+          These pages describe version 0.5. A new minor version can change the
+          API. The line <code>crabshell = "0.5"</code> in your
+          <code>Cargo.toml</code> keeps you on 0.5 until you change it.
+          <a href="https://docs.rs/crabshell">docs.rs</a> has reference docs for
+          every public item.
+        </p>
+      </article>
+    </main>
+  </body>
+</html>

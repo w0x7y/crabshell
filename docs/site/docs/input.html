@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pointer and keyboard | Crabshell docs</title>
+    <meta
+      name="description"
+      content="Clicks, hover, scrolling, drags, drag and drop, cursors, keyboard focus, key handlers and text fields in Crabshell."
+    />
+    <script>
+      try {
+        var t = localStorage.getItem("crabshell:theme");
+        if (t === "light" || t === "dark")
+          document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <link rel="icon" href="../logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="../site.css" />
+    <script src="../site.js" defer></script>
+  </head>
+  <body class="docs">
+    <header class="bar">
+      <a class="brand" href="../index.html"
+        ><img src="../logo.svg" alt="" width="20" height="20" />crabshell</a
+      >
+      <a class="ws" href="../docs/index.html">Docs</a>
+    </header>
+    <main>
+      <article>
+        <h1>Pointer and keyboard</h1>
+        <p class="lede">
+          A <code>Button</code> is how a widget hears the pointer. Keys go to
+          whatever has the keyboard focus, then up to the window.
+        </p>
+        <p>
+          Every handler receives a <code>&amp;Cx</code> first, so it can reach
+          services, open popups and set signals. A handler that panics is logged
+          and never called again.
+        </p>
+        <h2 id="clicks">Clicks</h2>
+        <pre><code class="rs">Button::new(Text::new("vol"))
+  .on_click(|cx| cx.audio().toggle_mute())
+  .on_right_click(|cx| cx.exec_detached(["pavucontrol"]))</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Handler</th>
+              <th>When it runs</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>on_click</code></td>
+              <td>The left button was pressed and released on the button.</td>
+            </tr>
+            <tr>
+              <td><code>on_right_click</code>, <code>on_middle_click</code></td>
+              <td>The same for the other two buttons.</td>
+            </tr>
+            <tr>
+              <td><code>on_back</code>, <code>on_forward</code></td>
+              <td>A click of the mouse's side buttons.</td>
+            </tr>
+            <tr>
+              <td><code>on_press</code></td>
+              <td>The moment the left button goes down.</td>
+            </tr>
+            <tr>
+              <td><code>on_release</code></td>
+              <td>The left button came up after going down on this button.</td>
+            </tr>
+            <tr>
+              <td><code>on_double_click</code></td>
+              <td>
+                Two clicks within 400 ms and 5 pixels. It replaces the second
+                <code>on_click</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>on_long_press</code></td>
+              <td>
+                The left button was held for 800 ms without moving. The release
+                then doesn't click.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          The pointer goes to the deepest enabled button under it. A
+          touchscreen's first finger acts as the left button.
+        </p>
+        <h2 id="hover">Hover</h2>
+        <p>
+          <code>hover_style</code> and <code>pressed_style</code> need no code.
+          When something else should react to the hover, bind a signal.
+        </p>
+        <pre><code class="rs">let hovered = cx.signal(false);
+Button::new(
+  Row::new()
+    .child(Text::new(move || title.get()))
+    .child(Text::new("×").visible(move || hovered.get())),
+)
+.hovered(hovered)</code></pre>
+        <p>
+          <code>hovered(signal)</code> is true while the pointer is over the
+          button or anything inside it, inner buttons included. Several buttons
+          may share one signal. <code>pointer_position(signal)</code> writes the
+          pointer's place in the button to a
+          <code>Signal&lt;Option&lt;Point&gt;&gt;</code>.
+        </p>
+        <p>
+          <code>cursor(shape)</code> takes any <code>CursorShape</code>, such as
+          <code>Pointer</code>, <code>Default</code>, <code>Text</code>,
+          <code>Grab</code>, <code>Grabbing</code>, <code>Crosshair</code>,
+          <code>NotAllowed</code>, <code>EwResize</code> or
+          <code>NsResize</code>.
+        </p>
+        <h2 id="scrolling">Scrolling</h2>
+        <pre><code class="rs">Button::new(volume_label).on_scroll(|cx, steps| cx.audio().change_volume(steps * 5))</code></pre>
+        <p>
+          <code>on_scroll</code> gets whole vertical steps as an
+          <code>i32</code>, positive for up. A wheel notch is one step, and a
+          touchpad gives one per 15 pixels.
+        </p>
+        <p>
+          <code>on_wheel</code> gets every scroll event as a <code>Wheel</code>,
+          with an <code>x</code> and a <code>y</code> axis, each holding
+          <code>pixels</code>, <code>notches</code> and <code>stop</code>, plus
+          a <code>source</code> of <code>ScrollSource::Wheel</code>,
+          <code>Finger</code>, <code>Continuous</code> or
+          <code>WheelTilt</code>. Here positive is down and right.
+        </p>
+        <pre><code class="rs">Button::new(timeline).on_wheel(move |_cx, wheel| {
+  offset.update(|x| *x += wheel.x.pixels + wheel.y.pixels);
+})</code></pre>
+        <p>
+          A button with either handler takes the scroll from a scroll view
+          around it.
+        </p>
+        <h2 id="drags">Drags</h2>
+        <pre><code class="rs">Button::new(knob).on_drag(move |_cx, drag| match drag.phase {
+  DragPhase::Start =&gt; grabbed.set(true),
+  DragPhase::Move =&gt; x.set(drag.position.x),
+  DragPhase::End =&gt; grabbed.set(false),
+})</code></pre>
+        <p>
+          A <code>Drag</code> has the <code>phase</code>, the
+          <code>start</code> and the <code>position</code> in the button's own
+          coordinates, and the button's <code>size</code>. A drag starts once
+          the held pointer has moved 10 pixels, or at the press on a button with
+          no click handler. It ends on release or when the pointer leaves the
+          window. For a value on a track, use a
+          <a href="widgets.html#slider"><code>Slider</code></a
+          >.
+        </p>
+        <h2 id="drag-drop">Drag and drop</h2>
+        <p>
+          One button carries a value of any <code>Clone</code> type, and another
+          takes it.
+        </p>
+        <pre><code class="rs">// A workspace button that takes windows dropped on it.
+Button::new(Text::new(move || ws.get().name))
+  .on_drop(move |cx, window_id: u64| move_window(cx, window_id, &amp;ws.get().name))
+  .drop_hovered(over)
+  .style(move || if over.get() { WS_TARGET } else { WS })
+
+// A window thumbnail that can be dragged.
+Button::new(thumbnail).drag_data(move || Some(window.get().id))</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>drag_data(data)</code></td>
+              <td>
+                An <code>Option&lt;T&gt;</code>. While it holds a value, the
+                button drags and carries it. While <code>None</code>, it clicks
+                as usual. As a closure it can follow an edit mode.
+              </td>
+            </tr>
+            <tr>
+              <td><code>on_drop(handler)</code></td>
+              <td>
+                Takes drops of the handler's value type. It gets
+                <code>&amp;Cx</code> and a copy of the value.
+              </td>
+            </tr>
+            <tr>
+              <td><code>drop_hovered(signal)</code></td>
+              <td>True while a drag this button would take is over it.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          The source's own <code>on_drag</code> sees
+          <code>drag.dropped</code> at <code>DragPhase::End</code>. A drag
+          reaches buttons in its own window only.
+          <a href="motion.html#exit"><code>displaced</code></a> slides a
+          reordered list into place.
+        </p>
+        <h2 id="enabled">Turning a button off</h2>
+        <p>
+          <code>enabled(false)</code> stops every handler and state style, and
+          lets the pointer through to a button around it. It shows nothing for
+          being off, so dim it yourself.
+        </p>
+        <pre><code class="rs">Button::new(Text::new("Connect"))
+  .enabled(move || !busy.get())
+  .style(move || if busy.get() { BUTTON.opacity(0.4) } else { BUTTON })</code></pre>
+        <h2 id="focus">Keyboard focus</h2>
+        <p>
+          A window gets keys only with a
+          <a href="windows.html#keyboard-focus"><code>keyboard_focus</code></a>
+          of <code>Exclusive</code> or <code>OnDemand</code>, or as a floating
+          window. Inside it, one button or text field has the focus.
+        </p>
+        <ul>
+          <li>
+            Tab and Shift+Tab move it, in the order the widgets were added.
+          </li>
+          <li>A click focuses a text field, but not a button.</li>
+          <li>
+            <code>focus(true)</code> on a <code>Button</code> or a
+            <code>TextInput</code> takes it whenever the value turns true.
+          </li>
+          <li>
+            Enter or Space clicks the focused button, and
+            <code>focus_style</code> shows which one that is.
+          </li>
+        </ul>
+        <h2 id="keys">Keys</h2>
+        <p>
+          A key press goes to the focused text field, then the focused button's
+          <code>on_key</code>, then the window's <code>on_key</code>. A handler
+          returns <code>true</code> if it used the key.
+        </p>
+        <pre><code class="rs">PanelWindow::new(output)
+  .keyboard_focus(KeyboardFocus::Exclusive)
+  .on_key(move |_cx, event| {
+    match event.key {
+      Key::Escape =&gt; open.set(false),
+      Key::Down =&gt; picked.update(|n| *n += 1),
+      Key::Up =&gt; picked.update(|n| *n = n.saturating_sub(1)),
+      Key::Character('q') if event.modifiers.ctrl =&gt; open.set(false),
+      _ =&gt; return false,
+    }
+    true
+  })</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th><code>KeyEvent</code> field</th>
+              <th>What it holds</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>key</code></td>
+              <td>
+                A <code>Key</code>: <code>Enter</code>, <code>Escape</code>,
+                <code>Tab</code>, <code>Backspace</code>, <code>Delete</code>,
+                <code>Left</code>, <code>Right</code>, <code>Up</code>,
+                <code>Down</code>, <code>Home</code>, <code>End</code>,
+                <code>PageUp</code>, <code>PageDown</code>,
+                <code>Function(n)</code>, <code>Character(c)</code> or
+                <code>Other(keysym)</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>text</code></td>
+              <td>The text the key types, if any.</td>
+            </tr>
+            <tr>
+              <td><code>modifiers</code></td>
+              <td>
+                <code>ctrl</code>, <code>alt</code>, <code>shift</code> and
+                <code>logo</code>, each a <code>bool</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>repeat</code></td>
+              <td>Whether the key is being held.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          For a key that works while no shell window has the focus, bind it in
+          the compositor to
+          <a href="system.html#ipc"><code>crabshell ipc</code></a
+          >, or on Hyprland use a
+          <a href="compositors.html#global-shortcuts">global shortcut</a>.
+        </p>
+        <h2 id="text-fields">Text fields</h2>
+        <p>
+          A launcher is a
+          <a href="widgets.html#textinput"><code>TextInput</code></a> that owns
+          the keyboard, a memo that filters by its text, and a window handler
+          for the keys the field passes on.
+        </p>
+        <pre><code class="rs">let query = cx.signal(String::new());
+let picked = cx.signal(0_usize);
+let shown = cx.memo(move || {
+  let query = query.get().to_lowercase();
+  apps.iter().filter(|app| app.contains(&amp;query)).cloned().collect::&lt;Vec&lt;_&gt;&gt;()
+});
+
+PanelWindow::new(output)
+  .layer(Layer::Overlay)
+  .keyboard_focus(KeyboardFocus::Exclusive)
+  .on_key(move |_cx, event| {
+    let count = shown.with(Vec::len);
+    match event.key {
+      Key::Down if picked.get_untracked() + 1 &lt; count =&gt; picked.update(|n| *n += 1),
+      Key::Up if picked.get_untracked() &gt; 0 =&gt; picked.update(|n| *n -= 1),
+      Key::Up | Key::Down =&gt; {}
+      _ =&gt; return false,
+    }
+    true
+  })
+  .child(
+    TextInput::new(query)
+      .placeholder("search")
+      .focus(true)
+      .on_accept(move |_cx, _text| launch()),
+  )</code></pre>
+      </article>
+    </main>
+  </body>
+</html>

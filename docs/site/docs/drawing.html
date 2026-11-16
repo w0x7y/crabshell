@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Drawing and images | Crabshell docs</title>
+    <meta
+      name="description"
+      content="Draw paths, arcs and graphs on a Canvas, and show icons, images, animated GIFs and wallpapers with filters and transitions."
+    />
+    <script>
+      try {
+        var t = localStorage.getItem("crabshell:theme");
+        if (t === "light" || t === "dark")
+          document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <link rel="icon" href="../logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="../site.css" />
+    <script src="../site.js" defer></script>
+  </head>
+  <body class="docs">
+    <header class="bar">
+      <a class="brand" href="../index.html"
+        ><img src="../logo.svg" alt="" width="20" height="20" />crabshell</a
+      >
+      <a class="ws" href="../docs/index.html">Docs</a>
+    </header>
+    <main>
+      <article>
+        <h1>Drawing and images</h1>
+        <p class="lede">
+          Styles cover boxes and text. For a ring, a graph or a picture there
+          are three widgets: <code>Canvas</code>, <code>Icon</code> and
+          <code>Image</code>.
+        </p>
+        <h2 id="canvas">Canvas</h2>
+        <p>
+          <code>Canvas::new(|pen| ...)</code> is a box your closure draws in,
+          sized by its style.
+        </p>
+        <pre><code class="rs">const RING: Style = Style::new().width(96.0).height(96.0);
+
+let ring = Canvas::new(move |pen| {
+  let size = pen.size();
+  let center = Point::new(size.width / 2.0, size.height / 2.0);
+  let radius = size.width.min(size.height) / 2.0 - 4.0;
+
+  // The dim full circle, then the part that is charged.
+  pen.stroke(&amp;Path::circle(center, radius), &amp;Stroke::new(8.0, TRACK));
+  let percent = battery.get();
+  pen.stroke(
+    &amp;Path::new().arc(center, radius, -90.0, percent * 3.6),
+    &amp;Stroke::new(8.0, ACCENT).cap(Cap::Round),
+  );
+})
+.style(RING);</code></pre>
+        <p>
+          The paint closure is a binding. It runs once the canvas has a size,
+          and again when the size or a signal it read changes. Each run replaces
+          the whole drawing, and only the canvas's box repaints. Coordinates are
+          logical pixels from the canvas's top-left corner.
+        </p>
+        <h3 id="pen">The pen</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>pen.size()</code></td>
+              <td>
+                The canvas's size, as a <code>Size</code> with
+                <code>width</code> and <code>height</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>pen.fill(&amp;path, paint)</code></td>
+              <td>Fills the path.</td>
+            </tr>
+            <tr>
+              <td><code>pen.stroke(&amp;path, &amp;stroke)</code></td>
+              <td>Draws a line along the path.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          A paint is a <code>Color</code> or a <code>Gradient</code>, and a
+          gradient is laid over the whole canvas.
+        </p>
+        <h3 id="paths">Paths</h3>
+        <pre><code class="rs">let line = Path::new()
+  .move_to(Point::new(0.0, 20.0))
+  .line_to(Point::new(40.0, 8.0))
+  .quad_to(Point::new(60.0, 0.0), Point::new(80.0, 20.0))
+  .cubic_to(Point::new(90.0, 30.0), Point::new(110.0, 30.0), Point::new(120.0, 20.0));</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it adds</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>move_to(point)</code></td>
+              <td>A new starting point.</td>
+            </tr>
+            <tr>
+              <td><code>line_to(point)</code></td>
+              <td>A straight line.</td>
+            </tr>
+            <tr>
+              <td><code>quad_to(control, to)</code></td>
+              <td>A curve with one control point.</td>
+            </tr>
+            <tr>
+              <td><code>cubic_to(first, second, to)</code></td>
+              <td>A curve with two control points.</td>
+            </tr>
+            <tr>
+              <td><code>arc(center, radius, start, sweep)</code></td>
+              <td>
+                Part of a circle. Angles are in degrees, clockwise from 3
+                o'clock. A negative sweep runs counterclockwise.
+              </td>
+            </tr>
+            <tr>
+              <td><code>close()</code></td>
+              <td>A line back to the start.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          <code>Path::rect(rect)</code>,
+          <code>Path::rounded_rect(rect, radius)</code>,
+          <code>Path::circle(center, radius)</code> and
+          <code>Path::ellipse(center, radius_x, radius_y)</code> build whole
+          shapes.
+        </p>
+        <h3 id="strokes">Strokes</h3>
+        <pre><code class="rs">Stroke::new(2.0, ACCENT).join(Join::Round).cap(Cap::Round)
+Stroke::new(1.0, GRID_LINE).dash(&amp;[3.0, 3.0], 0.0)</code></pre>
+        <p>
+          <code>Stroke::new(width, paint)</code> takes
+          <code>cap(Cap::Butt | Round | Square)</code>,
+          <code>join(Join::Miter | Round | Bevel)</code> and
+          <code>dash(pattern, offset)</code>. Paths and strokes are plain data,
+          so build the ones that never change outside the closure.
+        </p>
+        <h3 id="graph">A graph</h3>
+        <p>
+          The dashboard example's CPU graph has dashed guide lines, a filled
+          area and a line over it. <code>cpu</code> is a signal holding the last
+          minute's samples, each from 0 to 1.
+        </p>
+        <pre><code class="rs">let graph = Canvas::new(move |pen| {
+  let size = pen.size();
+  let grid = Stroke::new(1.0, GRID_LINE).dash(&amp;[3.0, 3.0], 0.0);
+  for quarter in 1..4 {
+    let y = (size.height * quarter as f32 / 4.0).round() + 0.5;
+    let line = Path::new().move_to(Point::new(0.0, y)).line_to(Point::new(size.width, y));
+    pen.stroke(&amp;line, &amp;grid);
+  }
+
+  let points: Vec&lt;Point&gt; = cpu.with(|samples| {
+    let step = size.width / (samples.len().max(2) - 1) as f32;
+    samples
+      .iter()
+      .enumerate()
+      .map(|(at, usage)| Point::new(at as f32 * step, 1.0 + (1.0 - usage) * (size.height - 2.0)))
+      .collect()
+  });
+  let (Some(first), Some(last)) = (points.first(), points.last()) else {
+    return;
+  };
+  let line = points[1..].iter().fold(Path::new().move_to(*first), |path, point| path.line_to(*point));
+  let area = line
+    .clone()
+    .line_to(Point::new(last.x, size.height))
+    .line_to(Point::new(first.x, size.height))
+    .close();
+  pen.fill(&amp;area, GRAPH_FILL);
+  pen.stroke(&amp;line, &amp;Stroke::new(2.0, ACCENT).join(Join::Round).cap(Cap::Round));
+})
+.style(GRAPH);</code></pre>
+        <p>
+          A horizontal line one pixel wide is sharpest when its
+          <code>y</code> ends in .5. A paint closure that panics is logged as
+          <code>&lt;path&gt;/Canvas.paint</code> and disabled, and the last
+          drawing stays.
+        </p>
+        <h2 id="icons">Icons</h2>
+        <p><code>Icon::new(source)</code> takes one of three things.</p>
+        <pre><code class="rs">Icon::new("firefox")                               // a name from the icon theme
+Icon::new(std::path::Path::new("/opt/app/icon.svg"))   // an SVG or PNG file
+Icon::new(move || IconSource::Name(entry.get().icon))  // a closure returning an IconSource</code></pre>
+        <p>
+          A <code>&amp;str</code> is always a theme name. For a file, pass a
+          <code>std::path::Path</code> or a <code>PathBuf</code>, since the
+          prelude's own <code>Path</code> is the canvas one. A desktop entry's
+          icon can be either, so check it.
+        </p>
+        <pre><code class="rs">let icon = move || {
+  let icon = entry.get().icon;
+  if icon.starts_with('/') { IconSource::File(icon.into()) } else { IconSource::Name(icon) }
+};
+Icon::new(icon).size(20)</code></pre>
+        <p>
+          Names follow the freedesktop icon theme rules, and the default theme
+          is <code>hicolor</code>. Name a full theme once in the root closure.
+          An icon the theme lacks isn't drawn.
+        </p>
+        <pre><code class="rs">crabshell::run(|cx| {
+  cx.set_icon_theme("Adwaita");
+  cx.per_output(bar);
+});</code></pre>
+        <p>
+          Symbolic icons, whose names end in <code>-symbolic</code>, are
+          single-color shapes. <code>tint</code> paints every pixel in one color
+          and keeps its alpha, and takes a value or a closure.
+        </p>
+        <pre><code class="rs">Icon::new("battery-good-symbolic").size(16).tint(TEXT)</code></pre>
+        <p>
+          Icon files have limits. An SVG may be up to 1 MiB and can't pull in
+          outside files. A PNG may be up to 4 MiB and 1024 pixels a side. XPM
+          icons are skipped. A file past a limit is logged and not drawn.
+        </p>
+        <h2 id="images">Images</h2>
+        <p>
+          <code>Image::new(path)</code> shows a PNG, JPEG, GIF, WebP or SVG
+          file, chosen by its extension, in a box of the size you give it.
+        </p>
+        <pre><code class="rs">Image::new(move || art_path.get())
+  .width(96)
+  .height(96)
+  .fit(Fit::Cover)
+  .style(Style::new().radius(12.0).clip(true))</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Fit</th>
+              <th>What it does when the shapes differ</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>Fit::Fill</code></td>
+              <td>Stretches the picture to the box. The default.</td>
+            </tr>
+            <tr>
+              <td><code>Fit::Contain</code></td>
+              <td>Shows it whole, centered, with its shape kept.</td>
+            </tr>
+            <tr>
+              <td><code>Fit::Cover</code></td>
+              <td>
+                Fills the box, centered, with its shape kept. What sticks out is
+                cut off.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          The path can be a closure, and a new path loads the new file. A
+          picture is scaled once to the size it is drawn at and cached. A file
+          rewritten in place is read again.
+        </p>
+        <p>
+          The limits are 32 MiB per file, 8192 pixels a side and 24 million
+          pixels in all. A file that can't be loaded is logged once, and the
+          image keeps what it had.
+        </p>
+        <h3 id="filters">Filters</h3>
+        <pre><code class="rs">// The same album art, blurred and darkened, behind the card.
+Image::new(picture)
+  .width(520)
+  .height(180)
+  .fit(Fit::Cover)
+  .blur(18.0)
+  .brightness(0.6)</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>brightness(n)</code></td>
+              <td>
+                Scales the colors. 1 leaves them, 0 is black and 2 is twice as
+                bright.
+              </td>
+            </tr>
+            <tr>
+              <td><code>contrast(n)</code></td>
+              <td>
+                1 leaves the picture, 0 is middle gray and more than 1 is
+                stronger.
+              </td>
+            </tr>
+            <tr>
+              <td><code>saturation(n)</code></td>
+              <td>
+                1 leaves the picture, 0 is gray and more than 1 is more vivid.
+              </td>
+            </tr>
+            <tr>
+              <td><code>blur(px)</code></td>
+              <td>
+                The blur's standard deviation in logical pixels, as in CSS's
+                <code>filter: blur()</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>tint(color)</code></td>
+              <td>Paints every pixel in one color and keeps its alpha.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Filters run once on the scaled picture, and the result is cached. A
+          blurred GIF shows its first frame, still. A blur here is twice as
+          strong as the same number in a <code>Shadow</code>.
+        </p>
+        <h3 id="gifs">Animated GIFs</h3>
+        <p>
+          A GIF with several frames plays while it is drawn, at its own speed.
+          <code>playing(false)</code> pauses it. A hidden GIF stops waking the
+          shell.
+        </p>
+        <h3 id="image-transitions">Transitions</h3>
+        <p>
+          <code>transition</code> says how a new source replaces the old one.
+        </p>
+        <pre><code class="rs">const FADE: Transition = Transition::new(800).easing(Easing::InOutCubic);
+
+Image::new(move || wallpaper.get()).transition(ImageTransition::crossfade(FADE))</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Transition</th>
+              <th>What it looks like</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>ImageTransition::none()</code></td>
+              <td>The new picture shows at once. The default.</td>
+            </tr>
+            <tr>
+              <td><code>ImageTransition::crossfade(transition)</code></td>
+              <td>The new picture fades in over the old one.</td>
+            </tr>
+            <tr>
+              <td><code>ImageTransition::wipe(transition, angle)</code></td>
+              <td>
+                An edge sweeps across. 0 sweeps toward the top and 90 toward the
+                right.
+              </td>
+            </tr>
+            <tr>
+              <td><code>ImageTransition::circle(transition)</code></td>
+              <td>A circle grows from the middle.</td>
+            </tr>
+            <tr>
+              <td><code>ImageTransition::pixelate(transition)</code></td>
+              <td>
+                The old picture breaks into blocks that resolve into the new
+                one.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Each takes a
+          <a href="motion.html#transitions"><code>Transition</code></a> for its
+          length, delay and curve.
+        </p>
+        <h2 id="wallpaper">A wallpaper</h2>
+        <p>
+          A wallpaper is an image in a panel on the background layer, anchored
+          to all four edges and sized from its monitor.
+        </p>
+        <pre><code class="rs">fn wallpaper(cx: &amp;Cx, output: &amp;Output, picture: ReadSignal&lt;Option&lt;PathBuf&gt;&gt;) -&gt; PanelWindow {
+  let outputs = cx.outputs();
+  let name = output.name();
+  let size = cx.memo(move || {
+    outputs.with(|all| {
+      let info = all.iter().find(|info| info.name == name);
+      info.map_or((0, 0), |info| (info.width, info.height))
+    })
+  });
+  PanelWindow::new(output)
+    .anchors(Edge::Top | Edge::Bottom | Edge::Left | Edge::Right)
+    .layer(Layer::Background)
+    .exclusive_zone(-1)
+    .namespace("wallpaper")
+    .child(
+      Image::new(move || picture.get().unwrap_or_default())
+        .width(move || size.get().0)
+        .height(move || size.get().1)
+        .fit(Fit::Cover)
+        .transition(ImageTransition::crossfade(Transition::new(800)))
+        .visible(move || picture.with(Option::is_some)),
+    )
+}</code></pre>
+        <p>
+          <code>exclusive_zone(-1)</code> lets it cover the space bars reserve.
+          Change <code>picture</code> from an
+          <a href="system.html#ipc">IPC handler</a>, and
+          <code>crabshell ipc wallpaper set ~/Pictures/lake.jpg</code>
+          crossfades to a new one. A crossfade holds two decoded pictures for
+          its length.
+        </p>
+        <h2 id="more">More ways to shape what is drawn</h2>
+        <ul>
+          <li>
+            <a href="styles.html#masks">Masks</a> cut a widget to an ellipse, a
+            gradient's alpha or another image's.
+          </li>
+          <li>
+            <a href="styles.html#shadows"><code>follow_content()</code></a>
+            casts a shadow from text or an icon.
+          </li>
+          <li>
+            <a href="system.html#quantize-colors"
+              ><code>cx.quantize_colors</code></a
+            >
+            finds a picture's main colors.
+          </li>
+          <li>
+            <a href="compositors.html#screencopy"
+              ><code>ScreencopyView</code></a
+            >
+            shows a live picture of a monitor or a window.
+          </li>
+        </ul>
+      </article>
+    </main>
+  </body>
+</html>

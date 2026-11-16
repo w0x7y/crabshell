@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Timers and motion | Crabshell docs</title>
+    <meta
+      name="description"
+      content="Timers, transitions, easing curves, springs, cycles, exit animations and sliding lists in Crabshell."
+    />
+    <script>
+      try {
+        var t = localStorage.getItem("crabshell:theme");
+        if (t === "light" || t === "dark")
+          document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <link rel="icon" href="../logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="../site.css" />
+    <script src="../site.js" defer></script>
+  </head>
+  <body class="docs">
+    <header class="bar">
+      <a class="brand" href="../index.html"
+        ><img src="../logo.svg" alt="" width="20" height="20" />crabshell</a
+      >
+      <a class="ws" href="../docs/index.html">Docs</a>
+    </header>
+    <main>
+      <article>
+        <h1>Timers and motion</h1>
+        <p class="lede">
+          Motion runs on one clock that ticks only while something moves. When
+          the last animation settles, the shell goes back to sleep.
+        </p>
+        <h2 id="timers">Timers</h2>
+        <pre><code class="rs">let hide = cx.after(Duration::from_millis(1500), move || shown.set(false));
+let poll = cx.interval(Duration::from_secs(1), move || samples.update(|all| all.push(read_cpu())));</code></pre>
+        <p>
+          <code>cx.after</code> runs a closure once and
+          <code>cx.interval</code> runs one every period. Each returns a
+          <code>Timer</code>, a <code>Copy</code> handle that goes with its
+          context.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>stop()</code></td>
+              <td>Stops it before it fires again.</td>
+            </tr>
+            <tr>
+              <td><code>restart()</code></td>
+              <td>Counts the delay or period again from now.</td>
+            </tr>
+            <tr>
+              <td><code>running()</code></td>
+              <td>Whether it will fire. A binding that reads it follows it.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          <code>restart</code> makes a debounce. This volume display shows while
+          its timer runs, and each change starts the count again.
+        </p>
+        <pre><code class="rs">let hide = cx.after(Duration::from_millis(1500), || {});
+hide.stop();   // it waits for the first change
+cx.effect(move || {
+  volume.get();
+  hide.restart();
+});
+let shown = move || hide.running();</code></pre>
+        <p>
+          An interval is a wakeup, so run one only while what it feeds is on
+          screen.
+        </p>
+        <h2 id="transitions">Transitions and curves</h2>
+        <pre><code class="rs">const SLIDE: Transition = Transition::new(250);
+const POP: Transition = Transition::new(300).easing(Easing::OutBack);
+const LATE: Transition = Transition::new(200).delay(100);</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>Transition::new(ms)</code></td>
+              <td>A transition this many milliseconds long.</td>
+            </tr>
+            <tr>
+              <td><code>easing(easing)</code></td>
+              <td>The curve. The default is <code>Easing::OutCubic</code>.</td>
+            </tr>
+            <tr>
+              <td><code>delay(ms)</code></td>
+              <td>Waits before it moves.</td>
+            </tr>
+            <tr>
+              <td><code>alternate()</code></td>
+              <td>
+                Makes a <a href="#cycles">cycle</a> come back the way it went.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          <code>Easing</code> has <code>Linear</code>, and <code>In</code>,
+          <code>Out</code> and <code>InOut</code> forms of <code>Quad</code>,
+          <code>Cubic</code>, <code>Sine</code>, <code>Quart</code>,
+          <code>Quint</code>, <code>Expo</code>, <code>Circ</code> and
+          <code>Back</code>, written as <code>OutCubic</code>.
+          <code>Bezier(x1, y1, x2, y2)</code> is a CSS
+          <code>cubic-bezier</code>, and
+          <code>Spline(&amp;[[c1x, c1y, c2x, c2y, x, y], ...])</code> joins
+          several segments.
+        </p>
+        <h2 id="animate">Animated values</h2>
+        <p>
+          <code>cx.animate(target, transition)</code> returns a signal that
+          follows a closure, moving to each new value instead of jumping. The
+          value is an <code>f32</code>, a <code>Point</code>, a
+          <code>Color</code>, or your own type that implements
+          <code>Animate</code>.
+        </p>
+        <pre><code class="rs">let picked = cx.signal(0_usize);
+// Slides to the picked tab.
+let x = cx.animate(move || picked.get() as f32 * 44.0, Transition::new(250));
+
+Row::new().style(move || INDICATOR.translate(x.get(), 0.0))</code></pre>
+        <p>
+          <code>cx.animation</code> is the same with a handle that also says
+          whether it is moving.
+        </p>
+        <pre><code class="rs">let slide = cx.animation(move || if shown.get() { 1.0 } else { 0.0 }, POP);
+
+slide.value();     // the ReadSignal&lt;f32&gt;, as cx.animate returns
+slide.running();   // a ReadSignal&lt;bool&gt;, true from a new target until it settles</code></pre>
+        <p>
+          An effect on <code>running()</code> is where to put whatever follows
+          an animation. Here a window takes no clicks once it has slid out.
+        </p>
+        <pre><code class="rs">.mask(move || (!shown.get() &amp;&amp; !slide.running().get()).then(Region::empty))</code></pre>
+        <h2 id="springs">Springs</h2>
+        <p>
+          <code>cx.spring(target, spring)</code> follows an <code>f32</code> on
+          a spring, which keeps its speed when the target moves.
+          <code>Spring::new(stiffness, damping)</code> takes how hard it pulls
+          and how fast it settles, and <code>Spring::default()</code> is 700 and
+          0.9. A lower damping bounces more.
+        </p>
+        <pre><code class="rs">let x = cx.spring(move || target.get(), Spring::new(700.0, 0.9));</code></pre>
+        <h2 id="cycles">Cycles</h2>
+        <p>
+          <code>cx.cycle(running, transition)</code> gives progress from 0 to 1
+          that repeats while <code>running</code> is true, for spinners and
+          pulses. With <code>alternate()</code> it goes there and back.
+        </p>
+        <pre><code class="rs">const SPIN: Transition = Transition::new(900).easing(Easing::Linear);
+const PULSE: Transition = Transition::new(600).easing(Easing::InOutSine).alternate();
+
+let turn = cx.cycle(move || busy.get(), SPIN);
+Row::new().style(move || SPINNER.rotate(turn.get() * 360.0))
+
+let glow = cx.cycle(move || recording.get(), PULSE);
+Row::new().style(move || DOT.opacity(0.5 + glow.get() / 2.0))</code></pre>
+        <h2 id="frames">A value for each frame</h2>
+        <p>
+          <code>cx.frames(running)</code> gives the time since
+          <code>running</code> turned true, updated on each frame.
+        </p>
+        <pre><code class="rs">let time = cx.frames(move || shown.get());
+// A dot that bobs up and down.
+Row::new().style(move || DOT.translate(0.0, 4.0 * (time.get().as_secs_f32() * 6.0).sin()))</code></pre>
+        <h2 id="exit">Children that leave and move</h2>
+        <p>
+          <code>.exit(duration)</code> after <code>children_keyed</code> keeps a
+          removed child mounted for that long, with
+          <code>cx.leaving()</code> true inside it, so the child can animate
+          itself out.
+        </p>
+        <pre><code class="rs">Column::new()
+  .gap(8)
+  .children_keyed(move || popups.get(), |n: &amp;Notification| n.id, toast)
+  .exit(Duration::from_millis(250))</code></pre>
+        <pre><code class="rs">fn toast(cx: &amp;Cx, notification: Memo&lt;Notification&gt;) -&gt; Button {
+  let entered = cx.signal(false);
+  let leaving = cx.leaving();
+  let x = cx.animate(
+    move || if entered.get() &amp;&amp; !leaving.get() { 0.0 } else { 340.0 },
+    Transition::new(250),
+  );
+  // Set after the animation took its first value, so the next round slides it in.
+  entered.set(true);
+
+  Button::new(Text::new(move || notification.get().summary))
+    .style(move || TOAST.translate(x.get(), 0.0))
+}</code></pre>
+        <p>
+          The toast starts off to the right, slides in because
+          <code>entered</code> flips right after the animation is made, and
+          slides back out while <code>leaving</code> is true. A leaving child
+          still takes clicks.
+        </p>
+        <p>
+          <code>.displaced(transition)</code> slides the remaining children to
+          their new places when one is added, removed or moved.
+        </p>
+        <pre><code class="rs">Column::new()
+  .children_keyed(items, key, row)
+  .exit(Duration::from_millis(200))
+  .displaced(Transition::new(200))</code></pre>
+        <h2 id="cost">What motion costs</h2>
+        <p>
+          While an animation runs, the shell draws a frame each time the
+          compositor asks, and repaints only what moves. A sliding indicator
+          with a fading hover on a 1920-pixel bar takes 0.31 ms a frame at scale
+          1. Move things with <code>translate</code>, <code>scale</code> and
+          <code>rotate</code> where you can, since animating a
+          <code>width</code> lays the window out on every frame.
+        </p>
+      </article>
+    </main>
+  </body>
+</html>

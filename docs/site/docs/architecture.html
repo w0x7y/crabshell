@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>How it works | Crabshell docs</title>
+    <meta
+      name="description"
+      content="Crabshell&#x27;s design: two processes, one thread, a reactive core, CPU rendering with damage tracking, and the four rules every change is checked against."
+    />
+    <script>
+      try {
+        var t = localStorage.getItem("crabshell:theme");
+        if (t === "light" || t === "dark")
+          document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <link rel="icon" href="../logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="../site.css" />
+    <script src="../site.js" defer></script>
+  </head>
+  <body class="docs">
+    <header class="bar">
+      <a class="brand" href="../index.html"
+        ><img src="../logo.svg" alt="" width="20" height="20" />crabshell</a
+      >
+      <a class="ws" href="../docs/index.html">Docs</a>
+    </header>
+    <main>
+      <article>
+        <h1>How it works</h1>
+        <p class="lede">
+          You can write a shell without reading this page. It explains why
+          Crabshell is fast, why it sleeps, and where a change to Crabshell
+          itself would go.
+        </p>
+        <h2 id="processes">Two processes</h2>
+        <pre><code>+---------------------------------+               +---------------------------------+
+| Config crate                    |    on save    | crabshell run, the supervisor   |
+| ~/.config/crabshell/src/main.rs | ------------&gt; | watches src/, runs cargo build  |
+| plain Rust and typed styles     |               | restarts on crash, keeps        |
++---------------------------------+               | last-good                       |
+                |                                 +---------------------------------+
+                | compiled into the binary                        |
+                v                                                 | starts it
++---------------------------------------------------------------------------------+
+| The shell, your own program                                     v               |
+|                                                                                 |
+|   config code ----&gt; signals &lt;---- services                                      |
+|                        |          Sway, tray, audio, clock, ...                 |
+|                        v                                                        |
+|                     widgets and layout                                          |
+|                        |                                                        |
+|                        v                                                        |
+|                     drawing, on the CPU, of what changed                        |
+|                        |                                                        |
+|                        v                                                        |
+|                     Wayland: windows, buffers, input                            |
++---------------------------------------------------------------------------------+
+                         |  buffers out, input events in
+                         v
+                    the compositor</code></pre>
+        <p>
+          The supervisor only builds the config and swaps the running shell. The
+          shell is a normal program that links the
+          <code>crabshell</code> library, so a crash in your config can't take
+          the supervisor down, and the supervisor can always start the last
+          build that worked.
+        </p>
+        <p>
+          A reload stops the old shell and then starts the new one, which leaves
+          the screen without a bar for 13 to 19 ms. Starting the new one first
+          would make both bars reserve space for a moment, and every window
+          would jump.
+        </p>
+        <h2 id="loop">One thread, one loop</h2>
+        <p>
+          Everything in the shell runs on one thread. Each turn of the event
+          loop does five things.
+        </p>
+        <ol>
+          <li>
+            Dispatch every source that is ready: Wayland events, timers, D-Bus,
+            the compositor's IPC socket, the audio channel.
+          </li>
+          <li>Run the effects those events queued.</li>
+          <li>Lay out every window marked for layout.</li>
+          <li>
+            Draw each window that is dirty and whose frame callback has arrived.
+          </li>
+          <li>
+            Flush the Wayland connection and sleep until a source is ready.
+          </li>
+        </ol>
+        <p>
+          When nothing is dirty there is no layout, drawing or commit, so idle
+          costs nothing. A wakeup has to come from outside: the compositor, a
+          bus, or a timer you started.
+        </p>
+        <p>
+          One thread also means no locks and no <code>Arc</code>. A few jobs run
+          on helper threads: the audio library, the D-Bus library's socket, each
+          PAM attempt and color quantizing. Each hands its results back to the
+          loop as messages.
+        </p>
+        <h2 id="reactive">The reactive core</h2>
+        <p>
+          Signals, memos and effects live in one table per thread, and a handle
+          is a small <code>Copy</code> key into it. Each node belongs to an
+          owner, and disposing an owner frees every node made under it.
+        </p>
+        <ul>
+          <li>
+            Reading a signal inside a memo or an effect records a dependency,
+            again on every run.
+          </li>
+          <li>
+            Writing a signal marks what depends on it and queues effects. It
+            never runs them on the spot.
+          </li>
+          <li>
+            The loop runs the queue once per turn, before layout. Each effect
+            runs at most once per round.
+          </li>
+          <li>
+            A memo recomputes only when read while stale, and tells its readers
+            only if its value changed.
+          </li>
+        </ul>
+        <p>
+          Every binding is an effect that writes one property of one widget.
+          There is no tree diff, since a change already knows which property it
+          lands on.
+        </p>
+        <h2 id="widgets">Widgets, layout and damage</h2>
+        <p>
+          A widget is a description. When a window is built, each one becomes a
+          node with its own owner, and each property given a closure becomes an
+          effect.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Kind</th>
+              <th>Examples</th>
+              <th>What a change costs</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Paint</td>
+              <td>
+                Colors, backgrounds, gradients, borders, opacity, radius, masks,
+                transforms
+              </td>
+              <td>
+                The widget's own area is marked dirty. Nothing is laid out.
+              </td>
+            </tr>
+            <tr>
+              <td>Layout</td>
+              <td>Text, fonts, padding, gaps, sizes, children</td>
+              <td>
+                The window is laid out again, and every widget that moved is
+                marked dirty at its old and new place.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Layout is flexbox and grid, computed by
+          <a href="https://docs.rs/taffy">taffy</a>. Text is measured with the
+          same buffer it is drawn from.
+        </p>
+        <h2 id="rendering">Drawing</h2>
+        <p>
+          Crabshell draws on the CPU with
+          <a href="https://docs.rs/tiny-skia">tiny-skia</a>, into shared-memory
+          buffers the compositor reads. A 1920 by 30 bar's buffer is 225 KiB.
+        </p>
+        <ul>
+          <li>
+            Each frame repaints only the widgets that cross a dirty rectangle,
+            and tells the compositor which pixels changed. When more than half a
+            window is dirty, the whole window repaints.
+          </li>
+          <li>
+            A window cycles through two or three buffers. Each remembers which
+            frames it missed and repaints those areas before it is used again.
+          </li>
+          <li>
+            After a commit the shell asks for a frame callback, and draws again
+            only when it arrives and something is dirty.
+          </li>
+          <li>
+            A buffer is the logical size times the monitor's scale. Scales of 1,
+            1.25, 1.5, 1.75 and 2 are each tested against reference pictures.
+          </li>
+        </ul>
+        <p>
+          Text is shaped by
+          <a href="https://docs.rs/cosmic-text">cosmic-text</a>. The shell asks
+          fontconfig for the families your styles name and loads only those
+          files.
+        </p>
+        <p>
+          A frame of the effects example, with a sliding indicator and a fading
+          hover on a 1920-pixel bar, takes 0.31 ms to draw at scale 1 and 0.54
+          ms at scale 2, under 4% of a frame at 60 Hz.
+        </p>
+        <h2 id="outside-data">Outside data is not trusted</h2>
+        <p>
+          Icons, images, theme files, tray pixmaps, D-Bus replies, IPC messages
+          and compositor events come from other programs. Each has a size limit,
+          and malformed or oversized input is logged and skipped. An SVG can't
+          load outside files, a picture's size is checked before memory is
+          allocated, and an IPC request is capped at 64 KiB.
+        </p>
+        <h2 id="panics">Panics</h2>
+        <p>
+          The toolkit wraps every call into your code in
+          <code>catch_unwind</code>: bindings, effects, event handlers,
+          <code>per_output</code> functions, list builders, paint closures,
+          timer callbacks and IPC handlers. The reactive core releases every
+          internal borrow before it calls you, so a caught panic never leaves it
+          broken.
+        </p>
+        <p>
+          A panic in the toolkit's own drawing or Wayland code is not caught.
+          The process exits, and the supervisor restarts it.
+        </p>
+        <h2 id="rules">The four rules</h2>
+        <p>
+          Every change to Crabshell is checked against four rules, and a broken
+          rule blocks it.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Rule</th>
+              <th>What it means</th>
+              <th>How it is checked</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Stay light</td>
+              <td>
+                Idle memory at or under 30 MB on one 1080p monitor. First frame
+                within 100 ms.
+              </td>
+              <td>
+                A measured run of the counter bar on the change and on the
+                commit before it.
+              </td>
+            </tr>
+            <tr>
+              <td>Idle means asleep</td>
+              <td>
+                Nothing dirty means no commit and no wakeup. A clock ticking
+                once a minute is the only periodic wakeup a bar gets.
+              </td>
+              <td>
+                A test counts the idle bar's context switches over a minute.
+                Each new source of wakeups gets its own idle test.
+              </td>
+            </tr>
+            <tr>
+              <td>A config is plain Rust</td>
+              <td>
+                A normal Cargo crate that calls <code>crabshell::run</code>.
+                Every property takes a value or a closure, signals are
+                <code>Copy</code>, and <code>Style</code> is a constant.
+              </td>
+              <td>
+                Each new public item is checked against those three points.
+              </td>
+            </tr>
+            <tr>
+              <td>One bad binding never takes the shell down</td>
+              <td>
+                Your code runs inside <code>catch_unwind</code>, with a logged
+                widget path.
+              </td>
+              <td>
+                Each new place the toolkit calls your code gets a test that
+                panics there and checks the log and that the shell keeps
+                running.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <h2 id="numbers">Measured</h2>
+        <p>
+          From the test suite's measured runs on headless Sway, release builds,
+          one 1920×1080 monitor at scale 1, at version 0.5.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>What</th>
+              <th>Measured</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Counter bar, memory</td>
+              <td>17.6 MiB</td>
+            </tr>
+            <tr>
+              <td>Counter bar, launch to first frame</td>
+              <td>9.8 ms</td>
+            </tr>
+            <tr>
+              <td>Bar with workspaces, tray, volume and clock, memory</td>
+              <td>20.9 MiB</td>
+            </tr>
+            <tr>
+              <td>Desktop example, memory</td>
+              <td>21.2 MiB</td>
+            </tr>
+            <tr>
+              <td>Control center example, memory</td>
+              <td>22.3 MiB</td>
+            </tr>
+            <tr>
+              <td>Lock screen example, locked, memory</td>
+              <td>25.3 MiB</td>
+            </tr>
+            <tr>
+              <td>Dashboard example over a 1080p wallpaper, memory</td>
+              <td>36.7 MiB</td>
+            </tr>
+            <tr>
+              <td>
+                Idle wakeups, in the counter, desktop, overview, lock and
+                control examples
+              </td>
+              <td>0</td>
+            </tr>
+            <tr>
+              <td>Sway workspace event to the frame that shows it</td>
+              <td>0.5 ms median</td>
+            </tr>
+            <tr>
+              <td>Rebuild after a one-line edit</td>
+              <td>0.7 s</td>
+            </tr>
+            <tr>
+              <td>Reload, time with no bar on screen</td>
+              <td>13 to 19 ms</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          The dashboard is the one example over the 30 MB target, and nearly all
+          of that is the decoded wallpaper.
+        </p>
+        <h2 id="crates">The crates</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Crate</th>
+              <th>What it owns</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>crabshell</code></td>
+              <td>
+                <code>run</code>, <code>per_output</code>, the prelude,
+                persisted state, IPC, and the examples. The one crate a config
+                depends on.
+              </td>
+            </tr>
+            <tr>
+              <td><code>crabshell-reactive</code></td>
+              <td>Signals, memos, effects and owners.</td>
+            </tr>
+            <tr>
+              <td><code>crabshell-ui</code></td>
+              <td>
+                <code>Cx</code>, widgets, styles, layout, text, focus, pointer
+                input and the animation clock.
+              </td>
+            </tr>
+            <tr>
+              <td><code>crabshell-render</code></td>
+              <td>Drawing, damage tracking, glyphs, icons and images.</td>
+            </tr>
+            <tr>
+              <td><code>crabshell-wayland</code></td>
+              <td>
+                The event loop, windows, buffers, scale, input and monitors.
+              </td>
+            </tr>
+            <tr>
+              <td><code>crabshell-services</code></td>
+              <td>
+                Everything on the <a href="services.html">services</a>,
+                <a href="compositors.html">compositors</a>,
+                <a href="system.html">system</a> and
+                <a href="lock.html">logins</a> pages.
+              </td>
+            </tr>
+            <tr>
+              <td><code>crabshell-cli</code></td>
+              <td>
+                The <code>crabshell</code> command and the config template.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Every crate forbids <code>unsafe</code>, and Wayland is spoken in pure
+          Rust. Four system libraries are linked: fontconfig, libpulse,
+          libxkbcommon and PAM. Dependencies must be MIT, Apache-2.0, BSD, ISC,
+          Zlib or Unicode licensed, which CI checks on every push.
+        </p>
+      </article>
+    </main>
+  </body>
+</html>

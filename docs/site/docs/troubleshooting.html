@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>When something breaks | Crabshell docs</title>
+    <meta
+      name="description"
+      content="Fixes for a config that won&#x27;t build, a bar that doesn&#x27;t show, a widget that stopped updating, missing icons and fonts, and how to check that your shell sleeps."
+    />
+    <script>
+      try {
+        var t = localStorage.getItem("crabshell:theme");
+        if (t === "light" || t === "dark")
+          document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <link rel="icon" href="../logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="../site.css" />
+    <script src="../site.js" defer></script>
+  </head>
+  <body class="docs">
+    <header class="bar">
+      <a class="brand" href="../index.html"
+        ><img src="../logo.svg" alt="" width="20" height="20" />crabshell</a
+      >
+      <a class="ws" href="../docs/index.html">Docs</a>
+    </header>
+    <main>
+      <article>
+        <h1>When something breaks</h1>
+        <p class="lede">
+          Start with the log. <code>crabshell run</code> prints the compiler's
+          errors, every panic with its place in the widget tree, and each thing
+          the shell looked for and didn't find.
+        </p>
+        <pre><code class="sh">$ CRABSHELL_LOG=debug crabshell run</code></pre>
+        <h2 id="build">It doesn't build</h2>
+        <p>
+          **The first build fails in a <code>-sys</code> crate or says a library
+          wasn't found.** A system library's development files are missing.
+          <a href="install.html#requirements">Install and run</a> has the
+          package names.
+        </p>
+        <p>
+          **<code>crabshell run</code> says it can't find cargo.** Cargo isn't
+          on the <code>PATH</code> of the session that started it, which is
+          common when a display manager starts the compositor. Set
+          <code>PATH</code> where the session reads it, or set
+          <code>CARGO</code> to cargo's full path.
+        </p>
+        <p>
+          <strong>A method doesn't exist, or takes other arguments.</strong>
+          Check the <code>crabshell = "0.5"</code> line of your
+          <code>Cargo.toml</code>. These pages describe 0.5, and a new minor
+          version can change the API.
+        </p>
+        <p>
+          <strong>The borrow checker complains about a closure.</strong> Three
+          habits fix most of it.
+        </p>
+        <ul>
+          <li>
+            Write <code>move</code> on every closure you give the toolkit.
+          </li>
+          <li>
+            Signals, memos and timers are <code>Copy</code>. A
+            <code>String</code> or a <code>Vec</code> isn't, so make a copy for
+            each closure.
+          </li>
+          <li>
+            Service handles such as <code>cx.hyprland()</code>, and
+            <code>Cx</code> itself, are cheap to <code>clone()</code>.
+          </li>
+        </ul>
+        <pre><code class="rs">let name = output.name();
+let for_items = name.clone();
+Row::new()
+  .child(Text::new(name))
+  .children_keyed(move || workspaces_on(&amp;for_items), |w| w.id, row)</code></pre>
+        <h2 id="nothing-shows">Nothing shows</h2>
+        <p>
+          <strong>The shell exits at once with status 2.</strong> It found no
+          compositor, or the compositor has no layer-shell. Check that
+          <code>WAYLAND_DISPLAY</code> is set where you ran it. GNOME's
+          compositor doesn't offer layer-shell.
+        </p>
+        <p>
+          <strong>It runs, but there is no bar.</strong> Look for a panic from
+          <code>per_output</code> in the log, which leaves that monitor empty
+          until the next reload. Also check that the window has a size. A panel
+          anchored to one edge needs both a width and a height.
+        </p>
+        <p>
+          <strong>Two bars are stacked.</strong> Another bar is still running.
+          Stop it, or remove it from your compositor's config.
+        </p>
+        <p>
+          <strong>Windows sit under the bar.</strong> Set
+          <code>exclusive_zone</code> to the bar's height. It is the default for
+          a bar anchored across the top or bottom, so check the anchors.
+        </p>
+        <p>
+          <strong>The text is there but can't be seen.</strong> Text is black
+          until a style gives it a <code>color</code>. Set one on the window's
+          style.
+        </p>
+        <h2 id="empty">Parts of it are empty</h2>
+        <p>
+          A service whose daemon isn't there gives an empty list or
+          <code>None</code>, and says so once in the log.
+        </p>
+        <p>
+          <strong>No workspaces.</strong> <code>cx.sway()</code> needs
+          <code>SWAYSOCK</code>, which only Sway sets. See
+          <a href="compositors.html#which">which one to use</a>.
+        </p>
+        <p>
+          <strong>"no audio".</strong> No PulseAudio or pipewire-pulse answered.
+          The service retries for a minute after startup, so if the audio server
+          started later, restart the shell.
+        </p>
+        <p>
+          <strong>No tray icons.</strong> The tray needs a D-Bus session bus.
+          Some applications show an icon only when asked, as with
+          <code>nm-applet --indicator</code>.
+        </p>
+        <p>
+          <strong>No notifications.</strong> Another notification daemon holds
+          the name. Stop it, and the shell takes over.
+        </p>
+        <p>
+          <strong>An icon is missing.</strong> The default theme,
+          <code>hicolor</code>, has only what applications install. Call
+          <code>cx.set_icon_theme</code> with a full theme such as
+          <code>"Adwaita"</code>. For a file, pass a <code>Path</code>, since a
+          <code>&amp;str</code> is always a name.
+        </p>
+        <p>
+          <strong>The wrong font shows.</strong> The family you named isn't
+          installed, and fontconfig picked its closest match.
+          <code>fc-match "Inter"</code> shows what a name resolves to.
+        </p>
+        <h2 id="stopped">A widget stopped updating</h2>
+        <p>
+          <strong>Its binding panicked.</strong> Find a line like this in the
+          log.
+        </p>
+        <pre><code>PanelWindow[DP-1]/Row/Button[2]/Text.text panicked and is disabled: called `Option::unwrap()` on a `None` value</code></pre>
+        <p>
+          The path reads from the window down. <code>Button[2]</code> is the
+          row's third child, and <code>.text</code> is the property. That one
+          binding is off and keeps its last value. Fix the closure and save.
+          Handlers are named the same way, as
+          <code>handler &lt;path&gt;.on_click</code>.
+        </p>
+        <p>
+          The usual cause is an <code>unwrap()</code> or an index on data from
+          outside. A list can be empty for a moment while a service connects, so
+          write the empty case.
+        </p>
+        <p>
+          <strong>It never updated at all.</strong> The closure isn't reading a
+          signal.
+        </p>
+        <pre><code class="rs">let name = ws.get().name;          // read once, outside any closure
+Text::new(name)                    // so this never changes
+
+Text::new(move || ws.get().name)   // read inside the closure: follows the signal</code></pre>
+        <p>
+          <code>get_untracked()</code> and anything inside
+          <code>untrack(...)</code> read without subscribing, on purpose.
+        </p>
+        <h2 id="too-often">Something runs too often</h2>
+        <p>
+          <strong>An effect runs when nothing changed.</strong> A signal
+          notifies on every <code>set</code>, even with an equal value. Read it
+          through a memo, which passes on only real changes.
+        </p>
+        <pre><code class="rs">let is_open = cx.memo(move || open.get());
+cx.effect(move || if is_open.get() { build() });</code></pre>
+        <p>
+          <strong>Windows multiply.</strong> <code>cx.per_output</code> was
+          called inside an effect, so each run added another set. Call it from
+          the root closure, or on a
+          <a href="reactivity.html#contexts">child context</a> the effect
+          disposes first.
+        </p>
+        <p>
+          <strong>The log says an effect ran 100 rounds.</strong> It writes a
+          signal it also reads, and the shell disabled it. Read with
+          <code>get_untracked()</code> the signals it should not react to.
+        </p>
+        <p>
+          <strong>A signal "has no value" or its context is gone.</strong> A
+          closure outlived the context its signal was made in. Make the signal
+          in the longer-lived context, or use <code>try_get()</code>.
+        </p>
+        <h2 id="input">Input goes to the wrong place</h2>
+        <p>
+          <strong>Keys don't reach the window.</strong> A panel takes no
+          keyboard by default. Set
+          <code>keyboard_focus(KeyboardFocus::Exclusive)</code> for a launcher,
+          or <code>OnDemand</code> for a window the user clicks into.
+        </p>
+        <p>
+          <strong
+            >Clicks don't reach what is behind an empty part of a
+            window.</strong
+          >
+          The whole window takes input unless you set a
+          <a href="windows.html#masks"><code>mask</code></a
+          >.
+        </p>
+        <p>
+          <strong>A click on a list row does nothing.</strong> Only a
+          <code>Button</code> hears the pointer. Wrap the row in one.
+        </p>
+        <h2 id="reloads">Reloads</h2>
+        <p>
+          <strong>Saving doesn't reload.</strong>
+          <code>crabshell run</code> watches only <code>Cargo.toml</code> and
+          <code>src/</code> in the config directory. A save that changes nothing
+          isn't swapped in.
+        </p>
+        <p>
+          <strong>The shell went back to an older version.</strong> The new
+          build crashed three times in a minute, so
+          <code>crabshell run</code> started the last build that worked. The
+          crash is in the log, and your next save tries again.
+        </p>
+        <p>
+          <strong>State resets on every save.</strong> Only
+          <a href="system.html#persist"><code>cx.persist</code></a> values
+          survive a reload.
+        </p>
+        <p>
+          <strong>The screen is locked and the shell is gone.</strong> Start the
+          shell again. If your config
+          <a href="lock.html#stay-locked">remembers that it was locked</a>, it
+          takes the lock back and can unlock. Otherwise switch to another
+          virtual terminal and start a lock program such as swaylock there, with
+          <code>WAYLAND_DISPLAY</code> set to the session's. It takes the lock
+          over, and you unlock with it.
+        </p>
+        <h2 id="asleep">Is my shell asleep?</h2>
+        <p>
+          A shell that wakes when nothing changes wastes battery. Count how
+          often yours returns from waiting over five idle minutes.
+        </p>
+        <pre><code class="sh">$ perf stat -e 'syscalls:sys_exit_epoll_wait' -p $(pgrep -n my-shell) -- sleep 300</code></pre>
+        <p>
+          A bar with a minute clock should show a handful, all on the minute.
+          Common sources of more:
+        </p>
+        <ul>
+          <li>A clock with <code>Precision::Second</code>.</li>
+          <li>
+            A <code>cx.interval</code> that runs while what it feeds isn't on
+            screen.
+          </li>
+          <li>An audio level meter from <code>peaks</code>.</li>
+          <li>
+            A <code>cx.cycle</code> or <code>cx.frames</code> whose
+            <code>running</code> never turns false.
+          </li>
+          <li>
+            A live <code>ScreencopyView</code> of something that keeps changing.
+          </li>
+        </ul>
+        <p>
+          For memory, <code>ps -o rss= -p $(pgrep -n my-shell)</code> prints the
+          resident size in KiB. The template bar uses about 21 MiB.
+        </p>
+        <h2 id="stuck">Still stuck</h2>
+        <p>
+          Open an issue on
+          <a href="https://github.com/w0x7y/crabshell/issues">GitHub</a> with
+          the output of <code>CRABSHELL_LOG=debug crabshell run</code>, your
+          compositor and its version, and the smallest config that shows the
+          problem.
+        </p>
+      </article>
+    </main>
+  </body>
+</html>

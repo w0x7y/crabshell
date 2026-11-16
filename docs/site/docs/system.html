@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Programs, files and IPC | Crabshell docs</title>
+    <meta
+      name="description"
+      content="Run programs, read and write files, keep state across reloads, talk over Unix sockets, list installed applications and call your shell from the command line."
+    />
+    <script>
+      try {
+        var t = localStorage.getItem("crabshell:theme");
+        if (t === "light" || t === "dark")
+          document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <link rel="icon" href="../logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="../site.css" />
+    <script src="../site.js" defer></script>
+  </head>
+  <body class="docs">
+    <header class="bar">
+      <a class="brand" href="../index.html"
+        ><img src="../logo.svg" alt="" width="20" height="20" />crabshell</a
+      >
+      <a class="ws" href="../docs/index.html">Docs</a>
+    </header>
+    <main>
+      <article>
+        <h1>Programs, files and IPC</h1>
+        <p class="lede">
+          The parts of a shell that reach outside the process: programs, files,
+          saved state, sockets and commands from a terminal.
+        </p>
+        <h2 id="process">Run a program and read what it prints</h2>
+        <p>
+          <code>cx.process</code> runs a program and keeps what it prints and
+          how it ended.
+        </p>
+        <pre><code class="rs">let kernel = cx.process(|| ["uname", "-r"]).stdout();
+Text::new(move || kernel.get().trim().to_owned())</code></pre>
+        <p>
+          The closure returns the command, a list such as
+          <code>["uptime", "-p"]</code> or a <code>std::process::Command</code>.
+          It is a binding, so when a signal it read changes, the program is
+          stopped and started again.
+        </p>
+        <pre><code class="rs">// Runs again each time `host` changes.
+let ping = cx.process(move || vec!["ping".to_string(), "-c1".to_string(), host.get()]);</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it gives or does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>stdout()</code>, <code>stderr()</code></td>
+              <td>Signals holding everything printed this run, up to 1 MiB.</td>
+            </tr>
+            <tr>
+              <td><code>running()</code></td>
+              <td>
+                A signal that is true until the program ends or fails to start.
+              </td>
+            </tr>
+            <tr>
+              <td><code>exit_status()</code></td>
+              <td>
+                A signal holding how the last run ended, or
+                <code>None</code> while it runs.
+              </td>
+            </tr>
+            <tr>
+              <td><code>on_line(handler)</code></td>
+              <td>Calls <code>handler</code> with each line as it comes.</td>
+            </tr>
+            <tr>
+              <td><code>on_split(marker, handler)</code></td>
+              <td>
+                The same, split at another marker such as <code>"\0"</code>. An
+                empty marker hands over each read as it arrives.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>with_stdin()</code>, <code>write(data)</code>,
+                <code>close_stdin()</code>
+              </td>
+              <td>Gives the program an input and feeds it.</td>
+            </tr>
+            <tr>
+              <td><code>kill()</code></td>
+              <td>Sends SIGTERM.</td>
+            </tr>
+            <tr>
+              <td><code>restart()</code></td>
+              <td>Stops it and starts the command again.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          <code>on_line</code>, <code>on_split</code> and
+          <code>with_stdin</code> are chained on the call, since they return the
+          process.
+        </p>
+        <pre><code class="rs">// Follow a program that prints one line per change.
+let layout = cx.signal(String::new());
+cx.process(|| ["my-keyboard-watcher"]).on_line(move |line| layout.set(line.to_owned()));</code></pre>
+        <p>
+          A program is stopped when its context goes, and the shell stops every
+          program it started before it exits or reloads.
+        </p>
+        <p>
+          To poll something that has no events, start a program on a timer, in a
+          context that lives only while the value shows.
+        </p>
+        <pre><code class="rs">let uptime = cx.process(|| ["uptime", "-p"]);
+let text = uptime.stdout();
+cx.interval(Duration::from_secs(60), move || uptime.restart());</code></pre>
+        <h2 id="exec-detached">Start a program and let it go</h2>
+        <p>
+          <code>cx.exec_detached(command)</code> starts a program that runs by
+          itself, as a launcher does. The shell doesn't read its output or wait
+          for it, and it keeps running after a reload.
+        </p>
+        <pre><code class="rs">Button::new(Text::new("Files")).on_click(|cx| cx.exec_detached(["nautilus"]))
+Button::new(Text::new("docs")).on_click(|cx| cx.exec_detached(["xdg-open", "https://docs.rs/crabshell"]))</code></pre>
+        <h2 id="desktop-entries">Installed applications</h2>
+        <p>
+          <code>cx.desktop_entries()</code> reads the
+          <code>.desktop</code> files in the XDG data directories.
+        </p>
+        <pre><code class="rs">let entries = cx.desktop_entries();
+let apps = entries.applications();
+let shown = cx.memo(move || {
+  let query = query.get().to_lowercase();
+  apps.with(|all| {
+    all
+      .iter()
+      .filter(|entry| !entry.no_display &amp;&amp; entry.name.to_lowercase().contains(&amp;query))
+      .cloned()
+      .collect::&lt;Vec&lt;_&gt;&gt;()
+  })
+});</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it gives or does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>applications()</code></td>
+              <td><code>Vec&lt;DesktopEntry&gt;</code>, sorted by name.</td>
+            </tr>
+            <tr>
+              <td><code>lookup(app_id)</code></td>
+              <td>
+                The entry a window's app id names, trying the exact id, then
+                other spellings and the entry's <code>StartupWMClass</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>launch(id)</code></td>
+              <td>
+                Starts an application by its entry's <code>id</code>. A terminal
+                application runs through <code>xdg-terminal-exec</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>launch_action(id, action)</code></td>
+              <td>
+                Starts one of its actions, such as a browser's "New private
+                window".
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          A <code>DesktopEntry</code> has <code>id</code>, <code>name</code>,
+          <code>generic_name</code>, <code>comment</code>, <code>icon</code>,
+          <code>exec</code>, <code>terminal</code>, <code>categories</code>,
+          <code>keywords</code>, <code>no_display</code>,
+          <code>startup_wm_class</code>, <code>working_dir</code>,
+          <code>actions</code> and the file's <code>path</code>. Entries marked
+          <code>no_display</code> are in the list, so filter them out of a
+          launcher. The directories are watched, so a newly installed
+          application shows up without a restart.
+        </p>
+        <h2 id="files">Files</h2>
+        <p><code>cx.file_view(path)</code> follows a text file.</p>
+        <pre><code class="rs">let note = cx.file_view("/home/me/notes/today.txt");
+let text = note.text();
+Text::new(move || text.get().unwrap_or_default().trim().to_owned())</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it gives or does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>text()</code></td>
+              <td>
+                A signal holding <code>Option&lt;String&gt;</code>: the file's
+                text, read again whenever it changes on disk.
+                <code>None</code> while it is missing or can't be read.
+              </td>
+            </tr>
+            <tr>
+              <td><code>error()</code></td>
+              <td>
+                A signal holding why the last read failed, as a
+                <code>FileError</code> with a <code>kind</code> of
+                <code>NotFound</code>, <code>PermissionDenied</code>,
+                <code>NotAFile</code> or <code>Other</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>write(text)</code></td>
+              <td>
+                Replaces the file's text by writing a new file and renaming it
+                over the old one.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Files up to 16 MiB are read, and changes come through inotify. Files
+          under <code>/proc</code> and many under <code>/sys</code> change
+          without telling inotify, so read those yourself on an interval, and
+          only while the value shows.
+        </p>
+        <pre><code class="rs">let load = cx.signal(String::new());
+let read = move || load.set(std::fs::read_to_string("/proc/loadavg").unwrap_or_default());
+read();
+cx.interval(Duration::from_secs(5), read);</code></pre>
+        <h2 id="json-file">Settings in a JSON file</h2>
+        <p>
+          <code>cx.json_file(path, default)</code> is a
+          <code>Signal&lt;T&gt;</code> kept in step with a JSON file, both ways.
+          Setting the signal rewrites the file, and editing the file updates the
+          signal.
+        </p>
+        <pre><code class="rs">#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+struct Settings {
+  bar_height: u32,
+  show_seconds: bool,
+}
+
+let settings = cx.json_file(
+  "/home/me/.config/my-shell/settings.json",
+  Settings { bar_height: 30, show_seconds: false },
+);
+
+PanelWindow::new(output).height(move || settings.get().bar_height)</code></pre>
+        <p>
+          The signal holds <code>default</code> until the file is read. A
+          missing file and its directory are made at the first <code>set</code>.
+          A file that isn't valid JSON for the type is logged and left alone.
+        </p>
+        <p>
+          The type needs serde's <code>Serialize</code> and
+          <code>Deserialize</code>, so add
+          <code>serde = { version = "1", features = ["derive"] }</code> to your
+          <code>Cargo.toml</code>. Plain types such as <code>bool</code>,
+          <code>String</code> and <code>Vec&lt;String&gt;</code> need no derive.
+        </p>
+        <h2 id="persist">State that survives a reload</h2>
+        <p>
+          <code>cx.persist(key, default)</code> is a signal whose value survives
+          <code>crabshell run</code> swapping the shell after an edit.
+        </p>
+        <pre><code class="rs">let count = cx.persist("clicks", 0_u32);
+let open = cx.persist(&amp;format!("drawer open on {}", output.name()), false);</code></pre>
+        <p>
+          Asking again with the same key gives the same signal, which lives as
+          long as the shell does. If an edit changed the value's type so the
+          saved one no longer fits, the default is used and that is logged once.
+          The type needs <code>Serialize</code> and <code>Deserialize</code>.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>After</th>
+              <th><code>cx.signal</code></th>
+              <th><code>cx.persist</code></th>
+              <th><code>cx.json_file</code></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>A reload after an edit</td>
+              <td>Lost</td>
+              <td>Kept</td>
+              <td>Kept</td>
+            </tr>
+            <tr>
+              <td>A crash, or a restart of the shell</td>
+              <td>Lost</td>
+              <td>Lost</td>
+              <td>Kept</td>
+            </tr>
+            <tr>
+              <td>A reboot</td>
+              <td>Lost</td>
+              <td>Lost</td>
+              <td>
+                Kept, unless the file is under <code>$XDG_RUNTIME_DIR</code>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <h2 id="ipc">Call your shell from the command line</h2>
+        <p>
+          <code>cx.ipc(target, function, handler)</code> registers a function
+          that <code>crabshell ipc</code> can call from a key binding, a script
+          or another program.
+        </p>
+        <pre><code class="rs">let open = cx.signal(false);
+cx.ipc("launcher", "toggle", move |_args| {
+  open.update(|open| *open = !*open);
+  Ok(String::new())
+});
+cx.ipc("wallpaper", "set", move |args| {
+  let path = args.first().ok_or("give a path")?;
+  wallpaper.set(Some(path.into()));
+  Ok(format!("showing {path}"))
+});</code></pre>
+        <pre><code class="sh">$ crabshell ipc launcher toggle
+$ crabshell ipc wallpaper set ~/Pictures/lake.jpg
+showing /home/me/Pictures/lake.jpg
+$ crabshell ipc</code></pre>
+        <p>
+          The handler gets the arguments as <code>&amp;[String]</code> and
+          returns <code>Result&lt;String, String&gt;</code>. An
+          <code>Ok</code> text is printed, and an <code>Err</code> text is an
+          error with exit status 1. <code>crabshell ipc</code> with no arguments
+          lists every target and function.
+        </p>
+        <ul>
+          <li>
+            Names are 1 to 64 ASCII letters, digits, <code>_</code>,
+            <code>-</code> and <code>.</code>.
+          </li>
+          <li>
+            Registering the same target and function again replaces the older
+            handler.
+          </li>
+          <li>A handler lasts as long as the context it was registered on.</li>
+          <li>
+            It runs on the shell's one thread. Start long work with
+            <code>cx.process</code> and return.
+          </li>
+        </ul>
+        <p>Bind a key in your compositor to a call.</p>
+        <pre><code># Sway
+bindsym $mod+d exec crabshell ipc launcher toggle
+
+# Hyprland
+bind = SUPER, D, exec, crabshell ipc launcher toggle</code></pre>
+        <p>
+          The shell names its socket after <code>WAYLAND_DISPLAY</code>, so
+          <code>crabshell ipc</code> reaches the shell of the session it is run
+          in.
+        </p>
+        <h2 id="sockets">Unix sockets</h2>
+        <p>
+          <code>cx.socket(path)</code> connects to a Unix socket, for a daemon
+          that speaks a line protocol.
+        </p>
+        <pre><code class="rs">let state = cx.signal(String::new());
+let socket = cx.socket("/run/user/1000/my-daemon.sock").on_line(move |line| state.set(line.to_owned()));
+socket.write("status\n");</code></pre>
+        <p>
+          It has <code>connected()</code>, a signal, plus <code>on_line</code>,
+          <code>on_split</code>, <code>write</code>,
+          <code>reconnect()</code> and <code>close()</code>. It closes when its
+          context goes.
+        </p>
+        <p>
+          <code>cx.socket_server(path)</code> listens instead. Each client
+          reaches <code>on_connection</code> as a <code>Socket</code>, with a
+          context of its own. A server removes its socket file when it stops.
+        </p>
+        <pre><code class="rs">cx.socket_server("/run/user/1000/my-shell.sock").on_connection(move |_cx, client| {
+  client.write(format!("volume {}\n", volume.get_untracked()));
+  client.close();
+});</code></pre>
+        <h2 id="quantize-colors">Colors from a picture</h2>
+        <p>
+          <code>cx.quantize_colors(path, depth)</code> finds an image's main
+          colors, most common first. It gives up to 2 to the power of
+          <code>depth</code> colors, so a depth of 3 gives up to eight.
+        </p>
+        <pre><code class="rs">let colors = cx.quantize_colors(move || wallpaper.get(), 3);
+let accent = cx.memo(move || colors.with(|all| all.first().copied()).unwrap_or(ACCENT));
+
+Row::new().style(move || Style::new().background(accent.get()))</code></pre>
+        <p>
+          The work runs on a thread of its own. The signal starts empty, fills
+          when the colors are found, and follows a changed path.
+        </p>
+        <h2 id="exit">Ending the shell</h2>
+        <p>
+          <code>cx.exit(code)</code> stops the programs the config started,
+          removes the IPC socket and exits with that status. Under
+          <code>crabshell run</code>, 0 ends the supervisor too, and any status
+          except 0 and 2 starts the shell again.
+        </p>
+        <h2 id="icon-theme">The icon theme</h2>
+        <p>
+          <code>cx.set_icon_theme("Adwaita")</code> makes
+          <a href="drawing.html#icons">icon</a> names resolve in that theme
+          instead of <code>hicolor</code>. Call it in the root closure.
+        </p>
+      </article>
+    </main>
+  </body>
+</html>

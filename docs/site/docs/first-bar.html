@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Your first bar | Crabshell docs</title>
+    <meta
+      name="description"
+      content="Build the template bar step by step: a window per monitor, a style, a clock, Sway&#x27;s workspaces, the volume and the tray."
+    />
+    <script>
+      try {
+        var t = localStorage.getItem("crabshell:theme");
+        if (t === "light" || t === "dark")
+          document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <link rel="icon" href="../logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="../site.css" />
+    <script src="../site.js" defer></script>
+  </head>
+  <body class="docs">
+    <header class="bar">
+      <a class="brand" href="../index.html"
+        ><img src="../logo.svg" alt="" width="20" height="20" />crabshell</a
+      >
+      <a class="ws" href="../docs/index.html">Docs</a>
+    </header>
+    <main>
+      <article>
+        <h1>Your first bar</h1>
+        <p class="lede">
+          <code>crabshell init</code> writes a bar with workspaces, a tray, the
+          volume and a clock. This page builds that file a piece at a time.
+        </p>
+        <p>
+          Keep <code>crabshell run</code> running while you follow along. Each
+          save swaps the bar.
+        </p>
+        <h2 id="smallest">The smallest shell</h2>
+        <pre data-file="src/main.rs"><code class="rs">use crabshell::prelude::*;
+
+fn main() {
+  crabshell::run(|cx| cx.per_output(bar));
+}
+
+fn bar(_cx: &amp;Cx, output: &amp;Output) -&gt; PanelWindow {
+  PanelWindow::new(output)
+    .anchors(Edge::Top | Edge::Left | Edge::Right)
+    .height(30)
+    .child(Text::new("hello"))
+}</code></pre>
+        <ul>
+          <li>
+            <code>crabshell::run</code> connects to the compositor, calls your
+            closure once and runs the event loop. It never returns.
+          </li>
+          <li>
+            <code>cx</code> is the context. You make signals with it and ask it
+            for services.
+          </li>
+          <li>
+            <code>cx.per_output(bar)</code> calls <code>bar</code> for each
+            monitor, including one plugged in later. Unplug a monitor and its
+            window goes, with everything <code>bar</code> made for it.
+          </li>
+          <li>
+            <code>PanelWindow::new(output)</code> is a surface on that monitor.
+            Anchored to the top, left and right, it spans the top edge. Sizes
+            are in logical pixels.
+          </li>
+        </ul>
+        <p>
+          The text is black on a transparent window, since nothing has a style
+          yet.
+        </p>
+        <h2 id="style">A style is a constant</h2>
+        <pre><code class="rs">const BAR: Style = Style::new()
+  .background(Color::rgb(0x1e, 0x1e, 0x2e))
+  .color(Color::rgb(0xcd, 0xd6, 0xf4))
+  .font(Font::new("Inter", 13.0));</code></pre>
+        <p>
+          Add <code>.style(BAR)</code> to the window. Every
+          <code>Style</code> method is a <code>const fn</code>, so a theme is a
+          list of constants, and one style can start from another.
+        </p>
+        <pre><code class="rs">const WS: Style = Style::new().padding(2, 8).radius(4.0);
+const WS_FOCUSED: Style = WS.background(Color::rgb(0x45, 0x47, 0x5a));</code></pre>
+        <p>
+          <code>Text</code> takes its <code>color</code> and
+          <code>font</code> from the nearest widget above it that sets them.
+          Nothing else is inherited. <a href="styles.html">Styles</a> lists
+          every field.
+        </p>
+        <h2 id="clock">A row, and a clock</h2>
+        <p>
+          A window holds one child. For several things side by side, make that
+          child a <code>Row</code>.
+        </p>
+        <pre><code class="rs">fn bar(cx: &amp;Cx, output: &amp;Output) -&gt; PanelWindow {
+  let clock = cx.clock(Precision::Minute);
+
+  PanelWindow::new(output)
+    .anchors(Edge::Top | Edge::Left | Edge::Right)
+    .height(30)
+    .exclusive_zone(30)
+    .style(BAR)
+    .child(
+      Row::new()
+        .gap(8)
+        .padding(4, 8)
+        .child(Text::new(output.name()))
+        .child(Spacer::new())
+        .child(Text::new(move || {
+          clock.get().strftime("%a %d %b  %H:%M").to_string()
+        })),
+    )
+}</code></pre>
+        <p>
+          <code>cx.clock(Precision::Minute)</code> is a signal that holds the
+          time and changes once a minute. The closure given to
+          <code>Text::new</code> reads it, which subscribes the closure. When
+          the minute changes, the closure runs again and that one text repaints.
+          Between minutes the shell is asleep.
+        </p>
+        <p>
+          This is the rule to remember. A plain value sets a property once, and
+          a closure keeps it up to date.
+        </p>
+        <p>
+          <code>Spacer</code> takes the leftover width, which pushes the clock
+          to the right. <code>exclusive_zone(30)</code> keeps other windows from
+          sitting under the bar.
+        </p>
+        <h2 id="workspaces">Workspaces</h2>
+        <pre><code class="rs">let workspaces = cx.sway().workspaces();
+let output_name = output.name();</code></pre>
+        <p>
+          <code>workspaces()</code> is a signal holding a
+          <code>Vec&lt;Workspace&gt;</code>. A list that changes needs
+          <code>children_keyed</code>, which takes three closures.
+        </p>
+        <pre><code class="rs">Row::new().gap(4).children_keyed(
+  // The items. This runs again when the workspaces change.
+  move || {
+    workspaces
+      .get()
+      .into_iter()
+      .filter(|w| w.output == output_name)
+      .collect::&lt;Vec&lt;_&gt;&gt;()
+  },
+  // A key that names each item.
+  |w| w.id,
+  // The widget for one item.
+  |_cx, ws| {
+    Button::new(Text::new(move || ws.get().name))
+      .style(move || if ws.get().focused { WS_FOCUSED } else { WS })
+      .on_click(move |cx| cx.sway().focus_workspace(&amp;ws.get().name))
+  },
+)</code></pre>
+        <p>
+          The third closure runs once per key, and its button is kept while that
+          key stays in the list. <code>ws</code> is a
+          <code>Memo&lt;Workspace&gt;</code> that changes with that workspace,
+          so focusing another one repaints two buttons and builds none.
+        </p>
+        <p>
+          Closures say <code>move</code> because they outlive the function.
+          Signals and memos are <code>Copy</code>, so one can move into several
+          closures. <code>output_name</code> is a <code>String</code>, so it is
+          made before the closure that takes it.
+        </p>
+        <h2 id="volume">The volume</h2>
+        <pre><code class="rs">let sink = cx.audio().default_sink();</code></pre>
+        <pre><code class="rs">Button::new(Text::new(move || match sink.get() {
+  Some(s) if s.muted =&gt; "muted".to_string(),
+  Some(s) =&gt; format!("vol {}%", s.volume_percent),
+  None =&gt; "no audio".to_string(),
+}))
+.on_click(|cx| cx.audio().toggle_mute())
+.on_scroll(|cx, steps| cx.audio().change_volume(steps * 5))</code></pre>
+        <p>
+          <code>default_sink()</code> holds an <code>Option&lt;Sink&gt;</code>,
+          which is <code>None</code> while no audio server answers. Every
+          service works this way. Something that isn't running gives
+          <code>None</code> or an empty list, never a panic.
+          <code>on_scroll</code> gets whole wheel steps, positive for up.
+        </p>
+        <h2 id="tray">The tray</h2>
+        <pre><code class="rs">.child(Tray::new().icon_size(18))</code></pre>
+        <p>
+          <code>Tray</code> is a finished widget with one icon per tray item.
+        </p>
+        <h2 id="whole-file">The whole file</h2>
+        <p>
+          This is what <code>crabshell init</code> writes. Its
+          <code>Cargo.toml</code> is on
+          <a href="cli.html#cargo-toml">the command's page</a>.
+        </p>
+        <pre data-file="src/main.rs"><code class="rs">use crabshell::prelude::*;
+
+const BAR: Style = Style::new()
+  .background(Color::rgb(0x1e, 0x1e, 0x2e))
+  .color(Color::rgb(0xcd, 0xd6, 0xf4))
+  .font(Font::new("Inter", 13.0));
+const WS: Style = Style::new().padding(2, 8).radius(4.0);
+const WS_FOCUSED: Style = WS.background(Color::rgb(0x45, 0x47, 0x5a));
+
+fn main() {
+  crabshell::run(|cx| cx.per_output(bar));
+}
+
+fn bar(cx: &amp;Cx, output: &amp;Output) -&gt; PanelWindow {
+  let clock = cx.clock(Precision::Minute);
+  let workspaces = cx.sway().workspaces();
+  let sink = cx.audio().default_sink();
+  let output_name = output.name();
+
+  PanelWindow::new(output)
+    .anchors(Edge::Top | Edge::Left | Edge::Right)
+    .height(30)
+    .exclusive_zone(30)
+    .style(BAR)
+    .child(
+      Row::new()
+        .gap(8)
+        .padding(4, 8)
+        .child(Row::new().gap(4).children_keyed(
+          move || {
+            workspaces
+              .get()
+              .into_iter()
+              .filter(|w| w.output == output_name)
+              .collect::&lt;Vec&lt;_&gt;&gt;()
+          },
+          |w| w.id,
+          |_cx, ws| {
+            Button::new(Text::new(move || ws.get().name))
+              .style(move || if ws.get().focused { WS_FOCUSED } else { WS })
+              .on_click(move |cx| cx.sway().focus_workspace(&amp;ws.get().name))
+          },
+        ))
+        .child(Spacer::new())
+        .child(Tray::new().icon_size(18))
+        .child(
+          Button::new(Text::new(move || match sink.get() {
+            Some(s) if s.muted =&gt; "muted".to_string(),
+            Some(s) =&gt; format!("vol {}%", s.volume_percent),
+            None =&gt; "no audio".to_string(),
+          }))
+          .on_click(|cx| cx.audio().toggle_mute())
+          .on_scroll(|cx, steps| cx.audio().change_volume(steps * 5)),
+        )
+        .child(Text::new(move || {
+          clock.get().strftime("%a %d %b  %H:%M").to_string()
+        })),
+    )
+}</code></pre>
+        <h2 id="split">Split it up</h2>
+        <p>
+          A widget is a value, so a function can return one. As the file grows,
+          move each part into a function that takes a <code>&amp;Cx</code>.
+        </p>
+        <pre><code class="rs">fn volume(cx: &amp;Cx) -&gt; Button {
+  let sink = cx.audio().default_sink();
+  Button::new(Text::new(move || match sink.get() {
+    Some(s) if s.muted =&gt; "muted".to_string(),
+    Some(s) =&gt; format!("vol {}%", s.volume_percent),
+    None =&gt; "no audio".to_string(),
+  }))
+  .on_click(|cx| cx.audio().toggle_mute())
+}</code></pre>
+        <p>
+          The bar then reads <code>.child(volume(cx))</code>. Asking for
+          <code>cx.audio()</code> in ten places still makes one connection.
+        </p>
+        <h2 id="next">Where next</h2>
+        <ul>
+          <li>
+            <a href="reactivity.html">Signals and effects</a>, for state of your
+            own.
+          </li>
+          <li>
+            <a href="windows.html">Windows</a>, for popups, floating windows and
+            a second window per monitor.
+          </li>
+          <li>
+            <a href="examples.html">The examples</a>, for a launcher,
+            notifications, a control center and a lock screen.
+          </li>
+        </ul>
+      </article>
+    </main>
+  </body>
+</html>

@@ -2,375 +2,338 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1, viewport-fit=cover"
-    />
-    <title>crabshell</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Crabshell, a Rust toolkit for desktop shells</title>
     <meta
       name="description"
-      content="crabshell, a desktop shell you write in rust: a replacement for quickshell."
+      content="Write your Wayland desktop shell as a Rust crate: bars, launchers, lock screens and notifications that use about 20 MiB and sleep while nothing changes."
     />
-    <link rel="icon" href="logo.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="site.css" />
     <script>
       try {
         var t = localStorage.getItem("crabshell:theme");
-        if (t) document.documentElement.dataset.theme = t;
+        if (t === "light" || t === "dark")
+          document.documentElement.dataset.theme = t;
       } catch (e) {}
     </script>
+    <link rel="icon" href="logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="site.css" />
+    <script src="site.js" defer></script>
   </head>
-  <body>
-    <header class="site">
-      <div class="row">
-        <a class="name" href="index.html">crabshell</a>
-        <span class="version">v0.5</span>
-      </div>
-      <div class="row">
-        <nav class="main" aria-label="main">
-          <a href="index.html" aria-current="page">home</a> /
-          <a href="start.html">start</a> / <a href="config.html">config</a> /
-          <a href="architecture.html">architecture</a> /
-          <a href="roadmap.html">roadmap</a> /
-          <a href="features.html">features</a> /
-          <a
-            href="https://github.com/w0x7y/crabshell"
-            target="_blank"
-            rel="noopener"
-            >github</a
-          >
-        </nav>
-        <p class="theme">
-          <button type="button" data-theme-set="dark">dark</button> /
-          <button type="button" data-theme-set="light">light</button>
-        </p>
-      </div>
+  <body class="home">
+    <header class="bar">
+      <a class="brand" href="index.html"
+        ><img src="logo.svg" alt="" width="33" height="22" />crabshell</a
+      >
+      <a class="ws" href="docs/index.html">Docs</a>
     </header>
-
     <main>
-      <section class="hero">
-        <svg
-          class="logo"
-          viewBox="0 0 38 38"
-          shape-rendering="crispEdges"
-          role="img"
-          aria-label="the crabshell logo, a pixel snail shell"
-        >
-          <path
-            fill="var(--orange)"
-            d="M15 0h8v1h-8zM12 1h14v1h-14zM10 2h18v1h-18zM8 3h22v1h-22zM7 4h24v1h-24zM6 5h26v1h-26zM5 6h28v1h-28zM4 7h30v1h-30zM3 8h15v1h-15zM25 8h10v1h-10zM3 9h12v1h-12zM27 9h8v1h-8zM2 10h12v1h-12zM28 10h8v1h-8zM2 11h11v1h-11zM18 11h6v1h-6zM29 11h7v1h-7zM1 12h11v1h-11zM16 12h10v1h-10zM30 12h7v1h-7zM1 13h11v1h-11zM15 13h12v1h-12zM31 13h6v1h-6zM1 14h11v1h-11zM15 14h13v1h-13zM32 14h5v1h-5zM0 15h11v1h-11zM14 15h15v1h-15zM32 15h5v1h-5zM0 16h11v1h-11zM14 16h15v1h-15zM33 16h5v1h-5zM0 17h11v1h-11zM14 17h16v1h-16zM33 17h5v1h-5zM0 18h11v1h-11zM14 18h16v1h-16zM33 18h5v1h-5zM1 19h11v1h-11zM15 19h3v1h-3zM21 19h9v1h-9zM33 19h5v1h-5zM1 20h11v1h-11zM17 20h1v1h-1zM21 20h9v1h-9zM33 20h5v1h-5zM1 21h12v1h-12zM21 21h9v1h-9zM33 21h5v1h-5zM2 22h12v1h-12zM20 22h10v1h-10zM33 22h4v1h-4zM2 23h14v1h-14zM18 23h12v1h-12zM33 23h4v1h-4zM2 24h28v1h-28zM33 24h4v1h-4zM3 25h27v1h-27zM33 25h4v1h-4zM3 26h26v1h-26zM32 26h4v1h-4zM4 27h25v1h-25zM32 27h4v1h-4zM5 28h23v1h-23zM31 28h4v1h-4zM6 29h21v1h-21zM31 29h4v1h-4zM7 30h19v1h-19zM30 30h4v1h-4zM9 31h16v1h-16zM29 31h4v1h-4zM11 32h12v1h-12zM28 32h4v1h-4zM14 33h6v1h-6zM27 33h4v1h-4zM25 34h5v1h-5zM23 35h5v1h-5zM20 36h6v1h-6zM16 37h6v1h-6z"
-          />
-        </svg>
-        <h1>a desktop shell you write in rust.</h1>
-        <p>
-          crabshell is a rust replacement for quickshell. your bar, its popups
-          and, later, everything else quickshell does live in one rust crate.
-          save it, and crabshell rebuilds it and swaps the running shell in
-          about a second.
-        </p>
-        <p class="links">
-          <a href="start.html">get started</a> ·
-          <a href="config.html">write a config</a> ·
-          <a
-            href="https://github.com/w0x7y/crabshell"
-            target="_blank"
-            rel="noopener"
-            >github</a
-          >
-          · <code>v0.5</code>
-        </p>
-      </section>
-
-      <h2 id="the-bar">the bar</h2>
-      <p>
-        the template that <code>crabshell init</code> writes makes this bar,
-        drawn here in rime's colors. click a workspace, scroll over the volume
-        to change it, and click the volume to mute it, as on the real one.
-      </p>
-      <div class="bar" role="group" aria-label="a preview of the template bar">
-        <button type="button" class="ws" aria-pressed="true">1</button>
-        <button type="button" class="ws" aria-pressed="false">2</button>
-        <button type="button" class="ws" aria-pressed="false">3</button>
-        <button type="button" class="ws" aria-pressed="false">4</button>
-        <span class="spacer"></span>
-        <span class="tray" aria-label="tray icons">
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
+      <section class="hero" id="hero">
+        <div class="wrap hero-grid">
+          <div class="hero-copy">
+            <h1>
+              <span style="--i: 0">Your desktop</span>
+              <span style="--i: 1">shell is a</span>
+              <span style="--i: 2">Rust crate.</span>
+            </h1>
+            <p class="lede" style="--i: 3">
+              A toolkit for the bars, launchers, lock screens and notifications
+              of a Wayland desktop. <code>crabshell run</code> rebuilds your
+              shell and swaps it in on each save.
+            </p>
+            <pre
+              class="install"
+              style="--i: 4"
+            ><code class="sh">$ cargo install --locked crabshell-cli</code></pre>
+            <p class="actions" style="--i: 5">
+              <a class="button" href="docs/install.html">Get started</a>
+              <a class="button quiet" href="docs/examples.html"
+                >See the examples</a
+              >
+            </p>
+          </div>
+          <div class="crab" id="crab">
+            <noscript
+              ><img
+                src="logo.svg"
+                alt="The Crabshell logo, a pixel hermit crab out of its shell"
+                width="480"
+                height="320"
+            /></noscript>
+          </div>
+        </div>
+        <a
+          class="hero-down"
+          href="#light"
+          aria-label="Scroll to the next section"
+          ><svg
+            viewBox="0 0 9 6"
+            shape-rendering="crispEdges"
             aria-hidden="true"
           >
             <path
-              d="M2 9a15 15 0 0 1 20 0M5.5 12.5a10 10 0 0 1 13 0M9 16a5 5 0 0 1 6 0"
-            />
-            <circle cx="12" cy="19.5" r="1" fill="currentColor" />
-          </svg>
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <path d="m7 7 10 10-5 5V2l5 5L7 17" />
-          </svg>
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <circle cx="8" cy="15" r="4" />
-            <path d="m10.8 12.2 8.7-8.7M17 6l2 2M14.5 8.5l2 2" />
-          </svg>
-        </span>
-        <span
-          class="vol"
-          id="vol"
-          tabindex="0"
-          role="button"
-          aria-label="volume, scroll to change, click to mute"
-          >vol 40%</span
-        >
-        <time class="clock" id="clock"></time>
-      </div>
-      <p class="figure-caption">
-        the real bar is 30 px tall, anchored to the top of each monitor, and
-        draws with crabshell's own renderer.
-      </p>
+              d="M0 0h1v1h-1zM8 0h1v1h-1zM0 1h2v1h-2zM7 1h2v1h-2zM1 2h2v1h-2zM6 2h2v1h-2zM2 3h2v1h-2zM5 3h2v1h-2zM3 4h3v1h-3zM4 5h1v1h-1z"
+            /></svg
+        ></a>
+      </section>
 
-      <h2 id="against-quickshell">against quickshell</h2>
-      <p>
-        both drew the same static text bar on the same laptop under swayfx,
-        1920×1080 at scale 1, median of three runs. shorter bars cost less.
-      </p>
-      <div class="legend">
-        <span><i class="swatch crab"></i>crabshell</span
-        ><span><i class="swatch qs"></i>quickshell 0.3.2</span>
-      </div>
-      <div
-        class="chart"
-        id="metrics"
-        role="figure"
-        aria-label="what the same bar costs in crabshell and in quickshell"
-      ></div>
-      <p class="figure-caption">
-        measured in phase 0, on 10 nov 2026. the full v0.1 bar, with workspaces,
-        the tray, volume and a clock, uses 18.7 MiB (15% of quickshell's 125.2
-        MiB) and draws its first frame in 11 ms on headless sway. quickshell
-        drew on the gpu through opengl, its default.
-      </p>
-
-      <div class="diff">
-        <div class="ahead">
-          <h3>where crabshell is ahead</h3>
-          <ul>
-            <li>
-              <strong>one bad binding stays contained.</strong> a panic in a
-              config closure is logged with its widget path, that binding turns
-              off, and the rest of the shell keeps running.
-            </li>
-            <li>
-              <strong>crashes recover on their own.</strong> a dead shell is
-              back in about a second, and three quick crashes fall back to the
-              last build that worked.
-            </li>
-            <li>
-              <strong>mistakes show up before the shell runs.</strong> the
-              compiler checks every config, and rust-analyzer gives completion
-              and inline errors.
-            </li>
-            <li>
-              <strong>idle means asleep.</strong> a bar with a minute clock
-              wakes once a minute and does nothing in between. every test suite
-              checks it.
-            </li>
-            <li>
-              <strong>a broken edit keeps your bar up.</strong> the old shell
-              stays on screen, and a notification shows the first compiler
-              error.
-            </li>
-          </ul>
+      <section class="band" id="light">
+        <div class="wrap">
+          <h2>Light, and asleep when idle</h2>
+          <p class="intro">
+            Stop for three seconds and the crab goes in, and this page stops
+            with it: it asks for no frame, runs no animation and holds no timer.
+            A shell built with Crabshell idles the same way. Here it is beside
+            Quickshell, each drawing the same bar.
+          </p>
+          <figure class="mem">
+            <dl>
+              <div>
+                <dt>Quickshell 0.3.2</dt>
+                <dd>
+                  <span class="mem-bar other" style="--n: 125.2"></span>
+                  <b>125.2 <small>MiB</small></b>
+                </dd>
+              </div>
+              <div>
+                <dt>Crabshell</dt>
+                <dd>
+                  <span class="mem-bar" style="--n: 13.2"></span>
+                  <b>13.2 <small>MiB</small></b>
+                </dd>
+              </div>
+            </dl>
+            <figcaption>
+              The same bar in both, 30 pixels tall with one line of text, on one
+              1920×1080 screen. This is the memory each held 10 seconds after
+              its first frame: the median of three runs on one laptop, with
+              Crabshell's first prototype and Quickshell drawing through OpenGL,
+              its default.
+            </figcaption>
+          </figure>
         </div>
-        <div class="behind">
-          <h3>where crabshell is behind</h3>
-          <ul>
-            <li>
-              <strong>configs have to compile.</strong> quickshell reloads qml
-              without a build. here the first build takes minutes, and each edit
-              rebuilds: 0.7 s for a one-line change to the template.
-            </li>
-            <li>
-              <strong>every user needs a rust toolchain,</strong> and writing a
-              config means learning closures and <code>move</code>.
-            </li>
-            <li>
-              <strong>a reload restarts the shell.</strong> the bar is gone for
-              13 to 19 ms, and every color change is a rebuild.
-            </li>
-            <li>
-              <strong>hyprland is checked against a stand-in.</strong> its
-              workspaces, monitors and windows follow a fake hyprland in the
-              tests, and its focus grab and global shortcuts haven't run on
-              hyprland yet. niri gets only the generic protocols.
-            </li>
-            <li>
-              <strong>blur is the compositor's.</strong> a window asks for it
-              through ext-background-effect-v1, which sway doesn't have. text
-              uses grayscale antialiasing, where qt uses subpixel.
-            </li>
-            <li>
-              <strong>most of quickshell isn't built yet,</strong> and there are
-              no configs to copy from.
-            </li>
-          </ul>
-        </div>
-      </div>
+      </section>
 
-      <h2 id="where-it-stands">where it stands</h2>
-      <div class="rail" id="rail" aria-hidden="true"></div>
-      <div class="rail-ticks" id="rail-ticks" aria-hidden="true"></div>
-      <p>
-        <strong id="phases-done"></strong> v0.1 was the first release, and v0.2
-        on crates.io adds phases 7 to 12: floating windows, keyboard and text
-        input with input methods and the clipboard, scrolling lists, images and
-        clipping; animations that run only while something moves, style fades,
-        gradients, shadows and blur behind windows; desktop services: the
-        battery and power profile, bluetooth, networks, media players, every
-        audio device, a notification server and an idle monitor; and system
-        integration: your installed apps, programs, files, json files and
-        sockets, an ipc handler for the command line, every window, a screen's
-        or window's picture, and a wallpaper's colors; and a lock screen that
-        checks your password with pam, a greetd greeter and a polkit agent; and
-        more compositors: hyprland's workspaces, monitors and windows, i3's
-        events and outputs, the generic workspace protocol, global shortcuts, a
-        focus grab and the shortcut inhibitor. v0.3 adds phase 13, a check
-        against every quickshell type. v0.4 adds phase 14: timers, springs,
-        cycles and more curves, translate, scale and rotate, and list items that
-        animate out. v0.5 adds phases 15 and 16: flexible layout and grids,
-        every pointer gesture, drag and drop, a slider, kinetic scrolling and
-        grid views, then a canvas, per-corner radii, sweep gradients, dashed
-        borders, tinted icons, image filters, animated gifs, masks, shadows that
-        follow text and icons, and wallpaper transitions. phases 17 to 19 bring
-        the rest of what configs take from qt itself: styled text, and outside
-        data like http and the clipboard. the
-        <a href="roadmap.html">roadmap</a> has every phase.
-      </p>
-      <p id="types-line"></p>
+      <section class="band">
+        <div class="wrap">
+          <h2>What you get, and what it asks</h2>
+          <p class="intro">
+            One crate and one <code>use crabshell::prelude::*</code>. A part you
+            never call never starts.
+          </p>
+          <div class="trade">
+            <div>
+              <h3>In the toolkit</h3>
+              <ul class="glyphs">
+                <li>
+                  <a href="docs/windows.html"
+                    ><svg
+                      class="glyph"
+                      viewBox="0 0 12 12"
+                      shape-rendering="crispEdges"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M0 0h12v1h-12zM0 1h12v1h-12zM0 2h2v1h-2zM10 2h2v1h-2zM0 3h2v1h-2zM10 3h2v1h-2zM0 4h2v1h-2zM10 4h2v1h-2zM0 5h2v1h-2zM10 5h2v1h-2zM0 6h2v1h-2zM10 6h2v1h-2zM0 7h2v1h-2zM10 7h2v1h-2zM0 8h12v1h-12zM4 9h4v1h-4zM2 10h8v1h-8z"
+                      /></svg
+                    ><strong>Windows</strong></a
+                  >
+                  <span
+                    >Panels, floating windows, popups and lock surfaces</span
+                  >
+                </li>
+                <li>
+                  <a href="docs/widgets.html"
+                    ><svg
+                      class="glyph"
+                      viewBox="0 0 12 12"
+                      shape-rendering="crispEdges"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M0 1h5v1h-5zM6 1h6v1h-6zM0 2h5v1h-5zM6 2h6v1h-6zM0 3h5v1h-5zM6 3h6v1h-6zM7 5h3v1h-3zM0 6h12v1h-12zM7 7h3v1h-3zM0 9h8v1h-8z"
+                      /></svg
+                    ><strong>Widgets</strong></a
+                  >
+                  <span>Buttons, text, sliders, lists and a canvas</span>
+                </li>
+                <li>
+                  <a href="docs/reactivity.html"
+                    ><svg
+                      class="glyph"
+                      viewBox="0 0 12 12"
+                      shape-rendering="crispEdges"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M4 0h4v1h-4zM4 1h4v1h-4zM4 2h4v1h-4zM5 3h2v1h-2zM1 4h10v1h-10zM1 5h2v1h-2zM9 5h2v1h-2zM1 6h2v1h-2zM9 6h2v1h-2zM0 7h4v1h-4zM8 7h4v1h-4zM0 8h4v1h-4zM8 8h4v1h-4zM0 9h4v1h-4zM8 9h4v1h-4z"
+                      /></svg
+                    ><strong>Signals</strong></a
+                  >
+                  <span>Closures that run again when state changes</span>
+                </li>
+                <li>
+                  <a href="docs/styles.html"
+                    ><svg
+                      class="glyph"
+                      viewBox="0 0 12 12"
+                      shape-rendering="crispEdges"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M0 0h12v1h-12zM0 1h11v1h-11zM0 2h10v1h-10zM11 2h1v1h-1zM0 3h9v1h-9zM10 3h1v1h-1zM0 4h8v1h-8zM9 4h1v1h-1zM11 4h1v1h-1zM0 5h7v1h-7zM8 5h1v1h-1zM10 5h1v1h-1zM0 6h6v1h-6zM7 6h1v1h-1zM9 6h1v1h-1zM11 6h1v1h-1zM0 7h5v1h-5zM6 7h1v1h-1zM8 7h1v1h-1zM10 7h1v1h-1zM0 8h4v1h-4zM5 8h1v1h-1zM7 8h1v1h-1zM9 8h1v1h-1zM11 8h1v1h-1zM0 9h3v1h-3zM4 9h1v1h-1zM6 9h1v1h-1zM8 9h1v1h-1zM10 9h1v1h-1zM0 10h2v1h-2zM3 10h1v1h-1zM5 10h1v1h-1zM7 10h1v1h-1zM9 10h1v1h-1zM11 10h1v1h-1zM0 11h1v1h-1zM2 11h1v1h-1zM4 11h1v1h-1zM6 11h1v1h-1zM8 11h1v1h-1zM10 11h1v1h-1z"
+                      /></svg
+                    ><strong>Styles</strong></a
+                  >
+                  <span>Gradients, shadows, masks and fades</span>
+                </li>
+                <li>
+                  <a href="docs/motion.html"
+                    ><svg
+                      class="glyph"
+                      viewBox="0 0 12 12"
+                      shape-rendering="crispEdges"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M8 0h4v1h-4zM6 1h3v1h-3zM5 2h2v1h-2zM4 3h2v1h-2zM3 4h2v1h-2zM3 5h2v1h-2zM2 6h2v1h-2zM2 7h2v1h-2zM1 8h2v1h-2zM1 9h2v1h-2zM0 10h2v1h-2zM0 11h2v1h-2z"
+                      /></svg
+                    ><strong>Motion</strong></a
+                  >
+                  <span>Timers, transitions and springs</span>
+                </li>
+                <li>
+                  <a href="docs/drawing.html"
+                    ><svg
+                      class="glyph"
+                      viewBox="0 0 12 12"
+                      shape-rendering="crispEdges"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M4 0h4v1h-4zM2 1h8v1h-8zM1 2h3v1h-3zM8 2h3v1h-3zM1 3h2v1h-2zM9 3h2v1h-2zM0 4h2v1h-2zM10 4h2v1h-2zM0 5h2v1h-2zM10 5h2v1h-2zM0 6h2v1h-2zM0 7h2v1h-2zM1 8h2v1h-2zM1 9h3v1h-3zM8 9h3v1h-3zM2 10h8v1h-8zM4 11h4v1h-4z"
+                      /></svg
+                    ><strong>Drawing</strong></a
+                  >
+                  <span>Paths, icons, image filters and wallpapers</span>
+                </li>
+                <li>
+                  <a href="docs/services.html"
+                    ><svg
+                      class="glyph"
+                      viewBox="0 0 12 12"
+                      shape-rendering="crispEdges"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M0 2h11v1h-11zM0 3h1v1h-1zM10 3h1v1h-1zM0 4h1v1h-1zM2 4h6v1h-6zM10 4h2v1h-2zM0 5h1v1h-1zM2 5h6v1h-6zM10 5h2v1h-2zM0 6h1v1h-1zM2 6h6v1h-6zM10 6h2v1h-2zM0 7h1v1h-1zM2 7h6v1h-6zM10 7h2v1h-2zM0 8h1v1h-1zM10 8h1v1h-1zM0 9h11v1h-11z"
+                      /></svg
+                    ><strong>Services</strong></a
+                  >
+                  <span
+                    >The tray, audio, networks, batteries and
+                    notifications</span
+                  >
+                </li>
+                <li>
+                  <a href="docs/compositors.html"
+                    ><svg
+                      class="glyph"
+                      viewBox="0 0 12 12"
+                      shape-rendering="crispEdges"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M0 0h12v1h-12zM0 1h1v1h-1zM6 1h1v1h-1zM11 1h1v1h-1zM0 2h1v1h-1zM6 2h1v1h-1zM11 2h1v1h-1zM0 3h1v1h-1zM6 3h1v1h-1zM11 3h1v1h-1zM0 4h1v1h-1zM6 4h1v1h-1zM11 4h1v1h-1zM0 5h1v1h-1zM6 5h6v1h-6zM0 6h1v1h-1zM6 6h1v1h-1zM11 6h1v1h-1zM0 7h1v1h-1zM6 7h1v1h-1zM11 7h1v1h-1zM0 8h1v1h-1zM6 8h1v1h-1zM11 8h1v1h-1zM0 9h1v1h-1zM6 9h1v1h-1zM11 9h1v1h-1zM0 10h12v1h-12z"
+                      /></svg
+                    ><strong>Compositors</strong></a
+                  >
+                  <span>Sway and Hyprland workspaces, and other windows</span>
+                </li>
+                <li>
+                  <a href="docs/lock.html"
+                    ><svg
+                      class="glyph"
+                      viewBox="0 0 12 12"
+                      shape-rendering="crispEdges"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M3 0h6v1h-6zM2 1h2v1h-2zM8 1h2v1h-2zM2 2h2v1h-2zM8 2h2v1h-2zM2 3h2v1h-2zM8 3h2v1h-2zM1 4h10v1h-10zM1 5h10v1h-10zM1 6h4v1h-4zM7 6h4v1h-4zM1 7h4v1h-4zM7 7h4v1h-4zM1 8h4v1h-4zM7 8h4v1h-4zM1 9h10v1h-10zM1 10h10v1h-10z"
+                      /></svg
+                    ><strong>Logins</strong></a
+                  >
+                  <span>A session lock, a greeter and a polkit agent</span>
+                </li>
+              </ul>
+            </div>
+            <div class="ask">
+              <h3>What it asks of you</h3>
+              <ul class="glyphs">
+                <li>
+                  <svg
+                    class="glyph"
+                    viewBox="0 0 12 12"
+                    shape-rendering="crispEdges"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M4 0h4v1h-4zM5 1h2v1h-2zM3 2h6v1h-6zM2 3h8v1h-8zM1 4h4v1h-4zM6 4h5v1h-5zM1 5h4v1h-4zM6 5h5v1h-5zM1 6h4v1h-4zM8 6h3v1h-3zM1 7h10v1h-10zM1 8h10v1h-10zM2 9h8v1h-8zM3 10h6v1h-6z"
+                    /></svg
+                  ><strong>0.7 s to see an edit</strong>
+                  <span
+                    >Each save is a <code>cargo build</code> and a restart. A
+                    config's first build takes a few minutes.</span
+                  >
+                </li>
+                <li>
+                  <svg
+                    class="glyph"
+                    viewBox="0 0 12 12"
+                    shape-rendering="crispEdges"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M3 0h2v1h-2zM7 0h2v1h-2zM2 1h2v1h-2zM8 1h2v1h-2zM2 2h2v1h-2zM8 2h2v1h-2zM2 3h2v1h-2zM8 3h2v1h-2zM1 4h2v1h-2zM9 4h2v1h-2zM0 5h2v1h-2zM10 5h2v1h-2zM1 6h2v1h-2zM9 6h2v1h-2zM2 7h2v1h-2zM8 7h2v1h-2zM2 8h2v1h-2zM8 8h2v1h-2zM2 9h2v1h-2zM8 9h2v1h-2zM3 10h2v1h-2zM7 10h2v1h-2z"
+                    /></svg
+                  ><strong>Rust as the config language</strong>
+                  <span
+                    >You need a toolchain and you write closures. The compiler
+                    catches a mistake before the shell runs.</span
+                  >
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="band">
+        <div class="wrap">
+          <h2>Run your first bar</h2>
+          <p class="intro">
+            You need Rust 1.99 or newer, a compositor with layer-shell and four
+            system libraries.
+            <a href="docs/install.html">The install guide</a> lists them.
+          </p>
+          <ol class="steps">
+            <li>
+              <pre><code class="sh">$ cargo install --locked crabshell-cli</code></pre>
+              <p>Installs the <code>crabshell</code> command.</p>
+            </li>
+            <li>
+              <pre><code class="sh">$ crabshell init</code></pre>
+              <p>Writes a Cargo project to <code>~/.config/crabshell</code>.</p>
+            </li>
+            <li>
+              <pre><code class="sh">$ crabshell run</code></pre>
+              <p>
+                Builds it and puts a bar on every monitor. Each save of
+                <code>src/main.rs</code> swaps it.
+              </p>
+            </li>
+          </ol>
+        </div>
+      </section>
     </main>
-
-    <footer class="site">
-      <p>
-        crabshell is mit or apache-2.0 licensed. its colors are
-        <a href="https://w0x7y.dev/rime" target="_blank" rel="noopener">rime</a>
-        and rime frost, plus an orange made to match.
-      </p>
-      <p>
-        these pages come from <a href="../design.md">the design doc</a> at
-        <code>3ec1d89</code>. quickshell's source stays unread: it is lgpl-3.0.
-      </p>
-    </footer>
-
-    <script src="data.js"></script>
-    <script src="site.js"></script>
-    <script>
-      // The bar: workspaces switch, the volume scrolls and mutes, and the clock sleeps until the next
-      // minute, like crabshell's own.
-      const workspaces = document.querySelectorAll(".bar .ws");
-      workspaces.forEach((ws) =>
-        ws.addEventListener("click", () => {
-          workspaces.forEach((w) =>
-            w.setAttribute("aria-pressed", String(w === ws)),
-          );
-        }),
-      );
-      const vol = document.getElementById("vol");
-      let volume = 40;
-      let muted = false;
-      const showVolume = () => {
-        vol.textContent = muted ? "muted" : `vol ${volume}%`;
-      };
-      vol.addEventListener(
-        "wheel",
-        (e) => {
-          e.preventDefault();
-          volume = Math.max(0, Math.min(100, volume + (e.deltaY < 0 ? 5 : -5)));
-          showVolume();
-        },
-        { passive: false },
-      );
-      vol.addEventListener("click", () => {
-        muted = !muted;
-        showVolume();
-      });
-      vol.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          muted = !muted;
-        }
-        if (e.key === "ArrowUp") {
-          e.preventDefault();
-          volume = Math.min(100, volume + 5);
-        }
-        if (e.key === "ArrowDown") {
-          e.preventDefault();
-          volume = Math.max(0, volume - 5);
-        }
-        showVolume();
-      });
-      const clock = document.getElementById("clock");
-      function tick() {
-        const now = new Date();
-        const part = (o) => now.toLocaleString("en-GB", o);
-        clock.innerHTML = `<span class="date">${part({ weekday: "short" })} ${part({ day: "2-digit" })} ${part({ month: "short" })}  </span>${part({ hour: "2-digit", minute: "2-digit", hour12: false })}`;
-        clock.dateTime = now.toISOString();
-        setTimeout(
-          tick,
-          60000 - (now.getSeconds() * 1000 + now.getMilliseconds()) + 20,
-        );
-      }
-      tick();
-
-      // The chart: each metric on its own scale, the factor at the right.
-      const metrics = document.getElementById("metrics");
-      for (const m of METRICS) {
-        const unit = m.unit ? " " + m.unit : "";
-        const factor = Math.round((m.q / m.c) * 10) / 10;
-        const row = document.createElement("div");
-        row.className = "metric";
-        row.innerHTML = `<div class="what">${m.name}<small>${m.why}</small></div>
-    <div class="bars">
-      <div class="track"><span class="bar-mark crab" tabindex="0" style="width:${(m.c / m.q) * 78}%"></span><span><b>${m.c}</b>${unit}</span></div>
-      <div class="track"><span class="bar-mark qs" tabindex="0" style="width:78%"></span><span><b>${m.q}</b>${unit}</span></div>
-    </div>
-    <div class="factor">${factor >= 10 ? Math.round(factor) : factor.toFixed(1)}×<small>${m.less}</small></div>`;
-        const [crab, qs] = row.querySelectorAll(".bar-mark");
-        cs.addTip(crab, `crabshell: ${m.c}${unit}`);
-        cs.addTip(qs, `quickshell 0.3.2: ${m.q}${unit}`);
-        crab.setAttribute("aria-label", `crabshell, ${m.name}: ${m.c}${unit}`);
-        qs.setAttribute("aria-label", `quickshell, ${m.name}: ${m.q}${unit}`);
-        metrics.appendChild(row);
-      }
-
-      // Where it stands.
-      const done = PHASES.filter((p) => p.state === "done").length;
-      document.getElementById("rail").innerHTML = railCells(PHASES);
-      document.getElementById("rail-ticks").innerHTML = PHASES.map(
-        (p) =>
-          `<span>${p.n === 0 || p === PHASES[PHASES.length - 1] ? p.n : p.n === 6 ? "v0.1" : p.n === 13 ? "v0.3" : ""}</span>`,
-      ).join("");
-      document.getElementById("phases-done").textContent =
-        `${done} of ${PHASES.length} phases done.`;
-      document.getElementById("types-line").innerHTML =
-        `of quickshell's ${ALL_TYPES.length} types, ${countTypes("yes")} are built and ${countTypes("part")} partly. <a href="features.html">features</a> goes through every one.`;
-    </script>
   </body>
 </html>
