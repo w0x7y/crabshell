@@ -174,6 +174,8 @@ fn view(fit: Fit, filters: ImageFilters) -> ImageView<'static> {
     fit,
     filters,
     playing: true,
+    transition: crabshell_ui::ImageTransition::None,
+    leaving: None,
   }
 }
 

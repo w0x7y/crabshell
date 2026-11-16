@@ -1,9 +1,12 @@
-//! The bindings of [`Image`](crate::Image) and [`Icon`](crate::Icon), and
-//! what the platform asks of an image: a repaint of one GIF's box when its
-//! next frame is due.
+//! The bindings of [`Image`](crate::Image) and [`Icon`](crate::Icon), an
+//! image's transition to a new source, and what the platform asks of an
+//! image: a repaint of one GIF's box when its next frame is due.
 
+use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::animation::{self, Transition};
 use crate::tree::{Change, ImageNode, NodeId, NodeKind, Tree, borrow, replace};
 use crate::widgets::{Fit, IconProps, ImageFilters, ImageProps};
 use crate::window::Window;
@@ -22,8 +25,89 @@ impl ImageNode {
       fit: Fit::default(),
       filters: ImageFilters::default(),
       playing: true,
+      transition: ImageTransition::None,
+      leaving: None,
+      transitions: 0,
     }
   }
+}
+
+/// How an [`Image`](crate::Image) shows a new source: at once, or coming
+/// in over the old picture over a [`Transition`], which gives its time,
+/// curve and delay. Both pictures are drawn at the image's size, fit and
+/// filters.
+///
+/// ```
+/// use crabshell_ui::{Easing, ImageTransition, Transition};
+///
+/// const WALLPAPER: ImageTransition =
+///     ImageTransition::wipe(Transition::new(800).easing(Easing::InOutCubic), 90.0);
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum ImageTransition {
+  /// The new picture replaces the old at once. The default.
+  #[default]
+  None,
+  /// The new picture fades in as the old one fades out.
+  Crossfade(Transition),
+  /// An edge sweeps across the box in the direction of the angle, in
+  /// degrees as CSS's gradient angle: 0 toward the top, 90 toward the
+  /// right. The new picture is behind it. An angle that isn't finite
+  /// counts as 90.
+  Wipe(Transition, f32),
+  /// A circle grows from the middle until it covers the box, the new
+  /// picture inside it.
+  Circle(Transition),
+  /// The old picture breaks into growing blocks and the new one sharpens
+  /// out of them.
+  Pixelate(Transition),
+}
+
+impl ImageTransition {
+  /// No transition: a new source shows at once.
+  pub const fn none() -> ImageTransition {
+    ImageTransition::None
+  }
+
+  /// A crossfade over `transition`.
+  pub const fn crossfade(transition: Transition) -> ImageTransition {
+    ImageTransition::Crossfade(transition)
+  }
+
+  /// A wipe toward `angle` degrees over `transition`.
+  pub const fn wipe(transition: Transition, angle: f32) -> ImageTransition {
+    ImageTransition::Wipe(transition, angle)
+  }
+
+  /// A circle reveal over `transition`.
+  pub const fn circle(transition: Transition) -> ImageTransition {
+    ImageTransition::Circle(transition)
+  }
+
+  /// A pixelation over `transition`.
+  pub const fn pixelate(transition: Transition) -> ImageTransition {
+    ImageTransition::Pixelate(transition)
+  }
+
+  /// Its time and curve, `None` for none.
+  pub const fn transition(self) -> Option<Transition> {
+    match self {
+      ImageTransition::None => None,
+      ImageTransition::Crossfade(transition)
+      | ImageTransition::Wipe(transition, _)
+      | ImageTransition::Circle(transition)
+      | ImageTransition::Pixelate(transition) => Some(transition),
+    }
+  }
+}
+
+/// The picture a running transition leaves.
+pub(crate) struct Leaving {
+  pub(crate) source: PathBuf,
+  /// How far along the transition is, eased.
+  pub(crate) t: f32,
+  /// Which transition of the image it is, so one replaced stops.
+  generation: u64,
 }
 
 /// `value` if it is finite and above 0, 0 if it is finite and not, and
@@ -50,8 +134,38 @@ impl Tree {
   pub(crate) fn bind_image(&mut self, id: NodeId, props: ImageProps) {
     self.images.push(id);
     self.bind(id, props.source, "image", |tree, id, value| {
+      let mut started = None;
       // A new picture of the same size only needs a repaint.
-      tree.update_image(id, |image| repaint(&mut image.source, Some(value)));
+      tree.update(id, |node| {
+        let drawn = node.rect.is_some();
+        let NodeKind::Image(image) = &mut node.kind else {
+          return Change::None;
+        };
+        if image.source.as_ref() == Some(&value) {
+          return Change::None;
+        }
+        let old = image.source.replace(value);
+        let transition = image
+          .transition
+          .transition()
+          .filter(|transition| !transition.is_instant());
+        image.leaving = None;
+        // One not drawn yet has nothing to leave. Mid-transition, the old
+        // picture is the one coming in, drawn last.
+        if let (Some(old), Some(transition), true) = (old, transition, drawn) {
+          image.transitions += 1;
+          image.leaving = Some(Leaving {
+            source: old,
+            t: 0.0,
+            generation: image.transitions,
+          });
+          started = Some((image.transitions, transition));
+        }
+        Change::Paint
+      });
+      if let Some((generation, transition)) = started {
+        tree.start_image_transition(id, generation, transition);
+      }
     });
     self.bind_opt(id, props.width, "width", |tree, id, value| {
       tree.update_image(id, |image| replace(&mut image.width, value));
@@ -84,6 +198,56 @@ impl Tree {
     self.bind_opt(id, props.playing, "playing", |tree, id, value| {
       tree.update_image(id, |image| repaint(&mut image.playing, value));
     });
+    self.bind_opt(id, props.transition, "transition", |tree, id, value| {
+      tree.update_image(id, |image| repaint(&mut image.transition, value));
+    });
+  }
+
+  /// Moves image `id`'s transition number `generation` with the animation
+  /// clock, repainting its box each tick, until it ends, when the old
+  /// picture is let go, or another replaces it.
+  fn start_image_transition(&self, id: NodeId, generation: u64, transition: Transition) {
+    let tree = self.this.clone();
+    let mut started = animation::start_time();
+    let label = self.node(id).map_or_else(
+      || Rc::from("an image transition"),
+      |node| format!("{}.transition", node.path).into(),
+    );
+    animation::start(
+      label,
+      Box::new(move |now| {
+        let Some(tree) = tree.upgrade() else {
+          return false;
+        };
+        let Ok(mut tree) = tree.try_borrow_mut() else {
+          return true;
+        };
+        let begun = *started.get_or_insert(now);
+        let waiting = transition.waiting(begun, now);
+        let (t, ended) = transition.progress(begun, now);
+        let mut mine = false;
+        tree.update_image(id, |image| {
+          let Some(leaving) = image
+            .leaving
+            .as_mut()
+            .filter(|leaving| leaving.generation == generation)
+          else {
+            return Change::None;
+          };
+          mine = true;
+          if ended {
+            image.leaving = None;
+          } else if waiting {
+            // Nothing on screen changes until the delay is over.
+            return Change::None;
+          } else {
+            leaving.t = t;
+          }
+          Change::Paint
+        });
+        mine && !ended
+      }),
+    );
   }
 
   pub(crate) fn bind_icon(&mut self, id: NodeId, props: IconProps) {

@@ -188,6 +188,8 @@ fn view(path: &std::path::Path, fit: Fit, filters: ImageFilters) -> ImageView<'_
     fit,
     filters,
     playing: true,
+    transition: crabshell_ui::ImageTransition::None,
+    leaving: None,
   }
 }
 

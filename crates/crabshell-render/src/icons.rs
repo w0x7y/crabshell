@@ -352,6 +352,8 @@ impl Icons {
       fit: Fit::Fill,
       filters: ImageFilters::default(),
       playing: false,
+      transition: crabshell_ui::ImageTransition::None,
+      leaving: None,
     };
     let log = !self.failed_masks.contains(path);
     if self.picture(&image, size, scale, log).is_none() {

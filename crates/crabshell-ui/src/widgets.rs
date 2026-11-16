@@ -13,6 +13,7 @@ use crabshell_reactive::{Memo, Signal};
 
 use crate::cx::Cx;
 use crate::geometry::{Point, Rect, Size};
+use crate::image::ImageTransition;
 use crate::input::{CursorShape, Drag, DragValue, DropTarget, Handler, Handlers, Wheel};
 use crate::keyboard::KeyEvent;
 use crate::keyed::{self, KeyedList, KeyedMount};
@@ -163,6 +164,7 @@ pub(crate) struct ImageProps {
   pub(crate) saturation: Option<Prop<f32>>,
   pub(crate) blur: Option<Prop<f32>>,
   pub(crate) playing: Option<Prop<bool>>,
+  pub(crate) transition: Option<Prop<ImageTransition>>,
 }
 
 /// The filters an [`Image`] is drawn through, for the renderer. Each
@@ -828,6 +830,7 @@ impl Image {
         saturation: None,
         blur: None,
         playing: None,
+        transition: None,
       },
       common: Common::default(),
     }
@@ -897,6 +900,16 @@ impl Image {
   /// the frame it shows.
   pub fn playing(mut self, playing: impl IntoProp<bool>) -> Image {
     self.image.playing = Some(playing.into_prop());
+    self
+  }
+
+  /// How a new source comes in: [`ImageTransition::None`], the default,
+  /// shows it at once; the others bring it in over the old picture on the
+  /// animation clock, repainting only the image's box. A new source
+  /// mid-transition starts again from the picture coming in. A new source
+  /// that can't be loaded keeps the old picture.
+  pub fn transition(mut self, transition: impl IntoProp<ImageTransition>) -> Image {
+    self.image.transition = Some(transition.into_prop());
     self
   }
 

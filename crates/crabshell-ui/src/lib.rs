@@ -98,6 +98,7 @@ pub use cx::Cx;
 pub use floating::{FloatingConfig, FloatingWindow, WindowRequest};
 pub use geometry::{Affine, Point, Rect, Size};
 pub use grid_view::GridView;
+pub use image::ImageTransition;
 pub use input::{CursorShape, Drag, DragPhase, PointerButton, ScrollSource, Wheel, WheelAxis};
 pub use keyboard::{Clipboard, Key, KeyEvent, Modifiers};
 pub use lock::{Lock, SessionLock};
@@ -129,8 +130,8 @@ pub use window::{
 pub mod prelude {
   pub use crate::{
     Align, Button, Canvas, Cap, Color, Column, CursorShape, Cx, Drag, DragPhase, Edge, Font, Grid,
-    GridView, Icon, IconSource, Join, Justify, Layer, Mask, Menu, Output, Paint, PanelWindow, Path,
-    Pen, Point, PopupWindow, Radii, Rect, Row, ScrollSource, Size, Slider, Spacer, Stack, Stroke,
-    Style, Text, TextSystem, Timer, Wheel, WheelAxis, Widget, Window,
+    GridView, Icon, IconSource, ImageTransition, Join, Justify, Layer, Mask, Menu, Output, Paint,
+    PanelWindow, Path, Pen, Point, PopupWindow, Radii, Rect, Row, ScrollSource, Size, Slider,
+    Spacer, Stack, Stroke, Style, Text, TextSystem, Timer, Wheel, WheelAxis, Widget, Window,
   };
 }

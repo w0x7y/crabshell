@@ -22,6 +22,7 @@ use crate::canvas::CanvasNode;
 use crate::cx::{Anchor, Cx};
 use crate::floating::FloatingState;
 use crate::geometry::{Affine, Point, Rect, Size};
+use crate::image::{ImageTransition, Leaving};
 use crate::input::{CursorShape, DragValue, Handlers, Pointer};
 use crate::keyboard::Keyboard;
 use crate::keyed::KeyedSlot;
@@ -256,6 +257,11 @@ pub(crate) struct ImageNode {
   pub(crate) fit: Fit,
   pub(crate) filters: ImageFilters,
   pub(crate) playing: bool,
+  pub(crate) transition: ImageTransition,
+  /// The picture a running transition leaves.
+  pub(crate) leaving: Option<Leaving>,
+  /// How many transitions it has started, to tell the running one.
+  pub(crate) transitions: u64,
 }
 
 pub(crate) struct IconNode {

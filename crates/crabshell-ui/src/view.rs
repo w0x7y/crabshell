@@ -7,6 +7,7 @@ use cosmic_text::{Buffer, LayoutRun};
 
 use crate::canvas::CanvasOp;
 use crate::geometry::{Affine, Point, Rect, Size};
+use crate::image::ImageTransition;
 use crate::screencopy::CaptureFrame;
 use crate::style::{Color, Style};
 use crate::text::TextNode;
@@ -171,6 +172,11 @@ impl<'a> NodeView<'a> {
           fit: image.fit,
           filters: image.filters,
           playing: image.playing,
+          transition: image.transition,
+          leaving: image
+            .leaving
+            .as_ref()
+            .map(|leaving| (leaving.source.as_path(), leaving.t)),
         }),
         None => Content::None,
       },
@@ -314,6 +320,13 @@ pub struct ImageView<'a> {
   pub filters: ImageFilters,
   /// Whether a GIF plays; paused, it stays on its frame.
   pub playing: bool,
+  /// How a new source comes in. With one other than none, a source that
+  /// can't be loaded shows the last one that could.
+  pub transition: ImageTransition,
+  /// While a transition runs: the file it leaves and how far along it is,
+  /// eased, from 0 (all old) to 1 (all new); an easing that overshoots
+  /// may stray past either end.
+  pub leaving: Option<(&'a Path, f32)>,
 }
 
 /// A screencopy view's frame, ready to draw.

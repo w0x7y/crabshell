@@ -323,6 +323,8 @@ fn view(id: u64, path: &Path, playing: bool) -> ImageView<'_> {
     fit: Fit::Fill,
     filters: ImageFilters::default(),
     playing,
+    transition: crabshell_ui::ImageTransition::None,
+    leaving: None,
   }
 }
 

@@ -6,6 +6,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use crate::animation::Transition;
+use crate::image::ImageTransition;
 use crate::input::CursorShape;
 use crate::menu::MenuEntry;
 use crate::popup::Adjust;
@@ -128,6 +129,7 @@ value_props!(
   Duration,
   CursorShape,
   Transition,
+  ImageTransition,
 );
 
 impl IntoProp<String> for &str {
