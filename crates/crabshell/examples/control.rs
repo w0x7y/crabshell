@@ -279,7 +279,11 @@ fn calendar(today: ReadSignal<Date>) -> Column {
 }
 
 /// The notifications kept, newest first. The row under the pointer is
-/// the list's current one, so the highlight slides to it.
+/// the list's current one, so the highlight slides to it. A list at rest
+/// keeps its current row in view, as Qt's does, so hovering a row cut
+/// off at an edge, or a notification arriving or going while one is
+/// hovered, scrolls that row whole; the pointer stays over the same row,
+/// so it scrolls no further.
 fn recent(cx: &Cx, notifications: ReadSignal<Vec<Notification>>) -> Column {
   let hovered = cx.signal(None::<u32>);
   let newest_first = move || notifications.with(|list| list.iter().rev().cloned().collect());

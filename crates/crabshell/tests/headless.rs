@@ -3973,6 +3973,46 @@ fn the_control_centers_highlight_follows_the_pointer_and_its_fling_rests() {
   assert_eq!(left_of(&shot, rows[0]), PANEL_BACKGROUND, "off the first");
   sleeps(&mut shell);
 
+  // The fifth row is cut off at the list's bottom. Over its strip that
+  // shows, it is current, so the list scrolls it whole, as Qt's ListView
+  // keeps its current item in view; the pointer is still over it, so
+  // nothing scrolls further.
+  let (list, _) = control_rows(shell.platform(), id);
+  let (_, rows) = control_rows_named(shell.platform(), id);
+  let (summary, clipped) = rows[4].clone();
+  let bottom = list.y + list.height;
+  assert!(
+    clipped.y < bottom && clipped.y + clipped.height > bottom,
+    "{summary} is cut off at {bottom}: {clipped:?}"
+  );
+  let strip = Rect {
+    height: bottom - clipped.y,
+    ..clipped
+  };
+  let (x, y) = on_screen(strip);
+  pointer.move_to(x, y, layout);
+  settle(&mut shell);
+  let whole = clipped.y + clipped.height - bottom;
+  assert_eq!(
+    control_offset(shell.platform(), id),
+    whole,
+    "scrolled whole"
+  );
+  sleeps(&mut shell);
+  assert_eq!(
+    control_offset(shell.platform(), id),
+    whole,
+    "and no further"
+  );
+  let (_, rows) = control_rows_named(shell.platform(), id);
+  let (_, now) = rows
+    .into_iter()
+    .find(|(name, _)| *name == summary)
+    .expect("the row is still built");
+  assert_eq!(now.y + now.height, bottom, "{summary} ends at the bottom");
+  let shot = shell.platform().snapshot(id).expect("the panel draws");
+  assert_eq!(left_of(&shot, now), HIGHLIGHTED, "still highlighted");
+
   // Five 10-pixel moves 10 ms apart lift at about 1000 pixels a second.
   // Each event carries the time it was sent, so the shell, which runs on
   // this thread, reads them all after the lift: drawing between them
@@ -3984,7 +4024,7 @@ fn the_control_centers_highlight_follows_the_pointer_and_its_fling_rests() {
     std::thread::sleep(Duration::from_millis(10));
   }
   pointer.swipe(0.0, 0.0, true);
-  assert_eq!(control_offset(shell.platform(), id), 0.0, "not read yet");
+  assert_eq!(control_offset(shell.platform(), id), whole, "not read yet");
   settle(&mut shell);
   let after = shell.platform().stats();
   assert!(!crabshell_ui::animating(), "at rest");
@@ -3992,7 +4032,7 @@ fn the_control_centers_highlight_follows_the_pointer_and_its_fling_rests() {
   assert!(rested.rgba != resting.rgba, "the list moved");
   // The fingers moved it 50 pixels; the fling took it on from there.
   let offset = control_offset(shell.platform(), id);
-  assert!(offset > 100.0, "it flung on to {offset}");
+  assert!(offset > whole + 100.0, "it flung on to {offset}");
   let frames = after.commits - before.commits;
   eprintln!(
     "the fling drew {frames} frames at scale 2, in {:.3} ms each",
@@ -4133,7 +4173,8 @@ fn the_control_center_sets_the_volume_flings_its_list_and_sleeps() {
   pointer.swipe(0.0, 0.0, true);
   let rest = steady_shot(&sway, "HEADLESS-1");
   assert!(rest.rgba != before.rgba, "the list scrolled");
-  // The fingers moved it 50 of its 312 pixels; only the fling after
+  // Ten rows, 5 × 46 + 5 × 36 tall in a list 180 tall, scroll 230
+  // pixels. The fingers moved it 50; only the fling after
   // their lift takes it to the end, where it springs back and rests.
   let bottom = thumb_bottom(&rest);
   let end = 8 + control::HEIGHT - control::PADDING;
