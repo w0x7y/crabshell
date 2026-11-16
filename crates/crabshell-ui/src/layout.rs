@@ -50,8 +50,11 @@ impl Tree {
   /// the size the compositor shrank it to.
   pub(crate) fn layout(&mut self, text: &mut Fonts) {
     let root = self.root;
-    // A font was added: every text shapes again in a full layout.
-    if self.fonts_added != fonts_added() {
+    // A font was added: every text shapes again in a full layout, and the
+    // whole window repaints, since text that kept its box may have new
+    // glyphs. It's rare, so nothing finer is worth it.
+    let font_added = self.fonts_added != fonts_added();
+    if font_added {
       self.fonts_added = fonts_added();
       self.needs_layout = true;
     }
@@ -109,6 +112,10 @@ impl Tree {
     }
 
     self.place(root, Point::default(), &mut Vec::new(), fonts);
+    if font_added {
+      let whole = Rect::new(0.0, 0.0, self.size.width, self.size.height);
+      add_damage(&mut self.damage, whole);
+    }
     self.needs_layout = false;
     self.needs_place = false;
     self.pointer_after_layout();

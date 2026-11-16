@@ -12,16 +12,23 @@ use crate::{Align, Content, Font, Rect, Row, Style, Text, TextSystem, Window};
 /// DejaVu Sans's bytes, leaked as `include_bytes!` would keep them, or
 /// `None` with a message on a machine that keeps the file elsewhere.
 fn dejavu() -> Option<&'static [u8]> {
-  for path in [
-    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+  font_file("DejaVuSans.ttf")
+}
+
+/// The bytes of the font file `name` from a usual directory, leaked, or
+/// `None` with a message.
+fn font_file(name: &str) -> Option<&'static [u8]> {
+  for dir in [
+    "/usr/share/fonts/dejavu",
+    "/usr/share/fonts/truetype/dejavu",
+    "/usr/share/fonts/TTF",
+    "/usr/share/fonts/noto-emoji",
   ] {
-    if let Ok(bytes) = std::fs::read(path) {
+    if let Ok(bytes) = std::fs::read(format!("{dir}/{name}")) {
       return Some(Box::leak(bytes.into_boxed_slice()));
     }
   }
-  eprintln!("skipped: DejaVuSans.ttf isn't in any of the usual places");
+  eprintln!("skipped: {name} isn't in any of the usual places");
   None
 }
 
@@ -164,4 +171,29 @@ fn a_font_added_later_shapes_laid_out_text_again() {
   h.frame(&window);
   assert!(drawn_from_bundled(&window, &h.text, &[0, 0]));
   assert!(!window.needs_layout());
+}
+
+#[test]
+fn a_font_added_later_repaints_text_that_kept_its_size() {
+  let Some(bold) = font_file("DejaVuSans-Bold.ttf") else {
+    return;
+  };
+  let mut h = Harness::new();
+  let style = Style::new()
+    .font(Font::new("DejaVu Sans", 13.0))
+    .width(200.0);
+  let row = Row::new()
+    .align(Align::Start)
+    .child(Text::new("hello").style(style));
+  let window = h.window(h.panel().child(row), 600.0, 60.0);
+  window.take_damage();
+  let text = rect_at(&window, &[0, 0]);
+  h.cx.add_font(bold);
+  h.frame(&window);
+  // Its box didn't move, but its glyphs may have changed.
+  let damage = window.take_damage();
+  assert!(
+    damage.iter().any(|area| area.union(text) == *area),
+    "{damage:?} misses {text:?}"
+  );
 }
