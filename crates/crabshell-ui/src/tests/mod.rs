@@ -25,6 +25,7 @@ mod kinetic;
 mod layout;
 mod lists;
 mod lock;
+mod markup;
 mod measure;
 mod menu;
 mod placement;

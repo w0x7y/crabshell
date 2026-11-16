@@ -74,6 +74,7 @@ mod menu;
 mod popup;
 mod prop;
 mod region;
+mod rich;
 mod screencopy;
 mod scroll;
 mod scrolling;
@@ -108,6 +109,7 @@ pub use menu::{Menu, MenuEntry, MenuToggle};
 pub use popup::{Adjust, Placement, PopupWindow};
 pub use prop::{IntoProp, Prop};
 pub use region::Region;
+pub use rich::{MARKUP_CAP, Span, parse_markup};
 pub use screencopy::{CaptureFrame, CaptureRequest, CaptureSource, ScreencopyView};
 pub use scroll::{ListView, ScrollView};
 pub use slider::Slider;
@@ -136,7 +138,7 @@ pub mod prelude {
     Align, Button, Canvas, Cap, Color, Column, CursorShape, Cx, Drag, DragPhase, Edge, Elide, Font,
     FontFeature, Grid, GridView, Icon, IconSource, ImageTransition, Join, Justify, Layer, Mask,
     Menu, Output, Paint, PanelWindow, Path, Pen, Point, PopupWindow, Radii, Rect, Row,
-    ScrollSource, Size, Slider, Spacer, Stack, Stroke, Style, Text, TextAlign, TextMetrics,
-    TextSystem, Timer, Wheel, WheelAxis, Widget, Window,
+    ScrollSource, Size, Slider, Spacer, Span, Stack, Stroke, Style, Text, TextAlign, TextMetrics,
+    TextSystem, Timer, Wheel, WheelAxis, Widget, Window, parse_markup,
   };
 }
