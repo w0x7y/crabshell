@@ -153,6 +153,20 @@ fn letter_spacing_adds_its_pixels_after_each_glyph() {
     Font::DEFAULT.letter_spacing(2.5),
   ));
   assert!((spaced - plain - 10.0).abs() < 0.01, "{plain} {spaced}");
+  // At most half the 13 px font size is taken back, so the glyphs stay
+  // within the em the painted area allows left of the text.
+  let tightest = width(&shaped(
+    &mut text,
+    "abcd",
+    Font::DEFAULT.letter_spacing(-6.5),
+  ));
+  let past = width(&shaped(
+    &mut text,
+    "abcd",
+    Font::DEFAULT.letter_spacing(-20.0),
+  ));
+  assert_eq!(past, tightest);
+  assert!(tightest < plain - 20.0, "{plain} {tightest}");
   for odd in [f32::NAN, f32::INFINITY] {
     let same = width(&shaped(
       &mut text,

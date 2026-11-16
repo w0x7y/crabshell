@@ -347,7 +347,8 @@ fn glyph_ink_outside_the_line_leaves_nothing_behind() {
 }
 
 #[test]
-fn squeezed_aligned_and_decorated_text_paints_inside_its_bounds() {
+fn squeezed_aligned_spaced_and_decorated_text_paints_inside_its_bounds() {
+  const BOLD: Font = Font::new("sans-serif", 20.0).weight(700);
   let styles = [
     Style::new().line_height(0.05),
     Style::new().line_height(0.05).text_align(TextAlign::End),
@@ -356,6 +357,7 @@ fn squeezed_aligned_and_decorated_text_paints_inside_its_bounds() {
       .strikethrough(true)
       .line_height(0.3),
     Style::new().text_align(TextAlign::Center).underline(true),
+    Style::new().font(BOLD.letter_spacing(-40.0)),
   ];
   for style in styles {
     for scale in [1.0, 1.5, 2.0] {
@@ -365,11 +367,9 @@ fn squeezed_aligned_and_decorated_text_paints_inside_its_bounds() {
         .style(Style::new().color(Color::rgb(255, 255, 255)))
         .child(
           Row::new().padding(30, 30).align(Align::Center).child(
-            Text::new("Agjy\nqÅ").max_lines(2).style(
-              style
-                .width(120.0)
-                .font(Font::new("sans-serif", 20.0).weight(700)),
-            ),
+            Text::new("Agjy\nqÅ")
+              .max_lines(2)
+              .style(Style::new().font(BOLD).merge(style).width(120.0)),
           ),
         );
       let window = scene.window(panel, 200.0, 120.0);

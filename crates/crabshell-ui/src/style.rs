@@ -212,8 +212,8 @@ pub struct Font {
   pub weight: u16,
   /// Whether the italic face is asked for.
   pub italic: bool,
-  /// Extra logical pixels after each glyph; a number that isn't finite
-  /// counts as 0.
+  /// Extra logical pixels after each glyph, at least minus half the
+  /// size; a number that isn't finite counts as 0.
   pub letter_spacing: f32,
   /// OpenType features turned on or off, in order.
   pub features: &'static [FontFeature],
@@ -250,7 +250,7 @@ impl Font {
   }
 
   /// The same font with `px` extra logical pixels after each glyph, or
-  /// less with a negative number.
+  /// less with a negative number, down to minus half the font size.
   pub const fn letter_spacing(self, px: f32) -> Font {
     Font {
       letter_spacing: px,

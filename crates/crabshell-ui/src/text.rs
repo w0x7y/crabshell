@@ -395,9 +395,10 @@ impl TextNode {
     if font.italic {
       attrs = attrs.style(cosmic_text::Style::Italic);
     }
-    // cosmic-text counts letter spacing in ems.
+    // cosmic-text counts letter spacing in ems. Taking back at most half
+    // an em keeps glyphs within the em the ink box allows left of the text.
     if font.letter_spacing.is_finite() && font.letter_spacing != 0.0 {
-      attrs = attrs.letter_spacing(font.letter_spacing / font_size(font));
+      attrs = attrs.letter_spacing((font.letter_spacing / font_size(font)).max(-0.5));
     }
     if !font.features.is_empty() {
       let mut features = FontFeatures::new();
