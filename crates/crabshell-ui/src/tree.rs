@@ -866,8 +866,8 @@ impl Tree {
         self.bind(id, props.text, "text", |tree, id, value| {
           tree.update_text(id, |text| text.set_content(value))
         });
-        self.bind_opt(id, props.ellipsis, "ellipsis", |tree, id, value| {
-          tree.update_text(id, |text| text.set_ellipsis(value))
+        self.bind_opt(id, props.elide, "elide", |tree, id, value| {
+          tree.update_text(id, |text| text.set_elide(value))
         });
         self.bind_opt(id, props.max_lines, "max_lines", |tree, id, value| {
           tree.update_text(id, |text| text.set_max_lines(value))

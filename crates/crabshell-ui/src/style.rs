@@ -189,10 +189,18 @@ const fn hex_digit(digit: u8) -> u8 {
   }
 }
 
-/// A font: family, size and weight.
+/// A font: family, size, weight, slant, letter spacing and OpenType
+/// features.
 ///
 /// The family is resolved through fontconfig, so generic names such as
 /// `"sans-serif"` and `"monospace"` work too.
+///
+/// ```
+/// use crabshell_ui::{Font, FontFeature};
+///
+/// const CLOCK: Font = Font::new("sans-serif", 13.0).features(&[FontFeature::TABULAR_NUMBERS]);
+/// const NOTE: Font = Font::new("sans-serif", 11.0).italic().letter_spacing(0.5);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Font {
   /// The family name, such as `"Inter"` or `"sans-serif"`.
@@ -202,6 +210,13 @@ pub struct Font {
   /// The weight, from 100 (thin) through 400 (regular) and 700 (bold) to
   /// 900 (black).
   pub weight: u16,
+  /// Whether the italic face is asked for.
+  pub italic: bool,
+  /// Extra logical pixels after each glyph; a number that isn't finite
+  /// counts as 0.
+  pub letter_spacing: f32,
+  /// OpenType features turned on or off, in order.
+  pub features: &'static [FontFeature],
 }
 
 impl Font {
@@ -214,12 +229,65 @@ impl Font {
       family,
       size,
       weight: 400,
+      italic: false,
+      letter_spacing: 0.0,
+      features: &[],
     }
   }
 
   /// The same font with another weight, such as 700 for bold.
   pub const fn weight(self, weight: u16) -> Font {
     Font { weight, ..self }
+  }
+
+  /// The same font in italic. A family without an italic face gets the
+  /// face fontconfig picks, slanted by the renderer if it is upright.
+  pub const fn italic(self) -> Font {
+    Font {
+      italic: true,
+      ..self
+    }
+  }
+
+  /// The same font with `px` extra logical pixels after each glyph, or
+  /// less with a negative number.
+  pub const fn letter_spacing(self, px: f32) -> Font {
+    Font {
+      letter_spacing: px,
+      ..self
+    }
+  }
+
+  /// The same font with these OpenType features, such as
+  /// [`FontFeature::TABULAR_NUMBERS`] for digits of one width.
+  pub const fn features(self, features: &'static [FontFeature]) -> Font {
+    Font { features, ..self }
+  }
+}
+
+/// An OpenType feature: a four-letter tag and its value, 0 for off and
+/// 1 for on, or which alternate for features that have several.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FontFeature {
+  /// The tag, such as `*b"tnum"`.
+  pub tag: [u8; 4],
+  /// The value.
+  pub value: u32,
+}
+
+impl FontFeature {
+  /// Digits of one width, so a clock's width holds still (`tnum`).
+  pub const TABULAR_NUMBERS: FontFeature = FontFeature::new(*b"tnum", 1);
+  /// No standard ligatures such as "fi" (`liga` off).
+  pub const NO_LIGATURES: FontFeature = FontFeature::new(*b"liga", 0);
+  /// Lowercase letters as small capitals (`smcp`).
+  pub const SMALL_CAPS: FontFeature = FontFeature::new(*b"smcp", 1);
+  /// A zero with a slash or dot (`zero`).
+  pub const SLASHED_ZERO: FontFeature = FontFeature::new(*b"zero", 1);
+
+  /// The feature `tag` set to `value`.
+  pub const fn new(tag: [u8; 4], value: u32) -> FontFeature {
+    FontFeature { tag, value }
   }
 }
 

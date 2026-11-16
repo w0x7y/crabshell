@@ -14,14 +14,15 @@ use std::rc::Rc;
 
 use cosmic_text::fontdb::{Database, Source};
 use cosmic_text::{
-  Attrs, Buffer, Ellipsize, EllipsizeHeightLimit, Family, FontSystem, LayoutGlyph, LayoutRun,
-  Metrics, Shaping, Weight, Wrap,
+  Attrs, Buffer, Ellipsize, EllipsizeHeightLimit, Family, FeatureTag, FontFeatures, FontSystem,
+  LayoutGlyph, LayoutRun, Metrics, Shaping, Weight, Wrap,
 };
-use fontconfig::{CharSet, FC_FAMILY, FC_WEIGHT, Fontconfig, Pattern};
+use fontconfig::{CharSet, FC_FAMILY, FC_SLANT, FC_SLANT_ITALIC, FC_WEIGHT, Fontconfig, Pattern};
 use taffy::AvailableSpace;
 
 use crate::geometry::{Point, Rect};
 use crate::style::Font;
+use crate::widgets::Elide;
 
 /// The fonts every window measures and draws text with.
 ///
@@ -31,16 +32,16 @@ use crate::style::Font;
 pub struct TextSystem {
   fonts: FontSystem,
   fontconfig: Lookup,
-  /// The family name each requested family and weight resolved to, as the
-  /// font database knows it. `None` if nothing was found.
-  families: HashMap<(&'static str, u16), Option<Rc<str>>>,
+  /// The family name each requested family, weight and slant resolved
+  /// to, as the font database knows it. `None` if nothing was found.
+  families: HashMap<(&'static str, u16, bool), Option<Rc<str>>>,
   /// The family name of each face asked for, by file and face number.
   loaded: HashMap<(PathBuf, u32), Option<Rc<str>>>,
   /// Files read into the database. Reading one loads all its faces.
   files: HashSet<PathBuf>,
-  /// Characters a fallback font was already looked up for, by the family
-  /// and weight asked for: fontconfig's answer depends on both.
-  fallback_tried: HashSet<(char, &'static str, u16)>,
+  /// Characters a fallback font was already looked up for, by the family,
+  /// weight and slant asked for: fontconfig's answer depends on all three.
+  fallback_tried: HashSet<(char, &'static str, u16, bool)>,
 }
 
 /// fontconfig, started on first use because that costs about 15 ms.
@@ -87,17 +88,17 @@ impl TextSystem {
     }
   }
 
-  /// The name to ask cosmic-text for to get `font`'s family and weight,
-  /// loading the file fontconfig matches the first time. `None`, logged
-  /// once, if no font could be loaded.
+  /// The name to ask cosmic-text for to get `font`'s family, weight and
+  /// slant, loading the file fontconfig matches the first time. `None`,
+  /// logged once, if no font could be loaded.
   pub(crate) fn family(&mut self, font: &Font) -> Option<Rc<str>> {
-    let key = (font.family, font.weight);
+    let key = (font.family, font.weight, font.italic);
     if let Some(name) = self.families.get(&key) {
       return name.clone();
     }
     let matched = self
       .fontconfig()
-      .and_then(|fontconfig| match_font(fontconfig, font.family, font.weight, None));
+      .and_then(|fontconfig| match_font(fontconfig, font, None));
     let name = matched.and_then(|file| self.load(file));
     match &name {
       Some(name) => tracing::debug!(requested = font.family, family = %name, "font loaded"),
@@ -116,12 +117,15 @@ impl TextSystem {
   fn load_fallbacks(&mut self, font: &Font, missing: &[char]) -> bool {
     let faces = self.fonts.db().len();
     for &ch in missing {
-      if !self.fallback_tried.insert((ch, font.family, font.weight)) {
+      if !self
+        .fallback_tried
+        .insert((ch, font.family, font.weight, font.italic))
+      {
         continue;
       }
       let Some(file) = self
         .fontconfig()
-        .and_then(|fontconfig| match_font(fontconfig, font.family, font.weight, Some(ch)))
+        .and_then(|fontconfig| match_font(fontconfig, font, Some(ch)))
       else {
         continue;
       };
@@ -170,18 +174,22 @@ fn source_path(source: &Source) -> Option<&PathBuf> {
 }
 
 /// Asks fontconfig for the font file and face index that best match
-/// `family` and `weight`, and that have `covering` if given.
+/// `font`'s family, weight and slant, and that have `covering` if given.
 fn match_font(
   fontconfig: &Fontconfig,
-  family: &str,
-  weight: u16,
+  font: &Font,
   covering: Option<char>,
 ) -> Option<(PathBuf, u32)> {
   let mut pattern = Pattern::new(fontconfig).ok()?;
   pattern
-    .add_string(FC_FAMILY, &CString::new(family).ok()?)
+    .add_string(FC_FAMILY, &CString::new(font.family).ok()?)
     .ok()?;
-  pattern.add_integer(FC_WEIGHT, fc_weight(weight)).ok()?;
+  pattern
+    .add_integer(FC_WEIGHT, fc_weight(font.weight))
+    .ok()?;
+  if font.italic {
+    pattern.add_integer(FC_SLANT, FC_SLANT_ITALIC).ok()?;
+  }
   if let Some(ch) = covering {
     let mut chars = CharSet::new(fontconfig).ok()?;
     chars.add_char(ch).ok()?;
@@ -235,12 +243,16 @@ pub(crate) fn fc_weight(weight: u16) -> i32 {
 /// The font size, falling back to the default for a size cosmic-text can't
 /// use, and a line height of 1.2 times it in whole pixels.
 fn metrics(font: &Font) -> Metrics {
-  let size = if font.size.is_finite() && font.size >= 1.0 {
+  let size = font_size(font);
+  Metrics::new(size, (size * 1.2).round())
+}
+
+fn font_size(font: &Font) -> f32 {
+  if font.size.is_finite() && font.size >= 1.0 {
     font.size
   } else {
     Font::DEFAULT.size
-  };
-  Metrics::new(size, (size * 1.2).round())
+  }
 }
 
 /// The text of one [`Text`](crate::Text) widget, shaped and laid out by
@@ -248,13 +260,13 @@ fn metrics(font: &Font) -> Metrics {
 /// it, so the measured and drawn sizes are the same.
 pub(crate) struct TextNode {
   pub(crate) content: String,
-  pub(crate) ellipsis: bool,
+  pub(crate) elide: Elide,
   /// At least 1.
   pub(crate) max_lines: u32,
   pub(crate) buffer: Buffer,
   /// The font the buffer was shaped with; `None` until the first layout.
   font: Option<Font>,
-  /// The content, `ellipsis` or `max_lines` changed since the buffer was
+  /// The content, `elide` or `max_lines` changed since the buffer was
   /// shaped.
   stale: bool,
   /// The top-left corner of the first line, set by layout.
@@ -265,7 +277,7 @@ impl TextNode {
   pub(crate) fn new() -> TextNode {
     TextNode {
       content: String::new(),
-      ellipsis: false,
+      elide: Elide::None,
       max_lines: 1,
       buffer: Buffer::new_empty(metrics(&Font::DEFAULT)),
       font: None,
@@ -280,8 +292,8 @@ impl TextNode {
     self.set(|text| &mut text.content, content)
   }
 
-  pub(crate) fn set_ellipsis(&mut self, ellipsis: bool) -> bool {
-    self.set(|text| &mut text.ellipsis, ellipsis)
+  pub(crate) fn set_elide(&mut self, elide: Elide) -> bool {
+    self.set(|text| &mut text.elide, elide)
   }
 
   pub(crate) fn set_max_lines(&mut self, max_lines: u32) -> bool {
@@ -299,9 +311,9 @@ impl TextNode {
   }
 
   /// Whether the text's width depends on the space it gets: it wraps or
-  /// ends in an ellipsis. Plain one-line text is always as wide as it is.
+  /// is elided. Plain one-line text is always as wide as it is.
   fn fits_width(&self) -> bool {
-    self.ellipsis || self.max_lines > 1
+    self.elide != Elide::None || self.max_lines > 1
   }
 
   /// Shapes the text again if its content, settings or `font` changed,
@@ -319,10 +331,12 @@ impl TextNode {
     } else {
       Wrap::None
     });
-    self.buffer.set_ellipsize(if self.ellipsis {
-      Ellipsize::End(EllipsizeHeightLimit::Lines(self.max_lines as usize))
-    } else {
-      Ellipsize::None
+    let lines = EllipsizeHeightLimit::Lines(self.max_lines as usize);
+    self.buffer.set_ellipsize(match self.elide {
+      Elide::None => Ellipsize::None,
+      Elide::Start => Ellipsize::Start(lines),
+      Elide::Middle => Ellipsize::Middle(lines),
+      Elide::End => Ellipsize::End(lines),
     });
     self.buffer.set_size(None, None);
     self.shape(family.as_deref(), &font, text);
@@ -336,11 +350,24 @@ impl TextNode {
   }
 
   fn shape(&mut self, family: Option<&str>, font: &Font, text: &mut TextSystem) {
-    let attrs = Attrs::new().weight(Weight(font.weight));
-    let attrs = match family {
-      Some(family) => attrs.family(Family::Name(family)),
-      None => attrs,
-    };
+    let mut attrs = Attrs::new().weight(Weight(font.weight));
+    if let Some(family) = family {
+      attrs = attrs.family(Family::Name(family));
+    }
+    if font.italic {
+      attrs = attrs.style(cosmic_text::Style::Italic);
+    }
+    // cosmic-text counts letter spacing in ems.
+    if font.letter_spacing.is_finite() && font.letter_spacing != 0.0 {
+      attrs = attrs.letter_spacing(font.letter_spacing / font_size(font));
+    }
+    if !font.features.is_empty() {
+      let mut features = FontFeatures::new();
+      for feature in font.features {
+        features.set(FeatureTag::new(&feature.tag), feature.value);
+      }
+      attrs = attrs.font_features(features);
+    }
     self
       .buffer
       .set_text(&self.content, &attrs, Shaping::Advanced, None);

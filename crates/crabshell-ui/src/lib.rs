@@ -110,7 +110,7 @@ pub use screencopy::{CaptureFrame, CaptureRequest, CaptureSource, ScreencopyView
 pub use scroll::{ListView, ScrollView};
 pub use slider::Slider;
 pub use style::{
-  Border, Color, Font, Gradient, GradientShape, Mask, Padding, Radii, Shadow, Style,
+  Border, Color, Font, FontFeature, Gradient, GradientShape, Mask, Padding, Radii, Shadow, Style,
 };
 pub use text::TextSystem;
 pub use text_input::{FieldState, Preedit, TextInput};
@@ -119,8 +119,8 @@ pub use view::{
   CanvasView, CaptureView, Content, IconView, ImageView, InputView, NodeView, TextView, WindowView,
 };
 pub use widgets::{
-  Align, Button, Column, Element, Fit, Grid, Icon, IconPixels, IconSource, Image, ImageFilters,
-  Justify, Row, Spacer, Stack, Text, Widget,
+  Align, Button, Column, Element, Elide, Fit, Grid, Icon, IconPixels, IconSource, Image,
+  ImageFilters, Justify, Row, Spacer, Stack, Text, Widget,
 };
 pub use window::{
   Anchors, Edge, KeyboardFocus, Layer, Margins, Output, PanelWindow, SurfaceConfig, Window,
@@ -129,9 +129,10 @@ pub use window::{
 /// What a bar's code needs, in one `use`.
 pub mod prelude {
   pub use crate::{
-    Align, Button, Canvas, Cap, Color, Column, CursorShape, Cx, Drag, DragPhase, Edge, Font, Grid,
-    GridView, Icon, IconSource, ImageTransition, Join, Justify, Layer, Mask, Menu, Output, Paint,
-    PanelWindow, Path, Pen, Point, PopupWindow, Radii, Rect, Row, ScrollSource, Size, Slider,
-    Spacer, Stack, Stroke, Style, Text, TextSystem, Timer, Wheel, WheelAxis, Widget, Window,
+    Align, Button, Canvas, Cap, Color, Column, CursorShape, Cx, Drag, DragPhase, Edge, Elide, Font,
+    FontFeature, Grid, GridView, Icon, IconSource, ImageTransition, Join, Justify, Layer, Mask,
+    Menu, Output, Paint, PanelWindow, Path, Pen, Point, PopupWindow, Radii, Rect, Row,
+    ScrollSource, Size, Slider, Spacer, Stack, Stroke, Style, Text, TextSystem, Timer, Wheel,
+    WheelAxis, Widget, Window,
   };
 }

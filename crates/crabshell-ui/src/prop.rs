@@ -13,7 +13,7 @@ use crate::popup::Adjust;
 use crate::region::Region;
 use crate::screencopy::CaptureSource;
 use crate::style::{Color, Style};
-use crate::widgets::{Align, Fit, IconSource, Justify};
+use crate::widgets::{Align, Elide, Fit, IconSource, Justify};
 use crate::window::{Anchors, Edge, KeyboardFocus, Layer, Margins};
 
 /// A widget property: either a value set once, or a binding that reruns
@@ -114,6 +114,7 @@ value_props!(
   String,
   Style,
   Align,
+  Elide,
   Justify,
   Anchors,
   Layer,

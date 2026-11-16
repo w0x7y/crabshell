@@ -143,7 +143,7 @@ pub(crate) struct GridProps {
 
 pub(crate) struct TextProps {
   pub(crate) text: Prop<String>,
-  pub(crate) ellipsis: Option<Prop<bool>>,
+  pub(crate) elide: Option<Prop<Elide>>,
   pub(crate) max_lines: Option<Prop<u32>>,
 }
 
@@ -707,9 +707,23 @@ impl Widget for Spacer {
   }
 }
 
+/// Where text that doesn't fit is cut, with "…" in its place.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Elide {
+  /// Not cut: the text keeps its width and overflows. The default.
+  #[default]
+  None,
+  /// The start of the last line shown.
+  Start,
+  /// The middle of the last line shown.
+  Middle,
+  /// The end of the last line shown.
+  End,
+}
+
 /// A line of text.
 ///
-/// The text, `ellipsis` and `max_lines` change the layout. Color and font
+/// The text, `elide` and `max_lines` change the layout. Color and font
 /// come from the nearest widget whose [`Style`] sets them, starting with the
 /// text's own.
 pub struct Text {
@@ -723,7 +737,7 @@ impl Text {
     Text {
       text: TextProps {
         text: text.into_prop(),
-        ellipsis: None,
+        elide: None,
         max_lines: None,
       },
       common: Common::default(),
@@ -731,9 +745,21 @@ impl Text {
   }
 
   /// When on, text that doesn't fit ends in "…" instead of being cut off.
-  /// Off by default.
+  /// Off by default. The same as [`elide`](Self::elide) with
+  /// [`Elide::End`] or [`Elide::None`]; whichever is called last wins.
   pub fn ellipsis(mut self, ellipsis: impl IntoProp<bool>) -> Text {
-    self.text.ellipsis = Some(ellipsis.into_prop());
+    let elide = ellipsis
+      .into_prop()
+      .map(|on| if on { Elide::End } else { Elide::None });
+    self.text.elide = Some(elide);
+    self
+  }
+
+  /// Where text that doesn't fit is cut, with "…" in its place:
+  /// [`Elide::None`] by default. With `max_lines` above 1, the last line
+  /// shown is cut.
+  pub fn elide(mut self, elide: impl IntoProp<Elide>) -> Text {
+    self.text.elide = Some(elide.into_prop());
     self
   }
 

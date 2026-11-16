@@ -37,6 +37,7 @@ mod slider;
 mod style;
 mod text;
 mod text_input;
+mod text_styles;
 mod timer;
 mod transform;
 mod visible;
