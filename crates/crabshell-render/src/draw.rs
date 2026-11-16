@@ -19,6 +19,8 @@ use tiny_skia::{
 use crate::damage::{BufferAge, DamageHistory, PixelRect};
 use crate::icons::Icons;
 
+mod canvas;
+
 /// The side of a tile, in buffer pixels. tiny-skia cuts a curve where it
 /// leaves the pixmap, which changes the antialiasing beside the cut, so
 /// every pixel is drawn in the same tile whatever the damage, and a repaint
@@ -532,7 +534,8 @@ impl Painter<'_> {
       Content::Image(image) => self.image(pixmap, &image),
       Content::Capture(capture) => self.capture(pixmap, &capture),
       Content::Input(input) => self.input(pixmap, &input),
-      Content::Canvas(_) | Content::None => {}
+      Content::Canvas(canvas) => self.canvas(pixmap, &canvas, style),
+      Content::None => {}
     }
     if node.clips() {
       self.clipped_children(pixmap, node, style);

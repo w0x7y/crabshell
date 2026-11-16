@@ -8,6 +8,7 @@
 //! `sans-serif` is Noto Sans, and DejaVu Sans and DejaVu Sans Bold supply
 //! the snowman.
 
+mod canvas;
 mod capture;
 mod colors;
 mod damage;

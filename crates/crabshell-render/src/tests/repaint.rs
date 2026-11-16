@@ -454,7 +454,7 @@ fn argb_repaints_match_a_full_argb_draw() {
 }
 
 /// Draws `damage` into `buffer`, which belongs to `history`.
-fn repaint(
+pub(super) fn repaint(
   scene: &mut Scene,
   window: &Window,
   damage: &[crabshell_ui::Rect],
