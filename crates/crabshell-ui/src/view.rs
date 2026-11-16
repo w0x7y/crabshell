@@ -3,11 +3,12 @@
 use std::cell::Ref;
 use std::path::Path;
 
-use cosmic_text::{Buffer, LayoutRun};
+use cosmic_text::{Buffer, LayoutGlyph, LayoutRun};
 
 use crate::canvas::CanvasOp;
 use crate::geometry::{Affine, Point, Rect, Size};
 use crate::image::ImageTransition;
+use crate::rich::Span;
 use crate::screencopy::CaptureFrame;
 use crate::select::{highlights, text_selection};
 use crate::style::{Color, Style};
@@ -307,6 +308,11 @@ impl<'a> TextView<'a> {
   /// one.
   pub fn color(&self) -> Color {
     self.color
+  }
+
+  /// The span `glyph` of a rich text belongs to, if any.
+  pub fn span(&self, glyph: &LayoutGlyph) -> Option<&'a Span> {
+    self.text.spans.get(glyph.metadata.checked_sub(1)?)
   }
 
   /// Whether to draw a line under the glyphs, in the text's color.

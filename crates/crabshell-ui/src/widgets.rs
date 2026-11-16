@@ -18,6 +18,7 @@ use crate::input::{CursorShape, Drag, DragValue, DropTarget, Handler, Handlers, 
 use crate::keyboard::KeyEvent;
 use crate::keyed::{self, KeyedList, KeyedMount};
 use crate::prop::{IntoProp, Prop};
+use crate::rich::Span;
 use crate::screencopy::ScreencopyProps;
 use crate::scroll::ScrollProps;
 use crate::style::{Color, Style};
@@ -142,7 +143,9 @@ pub(crate) struct GridProps {
 }
 
 pub(crate) struct TextProps {
-  pub(crate) text: Prop<String>,
+  /// The plain text, or for a rich text `None` and its spans.
+  pub(crate) text: Option<Prop<String>>,
+  pub(crate) spans: Option<Prop<Vec<Span>>>,
   pub(crate) elide: Option<Prop<Elide>>,
   pub(crate) max_lines: Option<Prop<u32>>,
   pub(crate) selectable: Option<Prop<bool>>,
@@ -737,7 +740,24 @@ impl Text {
   pub fn new(text: impl IntoProp<String>) -> Text {
     Text {
       text: TextProps {
-        text: text.into_prop(),
+        text: Some(text.into_prop()),
+        spans: None,
+        elide: None,
+        max_lines: None,
+        selectable: None,
+      },
+      common: Common::default(),
+    }
+  }
+
+  /// Text made of styled spans: a `Vec<Span>`, or a closure that returns
+  /// one. Each span takes what it doesn't set from the text, and
+  /// everything else a `Text` takes works the same.
+  pub fn rich(spans: impl IntoProp<Vec<Span>>) -> Text {
+    Text {
+      text: TextProps {
+        text: None,
+        spans: Some(spans.into_prop()),
         elide: None,
         max_lines: None,
         selectable: None,

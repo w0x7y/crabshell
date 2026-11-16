@@ -11,6 +11,7 @@ use crate::input::CursorShape;
 use crate::menu::MenuEntry;
 use crate::popup::Adjust;
 use crate::region::Region;
+use crate::rich::Span;
 use crate::screencopy::CaptureSource;
 use crate::style::{Color, Style};
 use crate::widgets::{Align, Elide, Fit, IconSource, Justify};
@@ -127,6 +128,7 @@ value_props!(
   IconSource,
   CaptureSource,
   Vec<MenuEntry>,
+  Vec<Span>,
   Duration,
   CursorShape,
   Transition,

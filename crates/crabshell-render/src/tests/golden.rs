@@ -5,8 +5,8 @@ use std::rc::Rc;
 
 use crabshell_ui::{
   Align, Color, Column, Content, Elide, Fit, Font, FontFeature, Gradient, Icon, IconPixels,
-  IconSource, Image, Mask, Menu, MenuEntry, MenuToggle, Row, Shadow, Stack, Style, Text, TextAlign,
-  Window,
+  IconSource, Image, Mask, Menu, MenuEntry, MenuToggle, Row, Shadow, Span, Stack, Style, Text,
+  TextAlign, Window, parse_markup,
 };
 
 use super::{Scene, assert_golden, fixture};
@@ -547,6 +547,45 @@ fn text_styles() {
                 .style(Style::new().width(70.0)),
             ),
         ),
+    )
+  });
+}
+
+#[test]
+fn rich_text() {
+  check_fonts();
+  const BODY: &str = "<b>Build</b> <i>finished</i> in <u>4 s</u> &amp; \
+    <a href=\"https://example.org/log\">the log</a> <img src=\"/x.png\" alt=\"[ok]\"/>\n\
+    next: <b><i>deploy &lt;prod&gt;</i></b>";
+  check("rich_text", 220.0, 96.0, |scene| {
+    let spans = vec![
+      Span::new("Plain, "),
+      Span::new("bold").bold(),
+      Span::new(", "),
+      Span::new("italic").italic(),
+      Span::new(", "),
+      Span::new("under").underline(),
+      Span::new(" and "),
+      Span::new("red struck")
+        .color(Color::hex("#f38ba8"))
+        .strikethrough(),
+      Span::new(" with "),
+      Span::new("a link")
+        .underline()
+        .color(Color::hex("#89b4fa"))
+        .link("https://example.org"),
+    ];
+    scene.panel().style(BAR).child(
+      Column::new()
+        .padding(4, 6)
+        .gap(6)
+        .align(Align::Start)
+        .child(
+          Text::rich(spans)
+            .max_lines(2)
+            .style(Style::new().width(200.0)),
+        )
+        .child(Text::rich(parse_markup(BODY)).max_lines(2)),
     )
   });
 }

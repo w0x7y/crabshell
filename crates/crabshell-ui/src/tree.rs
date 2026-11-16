@@ -875,15 +875,17 @@ impl Tree {
       }
       ElementKind::Grid(props) => self.bind_grid(id, props),
       ElementKind::Text(props) => {
-        self.bind(id, props.text, "text", |tree, id, value| {
+        // The old selection's bytes may not be in the new text.
+        self.bind_opt(id, props.text, "text", |tree, id, value| {
           tree.update_text(id, |text| {
-            // The old selection's bytes may not be in the new text.
             let changed = text.set_content(value);
-            if changed {
-              text.anchor = None;
-              text.cursor = 0;
-            }
-            changed
+            text.forget_selection_if(changed)
+          })
+        });
+        self.bind_opt(id, props.spans, "spans", |tree, id, value| {
+          tree.update_text(id, |text| {
+            let changed = text.set_spans(value);
+            text.forget_selection_if(changed)
           })
         });
         self.bind_opt(id, props.selectable, "selectable", Tree::set_selectable);

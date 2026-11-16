@@ -27,6 +27,7 @@ use fontconfig::{CharSet, FC_FAMILY, FC_SLANT, FC_SLANT_ITALIC, FC_WEIGHT, Fontc
 use taffy::AvailableSpace;
 
 use crate::geometry::{Point, Rect};
+use crate::rich::Span;
 use crate::style::{Font, Style, TextAlign};
 use crate::widgets::Elide;
 
@@ -495,6 +496,39 @@ impl From<Font> for TextStyle {
   }
 }
 
+/// The font a span is shaped in: the text's, bold or italic if it says.
+fn span_font(span: &Span, font: Font) -> Font {
+  Font {
+    weight: if span.bold { 700 } else { font.weight },
+    italic: font.italic || span.italic,
+    ..font
+  }
+}
+
+/// What cosmic-text shapes `font` with, in `family` if one was found.
+fn attrs<'a>(font: &Font, family: Option<&'a str>) -> Attrs<'a> {
+  let mut attrs = Attrs::new().weight(Weight(font.weight));
+  if let Some(family) = family {
+    attrs = attrs.family(Family::Name(family));
+  }
+  if font.italic {
+    attrs = attrs.style(cosmic_text::Style::Italic);
+  }
+  // cosmic-text counts letter spacing in ems. Taking back at most half
+  // an em keeps glyphs within the em the ink box allows left of the text.
+  if font.letter_spacing.is_finite() && font.letter_spacing != 0.0 {
+    attrs = attrs.letter_spacing((font.letter_spacing / font_size(font)).max(-0.5));
+  }
+  if !font.features.is_empty() {
+    let mut features = FontFeatures::new();
+    for feature in font.features {
+      features.set(FeatureTag::new(&feature.tag), feature.value);
+    }
+    attrs = attrs.font_features(features);
+  }
+  attrs
+}
+
 /// The font size, falling back to the default for a size cosmic-text can't
 /// use, and the line height in whole pixels, at least 1: 1.2 times the
 /// size unless the style sets a usable multiple.
@@ -519,7 +553,11 @@ fn font_size(font: &Font) -> f32 {
 /// cosmic-text. Layout measures with this buffer and the renderer draws from
 /// it, so the measured and drawn sizes are the same.
 pub(crate) struct TextNode {
+  /// The text shown; a rich text's spans, joined.
   pub(crate) content: String,
+  /// A rich text's spans. Each glyph's metadata is its span's index plus
+  /// one, and 0 for text outside any span, such as an ellipsis.
+  pub(crate) spans: Vec<Span>,
   pub(crate) elide: Elide,
   /// At least 1.
   pub(crate) max_lines: u32,
@@ -548,6 +586,7 @@ impl TextNode {
   pub(crate) fn new() -> TextNode {
     TextNode {
       content: String::new(),
+      spans: Vec::new(),
       elide: Elide::None,
       max_lines: 1,
       wrap: true,
@@ -566,6 +605,22 @@ impl TextNode {
 
   pub(crate) fn set_content(&mut self, content: String) -> bool {
     self.set(|text| &mut text.content, content)
+  }
+
+  pub(crate) fn set_spans(&mut self, spans: Vec<Span>) -> bool {
+    let content = spans.iter().map(|span| span.text.as_str()).collect();
+    let changed = self.set(|text| &mut text.spans, spans);
+    self.set_content(content) | changed
+  }
+
+  /// Drops the selection and puts the caret at the start if `changed`,
+  /// since the old one's bytes may not be in the new text; returns it.
+  pub(crate) fn forget_selection_if(&mut self, changed: bool) -> bool {
+    if changed {
+      self.anchor = None;
+      self.cursor = 0;
+    }
+    changed
   }
 
   pub(crate) fn set_elide(&mut self, elide: Elide) -> bool {
@@ -609,8 +664,11 @@ impl TextNode {
     if !self.stale && self.style == Some(style) && self.fonts_added == fonts_added() {
       return false;
     }
-    let font = style.font;
-    let family = text.family(&font);
+    // The text's own font, then each span's.
+    let fonts: Vec<Font> = std::iter::once(style.font)
+      .chain(self.spans.iter().map(|span| span_font(span, style.font)))
+      .collect();
+    let families: Vec<_> = fonts.iter().map(|font| text.family(font)).collect();
     self.buffer.set_metrics(metrics(&style));
     // Words wrap; one too long for a line breaks inside it.
     self.buffer.set_wrap(if self.wraps() {
@@ -626,10 +684,21 @@ impl TextNode {
       Elide::End => Ellipsize::End(lines),
     });
     self.buffer.set_size(None, None);
-    self.shape(family.as_deref(), &style, text);
-    let missing = self.fallback_chars(family.as_deref(), text.font_system().db());
-    if !missing.is_empty() && text.load_fallbacks(&font, &missing) {
-      self.shape(family.as_deref(), &style, text);
+    self.shape(&fonts, &families, &style, text);
+    let missing = self.fallback_chars(&families, text.font_system().db());
+    let mut gained = false;
+    for (index, font) in fonts.iter().enumerate() {
+      let chars: Vec<char> = missing
+        .iter()
+        .filter(|(at, _)| *at == index)
+        .map(|(_, ch)| *ch)
+        .collect();
+      if !chars.is_empty() {
+        gained |= text.load_fallbacks(font, &chars);
+      }
+    }
+    if gained {
+      self.shape(&fonts, &families, &style, text);
     }
     self.style = Some(style);
     self.fonts_added = fonts_added();
@@ -637,30 +706,33 @@ impl TextNode {
     true
   }
 
-  fn shape(&mut self, family: Option<&str>, style: &TextStyle, text: &mut Fonts) {
-    let font = &style.font;
-    let mut attrs = Attrs::new().weight(Weight(font.weight));
-    if let Some(family) = family {
-      attrs = attrs.family(Family::Name(family));
+  /// Shapes the text with `fonts` and `families`: the text's own first,
+  /// then each span's.
+  fn shape(
+    &mut self,
+    fonts: &[Font],
+    families: &[Option<Rc<str>>],
+    style: &TextStyle,
+    text: &mut Fonts,
+  ) {
+    let own = attrs(&fonts[0], families[0].as_deref());
+    if self.spans.is_empty() {
+      self
+        .buffer
+        .set_text(&self.content, &own, Shaping::Advanced, None);
+    } else {
+      let spans = self.spans.iter().enumerate().map(|(index, span)| {
+        let font = &fonts[index + 1];
+        let mut attrs = attrs(font, families[index + 1].as_deref()).metadata(index + 1);
+        if let Some(color) = span.color {
+          attrs = attrs.color(cosmic_text::Color::rgba(color.r, color.g, color.b, color.a));
+        }
+        (span.text.as_str(), attrs)
+      });
+      self
+        .buffer
+        .set_rich_text(spans, &own, Shaping::Advanced, None);
     }
-    if font.italic {
-      attrs = attrs.style(cosmic_text::Style::Italic);
-    }
-    // cosmic-text counts letter spacing in ems. Taking back at most half
-    // an em keeps glyphs within the em the ink box allows left of the text.
-    if font.letter_spacing.is_finite() && font.letter_spacing != 0.0 {
-      attrs = attrs.letter_spacing((font.letter_spacing / font_size(font)).max(-0.5));
-    }
-    if !font.features.is_empty() {
-      let mut features = FontFeatures::new();
-      for feature in font.features {
-        features.set(FeatureTag::new(&feature.tag), feature.value);
-      }
-      attrs = attrs.font_features(features);
-    }
-    self
-      .buffer
-      .set_text(&self.content, &attrs, Shaping::Advanced, None);
     let align = style.align.and_then(|align| match align {
       TextAlign::Start => None,
       TextAlign::Center => Some(Align::Center),
@@ -673,26 +745,29 @@ impl TextNode {
     self.buffer.shape_until_scroll(text.font_system(), false);
   }
 
-  /// Characters that need a fallback font: those that came out as the
-  /// missing-glyph box, and those drawn from a face outside `family`.
+  /// Characters that need a fallback font, with the index in `families`
+  /// of the font they were asked in: those that came out as the
+  /// missing-glyph box, and those drawn from a face outside that family.
   /// The second kind may have come from a fallback loaded for another
   /// weight or family, so fontconfig is asked again for this one.
-  fn fallback_chars(&self, family: Option<&str>, db: &Database) -> Vec<char> {
-    let in_family = |id| {
-      db.face(id).is_some_and(|face| {
+  fn fallback_chars(&self, families: &[Option<Rc<str>>], db: &Database) -> Vec<(usize, char)> {
+    let in_family = |glyph: &LayoutGlyph| {
+      let family = families.get(glyph.metadata).cloned().flatten();
+      db.face(glyph.font_id).is_some_and(|face| {
         face
           .families
           .iter()
-          .any(|(name, _)| Some(name.as_str()) == family)
+          .any(|(name, _)| Some(name.as_str()) == family.as_deref())
       })
     };
     let mut missing = Vec::new();
     for run in self.buffer.layout_runs() {
-      let fallback = |glyph: &&LayoutGlyph| glyph.glyph_id == 0 || !in_family(glyph.font_id);
+      let fallback = |glyph: &&LayoutGlyph| glyph.glyph_id == 0 || !in_family(glyph);
       for glyph in run.glyphs.iter().filter(fallback) {
+        let index = glyph.metadata.min(families.len() - 1);
         for ch in run.text.get(glyph.start..glyph.end).unwrap_or("").chars() {
-          if !missing.contains(&ch) {
-            missing.push(ch);
+          if !missing.contains(&(index, ch)) {
+            missing.push((index, ch));
           }
         }
       }

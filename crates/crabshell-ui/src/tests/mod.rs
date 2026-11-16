@@ -32,6 +32,7 @@ mod placement;
 mod pointer;
 mod popup;
 mod region;
+mod rich;
 mod screencopy;
 mod scroll;
 mod select;

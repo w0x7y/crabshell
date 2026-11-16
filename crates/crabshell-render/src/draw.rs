@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use cosmic_text::{FontSystem, LayoutRun, SwashCache, SwashContent, SwashImage};
+use cosmic_text::{FontSystem, LayoutGlyph, SwashCache, SwashContent, SwashImage};
 use crabshell_ui::{
   Affine, CaptureView, Color, Content, Gradient, GradientShape, IconView, ImageView, InputView,
   NodeView, Rect, Shadow, Size, Style, TextSystem, TextView, WindowView,
@@ -1018,14 +1018,11 @@ impl Painter<'_> {
     }
   }
 
-  /// Glyphs, drawn as masks in the text's color, then any underline and
-  /// strikethrough. The baseline sits on a whole pixel so horizontal
-  /// strokes stay sharp; glyphs keep their sub-pixel horizontal position.
+  /// Glyphs, drawn as masks in their span's color or else the text's,
+  /// then any underline and strikethrough. The baseline sits on a whole
+  /// pixel so horizontal strokes stay sharp; glyphs keep their sub-pixel
+  /// horizontal position.
   fn text(&mut self, pixmap: &mut PixmapMut<'_>, text: &TextView<'_>) {
-    let color = text.color();
-    if color.a == 0 {
-      return;
-    }
     let Grid {
       scale, left, top, ..
     } = self.grid;
@@ -1040,6 +1037,10 @@ impl Painter<'_> {
         continue;
       }
       for glyph in run.glyphs {
+        let color = span_color(glyph.color_opt, text.color());
+        if color.a == 0 {
+          continue;
+        }
         let physical = glyph.physical((x, baseline), scale);
         let Some(image) = self.glyphs.get_image(self.fonts, physical.cache_key) else {
           continue;
@@ -1060,26 +1061,42 @@ impl Painter<'_> {
           SwashContent::SubpixelMask => {}
         }
       }
-      if text.underline() || text.strikethrough() {
-        self.decorations(pixmap, text, &run, baseline);
+      let origin = text.origin().x;
+      let own = (text.underline(), text.strikethrough());
+      if own != (false, false) {
+        self.decorations(pixmap, origin, run.glyphs, baseline, own, text.color());
+      }
+      // A span's own lines run across its glyphs on the line, each in its
+      // color. cosmic-text's decoration spans join two decorated spans
+      // across the text between them, so they aren't used.
+      for glyphs in run.glyphs.chunk_by(|a, b| a.metadata == b.metadata) {
+        let Some(span) = text.span(&glyphs[0]) else {
+          continue;
+        };
+        let lines = (span.underline, span.strikethrough);
+        if lines != (false, false) {
+          let color = span.color.unwrap_or(text.color());
+          self.decorations(pixmap, origin, glyphs, baseline, lines, color);
+        }
       }
     }
   }
 
-  /// The underline and strikethrough of one line, across its glyphs, at
-  /// the place and thickness its first glyph's font gives, as cosmic-text
-  /// draws them. Edges snap to whole pixels in the buffer, so every tile
-  /// agrees, and each line is at least a pixel thick. A line is kept
-  /// within half an em of the baseline, which the text's painted area
-  /// covers.
+  /// The underline and strikethrough across `glyphs`, at the place and
+  /// thickness the first glyph's font gives, as cosmic-text draws them.
+  /// Edges snap to whole pixels in the buffer, so every tile agrees, and
+  /// each line is at least a pixel thick. A line is kept within half an
+  /// em of the baseline, which the text's painted area covers.
   fn decorations(
     &mut self,
     pixmap: &mut PixmapMut<'_>,
-    text: &TextView<'_>,
-    run: &LayoutRun<'_>,
+    origin: f32,
+    glyphs: &[LayoutGlyph],
     baseline: f32,
+    (underline, strikethrough): (bool, bool),
+    color: Color,
   ) {
-    let Some(first) = run.glyphs.first() else {
+    let Some(first) = glyphs.first() else {
       return;
     };
     let Some(font) = self.fonts.get_font(first.font_id, first.font_weight) else {
@@ -1091,20 +1108,18 @@ impl Painter<'_> {
       return;
     }
     let Grid { scale, left, .. } = self.grid;
-    let (start, end) = run
-      .glyphs
+    let (start, end) = glyphs
       .iter()
       .fold((f32::MAX, f32::MIN), |(start, end), glyph| {
         (start.min(glyph.x), end.max(glyph.x + glyph.w))
       });
-    let origin = text.origin().x;
     let x0 = ((origin + start) * scale).round() - left;
     let x1 = ((origin + end) * scale).round() - left;
     let size = first.font_size * scale;
     // cosmic-text's defaults for a font that gives none.
     let lines = [
-      (text.underline(), metrics.underline, -0.125),
-      (text.strikethrough(), metrics.strikeout, 0.3),
+      (underline, metrics.underline, -0.125),
+      (strikethrough, metrics.strikeout, 0.3),
     ];
     for (on, decoration, offset) in lines {
       if !on {
@@ -1118,7 +1133,7 @@ impl Painter<'_> {
       if let Some(area) = tiny_skia::Rect::from_ltrb(x0, y, x1, y + thickness) {
         let mut path = PathBuilder::new();
         path.push_rect(area);
-        fill(pixmap, path, text.color(), FillRule::Winding);
+        fill(pixmap, path, color, FillRule::Winding);
       }
     }
   }
@@ -1523,6 +1538,14 @@ fn erf(x: f32) -> f32 {
 ///
 /// cosmic-text doesn't re-export swash's `Source`, and swash isn't a
 /// dependency of this crate, so the variant is read from its name.
+/// A span's color, carried by its glyphs, or else the text's.
+fn span_color(span: Option<cosmic_text::Color>, text: Color) -> Color {
+  span.map_or(text, |color| {
+    let [r, g, b, a] = color.as_rgba();
+    Color::rgba(r, g, b, a)
+  })
+}
+
 fn is_color_outline(image: &SwashImage) -> bool {
   format!("{:?}", image.source).starts_with("ColorOutline")
 }
