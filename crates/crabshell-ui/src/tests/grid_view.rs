@@ -222,3 +222,67 @@ fn a_zero_cell_size_counts_as_one_pixel() {
   assert_eq!(cells(&window).len(), 30);
   assert_eq!(cell(&window, 13), Some(Rect::new(3.0, 1.0, 1.0, 1.0)));
 }
+
+#[test]
+fn a_grid_widened_while_scrolled_past_its_new_end_keeps_its_top_left_cell() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0);
+  let window = grid(&mut h, 1000, 100.0, offset, |grid| grid);
+  // Cell 950 at the top of five columns.
+  offset.set(3800.0);
+  h.frame(&window);
+  assert_eq!(cell(&window, 950).map(|rect| rect.y), Some(0.0));
+  // Ten columns are 2000 tall, so 3800 is past the end: row 95 shows it.
+  window.set_size(Size::new(200.0, 200.0));
+  h.frame(&window);
+  assert_eq!(offset.get(), 1900.0);
+  assert_eq!(cell(&window, 950).map(|rect| rect.y), Some(0.0));
+}
+
+#[test]
+fn a_width_that_keeps_the_columns_leaves_the_view_where_it_is() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0);
+  let current = h.cx.signal(Some(3));
+  let window = grid(&mut h, 1000, 100.0, offset, |grid| {
+    grid.current(move || current.get())
+  });
+  offset.set(1000.0);
+  h.frame(&window);
+  // Still five columns: the view stays away from the current cell.
+  window.set_size(Size::new(110.0, 200.0));
+  h.frame(&window);
+  assert_eq!(offset.get(), 1000.0);
+  // Ten columns show it again.
+  window.set_size(Size::new(200.0, 200.0));
+  h.frame(&window);
+  assert_eq!(offset.get(), 0.0);
+}
+
+#[test]
+fn a_current_cell_set_before_the_items_arrive_is_shown_once_they_do() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0);
+  let items = h.cx.signal(Vec::<u32>::new());
+  let current = h.cx.signal(Some(57));
+  let grid = GridView::new(
+    move || items.get(),
+    |n| *n,
+    |_, n| Text::new(move || n.get().to_string()),
+  )
+  .cell_size(20, 20)
+  .height(100)
+  .offset(offset)
+  .current(move || current.get());
+  let window = h.window(h.panel().child(grid), 100.0, 200.0);
+  items.set((0..1000).collect());
+  h.frame(&window);
+  // Row 11 ends at 240.
+  assert_eq!(offset.get(), 140.0);
+  // Items that keep it in range don't pull the view back to it.
+  offset.set(0.0);
+  h.frame(&window);
+  items.set((0..999).collect());
+  h.frame(&window);
+  assert_eq!(offset.get(), 0.0);
+}

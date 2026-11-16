@@ -108,8 +108,9 @@ impl GridView {
   }
 
   /// Keeps the cell at this index in view, scrolling as little as needed
-  /// whenever it, the height or the number of columns changes. `None`,
-  /// or an index past the end, scrolls nothing.
+  /// whenever it, the height or the number of columns changes. An index
+  /// past the end is scrolled to once the items reach it; `None` scrolls
+  /// nothing.
   pub fn current(mut self, index: impl IntoProp<Option<usize>>) -> GridView {
     self.props.current = Some(index.into_prop());
     self
@@ -256,21 +257,34 @@ where
     first..last.max(first)
   });
   // A new number of columns keeps the cell at the top left in view, and
-  // then the current one.
+  // then the current one. The current one is shown too when it, the
+  // height or the cells' height changes, or when the items first reach
+  // it, but not for a width that keeps the columns.
   let current = current.map(Prop::shared);
   {
     let current = current.clone();
     let mut was = None;
+    let mut asked = None;
     cx.effect(move || {
       let columns = columns.get();
       let index = current.as_ref().and_then(|current| current());
       let viewport = inner.get();
       let row = cell().height;
       let laid_out = width.get() > 0.0;
+      let count = count.get();
       untrack(|| {
-        let before = shown();
-        let mut next = before;
-        if let Some(was) = was.filter(|&was| was != columns) {
+        let now = shown();
+        let mut next = now;
+        let raw = offset.get();
+        let regrid = was.is_some_and(|was| was != columns);
+        if let Some(was) = was.filter(|_| regrid) {
+          // Where the old columns showed it, before the new ones clamp it.
+          let most = (count.div_ceil(was) as f32 * row - viewport).max(0.0);
+          let before = if raw.is_nan() {
+            0.0
+          } else {
+            raw.clamp(0.0, most)
+          };
           let top = (before / row).floor();
           let first = top as usize * was;
           next = (first / columns) as f32 * row + (before - top * row);
@@ -279,11 +293,15 @@ where
         if laid_out {
           was = Some(columns);
         }
-        if let Some(index) = index.filter(|&index| index < count.get()) {
+        let wanted = index.filter(|&index| index < count);
+        let ask = (index, viewport, row);
+        let fresh = asked.replace((ask, wanted.is_some())) != Some((ask, true));
+        if let Some(index) = wanted.filter(|_| regrid || fresh) {
           let start = (index / columns) as f32 * row;
           next = keep_in_view(start, start + row, viewport, next);
         }
-        if next != before {
+        // A regrid also puts right an offset past the new end.
+        if next != now || (regrid && next != raw) {
           offset.set(next);
         }
       });
