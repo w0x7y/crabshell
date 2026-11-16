@@ -4303,6 +4303,17 @@ fn pattern_png(path: &Path, width: u32, height: u32, color: impl Fn(u32, u32) ->
   writer.write_image_data(&pixels).expect("the pixels");
 }
 
+/// A 1920 by 1080 PNG at `path`, from `from` at the top left to `to` at
+/// the bottom right.
+fn gradient_png(path: &Path, from: [u8; 3], to: [u8; 3]) {
+  pattern_png(path, 1920, 1080, |x, y| {
+    let t = (x + y) as f32 / (1920 + 1080) as f32;
+    let mix =
+      |at: usize| (f32::from(from[at]) + (f32::from(to[at]) - f32::from(from[at])) * t) as u8;
+    [mix(0), mix(1), mix(2)]
+  });
+}
+
 /// The pictures the dashboard's tests show, in a temporary directory: a
 /// wallpaper of two colors and album art of colored squares.
 struct DashboardFiles {
@@ -4338,11 +4349,7 @@ impl DashboardFiles {
   /// blue at the top left to orange at the bottom right.
   fn wallpaper_1080p(&self) -> PathBuf {
     let path = self.dir.join("wallpaper-1080p.png");
-    pattern_png(&path, 1920, 1080, |x, y| {
-      let t = (x + y) as f32 / (1920 + 1080) as f32;
-      let mix = |from: u8, to: u8| (f32::from(from) + (f32::from(to) - f32::from(from)) * t) as u8;
-      [mix(0x1e, 0xfe), mix(0x66, 0x64), mix(0xf5, 0x0b)]
-    });
+    gradient_png(&path, [0x1e, 0x66, 0xf5], [0xfe, 0x64, 0x0b]);
     path
   }
 
@@ -4521,4 +4528,101 @@ fn the_dashboard_samples_the_cpu_only_while_it_shows() {
   shown.set(true);
   run_until(&mut shell, "the dashboard again", dashboard_shown);
   assert!(crabshell_ui::next_timer().is_some(), "sampling again");
+}
+
+/// This process's resident memory in MiB, from `/proc/self/status`.
+fn own_rss_mib() -> f64 {
+  let status = std::fs::read_to_string("/proc/self/status").expect("/proc/self/status");
+  let kib: u64 = status
+    .lines()
+    .find_map(|line| line.strip_prefix("VmRSS:"))
+    .and_then(|rest| rest.trim().strip_suffix("kB")?.trim().parse().ok())
+    .expect("a VmRSS line");
+  kib as f64 / 1024.0
+}
+
+/// Part of Phase 16's exit check, in this process: the dashboard's
+/// wallpaper, filling a 1920x1080 output at scale 1, crossfades to a new
+/// picture over a frame each refresh, holding both decoded pictures,
+/// about 16 MB, only while it runs; then the old one is freed and the
+/// loop sleeps. Run it in a release build for the frame time:
+/// `env -u SWAYSOCK cargo test --release -p crabshell --test headless a_1080p -- --ignored --nocapture`.
+///
+/// It runs again as a child with glibc's mmap threshold pinned at 1 MiB.
+/// Left to move, the threshold rises to the size of a large block once
+/// one is freed, so the next picture is put on the heap, and a picture
+/// freed there leaves the RSS at its high-water mark.
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_1080p_wallpaper_crossfade_holds_both_pictures_only_while_it_runs() {
+  const THRESHOLD: &str = "MALLOC_MMAP_THRESHOLD_";
+  if std::env::var_os(THRESHOLD).is_none() {
+    let status =
+      this_as_shell("a_1080p_wallpaper_crossfade_holds_both_pictures_only_while_it_runs")
+        .env(THRESHOLD, "1048576")
+        .status()
+        .expect("the test runs again");
+    assert!(status.success(), "the crossfade check failed: {status}");
+    return;
+  }
+  let files = DashboardFiles::new();
+  let (first, second) = (files.dir.join("first.png"), files.dir.join("second.png"));
+  gradient_png(&first, [0x1e, 0x66, 0xf5], [0xfe, 0x64, 0x0b]);
+  gradient_png(&second, [0xa6, 0xe3, 0xa1], [0x31, 0x32, 0x44]);
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let held: Rc<std::cell::Cell<Option<Signal<Option<PathBuf>>>>> = Rc::default();
+  let into = Rc::clone(&held);
+  let start = first.clone();
+  let mut shell = Shell::new(sway.connect(), move |cx| {
+    let wallpaper = cx.signal(Some(start.clone()));
+    let outputs = cx.outputs();
+    cx.per_output(move |cx, output| {
+      dashboard::wallpaper_window(cx, output, outputs, wallpaper.read_only())
+    });
+    into.set(Some(wallpaper));
+  })
+  .expect("the root closure runs");
+  let wallpaper = held.take().expect("the root closure ran");
+  run_until(&mut shell, "the wallpaper", |platform| {
+    platform
+      .windows()
+      .any(|(_, window)| window.surface().namespace == "wallpaper")
+  });
+  settle(&mut shell);
+  let resting = own_rss_mib();
+
+  wallpaper.set(Some(second));
+  let before = shell.platform().stats();
+  // The first frame decodes the new picture; the crossfade's own frames
+  // come after it.
+  run_until(&mut shell, "the new picture's first frame", |platform| {
+    platform.stats().commits > before.commits
+  });
+  assert!(crabshell_ui::animating(), "the crossfade runs");
+  let fading = shell.platform().stats();
+  let mut both = own_rss_mib();
+  let deadline = Instant::now() + TIMEOUT;
+  while crabshell_ui::animating() {
+    assert!(Instant::now() < deadline, "the crossfade never ended");
+    shell
+      .dispatch(Some(Duration::from_millis(20)))
+      .expect("the connection works");
+    both = both.max(own_rss_mib());
+  }
+  let after = shell.platform().stats();
+  settle(&mut shell);
+  let ended = own_rss_mib();
+  let frames = after.commits - fading.commits;
+  let ms = (after.drawing - fading.drawing).as_secs_f64() * 1000.0 / frames as f64;
+  eprintln!(
+    "a 1920x1080 crossfade at scale 1 drew {frames} frames in {ms:.2} ms each; RSS {resting:.1} MiB \
+     resting, {both:.1} MiB at most while both pictures were held, {ended:.1} MiB once it ended"
+  );
+  // About 48 at 60 Hz in a release build; a debug build draws a few.
+  assert!(frames >= 3, "{frames} frames for the crossfade");
+  // A 1920x1080 picture decoded is 7.9 MiB.
+  assert!(both >= resting + 6.0, "both pictures held: {both:.1} MiB");
+  assert!(ended <= both - 6.0, "the old picture freed: {ended:.1} MiB");
+  sleeps(&mut shell);
 }

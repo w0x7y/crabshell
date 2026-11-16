@@ -2,7 +2,7 @@
 //! battery as a ring, the CPU's use over the last minute as a graph,
 //! and what plays, its album art sharp in front of a blurred copy, with
 //! buttons that skip and pause it. The command line hides and shows it,
-//! and changes the wallpaper.
+//! and changes the wallpaper, which crossfades to the new picture.
 //!
 //! ```sh
 //! WALLPAPER=~/Pictures/hills.jpg cargo run --release -p crabshell --example dashboard
@@ -27,6 +27,9 @@ const PEACH: Color = Color::rgb(0xfa, 0xb3, 0x87);
 const DARK: Color = Color::rgb(0x1e, 0x1e, 0x2e);
 const SURFACE: Color = Color::rgb(0x31, 0x32, 0x44);
 const RAISED: Color = Color::rgb(0x45, 0x47, 0x5a);
+
+/// How a new wallpaper replaces the old one.
+pub const WALLPAPER_FADE: Transition = Transition::new(800).easing(Easing::InOutCubic);
 
 /// The icon theme the symbolic icons come from.
 pub const ICON_THEME: &str = "Adwaita";
@@ -183,7 +186,8 @@ pub fn dashboard(cx: &Cx, shown: ReadSignal<bool>, feeds: Feeds) {
   });
 }
 
-/// The wallpaper on `output`, filling it, behind everything.
+/// The wallpaper on `output`, filling it, behind everything. A new one
+/// crossfades in, both pictures held only while it does.
 pub fn wallpaper_window(
   cx: &Cx,
   output: &Output,
@@ -210,6 +214,7 @@ pub fn wallpaper_window(
         .width(move || size.get().0)
         .height(move || size.get().1)
         .fit(Fit::Cover)
+        .transition(ImageTransition::crossfade(WALLPAPER_FADE))
         .visible(move || wallpaper.with(Option::is_some)),
     )
 }
