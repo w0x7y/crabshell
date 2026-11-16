@@ -4626,3 +4626,54 @@ fn a_1080p_wallpaper_crossfade_holds_both_pictures_only_while_it_runs() {
   assert!(ended <= both - 6.0, "the old picture freed: {ended:.1} MiB");
   sleeps(&mut shell);
 }
+
+thread_local! {
+  /// How many times [`counted_cpu`] started the CPU's samples.
+  static CPU_STARTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// [`pinned_cpu`], counting each start in [`CPU_STARTS`].
+fn counted_cpu(cx: &Cx) -> ReadSignal<Vec<f32>> {
+  CPU_STARTS.with(|starts| starts.set(starts.get() + 1));
+  pinned_cpu(cx)
+}
+
+/// `dashboard open` on a dashboard already open sets `shown` to the value
+/// it has: nothing is built again, so its windows stay and its CPU
+/// history goes on.
+#[test]
+#[ignore = "needs headless Sway"]
+fn opening_an_open_dashboard_keeps_its_windows_and_cpu_history() {
+  let sway = Sway::start();
+  let held: Rc<std::cell::Cell<Option<Signal<bool>>>> = Rc::default();
+  let into = Rc::clone(&held);
+  let mut shell = Shell::new(sway.connect(), move |cx| {
+    let shown = cx.signal(true);
+    let feeds = dashboard::Feeds {
+      battery: cx.signal(None).read_only(),
+      players: cx.signal(Vec::new()).read_only(),
+      cpu: counted_cpu,
+    };
+    dashboard::dashboard(cx, shown.read_only(), feeds);
+    into.set(Some(shown));
+  })
+  .expect("the root closure runs");
+  let shown = held.take().expect("the root closure ran");
+  run_until(&mut shell, "the dashboard", dashboard_shown);
+  settle(&mut shell);
+  let window = window_named(shell.platform(), "dashboard");
+  assert_eq!(CPU_STARTS.with(std::cell::Cell::get), 1);
+
+  shown.set(true);
+  settle(&mut shell);
+  assert_eq!(
+    window_named(shell.platform(), "dashboard"),
+    window,
+    "the same window"
+  );
+  assert_eq!(
+    CPU_STARTS.with(std::cell::Cell::get),
+    1,
+    "the same CPU history"
+  );
+}

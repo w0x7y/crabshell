@@ -143,14 +143,15 @@ pub fn shell(cx: &Cx, feeds: Feeds) {
     shown.update(|shown| *shown = !*shown);
     Ok(String::new())
   });
-  cx.ipc("dashboard", "open", move |_| {
-    shown.set(true);
+  // A set notifies even with the value it has, so only a change is set.
+  let show = move |to: bool| {
+    if shown.get_untracked() != to {
+      shown.set(to);
+    }
     Ok(String::new())
-  });
-  cx.ipc("dashboard", "close", move |_| {
-    shown.set(false);
-    Ok(String::new())
-  });
+  };
+  cx.ipc("dashboard", "open", move |_| show(true));
+  cx.ipc("dashboard", "close", move |_| show(false));
   dashboard(cx, shown.read_only(), feeds);
 }
 
@@ -167,10 +168,13 @@ pub struct Feeds {
 }
 
 /// While `shown`, the dashboard on every output. Hidden, its context is
-/// freed, its windows and the CPU's sampling with it.
+/// freed, its windows and the CPU's sampling with it. `shown` set to the
+/// value it has changes nothing.
 pub fn dashboard(cx: &Cx, shown: ReadSignal<bool>, feeds: Feeds) {
   let parent = cx.clone();
   let mut open: Option<Cx> = None;
+  // A memo runs what reads it only when its value changes.
+  let shown = cx.memo(move || shown.get());
   cx.effect(move || {
     if let Some(old) = open.take() {
       old.owner().dispose();
