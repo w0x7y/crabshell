@@ -81,6 +81,13 @@ mod dashboard;
 
 #[allow(
   dead_code,
+  reason = "the example's panel is tested; its main isn't run here"
+)]
+#[path = "../examples/notes.rs"]
+mod notes;
+
+#[allow(
+  dead_code,
   reason = "the example's lock screen is tested; its main isn't run here"
 )]
 #[path = "../examples/lock.rs"]
@@ -108,7 +115,7 @@ use crabshell_reactive::Runtime;
 use crabshell_ui::{Content, NodeView, Rect};
 use crabshell_wayland::{EventLoop, Platform, WindowId};
 use pipewire::PrivateServer;
-use sway::{AppWindow, Image, Sway, VirtualKeyboard, VirtualPointer, keys};
+use sway::{AppWindow, Image, InputMethod, Sway, VirtualKeyboard, VirtualPointer, keys};
 
 /// How long any wait may take before the test fails.
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -4800,4 +4807,173 @@ fn the_dashboards_wallpaper_takes_absolute_paths_only() {
   for bad in [&[][..], &[""], &["hills.jpg"], &["./hills.jpg"]] {
     assert_eq!(dashboard::wallpaper_path(&args(bad)), refused, "{bad:?}");
   }
+}
+
+/// When the notes example's clock is stopped in its tests, as its
+/// `NOTES_NOW` takes it.
+const NOTES_NOW: &str = "2026-11-17T11:11:11";
+
+/// The notifications the notes example's tests send, oldest first, as
+/// summary and markup body: one too long for a card's three lines, one
+/// with the other tags, and one with a link.
+const NOTES_SENT: [(&str, &str); 3] = [
+  (
+    "Disk almost full",
+    "Only <b>2 GB</b> left on <i>/home</i>. This body runs on well past the \
+     three lines a card shows, so the last line it shows ends in an ellipsis, \
+     and the rest of it waits for the app that sent it.",
+  ),
+  (
+    "Meeting moved",
+    "Design review is now at <i>3 pm</i> in room 4. <u>Bring the notes.</u>",
+  ),
+  (
+    "Build finished",
+    "<b>crabshell</b> passed 1,204 tests &amp; failed none. See \
+     <a href=\"https://example.org/log\">the log</a>.",
+  ),
+];
+
+/// `at` as the notes example's clock shows it.
+fn notes_time(at: &str) -> crabshell::jiff::Zoned {
+  let at: crabshell::jiff::civil::DateTime = at.parse().expect("a date and time");
+  at.to_zoned(crabshell::jiff::tz::TimeZone::UTC)
+    .expect("in range")
+}
+
+/// [`NOTES_SENT`] as the server keeps them with body markup on, ids from 1.
+fn notes_notifications() -> Vec<Notification> {
+  NOTES_SENT
+    .iter()
+    .zip(1..)
+    .map(|((summary, body), id)| Notification {
+      app_name: String::from("exit-check"),
+      body: (*body).to_owned(),
+      ..notification(id, summary)
+    })
+    .collect()
+}
+
+/// Where the notes panel is in an output's logical pixels: 8 in from the
+/// top right of an output `layout` wide.
+fn notes_origin(layout: (u32, u32)) -> (f32, f32) {
+  ((layout.0 - 8 - notes::WIDTH) as f32, 8.0)
+}
+
+/// The middle of the notes panel's note area, in the window.
+fn notes_area(platform: &Platform) -> (f32, f32) {
+  let id = window_named(platform, "notes");
+  let (_, window) = platform
+    .windows()
+    .find(|(held, _)| *held == id)
+    .expect("the panel is held");
+  fn find(node: NodeView<'_>) -> Option<Rect> {
+    match node.content() {
+      Content::Input(_) => Some(node.rect()),
+      _ => node.children().find_map(find),
+    }
+  }
+  let area = find(window.view().root()).expect("the note area");
+  (area.x + area.width / 2.0, area.y + area.height / 2.0)
+}
+
+/// Part of Phase 17's exit check, in this process with plain signals for
+/// the services: the notes example's clock, in tabular digits, is as wide
+/// at 00:00:00 as at 11:11:11, as its `geometry` says; its note takes
+/// typed keys and an input method's text into its persisted signal; and
+/// then the loop sleeps.
+#[test]
+#[ignore = "needs headless Sway"]
+fn the_notes_clock_holds_its_width_and_its_note_takes_keys_and_input_method_text() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", CONTROL_MODE, "scale", "1"]);
+  let mut pointer = VirtualPointer::new(&sway);
+  let mut keyboard = VirtualKeyboard::new(&sway);
+  let mut method = InputMethod::new(&sway);
+  let knobs = Cell::new(None);
+  let mut shell = Shell::new(sway.connect(), |cx| {
+    let now = cx.signal(notes_time(NOTES_NOW));
+    let clock = cx.signal(Rect::default());
+    let note = cx.persist(notes::NOTE_KEY, String::new());
+    knobs.set(Some((now, clock, note)));
+    let feeds = notes::Feeds {
+      now: now.read_only(),
+      notifications: cx.signal(notes_notifications()).read_only(),
+      open: |_, _| {},
+    };
+    cx.per_output(move |cx, output| {
+      let probe = PanelWindow::new(output)
+        .anchors(Edge::Top | Edge::Left)
+        .width(320)
+        .height(60)
+        .namespace("clock")
+        .child(Row::new().child(notes::clock(now.read_only()).geometry(clock)));
+      vec![notes::panel(cx, output, feeds), probe]
+    });
+  })
+  .expect("the root closure runs");
+  let (now, clock, note) = knobs.get().expect("the root closure ran");
+  run_until(&mut shell, "both windows' first frames", |platform| {
+    let shown = platform.windows().filter(|(id, _)| {
+      platform
+        .window_info(*id)
+        .is_some_and(|info| info.commits > 0)
+    });
+    shown.count() == 2
+  });
+  settle(&mut shell);
+  let clock_text = |platform: &Platform| {
+    let id = window_named(platform, "clock");
+    in_row(platform, id, 0, |text| {
+      let Content::Text(text) = text.content() else {
+        panic!("the clock is text");
+      };
+      text.runs().map(|run| run.text).collect::<String>()
+    })
+  };
+  assert_eq!(clock_text(shell.platform()), "11:11:11");
+  let ones = clock.get_untracked();
+  assert!(ones.width > 0.0, "laid out: {ones:?}");
+  now.set(notes_time("2026-11-17T00:00:00"));
+  settle(&mut shell);
+  assert_eq!(clock_text(shell.platform()), "00:00:00");
+  let zeros = clock.get_untracked();
+  assert_eq!(ones.width, zeros.width, "11:11:11, then 00:00:00");
+
+  // A click in the note gives the panel the keyboard and the area the focus.
+  let (x, y) = notes_area(shell.platform());
+  let (left, top) = notes_origin(CONTROL_LAYOUT);
+  pointer.move_to((left + x) as u32, (top + y) as u32, CONTROL_LAYOUT);
+  pointer.click();
+  run_until(&mut shell, "the input method to activate", |_| {
+    method.poll();
+    method.active()
+  });
+  for key in [keys::H, keys::ENTER, keys::I] {
+    keyboard.tap(key);
+  }
+  run_until(&mut shell, "two typed lines", |_| {
+    note.get_untracked() == "h\ni"
+  });
+  // Sway ignores a commit whose serial isn't the latest `done`, so wait
+  // until the input method has heard the typed text.
+  run_until(&mut shell, "the input method to hear it", |_| {
+    method.poll();
+    method.surrounding() == "h\ni"
+  });
+  method.commit("你");
+  run_until(&mut shell, "the committed text", |_| {
+    note.get_untracked() == "h\ni你"
+  });
+  run_until(&mut shell, "the surrounding text", |_| {
+    method.poll();
+    method.surrounding() == "h\ni你"
+  });
+  // One event comes after the input method's last change, and then the
+  // loop sleeps.
+  settle(&mut shell);
+  shell
+    .dispatch(Some(Duration::from_secs(1)))
+    .expect("the connection works");
+  sleeps(&mut shell);
 }
