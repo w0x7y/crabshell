@@ -305,6 +305,9 @@ pub(crate) struct Pointer {
   positions: Vec<(NodeId, Signal<Option<Point>>, Point)>,
   /// The button a pointer button went down on, until it comes up.
   pressed: Option<Press>,
+  /// The text, span index and URL of the link the left button went down
+  /// on, until it comes up.
+  link: Option<(NodeId, usize, String)>,
   /// A scroll bar's handle held, until the left button comes up.
   pub(crate) bar: Option<BarDrag>,
   /// The scroll views under the left button, one maybe dragged, until it
@@ -826,6 +829,7 @@ impl Tree {
     if button != PointerButton::Left {
       return Vec::new();
     }
+    self.pointer.link = self.link_under(id, at);
     if self.selects(id) {
       self.press_text(id, at, time);
     }
@@ -855,7 +859,8 @@ impl Tree {
     let mut calls = Vec::new();
     if button == PointerButton::Left {
       calls.extend(self.call(press.id, Action::Release));
-      calls.extend(self.link_click(press));
+      let link = self.pointer.link.take();
+      calls.extend(link.and_then(|link| self.link_click(press, link)));
     }
     // Set by the drop once its `on_drop` returns, before the `End` reads it.
     let landed = Rc::new(Cell::new(false));
@@ -891,9 +896,21 @@ impl Tree {
     text.link_at(self.local_point(id, self.pointer.position?)?)
   }
 
-  /// The `on_link` a left release ending `press` runs: the press and the
-  /// release were on the same link of a text, and selected nothing.
-  fn link_click(&self, press: Press) -> Option<Call> {
+  /// The link of text `id` under `at`, in window coordinates: the text,
+  /// the span's index and its URL.
+  fn link_under(&self, id: NodeId, at: Point) -> Option<(NodeId, usize, String)> {
+    let NodeKind::Text(text) = &self.node(id)?.kind else {
+      return None;
+    };
+    let index = text.link_at(self.local_point(id, at)?)?;
+    Some((id, index, text.spans[index].link.clone()?))
+  }
+
+  /// The `on_link` a left release ending `press` runs: the press went
+  /// down on `pressed`, and the same link, by span and URL, is under the
+  /// release, with nothing selected. The press's link is the one under
+  /// the pointer then, so a layout while held can't put another there.
+  fn link_click(&self, press: Press, pressed: (NodeId, usize, String)) -> Option<Call> {
     let node = self.node(press.id)?;
     let NodeKind::Text(text) = &node.kind else {
       return None;
@@ -901,10 +918,9 @@ impl Tree {
     if text_selection(text).is_some() {
       return None;
     }
-    let pressed = text.link_at(self.local_point(press.id, press.at)?)?;
-    let released = text.link_at(self.local_point(press.id, self.pointer.position?)?)?;
-    let url = text.spans[pressed].link.clone()?;
+    let released = self.link_under(press.id, self.pointer.position?)?;
     let handler = text.on_link.clone()?;
+    let url = released.2.clone();
     (pressed == released).then(|| Call {
       cx: node.cx.clone(),
       path: Rc::clone(&node.path),

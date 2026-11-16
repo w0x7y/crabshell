@@ -245,3 +245,24 @@ fn the_ellipsis_after_a_leading_link_is_not_part_of_it() {
   click(&window, span_point(&window, &[0, 0], 0, 0), 1000);
   assert_eq!(*opened.borrow(), ["https://e.org"]);
 }
+
+#[test]
+fn a_link_that_changes_while_held_opens_nothing() {
+  let mut h = Harness::new();
+  let url = h.cx.signal(String::from("https://one.org"));
+  let opened = Rc::new(RefCell::new(Vec::new()));
+  let log = Rc::clone(&opened);
+  let text = Text::rich(move || vec![Span::new("go to "), Span::new("site").link(url.get())])
+    .on_link(move |_cx, url| log.borrow_mut().push(url.to_owned()));
+  let window = window(&mut h, text);
+  let link = span_point(&window, &[0, 0], 1, 0);
+  window.pointer_motion_at(link, 0);
+  window.pointer_button_at(PointerButton::Left, true, 0);
+  // Another link is under the press now.
+  url.set(String::from("https://two.org"));
+  h.frame(&window);
+  window.pointer_button_at(PointerButton::Left, false, 10);
+  assert!(opened.borrow().is_empty(), "{:?}", opened.borrow());
+  click(&window, link, 1000);
+  assert_eq!(*opened.borrow(), ["https://two.org"]);
+}
