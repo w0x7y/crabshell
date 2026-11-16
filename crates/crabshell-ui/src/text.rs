@@ -99,7 +99,7 @@ pub(crate) struct Fonts {
   /// to, as the font database knows it. `None` if nothing was found.
   families: HashMap<(&'static str, u16, bool), Option<Rc<str>>>,
   /// The family name of each face asked for, by file and face number.
-  loaded: HashMap<(PathBuf, u32), Option<Rc<str>>>,
+  pub(crate) loaded: HashMap<(PathBuf, u32), Option<Rc<str>>>,
   /// Files read into the database. Reading one loads all its faces.
   files: HashSet<PathBuf>,
   /// Characters a fallback font was already looked up for, by the family,
@@ -239,7 +239,7 @@ impl Fonts {
     // A face loaded from a file that a bundled one replaces, of the same
     // family, style and weight, gives way: cosmic-text takes the first face
     // of a name, and the bundled ones fill their places.
-    let replaced: Vec<(ID, PathBuf)> = self
+    let replaced: Vec<_> = self
       .fonts
       .db()
       .faces()
@@ -248,20 +248,30 @@ impl Fonts {
           new.style == old.style && (*low..=*high).contains(&old.weight.0) && same_family(new, old)
         })
       })
-      .filter_map(|old| Some((old.id, source_path(&old.source)?.clone())))
+      .filter_map(|old| {
+        let family = old
+          .families
+          .first()
+          .map(|(name, _)| Rc::from(name.as_str()));
+        Some((
+          old.id,
+          (source_path(&old.source)?.clone(), old.index),
+          family,
+        ))
+      })
       .collect();
     let db = self.fonts.db_mut();
-    for &(id, _) in &replaced {
+    for (id, face, family) in replaced {
       db.remove_face(id);
+      // Its file stays read, so it isn't read again; asked for, it gives
+      // its family's name, which now finds the bundled face.
+      self.loaded.entry(face).or_insert(family);
     }
     // fontdb reads the faces in the same order the probe did.
     let ids = db.load_font_source(source);
     for (id, (_, weights)) in ids.into_iter().zip(&faces) {
       self.bundled.insert(id, *weights);
     }
-    let gone = |path: &PathBuf| replaced.iter().any(|(_, replaced)| replaced == path);
-    self.files.retain(|path| !gone(path));
-    self.loaded.retain(|(path, _), _| !gone(path));
     self
       .families
       .retain(|(family, _, _), _| !names.iter().any(|name| name.eq_ignore_ascii_case(family)));

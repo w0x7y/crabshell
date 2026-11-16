@@ -267,3 +267,32 @@ fn a_bundled_variable_font_serves_the_weights_it_spans() {
   fonts.family(&Font::new("Noto Emoji", 13.0).weight(900));
   assert!(fonts.fontconfig_started());
 }
+
+#[test]
+fn a_replaced_face_is_never_read_back() {
+  let Some(regular) = dejavu() else { return };
+  let mut fonts = Fonts::new();
+  dejavu_text(&mut fonts, 400);
+  let path = fonts
+    .font_system()
+    .db()
+    .faces()
+    .find_map(|face| match &face.source {
+      Source::File(path) | Source::SharedFile(path, _) => Some(path.clone()),
+      Source::Binary(_) => None,
+    })
+    .expect("fontconfig loaded a file");
+  // As for a collection's face that was read with another one and never
+  // asked for by its own number.
+  fonts.loaded.clear();
+  fonts.add(regular);
+  let name = fonts.load((path, 0));
+  assert_eq!(name.as_deref(), Some("DejaVu Sans"));
+  let files = fonts
+    .font_system()
+    .db()
+    .faces()
+    .filter(|face| !matches!(face.source, Source::Binary(_)))
+    .count();
+  assert_eq!(files, 0, "the replaced face was read again");
+}
