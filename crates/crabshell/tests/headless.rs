@@ -729,7 +729,7 @@ fn measure_the_counter_bar() {
   let desktop = Desktop::new("measure-control");
   let control = desktop.run(&sway, "control");
   report += &format!(
-    "control example with audio on a private pipewire-pulse, {}\n",
+    "control example with audio on a private pipewire-pulse and notifications on a private bus, {}\n",
     measure(&control)
   );
   eprint!("{report}");
@@ -2387,20 +2387,17 @@ impl Desktop {
 
   /// Sends a notification, as an app would, and returns gdbus's answer.
   fn notify(&self, summary: &str, timeout_ms: i32) -> String {
+    self.notify_with(summary, "from the exit check", timeout_ms)
+  }
+
+  /// [`notify`](Self::notify) with `body`.
+  fn notify_with(&self, summary: &str, body: &str, timeout_ms: i32) -> String {
     let output = Command::new("gdbus")
       .args(["call", "--address", &self.session.address])
       .args(["--dest", "org.freedesktop.Notifications"])
       .args(["--object-path", "/org/freedesktop/Notifications"])
       .args(["--method", "org.freedesktop.Notifications.Notify"])
-      .args([
-        "exit-check",
-        "0",
-        "",
-        summary,
-        "from the exit check",
-        "[]",
-        "{}",
-      ])
+      .args(["exit-check", "0", "", summary, body, "[]", "{}"])
       .arg(timeout_ms.to_string())
       .env_clear()
       .env("PATH", std::env::var_os("PATH").unwrap_or_default())
@@ -3795,13 +3792,245 @@ fn the_control_centers_day_sleeps_until_midnight_and_goes_with_its_context() {
   assert_eq!(runtime.node_count(), nodes, "the day's timer was freed");
 }
 
+/// The control example's highlight and panel colors, from
+/// examples/control.rs.
+const HIGHLIGHTED: [u8; 4] = [0x31, 0x32, 0x44, 0xff];
+const PANEL_BACKGROUND: [u8; 4] = [0x1e, 0x1e, 0x2e, 0xff];
+
+/// The notifications the in-process control panel lists, oldest first:
+/// every other one without a body, so the rows differ in height.
+fn twelve_notifications() -> Vec<Notification> {
+  (1..=12)
+    .map(|id| {
+      let mut notification = notification(id, &format!("Message {id}"));
+      if id % 2 == 0 {
+        notification.body.clear();
+      }
+      notification
+    })
+    .collect()
+}
+
+/// The control panel's list and the rectangles of its rows built, in
+/// the window's logical pixels, top first.
+fn control_rows(platform: &Platform, id: WindowId) -> (Rect, Vec<Rect>) {
+  let (list, rows) = control_rows_named(platform, id);
+  (list, rows.into_iter().map(|(_, rect)| rect).collect())
+}
+
+/// [`control_rows`] with each row's first line, its summary.
+fn control_rows_named(platform: &Platform, id: WindowId) -> (Rect, Vec<(String, Rect)>) {
+  fn first_text(node: NodeView<'_>) -> Option<String> {
+    if let Content::Text(text) = node.content() {
+      return Some(text.runs().map(|run| run.text).collect());
+    }
+    node.children().find_map(first_text)
+  }
+  fn walk(node: NodeView<'_>, list: &mut Option<Rect>, rows: &mut Vec<(String, Rect)>) {
+    if node.name() == "ListView" {
+      *list = Some(node.rect());
+    }
+    if node.name() == "Button" && node.path().contains("/ListView") {
+      rows.push((first_text(node).unwrap_or_default(), node.rect()));
+    }
+    for child in node.children() {
+      walk(child, list, rows);
+    }
+  }
+  let (_, window) = platform
+    .windows()
+    .find(|(held, _)| *held == id)
+    .expect("the panel is held");
+  let view = window.view();
+  let (mut list, mut rows) = (None, Vec::new());
+  walk(view.root(), &mut list, &mut rows);
+  rows.sort_by(|a, b| a.1.y.total_cmp(&b.1.y));
+  (list.expect("the panel has a list"), rows)
+}
+
+/// How far the control panel's list of [`twelve_notifications`] is
+/// scrolled, from where its first row built is: newest first, the rows
+/// are 36 pixels tall without a body and 46 with one.
+fn control_offset(platform: &Platform, id: WindowId) -> f32 {
+  let (list, rows) = control_rows_named(platform, id);
+  let (summary, rect) = rows.first().expect("a row is built");
+  let n: u32 = summary
+    .strip_prefix("Message ")
+    .and_then(|n| n.parse().ok())
+    .unwrap_or_else(|| panic!("a row's summary is {summary:?}"));
+  let index = 12 - n;
+  let start = (index / 2) * 82 + (index % 2) * 36;
+  list.y + start as f32 - rect.y
+}
+
+/// The pixel of a snapshot at scale 2 just inside the left of `row`,
+/// halfway down: the highlight's color when it is behind the row.
+fn left_of(shot: &crabshell_wayland::Snapshot, row: Rect) -> [u8; 4] {
+  let (x, y) = ((row.x + 3.0) * 2.0, (row.y + row.height / 2.0) * 2.0);
+  let at = (y as usize * shot.width as usize + x as usize) * 4;
+  shot.rgba[at..at + 4].try_into().expect("four bytes")
+}
+
+/// Part of Phase 15's exit check, in this process with plain signals for
+/// the services, at scale 2: the control panel's highlight slides to the
+/// row the pointer is over, and its frames end; a touchpad fling on the
+/// list runs on after the fingers lift and comes to rest; and then the
+/// loop sleeps.
+#[test]
+#[ignore = "needs headless Sway"]
+fn the_control_centers_highlight_follows_the_pointer_and_its_fling_rests() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", CONTROL_MODE, "scale", "2"]);
+  let mut pointer = VirtualPointer::new(&sway);
+  let mut shell = Shell::new(sway.connect(), move |cx| {
+    let sink = cx.signal(Some(sink_at(50)));
+    let today = cx.signal(CONTROL_TODAY.parse().expect("a date"));
+    let notifications = cx.signal(twelve_notifications());
+    cx.per_output(move |cx, output| {
+      control::panel(
+        cx,
+        output,
+        sink.read_only(),
+        today.read_only(),
+        notifications.read_only(),
+      )
+    });
+  })
+  .expect("the root closure runs");
+  run_until(&mut shell, "the panel's first frame", |platform| {
+    shown_on(platform, "HEADLESS-1").is_some()
+  });
+  settle(&mut shell);
+  let id = window_named(shell.platform(), "control");
+  let (list, rows) = control_rows(shell.platform(), id);
+  eprintln!("the list is at {list:?}, its rows at {rows:?}");
+  // Where the out-of-process check points.
+  let bottom = (control::HEIGHT - control::PADDING) as f32;
+  assert_eq!(list.y + list.height, bottom, "the list ends at the padding");
+  assert!(
+    rows[0].height < rows[1].height,
+    "a row with a body is taller"
+  );
+  // Logical pixels at scale 2: half the mode.
+  let layout = (CONTROL_LAYOUT.0 / 2, CONTROL_LAYOUT.1 / 2);
+  let origin = (layout.0 - 8 - control::WIDTH, 8);
+  let on_screen = |row: Rect| {
+    let (x, y) = middle(row);
+    (origin.0 + x, origin.1 + y)
+  };
+
+  // Over the first row, the highlight shows behind it.
+  let (x, y) = on_screen(rows[0]);
+  pointer.move_to(x, y, layout);
+  run_until(&mut shell, "the highlight on the first row", |platform| {
+    platform
+      .snapshot(id)
+      .is_some_and(|shot| left_of(&shot, rows[0]) == HIGHLIGHTED)
+  });
+  settle(&mut shell);
+  // Over the third, it slides there over its transition, then stops.
+  let before = shell.platform().stats().commits;
+  let (x, y) = on_screen(rows[2]);
+  pointer.move_to(x, y, layout);
+  settle(&mut shell);
+  let slid = shell.platform().stats().commits - before;
+  assert!(slid >= 3, "it slid over {slid} frames");
+  let shot = shell.platform().snapshot(id).expect("the panel draws");
+  assert_eq!(left_of(&shot, rows[2]), HIGHLIGHTED, "on the third row");
+  assert_eq!(left_of(&shot, rows[0]), PANEL_BACKGROUND, "off the first");
+  sleeps(&mut shell);
+
+  // Five 10-pixel moves 10 ms apart lift at about 1000 pixels a second.
+  // Each event carries the time it was sent, so the shell, which runs on
+  // this thread, reads them all after the lift: drawing between them
+  // would space them by a debug build's frame time.
+  let before = shell.platform().stats();
+  let resting = shell.platform().snapshot(id).expect("the panel draws");
+  for _ in 0..5 {
+    pointer.swipe(0.0, 10.0, false);
+    std::thread::sleep(Duration::from_millis(10));
+  }
+  pointer.swipe(0.0, 0.0, true);
+  assert_eq!(control_offset(shell.platform(), id), 0.0, "not read yet");
+  settle(&mut shell);
+  let after = shell.platform().stats();
+  assert!(!crabshell_ui::animating(), "at rest");
+  let rested = shell.platform().snapshot(id).expect("the panel draws");
+  assert!(rested.rgba != resting.rgba, "the list moved");
+  // The fingers moved it 50 pixels; the fling took it on from there.
+  let offset = control_offset(shell.platform(), id);
+  assert!(offset > 100.0, "it flung on to {offset}");
+  let frames = after.commits - before.commits;
+  eprintln!(
+    "the fling drew {frames} frames at scale 2, in {:.3} ms each",
+    (after.drawing - before.drawing).as_secs_f64() * 1000.0 / frames as f64
+  );
+  sleeps(&mut shell);
+}
+
+/// Asserts that one dispatch sleeps a whole 2 s: nothing wakes the loop.
+fn sleeps(shell: &mut Shell) {
+  let before = shell.platform().stats().iterations;
+  let started = Instant::now();
+  shell
+    .dispatch(Some(Duration::from_secs(2)))
+    .expect("the connection works");
+  let slept = started.elapsed();
+  assert!(slept >= Duration::from_millis(1950), "woke after {slept:?}");
+  assert_eq!(shell.platform().stats().iterations, before + 1);
+}
+
+/// The control example's output: 3360 by 2100 is a whole number of
+/// logical pixels at every scale from 1 to 2 in quarters, and tall
+/// enough for the panel at 2.
+const CONTROL_MODE: &str = "3360x2100";
+
+/// Its logical size at scale 1, as the virtual pointer takes it.
+const CONTROL_LAYOUT: (u32, u32) = (3360, 2100);
+
+/// The middle of the control example's notification list at scale 1, in
+/// the output: the list ends at the panel's padding, which the in-process
+/// test checks.
+fn control_list_middle() -> (u32, u32) {
+  let x = CONTROL_LAYOUT.0 - 8 - control::WIDTH / 2;
+  let y = 8 + control::HEIGHT - control::PADDING - control::LIST_HEIGHT / 2;
+  (x, y)
+}
+
+/// The bottom row of the control example's scroll bar thumb in a
+/// screenshot at scale 1: the lowest of its color in the bar's column,
+/// beside the list.
+fn thumb_bottom(shot: &Image) -> u32 {
+  let x = CONTROL_LAYOUT.0 - 8 - control::PADDING - 3;
+  let end = 8 + control::HEIGHT - control::PADDING;
+  (end - control::LIST_HEIGHT..end)
+    .filter(|&y| rgb(shot, x, y) == [0x45, 0x47, 0x5a])
+    .max()
+    .expect("the scroll bar shows")
+}
+
+/// Sends the control example ten notifications, every other one without
+/// a body, so its rows differ in height and its list scrolls.
+fn notify_ten(desktop: &Desktop) {
+  for n in 1..=10 {
+    let body = if n % 2 == 0 {
+      ""
+    } else {
+      "from the exit check"
+    };
+    desktop.notify_with(&format!("Message {n}"), body, 0);
+  }
+}
+
 /// Phase 15's exit check: the control example, on a private audio server
-/// and session bus with its date pinned, matches its goldens at all five
-/// scales; a virtual pointer drags its slider, and the sink's volume
-/// follows until `pactl` agrees.
+/// and session bus with its date pinned and ten notifications, matches
+/// its goldens at all five scales; a virtual pointer drags its slider,
+/// and the sink's volume follows until `pactl` agrees; a touchpad fling
+/// on its list runs on after the fingers lift and comes to rest; and then
+/// the shell wakes nothing for a minute.
 #[test]
 #[ignore = "needs headless Sway and pipewire"]
-fn the_control_center_matches_its_goldens_and_its_slider_sets_the_volume() {
+fn the_control_center_sets_the_volume_flings_its_list_and_sleeps() {
   let mut desktop = Desktop::new("control");
   desktop
     .env
@@ -3811,10 +4040,11 @@ fn the_control_center_matches_its_goldens_and_its_slider_sets_the_volume() {
     .pactl(&["set-sink-volume", "@DEFAULT_SINK@", "50%"]);
   for scale in ["1", "1.25", "1.5", "1.75", "2"] {
     let sway = Sway::start();
-    sway.msg(&["output", "HEADLESS-1", "mode", MOTION_MODE, "scale", scale]);
+    sway.msg(&["output", "HEADLESS-1", "mode", CONTROL_MODE, "scale", scale]);
     let shell = desktop.run(&sway, "control");
     shell.wait_until_connected(&desktop.server);
     shell.wait_for(FIRST_FRAME);
+    notify_ten(&desktop);
     let factor: f32 = scale.parse().expect("a scale");
     // The volume shows once the server answers; until then, no handle.
     wait_for_shot(&sway, "HEADLESS-1", "the volume", |shot| {
@@ -3826,30 +4056,30 @@ fn the_control_center_matches_its_goldens_and_its_slider_sets_the_volume() {
   }
 
   let sway = Sway::start();
-  sway.msg(&["output", "HEADLESS-1", "mode", MOTION_MODE, "scale", "1"]);
+  sway.msg(&["output", "HEADLESS-1", "mode", CONTROL_MODE, "scale", "1"]);
   let mut pointer = VirtualPointer::new(&sway);
   let shell = desktop.run(&sway, "control");
   shell.wait_until_connected(&desktop.server);
   shell.wait_for(FIRST_FRAME);
-  let layout = (1680, 1050);
+  notify_ten(&desktop);
   wait_for_shot(&sway, "HEADLESS-1", "the handle", |shot| {
     slider_handle(shot).is_some()
   });
   let (x, y) = slider_handle(&steady_shot(&sway, "HEADLESS-1")).expect("the handle shows");
   // The handle's middle runs from half a handle in to half a handle
   // short of the track's end.
-  let track = (1680 - 8 - control::WIDTH + control::PADDING) as f32;
+  let track = (CONTROL_LAYOUT.0 - 8 - control::WIDTH + control::PADDING) as f32;
   let at = |percent: f32| {
     let travel = control::TRACK_WIDTH - control::HANDLE;
     (track + control::HANDLE / 2.0 + travel * percent / 100.0).round() as u32
   };
   assert!(x.abs_diff(at(50.0)) <= 1, "the handle is at {x}, not 50%");
-  pointer.move_to(x, y, layout);
+  pointer.move_to(x, y, CONTROL_LAYOUT);
   pointer.press(VirtualPointer::LEFT);
-  pointer.move_to(at(60.0), y, layout);
+  pointer.move_to(at(60.0), y, CONTROL_LAYOUT);
   wait_for_volume(&desktop.server, 60);
   // Off the track, it follows along it.
-  pointer.move_to(at(75.0), y + 40, layout);
+  pointer.move_to(at(75.0), y + 40, CONTROL_LAYOUT);
   wait_for_volume(&desktop.server, 75);
   pointer.release(VirtualPointer::LEFT);
   steady_shot(&sway, "HEADLESS-1");
@@ -3858,4 +4088,29 @@ fn the_control_center_matches_its_goldens_and_its_slider_sets_the_volume() {
   eprintln!("pactl says {volume}% after the drag to 75%");
   let (x, _) = slider_handle(&steady_shot(&sway, "HEADLESS-1")).expect("the handle shows");
   assert!(x.abs_diff(at(75.0)) <= 1, "the handle rests at {x}");
+
+  // Five 10-pixel moves 10 ms apart lift at about 1000 pixels a second.
+  let (x, y) = control_list_middle();
+  pointer.move_to(x, y, CONTROL_LAYOUT);
+  let before = steady_shot(&sway, "HEADLESS-1");
+  for _ in 0..5 {
+    pointer.swipe(0.0, 10.0, false);
+    std::thread::sleep(Duration::from_millis(10));
+  }
+  pointer.swipe(0.0, 0.0, true);
+  let rest = steady_shot(&sway, "HEADLESS-1");
+  assert!(rest.rgba != before.rgba, "the list scrolled");
+  // The fingers moved it 50 of its 312 pixels; only the fling after
+  // their lift takes it to the end, where it springs back and rests.
+  let bottom = thumb_bottom(&rest);
+  let end = 8 + control::HEIGHT - control::PADDING;
+  assert!(
+    bottom + 2 >= end,
+    "the scroll bar rests at {bottom}, not {end}"
+  );
+
+  // Asleep: no wakeups for a minute.
+  shell.wait_until_quiet();
+  let wakeups = shell.wakeups_for(Duration::from_secs(60));
+  assert!(wakeups.is_empty(), "woke while idle: {wakeups:?}");
 }
