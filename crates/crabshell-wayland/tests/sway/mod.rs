@@ -467,13 +467,13 @@ impl VirtualPointer {
   }
 
   /// Presses `button`, such as [`LEFT`](Self::LEFT), and holds it.
-  #[allow(dead_code, reason = "crabshell's tests don't use it")]
+  #[allow(dead_code, reason = "not every test binary uses it")]
   pub fn press(&mut self, button: u32) {
     self.button(button, wl_pointer::ButtonState::Pressed);
   }
 
   /// Releases a held `button`.
-  #[allow(dead_code, reason = "crabshell's tests don't use it")]
+  #[allow(dead_code, reason = "not every test binary uses it")]
   pub fn release(&mut self, button: u32) {
     self.button(button, wl_pointer::ButtonState::Released);
   }

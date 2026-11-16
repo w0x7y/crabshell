@@ -67,6 +67,13 @@ mod motion;
 
 #[allow(
   dead_code,
+  reason = "the example's panel is tested; its main isn't run here"
+)]
+#[path = "../examples/control.rs"]
+mod control;
+
+#[allow(
+  dead_code,
   reason = "the example's lock screen is tested; its main isn't run here"
 )]
 #[path = "../examples/lock.rs"]
@@ -3682,4 +3689,164 @@ fn the_motion_example_slides_spins_and_sleeps() {
   shell.wait_until_quiet();
   let wakeups = shell.wakeups_for(Duration::from_secs(60));
   assert!(wakeups.is_empty(), "woke while idle: {wakeups:?}");
+}
+
+/// The date the control example's calendar is pinned to in its tests, a
+/// Monday in a month that starts on a Sunday, so the first week is all
+/// blanks but one.
+const CONTROL_TODAY: &str = "2026-11-16";
+
+/// The control example's slider handle color, from examples/control.rs.
+const HANDLE: [u8; 3] = [0xcd, 0xd6, 0xf4];
+
+/// The middle of the control example's slider handle in a screenshot at
+/// scale 1: the middle of the longest run of its color in the panel's
+/// top part. Glyphs never draw 10 pixels of one color in a row.
+fn slider_handle(shot: &Image) -> Option<(u32, u32)> {
+  let left = shot.width - 8 - control::WIDTH;
+  let mut best: Option<(u32, u32, u32)> = None;
+  for y in 8..120 {
+    let mut start = left;
+    for x in left..=shot.width - 8 {
+      if x < shot.width - 8 && rgb(shot, x, y) == HANDLE {
+        continue;
+      }
+      let run = x - start;
+      if run >= 10 && best.is_none_or(|(_, _, longest)| run > longest) {
+        best = Some(((start + x) / 2, y, run));
+      }
+      start = x + 1;
+    }
+  }
+  best.map(|(x, y, _)| (x, y))
+}
+
+/// The default sink's volume in percent, as `pactl` says: its first
+/// channel's.
+fn pactl_volume(server: &PrivateServer) -> u32 {
+  let out = server.pactl(&["get-sink-volume", "@DEFAULT_SINK@"]);
+  out
+    .split('%')
+    .next()
+    .and_then(|before| before.rsplit(' ').next())
+    .and_then(|percent| percent.parse().ok())
+    .unwrap_or_else(|| panic!("no volume in {out:?}"))
+}
+
+/// Waits until `pactl` says the default sink's volume is within a
+/// percent of `percent`.
+fn wait_for_volume(server: &PrivateServer, percent: u32) {
+  let deadline = Instant::now() + TIMEOUT;
+  loop {
+    let now = pactl_volume(server);
+    if now.abs_diff(percent) <= 1 {
+      return;
+    }
+    assert!(
+      Instant::now() < deadline,
+      "the volume stayed at {now}%, not {percent}%"
+    );
+    std::thread::sleep(Duration::from_millis(50));
+  }
+}
+
+/// The control example's calendar, unpinned, shows today, and the timer
+/// that moves it on at midnight wakes nothing before then and goes with
+/// its context.
+#[test]
+#[ignore = "needs headless Sway"]
+fn the_control_centers_day_sleeps_until_midnight_and_goes_with_its_context() {
+  type Held = (Cx, ReadSignal<crabshell::jiff::civil::Date>, usize);
+  let sway = Sway::start();
+  let runtime = Runtime::current();
+  let held: Rc<std::cell::RefCell<Option<Held>>> = Rc::default();
+  let into = Rc::clone(&held);
+  let mut shell = Shell::new(sway.connect(), move |cx| {
+    let nodes = Runtime::current().node_count();
+    let child = cx.child();
+    let today = control::today(&child);
+    *into.borrow_mut() = Some((child, today, nodes));
+  })
+  .expect("the root closure runs");
+  let (child, today, nodes) = held.borrow_mut().take().expect("the root closure ran");
+  shell
+    .dispatch(Some(Duration::from_millis(20)))
+    .expect("the connection works");
+  assert_eq!(today.get_untracked(), crabshell::jiff::Zoned::now().date());
+  let before = shell.platform().stats().iterations;
+  let started = Instant::now();
+  shell
+    .dispatch(Some(Duration::from_secs(2)))
+    .expect("the connection works");
+  let slept = started.elapsed();
+  assert!(slept >= Duration::from_millis(1950), "woke after {slept:?}");
+  assert_eq!(shell.platform().stats().iterations, before + 1);
+  child.owner().dispose();
+  runtime.flush();
+  assert_eq!(runtime.node_count(), nodes, "the day's timer was freed");
+}
+
+/// Phase 15's exit check: the control example, on a private audio server
+/// and session bus with its date pinned, matches its goldens at all five
+/// scales; a virtual pointer drags its slider, and the sink's volume
+/// follows until `pactl` agrees.
+#[test]
+#[ignore = "needs headless Sway and pipewire"]
+fn the_control_center_matches_its_goldens_and_its_slider_sets_the_volume() {
+  let mut desktop = Desktop::new("control");
+  desktop
+    .env
+    .push(("CONTROL_TODAY", CONTROL_TODAY.to_owned()));
+  desktop
+    .server
+    .pactl(&["set-sink-volume", "@DEFAULT_SINK@", "50%"]);
+  for scale in ["1", "1.25", "1.5", "1.75", "2"] {
+    let sway = Sway::start();
+    sway.msg(&["output", "HEADLESS-1", "mode", MOTION_MODE, "scale", scale]);
+    let shell = desktop.run(&sway, "control");
+    shell.wait_until_connected(&desktop.server);
+    shell.wait_for(FIRST_FRAME);
+    let factor: f32 = scale.parse().expect("a scale");
+    // The volume shows once the server answers; until then, no handle.
+    wait_for_shot(&sway, "HEADLESS-1", "the volume", |shot| {
+      let x = shot.width as f32 - (8 + control::WIDTH / 2) as f32 * factor;
+      (0..(120.0 * factor) as u32).any(|y| rgb(shot, x as u32, y) == HANDLE)
+    });
+    let shot = steady_shot(&sway, "HEADLESS-1");
+    check_golden(&format!("control@{scale}x"), &shot, shot.height);
+  }
+
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", MOTION_MODE, "scale", "1"]);
+  let mut pointer = VirtualPointer::new(&sway);
+  let shell = desktop.run(&sway, "control");
+  shell.wait_until_connected(&desktop.server);
+  shell.wait_for(FIRST_FRAME);
+  let layout = (1680, 1050);
+  wait_for_shot(&sway, "HEADLESS-1", "the handle", |shot| {
+    slider_handle(shot).is_some()
+  });
+  let (x, y) = slider_handle(&steady_shot(&sway, "HEADLESS-1")).expect("the handle shows");
+  // The handle's middle runs from half a handle in to half a handle
+  // short of the track's end.
+  let track = (1680 - 8 - control::WIDTH + control::PADDING) as f32;
+  let at = |percent: f32| {
+    let travel = control::TRACK_WIDTH - control::HANDLE;
+    (track + control::HANDLE / 2.0 + travel * percent / 100.0).round() as u32
+  };
+  assert!(x.abs_diff(at(50.0)) <= 1, "the handle is at {x}, not 50%");
+  pointer.move_to(x, y, layout);
+  pointer.press(VirtualPointer::LEFT);
+  pointer.move_to(at(60.0), y, layout);
+  wait_for_volume(&desktop.server, 60);
+  // Off the track, it follows along it.
+  pointer.move_to(at(75.0), y + 40, layout);
+  wait_for_volume(&desktop.server, 75);
+  pointer.release(VirtualPointer::LEFT);
+  steady_shot(&sway, "HEADLESS-1");
+  let volume = pactl_volume(&desktop.server);
+  assert!(volume.abs_diff(75) <= 1, "pactl says {volume}%");
+  eprintln!("pactl says {volume}% after the drag to 75%");
+  let (x, _) = slider_handle(&steady_shot(&sway, "HEADLESS-1")).expect("the handle shows");
+  assert!(x.abs_diff(at(75.0)) <= 1, "the handle rests at {x}");
 }
