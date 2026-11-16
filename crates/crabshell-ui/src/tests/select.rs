@@ -320,3 +320,26 @@ fn shift_click_after_new_text_extends_from_its_start() {
   click(&window, 1.0, 1000);
   assert_eq!(copied(&window), None);
 }
+
+#[test]
+fn a_double_click_in_a_password_selects_all_of_it() {
+  let mut h = Harness::new();
+  let text = h.cx.signal(String::from("ab cd"));
+  let row = Row::new().child(
+    TextInput::new(text)
+      .password(true)
+      .style(Style::new().width(100.0)),
+  );
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+  window.keyboard_enter();
+  // Past the dots: the last word, were it shown.
+  click(&window, 99.0, 0);
+  click(&window, 99.0, 100);
+  window.key(&KeyEvent {
+    key: Key::Character('x'),
+    text: Some(String::from("x")),
+    modifiers: Modifiers::default(),
+    repeat: false,
+  });
+  assert_eq!(text.get(), "x", "where its spaces are stays hidden");
+}

@@ -25,6 +25,8 @@ enum Select {
   Extend(usize),
   /// Selects the word here.
   Word(usize),
+  /// Selects the whole text.
+  All,
 }
 
 impl Tree {
@@ -136,6 +138,11 @@ impl Tree {
       return;
     }
     self.update_input(id, |input| {
+      // A password's words would show where its spaces are.
+      let how = match how {
+        Select::Word(_) if input.password => Select::All,
+        how => how,
+      };
       let Edit {
         text,
         cursor,
@@ -241,6 +248,10 @@ fn apply(text: &str, cursor: &mut usize, anchor: &mut Option<usize>, how: Select
       let word = word_at(text, at);
       *anchor = Some(word.start);
       *cursor = word.end;
+    }
+    Select::All => {
+      *anchor = Some(0);
+      *cursor = text.len();
     }
   }
 }
