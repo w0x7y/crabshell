@@ -296,3 +296,90 @@ fn place_fields_change_the_layout_and_z_only_the_paint() {
   }
   assert!(base.same_layout(&base.z(3)));
 }
+
+#[test]
+fn hsl_gives_the_colors_css_does() {
+  // Each against what CSS's `hsl()` gives.
+  const STEEL: Color = Color::hsl(210.0, 0.5, 0.4);
+  assert_eq!(STEEL, Color::rgb(51, 102, 153));
+  assert_eq!(Color::hsl(0.0, 1.0, 0.5), Color::rgb(255, 0, 0));
+  assert_eq!(Color::hsl(120.0, 1.0, 0.25), Color::rgb(0, 128, 0));
+  assert_eq!(Color::hsl(300.0, 0.76, 0.72), Color::rgb(238, 129, 238));
+  assert_eq!(Color::hsl(30.0, 1.0, 0.5), Color::rgb(255, 128, 0));
+  assert_eq!(Color::hsl(0.0, 0.0, 0.5), Color::rgb(128, 128, 128));
+  // A hue wraps around; the others clamp.
+  assert_eq!(Color::hsl(570.0, 0.5, 0.4), STEEL);
+  assert_eq!(Color::hsl(-150.0, 0.5, 0.4), STEEL);
+  assert_eq!(Color::hsl(10.0, 2.0, 1.5), Color::rgb(255, 255, 255));
+  assert_eq!(Color::hsl(10.0, -1.0, 0.5), Color::rgb(128, 128, 128));
+  assert_eq!(
+    Color::hsla(210.0, 0.5, 0.4, 0.5),
+    Color::rgba(51, 102, 153, 128)
+  );
+  assert_eq!(Color::hsla(210.0, 0.5, 0.4, 7.0).a, 255);
+  // Not a number anywhere gives opaque black.
+  for (h, s, l, a) in [
+    (f32::NAN, 0.5, 0.5, 1.0),
+    (0.0, f32::NAN, 0.5, 1.0),
+    (0.0, 0.5, f32::NAN, 1.0),
+    (0.0, 0.5, 0.5, f32::NAN),
+    (f32::INFINITY, 0.5, 0.5, 1.0),
+  ] {
+    assert_eq!(
+      Color::hsla(h, s, l, a),
+      Color::rgb(0, 0, 0),
+      "{h} {s} {l} {a}"
+    );
+  }
+}
+
+#[test]
+fn lighter_and_darker_move_the_hsl_lightness() {
+  const STEEL: Color = Color::rgb(51, 102, 153);
+  const LIGHT: Color = STEEL.lighter(0.1);
+  // hsl(210, 50%, 50%) and hsl(210, 50%, 30%).
+  assert_eq!(LIGHT, Color::rgb(64, 128, 191));
+  assert_eq!(STEEL.darker(0.1), Color::rgb(38, 77, 115));
+  // They keep the alpha, clamp the lightness and the amount, and a NaN
+  // leaves the color as it was.
+  let clear = Color::rgba(51, 102, 153, 40);
+  assert_eq!(clear.lighter(0.1), Color::rgba(64, 128, 191, 40));
+  assert_eq!(STEEL.lighter(5.0), Color::rgb(255, 255, 255));
+  assert_eq!(STEEL.darker(5.0), Color::rgb(0, 0, 0));
+  assert_eq!(STEEL.lighter(-1.0), STEEL);
+  assert_eq!(STEEL.darker(f32::NAN), STEEL);
+  // Going through HSL and back keeps every color.
+  for color in [
+    Color::rgb(0x1e, 0x1e, 0x2e),
+    Color::rgb(0xcd, 0xd6, 0xf4),
+    Color::rgb(0xf3, 0x8b, 0xa8),
+    Color::rgb(255, 0, 255),
+    Color::rgb(1, 2, 3),
+    Color::rgb(254, 255, 253),
+  ] {
+    assert_eq!(color.lighter(0.0), color);
+  }
+}
+
+#[test]
+fn with_alpha_and_mix_work_on_srgb_channels() {
+  const BASE: Color = Color::hex("#1e1e2e");
+  const VEIL: Color = BASE.with_alpha(0.5);
+  assert_eq!(VEIL, Color::rgba(0x1e, 0x1e, 0x2e, 128));
+  assert_eq!(BASE.with_alpha(2.0).a, 255);
+  assert_eq!(BASE.with_alpha(-1.0).a, 0);
+  assert_eq!(VEIL.with_alpha(f32::NAN), VEIL);
+  // Each channel on its own, alpha included, as a style fade blends.
+  const RED: Color = Color::rgb(255, 0, 0);
+  const HALF: Color = RED.mix(Color::rgba(0, 0, 255, 0), 0.5);
+  assert_eq!(HALF, Color::rgba(128, 0, 128, 128));
+  assert_eq!(RED.mix(BASE, 0.0), RED);
+  assert_eq!(RED.mix(BASE, 1.0), BASE);
+  assert_eq!(RED.mix(BASE, 9.0), BASE);
+  assert_eq!(RED.mix(BASE, -1.0), RED);
+  assert_eq!(RED.mix(BASE, f32::NAN), RED);
+  assert_eq!(
+    Color::rgb(0, 100, 200).mix(Color::rgb(100, 0, 0), 0.25),
+    Color::rgb(25, 75, 150)
+  );
+}

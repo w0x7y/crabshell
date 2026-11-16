@@ -55,6 +55,125 @@ impl Color {
       a,
     }
   }
+
+  /// An opaque color from a hue in degrees, a saturation and a lightness
+  /// from 0 to 1, as CSS's `hsl()`: `Color::hsl(210.0, 0.5, 0.4)` is
+  /// `hsl(210 50% 40%)`. The hue wraps around, the others clamp, and a
+  /// number that isn't finite gives opaque black.
+  pub const fn hsl(hue: f32, saturation: f32, lightness: f32) -> Color {
+    Color::hsla(hue, saturation, lightness, 1.0)
+  }
+
+  /// [`hsl`](Self::hsl) with an alpha from 0 (transparent) to 1 (opaque).
+  pub const fn hsla(hue: f32, saturation: f32, lightness: f32, alpha: f32) -> Color {
+    if !(hue.is_finite() && saturation.is_finite() && lightness.is_finite() && alpha.is_finite()) {
+      return Color::rgb(0, 0, 0);
+    }
+    let hue = hue - (hue / 360.0).floor() * 360.0;
+    let saturation = saturation.clamp(0.0, 1.0);
+    let lightness = lightness.clamp(0.0, 1.0);
+    // CSS Color 4's conversion: the chroma, then where the hue puts it.
+    let chroma = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
+    let sector = hue / 60.0;
+    let second = chroma * (1.0 - (sector - (sector / 2.0).floor() * 2.0 - 1.0).abs());
+    let (r, g, b) = match sector as u8 {
+      0 => (chroma, second, 0.0),
+      1 => (second, chroma, 0.0),
+      2 => (0.0, chroma, second),
+      3 => (0.0, second, chroma),
+      4 => (second, 0.0, chroma),
+      _ => (chroma, 0.0, second),
+    };
+    let lowest = lightness - chroma / 2.0;
+    Color {
+      r: unit_byte(r + lowest),
+      g: unit_byte(g + lowest),
+      b: unit_byte(b + lowest),
+      a: unit_byte(alpha),
+    }
+  }
+
+  /// The same color with an alpha from 0 (transparent) to 1 (opaque),
+  /// clamped. NaN leaves it as it is.
+  pub const fn with_alpha(self, alpha: f32) -> Color {
+    if alpha.is_nan() {
+      return self;
+    }
+    Color {
+      a: unit_byte(alpha),
+      ..self
+    }
+  }
+
+  /// `t` of the way from this color to `other`, from 0 to 1, clamped,
+  /// each sRGB channel and the alpha on their own, as a style fade
+  /// blends. NaN leaves this color as it is.
+  pub const fn mix(self, other: Color, t: f32) -> Color {
+    if t.is_nan() {
+      return self;
+    }
+    let t = t.clamp(0.0, 1.0);
+    Color {
+      r: mix_channel(self.r, other.r, t),
+      g: mix_channel(self.g, other.g, t),
+      b: mix_channel(self.b, other.b, t),
+      a: mix_channel(self.a, other.a, t),
+    }
+  }
+
+  /// The same color with its HSL lightness raised by `amount`, from 0 to
+  /// 1, as Sass's `lighten`: `lighter(0.1)` takes `hsl(210 50% 40%)` to
+  /// `hsl(210 50% 50%)`. The amount and the lightness clamp, and NaN
+  /// leaves the color as it is.
+  pub const fn lighter(self, amount: f32) -> Color {
+    self.lightness_by(amount.clamp(0.0, 1.0))
+  }
+
+  /// The same color with its HSL lightness lowered by `amount`, as
+  /// [`lighter`](Self::lighter) raises it.
+  pub const fn darker(self, amount: f32) -> Color {
+    self.lightness_by(-amount.clamp(0.0, 1.0))
+  }
+
+  /// This color with `change` added to its HSL lightness.
+  const fn lightness_by(self, change: f32) -> Color {
+    if change.is_nan() {
+      return self;
+    }
+    let (r, g, b) = (
+      self.r as f32 / 255.0,
+      self.g as f32 / 255.0,
+      self.b as f32 / 255.0,
+    );
+    let (high, low) = (r.max(g).max(b), r.min(g).min(b));
+    let lightness = (high + low) / 2.0;
+    let chroma = high - low;
+    let (hue, saturation) = if chroma == 0.0 {
+      (0.0, 0.0)
+    } else {
+      let hue = if high == r {
+        (g - b) / chroma
+      } else if high == g {
+        (b - r) / chroma + 2.0
+      } else {
+        (r - g) / chroma + 4.0
+      };
+      (hue * 60.0, chroma / (1.0 - (2.0 * lightness - 1.0).abs()))
+    };
+    let lightness = lightness + change;
+    Color::hsla(hue, saturation, lightness, self.a as f32 / 255.0)
+  }
+}
+
+/// `t` of the way from one channel to another, rounded. Closures can't
+/// be called in a `const fn`.
+const fn mix_channel(from: u8, to: u8, t: f32) -> u8 {
+  (from as f32 + (to as f32 - from as f32) * t).round() as u8
+}
+
+/// A fraction from 0 to 1, clamped, as a channel from 0 to 255.
+const fn unit_byte(value: f32) -> u8 {
+  (value.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 const fn hex_byte(high: u8, low: u8) -> u8 {
