@@ -58,6 +58,7 @@
 #![warn(missing_docs)]
 
 mod animation;
+mod canvas;
 mod cx;
 mod edit;
 mod floating;
@@ -91,6 +92,7 @@ mod tests;
 pub use animation::{
   Animate, Animation, Easing, Spring, Transition, advance_animations, animating,
 };
+pub use canvas::{Cap, Join, Paint, Path, PathCommand, Stroke};
 pub use cx::Cx;
 pub use floating::{FloatingConfig, FloatingWindow, WindowRequest};
 pub use geometry::{Affine, Point, Rect, Size};
@@ -123,9 +125,9 @@ pub use window::{
 /// What a bar's code needs, in one `use`.
 pub mod prelude {
   pub use crate::{
-    Align, Button, Color, Column, CursorShape, Cx, Drag, DragPhase, Edge, Font, Grid, GridView,
-    Icon, IconSource, Justify, Layer, Menu, Output, PanelWindow, Point, PopupWindow, Rect, Row,
-    ScrollSource, Size, Slider, Spacer, Stack, Style, Text, TextSystem, Timer, Wheel, WheelAxis,
-    Widget, Window,
+    Align, Button, Cap, Color, Column, CursorShape, Cx, Drag, DragPhase, Edge, Font, Grid,
+    GridView, Icon, IconSource, Join, Justify, Layer, Menu, Output, Paint, PanelWindow, Path,
+    Point, PopupWindow, Rect, Row, ScrollSource, Size, Slider, Spacer, Stack, Stroke, Style, Text,
+    TextSystem, Timer, Wheel, WheelAxis, Widget, Window,
   };
 }

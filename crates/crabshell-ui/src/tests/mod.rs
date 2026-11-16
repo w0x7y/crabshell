@@ -6,6 +6,7 @@
 //! fontconfig picks depends on the machine.
 
 mod animation;
+mod canvas;
 mod displaced;
 mod drop;
 mod edit;
