@@ -54,6 +54,8 @@ pub(crate) struct Tree {
   /// The size the compositor gave the window.
   pub(crate) size: Size,
   pub(crate) needs_layout: bool,
+  /// [`fonts_added`](crate::text::fonts_added) at the last layout.
+  pub(crate) fonts_added: u64,
   /// A transform changed, so where things are drawn is worked out again,
   /// without laying anything out.
   pub(crate) needs_place: bool,
@@ -521,6 +523,7 @@ impl Tree {
       surface: Surface::default(),
       size: Size::default(),
       needs_layout: true,
+      fonts_added: 0,
       needs_place: false,
       damage: Vec::new(),
       pointer: Pointer::default(),

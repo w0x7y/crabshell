@@ -7,6 +7,8 @@ use std::rc::{Rc, Weak};
 
 use crabshell_reactive::{Effect, Memo, Owner, ReadSignal, Signal};
 
+use crate::style::Font;
+use crate::text::{TextMetrics, TextSystem};
 use crate::tree::{NodeId, Tree};
 
 /// The context widget code runs in.
@@ -166,5 +168,30 @@ impl Cx {
   #[track_caller]
   pub fn effect(&self, f: impl FnMut() + 'static) -> Effect {
     self.owner.effect(f)
+  }
+
+  /// Measures `text` as a [`Text`](crate::Text) with `font` lays it out,
+  /// with the same fonts and fallbacks. Each line break starts another
+  /// line: the width is the widest line's and the height a line height per
+  /// line. It isn't reactive itself; a binding that calls it runs again
+  /// when the signals it read change.
+  pub fn measure_text(&self, text: &str, font: Font) -> TextMetrics {
+    self.text_system().fonts().measure(text, font)
+  }
+
+  /// Adds the fonts in `bytes`, such as `include_bytes!("fonts/Inter.ttf")`,
+  /// without copying them. A family they provide is used before any
+  /// installed font of that name, and text already laid out shapes again.
+  /// Bytes that hold no font are logged and ignored.
+  pub fn add_font(&self, bytes: &'static [u8]) {
+    self.text_system().fonts().add(bytes);
+  }
+
+  /// The shell's text system, which the platform provides; one is made if
+  /// it didn't.
+  fn text_system(&self) -> Rc<TextSystem> {
+    self
+      .service()
+      .unwrap_or_else(|| self.provide(TextSystem::new()))
   }
 }

@@ -180,6 +180,8 @@ impl Shell {
     let cx = Cx::new(runtime.new_owner().named("root"));
     // Nothing starts here: each service connects when root first asks.
     crabshell_services::provide(&cx, &event_loop.handle());
+    // `cx.measure_text` and `cx.add_font` use the fonts windows lay out with.
+    cx.provide(event_loop.platform().text_system().clone());
     let state = Rc::new(RefCell::new(PerOutput::new()));
     let outputs = cx.signal(event_loop.platform().outputs().cloned().collect::<Vec<_>>());
     cx.provide(Service {

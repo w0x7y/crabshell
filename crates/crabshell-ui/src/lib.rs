@@ -113,7 +113,7 @@ pub use style::{
   Border, Color, Font, FontFeature, Gradient, GradientShape, Mask, Padding, Radii, Shadow, Style,
   TextAlign,
 };
-pub use text::TextSystem;
+pub use text::{TextMetrics, TextSystem};
 pub use text_input::{FieldState, Preedit, TextInput};
 pub use timer::{Timer, fire_timers, next_timer};
 pub use view::{
@@ -133,7 +133,7 @@ pub mod prelude {
     Align, Button, Canvas, Cap, Color, Column, CursorShape, Cx, Drag, DragPhase, Edge, Elide, Font,
     FontFeature, Grid, GridView, Icon, IconSource, ImageTransition, Join, Justify, Layer, Mask,
     Menu, Output, Paint, PanelWindow, Path, Pen, Point, PopupWindow, Radii, Rect, Row,
-    ScrollSource, Size, Slider, Spacer, Stack, Stroke, Style, Text, TextAlign, TextSystem, Timer,
-    Wheel, WheelAxis, Widget, Window,
+    ScrollSource, Size, Slider, Spacer, Stack, Stroke, Style, Text, TextAlign, TextMetrics,
+    TextSystem, Timer, Wheel, WheelAxis, Widget, Window,
   };
 }

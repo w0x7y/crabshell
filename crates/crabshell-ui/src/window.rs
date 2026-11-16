@@ -14,7 +14,7 @@ use crate::keyboard::{KeyEvent, KeyHandler};
 use crate::prop::{IntoProp, Prop};
 use crate::region::Region;
 use crate::style::Style;
-use crate::text::TextSystem;
+use crate::text::{TextSystem, fonts_added};
 use crate::tree::{Tree, borrow};
 use crate::view::WindowView;
 use crate::widgets::Widget;
@@ -621,7 +621,7 @@ impl Window {
   /// Whether something changed that needs [`layout`](Self::layout).
   pub fn needs_layout(&self) -> bool {
     let tree = self.tree.borrow();
-    tree.needs_layout || tree.needs_place
+    tree.needs_layout || tree.needs_place || tree.fonts_added != fonts_added()
   }
 
   /// Lays the window out at its size, measuring text with `text`, and
@@ -634,7 +634,8 @@ impl Window {
     for _ in 0..GEOMETRY_ROUNDS {
       let (moved, measured) = {
         let mut tree = borrow(&self.tree);
-        tree.layout(text);
+        // Both borrows end before the effects below run.
+        tree.layout(&mut text.fonts());
         (
           std::mem::take(&mut tree.geometry),
           std::mem::take(&mut tree.measured),

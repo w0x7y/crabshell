@@ -90,6 +90,7 @@ mod lock;
 #[path = "../../crabshell-services/tests/pipewire/mod.rs"]
 mod pipewire;
 
+use std::cell::Cell;
 use std::io::{self, BufRead, BufReader};
 use std::ops::Range;
 use std::panic::{self, AssertUnwindSafe};
@@ -100,6 +101,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
+use cosmic_text::fontdb::Source;
 use crabshell::Shell;
 use crabshell::prelude::*;
 use crabshell_reactive::Runtime;
@@ -631,6 +633,44 @@ fn an_idle_counter_bar_wakes_nothing() {
     before,
     "context switches in 60 idle seconds"
   );
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_bundled_font_lays_out_the_bar_and_measures_with_it() {
+  // Leaked, as `include_bytes!` would keep them.
+  let Ok(bytes) = std::fs::read("/usr/share/fonts/dejavu/DejaVuSans.ttf") else {
+    eprintln!("skipped: no /usr/share/fonts/dejavu/DejaVuSans.ttf");
+    return;
+  };
+  let bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+  let font = Font::new("DejaVu Sans", 13.0);
+  let sway = Sway::start();
+  let measured = Rc::new(Cell::new(None));
+  let mut shell = Shell::new(sway.connect(), |cx| {
+    cx.add_font(bytes);
+    measured.set(Some(cx.measure_text("clicked 0 times", font)));
+    cx.per_output(move |cx, output| counter::bar(cx, output).style(Style::new().font(font)));
+  })
+  .expect("the root closure runs");
+  run_until(&mut shell, "the bar", |platform| {
+    shown_on(platform, "HEADLESS-1").is_some()
+  });
+  let id = shown_on(shell.platform(), "HEADLESS-1").expect("the bar is shown");
+  // Every face is the bundled one's: the platform lays out with the fonts
+  // the root context added to, and fontconfig loaded no file.
+  let fonts = shell.platform().text_system().font_system();
+  let bundled = |source: &Source| matches!(source, Source::Binary(_));
+  let files = fonts.db().faces().filter(|face| !bundled(&face.source));
+  assert_eq!(files.count(), 0, "faces were loaded from files");
+  assert!(!fonts.db().is_empty());
+  drop(fonts);
+  assert_eq!(label(shell.platform(), id), "clicked 0 times");
+  let width = button(shell.platform(), id, |button| {
+    button.children().next().expect("the label").rect().width
+  });
+  let measured = measured.get().expect("root measured");
+  assert_eq!(measured.width.ceil(), width);
 }
 
 #[test]

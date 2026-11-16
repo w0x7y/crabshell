@@ -421,8 +421,9 @@ fn check_fonts() {
       .runs()
       .flat_map(|run| run.glyphs.iter())
       .next()
-      .and_then(|glyph| scene.text.font_system().db().face(glyph.font_id))
-      .and_then(|face| {
+      .and_then(|glyph| {
+        let fonts = scene.text.font_system();
+        let face = fonts.db().face(glyph.font_id)?;
         let (name, _) = face.families.first()?;
         Some(match face.style {
           cosmic_text::fontdb::Style::Normal => name.clone(),

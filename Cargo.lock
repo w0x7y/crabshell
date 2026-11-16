@@ -177,6 +177,7 @@ name = "crabshell"
 version = "0.5.0"
 dependencies = [
  "calloop",
+ "cosmic-text",
  "crabshell-reactive",
  "crabshell-render",
  "crabshell-services",

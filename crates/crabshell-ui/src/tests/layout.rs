@@ -287,7 +287,7 @@ fn ellipsis_lets_text_shrink_to_fit() {
   // The line ends in the font's own "…" glyph.
   let mut dots = TextNode::new();
   dots.set_content(String::from("\u{2026}"));
-  dots.prepare(crate::Font::DEFAULT, &mut h.text);
+  dots.prepare(crate::Font::DEFAULT, &mut h.text.fonts());
   let dots = dots.runs().next().expect("a line").glyphs[0].glyph_id;
   assert_ne!(dots, 0);
   assert_eq!(line.glyphs.last().map(|glyph| glyph.glyph_id), Some(dots));

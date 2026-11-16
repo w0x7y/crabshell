@@ -111,7 +111,7 @@ pub mod prelude {
     Margins, Mask, Menu, MenuEntry, MenuToggle, Modifiers, Output, Padding, Paint, PanelWindow,
     Path, Pen, Point, PopupWindow, Radii, Rect, Region, Row, ScreencopyView, ScrollSource,
     ScrollView, SessionLock, Shadow, Size, Slider, Spacer, Spring, Stack, Stroke, Style, Text,
-    TextAlign, TextInput, Timer, Transition, Wheel, WheelAxis, Widget,
+    TextAlign, TextInput, TextMetrics, Timer, Transition, Wheel, WheelAxis, Widget,
   };
   pub use crabshell_wayland::{OutputInfo, Toplevel, Windowset, WindowsetProjection};
   /// For [`cx.after`](Cx::after) and [`cx.interval`](Cx::interval).

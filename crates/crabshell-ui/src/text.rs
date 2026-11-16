@@ -6,13 +6,19 @@
 //! through fontconfig and only the file it matched is loaded. When a text
 //! uses a character none of the loaded fonts has, fontconfig names a font
 //! that has it, that file is loaded too, and the text is shaped again.
+//!
+//! A font a config bundles with [`Cx::add_font`](crate::Cx::add_font) is
+//! read from its bytes, and a family it provides is used before fontconfig
+//! is asked, so a config whose fonts are all bundled never starts it.
 
+use std::cell::{Cell, RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
-use cosmic_text::fontdb::{Database, Source};
+use cosmic_text::fontdb::{Database, Query, Source};
 use cosmic_text::{
   Align, Attrs, Buffer, Ellipsize, EllipsizeHeightLimit, Family, FeatureTag, FontFeatures,
   FontSystem, LayoutGlyph, LayoutRun, Metrics, Shaping, Weight, Wrap,
@@ -26,10 +32,67 @@ use crate::widgets::Elide;
 
 /// The fonts every window measures and draws text with.
 ///
-/// There is one per process. The platform passes it to
-/// [`Window::layout`](crate::Window::layout), and the renderer rasterizes
-/// glyphs with its [`font_system`](Self::font_system).
-pub struct TextSystem {
+/// There is one per process, and cloning it gives another handle to the
+/// same fonts. The platform passes it to
+/// [`Window::layout`](crate::Window::layout), the renderer rasterizes
+/// glyphs with its [`font_system`](Self::font_system), and the root [`Cx`]
+/// gets it as a service for [`Cx::measure_text`] and [`Cx::add_font`].
+///
+/// [`Cx`]: crate::Cx
+/// [`Cx::measure_text`]: crate::Cx::measure_text
+/// [`Cx::add_font`]: crate::Cx::add_font
+#[derive(Clone, Default)]
+pub struct TextSystem(Rc<RefCell<Fonts>>);
+
+impl TextSystem {
+  /// An empty font database. Nothing is loaded until text is laid out.
+  pub fn new() -> TextSystem {
+    TextSystem::default()
+  }
+
+  /// cosmic-text's font system, for rasterizing glyphs. Release it before
+  /// laying a window out.
+  pub fn font_system(&self) -> RefMut<'_, FontSystem> {
+    RefMut::map(self.fonts(), |fonts| &mut fonts.fonts)
+  }
+
+  /// The fonts, borrowed.
+  pub(crate) fn fonts(&self) -> RefMut<'_, Fonts> {
+    self
+      .0
+      .try_borrow_mut()
+      .expect("nothing that holds the fonts runs user code, which may measure text")
+  }
+}
+
+thread_local! {
+  /// How many fonts were added. Text shaped before the last one shapes
+  /// again, and windows laid out before it lay out again.
+  static FONTS_ADDED: Cell<u64> = const { Cell::new(0) };
+}
+
+pub(crate) fn fonts_added() -> u64 {
+  FONTS_ADDED.get()
+}
+
+/// The size of text shaped with one font, from
+/// [`Cx::measure_text`](crate::Cx::measure_text), in logical pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TextMetrics {
+  /// The advance of the widest line.
+  pub width: f32,
+  /// The line boxes: one line height per line.
+  pub height: f32,
+  /// How far the font rises above the baseline at this size.
+  pub ascent: f32,
+  /// How far the font reaches below the baseline at this size, positive.
+  pub descent: f32,
+  /// The height of one line, as a `Text` with this font has.
+  pub line_height: f32,
+}
+
+/// What a [`TextSystem`] holds.
+pub(crate) struct Fonts {
   fonts: FontSystem,
   fontconfig: Lookup,
   /// The family name each requested family, weight and slant resolved
@@ -51,13 +114,13 @@ enum Lookup {
   Failed,
 }
 
-impl TextSystem {
-  /// An empty font database. Nothing is loaded until text is laid out.
-  pub fn new() -> TextSystem {
+impl Fonts {
+  /// An empty font database.
+  pub(crate) fn new() -> Fonts {
     // cosmic-text needs a locale. Reading the system's would take another
     // crate, and it only affects which script-specific fallbacks it tries.
     let fonts = FontSystem::new_with_locale_and_db("en-US".to_owned(), Database::new());
-    TextSystem {
+    Fonts {
       fonts,
       fontconfig: Lookup::NotStarted,
       families: HashMap::new(),
@@ -67,9 +130,15 @@ impl TextSystem {
     }
   }
 
-  /// cosmic-text's font system, for rasterizing glyphs.
-  pub fn font_system(&mut self) -> &mut FontSystem {
+  /// cosmic-text's font system.
+  pub(crate) fn font_system(&mut self) -> &mut FontSystem {
     &mut self.fonts
+  }
+
+  /// Whether fontconfig was started.
+  #[cfg(test)]
+  pub(crate) fn fontconfig_started(&self) -> bool {
+    !matches!(self.fontconfig, Lookup::NotStarted)
   }
 
   fn fontconfig(&mut self) -> Option<&Fontconfig> {
@@ -89,12 +158,17 @@ impl TextSystem {
   }
 
   /// The name to ask cosmic-text for to get `font`'s family, weight and
-  /// slant, loading the file fontconfig matches the first time. `None`,
-  /// logged once, if no font could be loaded.
+  /// slant: a bundled family of that name, or else the file fontconfig
+  /// matches, loaded the first time. `None`, logged once, if no font
+  /// could be loaded.
   pub(crate) fn family(&mut self, font: &Font) -> Option<Rc<str>> {
     let key = (font.family, font.weight, font.italic);
     if let Some(name) = self.families.get(&key) {
       return name.clone();
+    }
+    if let Some(name) = self.bundled(font.family) {
+      self.families.insert(key, Some(Rc::clone(&name)));
+      return Some(name);
     }
     let matched = self
       .fontconfig()
@@ -109,6 +183,98 @@ impl TextSystem {
     }
     self.families.insert(key, name.clone());
     name
+  }
+
+  /// The database's name for `family` if a bundled font provides it.
+  fn bundled(&self, family: &str) -> Option<Rc<str>> {
+    self
+      .fonts
+      .db()
+      .faces()
+      .filter(|face| matches!(face.source, Source::Binary(_)))
+      .flat_map(|face| &face.families)
+      .find(|(name, _language)| name.eq_ignore_ascii_case(family))
+      .map(|(name, _language)| Rc::from(name.as_str()))
+  }
+
+  /// Reads every face in `bytes` into the database, without copying them.
+  /// Families they provide are resolved again, and all text shapes again.
+  /// Bytes with no face are logged and ignored.
+  pub(crate) fn add(&mut self, bytes: &'static [u8]) {
+    // fontdb keeps a font's bytes behind an `Arc`, whatever the thread.
+    let source = Source::Binary(Arc::new(bytes));
+    // Read on its own first, for the families it provides.
+    let mut probe = Database::new();
+    probe.load_font_source(source.clone());
+    let names: Vec<String> = probe
+      .faces()
+      .flat_map(|face| face.families.iter().map(|(name, _)| name.clone()))
+      .collect();
+    if names.is_empty() {
+      tracing::warn!(
+        bytes = bytes.len(),
+        "a bundled font has no face that could be read, so it is ignored"
+      );
+      return;
+    }
+    tracing::debug!(?names, "font added");
+    let provides = |family: &str| names.iter().any(|name| name.eq_ignore_ascii_case(family));
+    // Faces of those families loaded from files give way: cosmic-text takes
+    // the first face of a name, and the bundled ones fill their places.
+    let replaced: Vec<_> = self
+      .fonts
+      .db()
+      .faces()
+      .filter(|face| face.families.iter().any(|(name, _)| provides(name)))
+      .filter_map(|face| Some((face.id, source_path(&face.source)?.clone())))
+      .collect();
+    let db = self.fonts.db_mut();
+    for (id, _) in &replaced {
+      db.remove_face(*id);
+    }
+    db.load_font_source(source);
+    let gone = |path: &PathBuf| replaced.iter().any(|(_, replaced)| replaced == path);
+    self.files.retain(|path| !gone(path));
+    self.loaded.retain(|(path, _), _| !gone(path));
+    self.families.retain(|(family, _, _), _| !provides(family));
+    // A character a removed face drew is looked up again if it is missing.
+    self.fallback_tried.clear();
+    FONTS_ADDED.set(FONTS_ADDED.get() + 1);
+  }
+
+  /// Shapes `content` as a `Text` with `font` shapes it, every line shown.
+  pub(crate) fn measure(&mut self, content: &str, font: Font) -> TextMetrics {
+    let mut node = TextNode::new();
+    node.set_content(content.to_owned());
+    node.set_max_lines(u32::MAX);
+    node.prepare(font, self);
+    let Metrics {
+      font_size,
+      line_height,
+    } = node.buffer.metrics();
+    let weight = Weight(font.weight);
+    let face = self.family(&font).and_then(|name| {
+      self.fonts.db().query(&Query {
+        families: &[Family::Name(&name)],
+        weight,
+        ..Query::default()
+      })
+    });
+    let (ascent, descent) =
+      face
+        .and_then(|id| self.fonts.get_font(id, weight))
+        .map_or((0.0, 0.0), |face| {
+          let metrics = face.metrics();
+          let scale = font_size / f32::from(metrics.units_per_em);
+          (metrics.ascent * scale, -metrics.descent * scale)
+        });
+    TextMetrics {
+      width: node.width(),
+      height: node.height(),
+      ascent,
+      descent,
+      line_height,
+    }
   }
 
   /// Loads fontconfig's best font for each character in `missing` that
@@ -160,7 +326,7 @@ impl TextSystem {
   }
 }
 
-impl Default for TextSystem {
+impl Default for Fonts {
   fn default() -> Self {
     Self::new()
   }
@@ -301,6 +467,8 @@ pub(crate) struct TextNode {
   pub(crate) buffer: Buffer,
   /// The style the buffer was shaped with; `None` until the first layout.
   style: Option<TextStyle>,
+  /// [`fonts_added`] when the buffer was shaped.
+  fonts_added: u64,
   /// The content, `elide` or `max_lines` changed since the buffer was
   /// shaped.
   stale: bool,
@@ -316,6 +484,7 @@ impl TextNode {
       max_lines: 1,
       buffer: Buffer::new_empty(metrics(&Font::DEFAULT.into())),
       style: None,
+      fonts_added: 0,
       stale: true,
       origin: Point::default(),
     }
@@ -352,11 +521,12 @@ impl TextNode {
   }
 
   /// Shapes the text again if its content, settings or style changed,
-  /// loading fallback fonts for characters the font lacks. Returns whether
-  /// it did, so layout must measure it again.
-  pub(crate) fn prepare(&mut self, style: impl Into<TextStyle>, text: &mut TextSystem) -> bool {
+  /// loading fallback fonts for characters the font lacks, or if a font
+  /// was added since. Returns whether it did, so layout must measure it
+  /// again.
+  pub(crate) fn prepare(&mut self, style: impl Into<TextStyle>, text: &mut Fonts) -> bool {
     let style = style.into();
-    if !self.stale && self.style == Some(style) {
+    if !self.stale && self.style == Some(style) && self.fonts_added == fonts_added() {
       return false;
     }
     let font = style.font;
@@ -382,11 +552,12 @@ impl TextNode {
       self.shape(family.as_deref(), &style, text);
     }
     self.style = Some(style);
+    self.fonts_added = fonts_added();
     self.stale = false;
     true
   }
 
-  fn shape(&mut self, family: Option<&str>, style: &TextStyle, text: &mut TextSystem) {
+  fn shape(&mut self, family: Option<&str>, style: &TextStyle, text: &mut Fonts) {
     let font = &style.font;
     let mut attrs = Attrs::new().weight(Weight(font.weight));
     if let Some(family) = family {

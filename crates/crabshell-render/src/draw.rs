@@ -234,6 +234,7 @@ impl Renderer {
     tiles.sort_unstable();
     tiles.dedup();
     let mut casts = HashMap::new();
+    let mut fonts = text.font_system();
     for (row, column) in tiles {
       let (x, y) = (column * TILE, row * TILE);
       let size = (width.saturating_sub(x), height.saturating_sub(y));
@@ -255,7 +256,7 @@ impl Renderer {
         },
         glyphs: &mut self.glyphs,
         icons: &mut self.icons,
-        fonts: text.font_system(),
+        fonts: &mut fonts,
         work: &mut self.work,
         casts: &mut casts,
       };

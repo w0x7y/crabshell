@@ -2,9 +2,9 @@
 //! decorations and eliding, and how each is inherited and invalidated.
 
 use super::{Harness, node_at, rect_at};
-use crate::text::TextNode;
+use crate::text::{Fonts, TextNode};
 use crate::{
-  Align, Column, Content, Elide, Font, FontFeature, Row, Style, Text, TextAlign, TextSystem, Window,
+  Align, Column, Content, Elide, Font, FontFeature, Row, Style, Text, TextAlign, Window,
 };
 
 const LONG: &str = "a sentence much too long for the narrow window it sits in";
@@ -19,7 +19,7 @@ fn with_text<T>(window: &Window, path: &[usize], f: impl FnOnce(&crate::TextView
 }
 
 /// `text` shaped alone in `font`.
-fn shaped(text: &mut TextSystem, content: &str, font: Font) -> TextNode {
+fn shaped(text: &mut Fonts, content: &str, font: Font) -> TextNode {
   let mut node = TextNode::new();
   node.set_content(String::from(content));
   node.prepare(font, text);
@@ -145,7 +145,7 @@ fn a_decoration_change_repaints_and_a_line_height_change_lays_out() {
 
 #[test]
 fn letter_spacing_adds_its_pixels_after_each_glyph() {
-  let mut text = TextSystem::new();
+  let mut text = Fonts::new();
   let plain = width(&shaped(&mut text, "abcd", Font::DEFAULT));
   let spaced = width(&shaped(
     &mut text,
@@ -181,8 +181,8 @@ fn letter_spacing_adds_its_pixels_after_each_glyph() {
 fn italic_text_is_shaped_from_an_italic_face() {
   // This machine's sans-serif, Noto Sans, has an italic face. Upright
   // text goes first, so both faces are loaded when italic is asked for.
-  let mut text = TextSystem::new();
-  let face_style = |text: &mut TextSystem, font| {
+  let mut text = Fonts::new();
+  let face_style = |text: &mut Fonts, font| {
     let node = shaped(text, "x", font);
     let id = node.runs().next().expect("a line").glyphs[0].font_id;
     text.font_system().db().face(id).map(|face| face.style)
@@ -201,8 +201,8 @@ fn tabular_digits_hold_a_clocks_width_still() {
   // undo that.
   const PROPORTIONAL: [FontFeature; 1] = [FontFeature::new(*b"pnum", 1)];
   const TABULAR: [FontFeature; 2] = [PROPORTIONAL[0], FontFeature::TABULAR_NUMBERS];
-  let mut text = TextSystem::new();
-  let clock = |text: &mut TextSystem, features| {
+  let mut text = Fonts::new();
+  let clock = |text: &mut Fonts, features| {
     let font = Font::DEFAULT.features(features);
     let ones = width(&shaped(text, "11:11", font));
     let zeros = width(&shaped(text, "00:00", font));
@@ -268,7 +268,7 @@ fn ellipsis_at(
   index: usize,
   line: usize,
 ) -> Option<(usize, usize)> {
-  let dots = shaped(&mut h.text, "\u{2026}", Font::DEFAULT);
+  let dots = shaped(&mut h.text.fonts(), "\u{2026}", Font::DEFAULT);
   let dots = dots.runs().next().expect("a line").glyphs[0].glyph_id;
   with_text(window, &[0, index], |t| {
     let glyphs: Vec<u16> = t

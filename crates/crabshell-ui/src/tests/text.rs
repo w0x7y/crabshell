@@ -1,7 +1,7 @@
 //! Font loading through fontconfig, and fallback fonts.
 
-use crate::text::{TextNode, face_number, fc_weight};
-use crate::{Font, TextSystem};
+use crate::Font;
+use crate::text::{Fonts, TextNode, face_number, fc_weight};
 
 #[test]
 fn css_weights_map_onto_fontconfigs_scale() {
@@ -17,7 +17,7 @@ fn css_weights_map_onto_fontconfigs_scale() {
 
 #[test]
 fn a_generic_family_resolves_to_one_loaded_font() {
-  let mut text = TextSystem::new();
+  let mut text = Fonts::new();
   let name = text.family(&Font::new("sans-serif", 13.0));
   assert!(name.is_some_and(|name| !name.is_empty()));
   // Only the matched file is in the database, not every installed font.
@@ -33,7 +33,7 @@ fn a_character_the_font_lacks_loads_a_fallback() {
   // Noto Sans, this machine's sans-serif, has no snowman; fontconfig names
   // DejaVu Sans for it. On a machine whose sans-serif has one, the second
   // face check below would fail and the test needs another character.
-  let mut text = TextSystem::new();
+  let mut text = Fonts::new();
   let mut node = TextNode::new();
   node.set_content(String::from("a\u{2603}b"));
   assert!(node.prepare(Font::new("sans-serif", 13.0), &mut text));
@@ -56,7 +56,7 @@ fn a_character_the_font_lacks_loads_a_fallback() {
 #[test]
 fn bold_text_gets_a_bold_fallback_face() {
   // DejaVu Sans Bold has the snowman too, and regular text asks first.
-  let mut text = TextSystem::new();
+  let mut text = Fonts::new();
   let mut regular = TextNode::new();
   regular.set_content(String::from("\u{2603}"));
   regular.prepare(Font::new("sans-serif", 13.0), &mut text);
@@ -81,7 +81,7 @@ fn bold_text_gets_a_bold_fallback_face() {
 
 #[test]
 fn an_unusable_font_size_falls_back_to_the_default() {
-  let mut text = TextSystem::new();
+  let mut text = Fonts::new();
   let mut node = TextNode::new();
   node.set_content(String::from("x"));
   for size in [0.0, -3.0, f32::NAN, f32::INFINITY] {
@@ -93,7 +93,7 @@ fn an_unusable_font_size_falls_back_to_the_default() {
 
 #[test]
 fn an_unknown_family_still_gets_fontconfigs_best_match() {
-  let mut text = TextSystem::new();
+  let mut text = Fonts::new();
   let name = text.family(&Font::new("No Such Family 1234", 13.0));
   assert!(name.is_some());
 }
@@ -110,7 +110,7 @@ fn a_fontconfig_face_index_drops_the_named_instance() {
 
 #[test]
 fn loading_another_face_of_a_loaded_file_adds_no_faces() {
-  let mut text = TextSystem::new();
+  let mut text = Fonts::new();
   text.family(&Font::new("sans-serif", 13.0));
   let faces = text.font_system().db().faces().count();
   let path = text
@@ -138,7 +138,7 @@ fn loading_another_face_of_a_loaded_file_adds_no_faces() {
 #[test]
 #[ignore = "needs FONTCONFIG_FILE with only a variable font; see the comment above"]
 fn a_variable_font_named_instance_loads() {
-  let mut text = TextSystem::new();
+  let mut text = Fonts::new();
   let name = text.family(&Font::new("Noto Emoji", 13.0).weight(700));
   assert_eq!(name.as_deref(), Some("Noto Emoji"));
 }
@@ -146,7 +146,7 @@ fn a_variable_font_named_instance_loads() {
 #[test]
 #[ignore = "needs FONTCONFIG_FILE with only a variable font; see the comment above"]
 fn a_variable_font_fallback_is_shaped_again() {
-  let mut text = TextSystem::new();
+  let mut text = Fonts::new();
   let mut node = TextNode::new();
   node.set_content(String::from("a\u{1FAE0}"));
   node.prepare(Font::new("sans-serif", 13.0).weight(700), &mut text);
@@ -163,7 +163,7 @@ fn a_variable_font_fallback_is_shaped_again() {
 #[test]
 #[ignore = "needs FONTCONFIG_FILE with only a variable font; see the comment above"]
 fn a_variable_font_draws_heavier_at_a_heavier_weight() {
-  let mut text = TextSystem::new();
+  let mut text = Fonts::new();
   let mut ink = |weight: u16| -> u32 {
     let mut node = TextNode::new();
     node.set_content(String::from("\u{1F600}"));

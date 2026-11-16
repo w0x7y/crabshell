@@ -342,7 +342,7 @@ fn the_damage_covers_every_glyph_pixel() {
     let baseline = (text.origin().y + run.line_y).round();
     for glyph in run.glyphs {
       let key = glyph.physical((0.0, 0.0), 1.0).cache_key;
-      if let Some(image) = cache.get_image_uncached(h.text.font_system(), key) {
+      if let Some(image) = cache.get_image_uncached(&mut h.text.font_system(), key) {
         let glyph_top = baseline - image.placement.top as f32;
         top = top.min(glyph_top);
         bottom = bottom.max(glyph_top + image.placement.height as f32);
@@ -391,7 +391,8 @@ fn ink(window: &crate::Window, text: &mut crate::TextSystem, path: &[usize], sca
     let baseline = ((origin.y + run.line_y) * scale).round();
     for glyph in run.glyphs {
       let physical = glyph.physical((origin.x * scale, baseline), scale);
-      let Some(image) = cache.get_image_uncached(text.font_system(), physical.cache_key) else {
+      let Some(image) = cache.get_image_uncached(&mut text.font_system(), physical.cache_key)
+      else {
         continue;
       };
       let left = (physical.x + image.placement.left) as f32;

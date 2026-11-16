@@ -24,7 +24,7 @@ use taffy::{
 use crate::geometry::{Affine, Point, Rect};
 use crate::scroll::{BAR_MIN_LENGTH, BAR_WIDTH};
 use crate::style::{Font, Shadow, Style};
-use crate::text::{TextStyle, TextSystem};
+use crate::text::{Fonts, TextStyle, fonts_added};
 use crate::text_input::DEFAULT_WIDTH;
 use crate::tree::{Node, NodeId, NodeKind, ScrollNode, Tree, add_damage, centered, icon_rect};
 use crate::widgets::{Align, Justify};
@@ -48,8 +48,13 @@ impl Tree {
   /// Lays the window out at `self.size` and records damage. A popup first
   /// takes the size its content wants, rounded up to whole pixels, within
   /// the size the compositor shrank it to.
-  pub(crate) fn layout(&mut self, text: &mut TextSystem) {
+  pub(crate) fn layout(&mut self, text: &mut Fonts) {
     let root = self.root;
+    // A font was added: every text shapes again in a full layout.
+    if self.fonts_added != fonts_added() {
+      self.fonts_added = fonts_added();
+      self.needs_layout = true;
+    }
     // Only a transform changed: nothing moves in the layout, so taffy
     // isn't asked again. Nor is the pointer: a hover transform that moves
     // its button off a still pointer would unhover it, move it back and
@@ -151,7 +156,7 @@ impl Tree {
 
   /// The first pass: gives taffy each node's style, and reshapes text.
   /// `inherited` is the text style inherited from the ancestors.
-  fn sync(&mut self, id: NodeId, parent: Parent, inherited: TextStyle, text: &mut TextSystem) {
+  fn sync(&mut self, id: NodeId, parent: Parent, inherited: TextStyle, text: &mut Fonts) {
     let size = self.size;
     let Some(node) = self.taffy.get_node_context_mut(id) else {
       return;

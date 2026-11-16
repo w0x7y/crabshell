@@ -25,6 +25,7 @@ mod kinetic;
 mod layout;
 mod lists;
 mod lock;
+mod measure;
 mod menu;
 mod placement;
 mod pointer;
@@ -65,11 +66,10 @@ struct Harness {
 impl Harness {
   fn new() -> Harness {
     let runtime = Runtime::current();
-    Harness {
-      runtime,
-      cx: Cx::new(runtime.new_owner()),
-      text: TextSystem::new(),
-    }
+    let cx = Cx::new(runtime.new_owner());
+    // As the platform does, so `cx.measure_text` uses the same fonts.
+    let text = cx.provide(TextSystem::new()).as_ref().clone();
+    Harness { runtime, cx, text }
   }
 
   /// A panel on output "DP-1", for `panel` to finish.

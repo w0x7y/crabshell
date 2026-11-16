@@ -30,6 +30,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+# A headless test checks that a bundled font's face came from its bytes.
+cosmic-text.workspace = true
 # The headless Sway tests decode grim's screenshots and write goldens.
 png.workspace = true
 # The headless Sway tests' virtual pointer.
