@@ -689,17 +689,10 @@ impl TextNode {
     });
     self.buffer.set_size(None, None);
     self.shape(&fonts, &families, &style, text);
-    let missing = self.fallback_chars(&families, text.font_system().db());
+    let missing = self.fallback_chars(&fonts, &families, text.font_system().db());
     let mut gained = false;
-    for (index, font) in fonts.iter().enumerate() {
-      let chars: Vec<char> = missing
-        .iter()
-        .filter(|(at, _)| *at == index)
-        .map(|(_, ch)| *ch)
-        .collect();
-      if !chars.is_empty() {
-        gained |= text.load_fallbacks(font, &chars);
-      }
+    for (font, chars) in missing {
+      gained |= text.load_fallbacks(&font, &chars);
     }
     if gained {
       self.shape(&fonts, &families, &style, text);
@@ -749,12 +742,18 @@ impl TextNode {
     self.buffer.shape_until_scroll(text.font_system(), false);
   }
 
-  /// Characters that need a fallback font, with the index in `families`
-  /// of the font they were asked in: those that came out as the
-  /// missing-glyph box, and those drawn from a face outside that family.
-  /// The second kind may have come from a fallback loaded for another
-  /// weight or family, so fontconfig is asked again for this one.
-  fn fallback_chars(&self, families: &[Option<Rc<str>>], db: &Database) -> Vec<(usize, char)> {
+  /// Characters that need a fallback font, by the font they were asked
+  /// in: those that came out as the missing-glyph box, and those drawn
+  /// from a face outside that font's family. The second kind may have
+  /// come from a fallback loaded for another weight or family, so
+  /// fontconfig is asked again for this one. Spans differ only in weight
+  /// and slant, so there are at most a few fonts, however many spans.
+  fn fallback_chars(
+    &self,
+    fonts: &[Font],
+    families: &[Option<Rc<str>>],
+    db: &Database,
+  ) -> Vec<(Font, Vec<char>)> {
     let in_family = |glyph: &LayoutGlyph| {
       let family = families.get(glyph.metadata).cloned().flatten();
       db.face(glyph.font_id).is_some_and(|face| {
@@ -764,14 +763,22 @@ impl TextNode {
           .any(|(name, _)| Some(name.as_str()) == family.as_deref())
       })
     };
-    let mut missing = Vec::new();
+    let mut missing: Vec<(Font, Vec<char>)> = Vec::new();
+    let mut seen = HashSet::new();
     for run in self.buffer.layout_runs() {
       let fallback = |glyph: &&LayoutGlyph| glyph.glyph_id == 0 || !in_family(glyph);
       for glyph in run.glyphs.iter().filter(fallback) {
-        let index = glyph.metadata.min(families.len() - 1);
+        let font = fonts[glyph.metadata.min(fonts.len() - 1)];
         for ch in run.text.get(glyph.start..glyph.end).unwrap_or("").chars() {
-          if !missing.contains(&(index, ch)) {
-            missing.push((index, ch));
+          if !seen.insert((font.weight, font.italic, ch)) {
+            continue;
+          }
+          match missing
+            .iter_mut()
+            .find(|(other, _)| (other.weight, other.italic) == (font.weight, font.italic))
+          {
+            Some((_, chars)) => chars.push(ch),
+            None => missing.push((font, vec![ch])),
           }
         }
       }

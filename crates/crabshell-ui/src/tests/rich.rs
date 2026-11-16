@@ -175,3 +175,29 @@ fn new_spans_lay_out_and_equal_ones_do_nothing() {
   h.frame(&window);
   assert!(rect_at(&window, &[0, 0]).width > before);
 }
+
+#[test]
+fn many_spans_needing_fallbacks_shape_quickly() {
+  let time = |body: &str| {
+    let spans = crate::parse_markup(&body.repeat(5000));
+    assert_eq!(spans.len(), 10000);
+    let mut fonts = Fonts::new();
+    // Warm: the faces and fallbacks load once.
+    rich(&mut fonts, spans[..2].to_vec(), FONT);
+    let start = std::time::Instant::now();
+    let node = rich(&mut fonts, spans, FONT);
+    let elapsed = start.elapsed();
+    let glyphs: Vec<_> = node.runs().flat_map(|run| run.glyphs.iter()).collect();
+    assert!(
+      glyphs.iter().all(|glyph| glyph.glyph_id != 0),
+      "a glyph is missing"
+    );
+    elapsed
+  };
+  // Noto Sans has no CJK, so every span asks for a fallback, unlike "a".
+  let plain = time("<b>a</b>a");
+  let fallback = time("<b>字</b>字");
+  // A fallback costs some shaping, about three times the plain body here,
+  // but matching each missing character against every span cost seven.
+  assert!(fallback < plain * 5, "{fallback:?} against {plain:?}");
+}
