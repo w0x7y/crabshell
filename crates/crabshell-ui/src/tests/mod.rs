@@ -38,6 +38,7 @@ mod services;
 mod slider;
 mod style;
 mod text;
+mod text_area;
 mod text_input;
 mod text_styles;
 mod timer;

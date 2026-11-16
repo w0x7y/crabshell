@@ -78,7 +78,7 @@ impl Tree {
   /// takes the focus, then places the caret, or extends the selection
   /// with Shift held, or selects the word on a double click.
   pub(crate) fn press_text(&mut self, id: NodeId, at: Point, time: u32) {
-    let Some(index) = self.text_index(id, at) else {
+    let Some((index, upstream)) = self.text_index(id, at) else {
       return;
     };
     // Timed from press to press: the release comes after a drag.
@@ -96,28 +96,30 @@ impl Tree {
       Select::Place(index)
     };
     self.focus(Some(id));
-    self.select(id, how);
+    self.select(id, how, upstream);
   }
 
   /// The left button held on `id` moved to `at`: the selection runs to
   /// the pointer.
   pub(crate) fn drag_text(&mut self, id: NodeId, at: Point) {
-    if let Some(index) = self.text_index(id, at) {
-      self.select(id, Select::Extend(index));
+    if let Some((index, upstream)) = self.text_index(id, at) {
+      self.select(id, Select::Extend(index), upstream);
     }
   }
 
-  /// The text position nearest `at`, in window coordinates, in node `id`.
-  fn text_index(&self, id: NodeId, at: Point) -> Option<usize> {
+  /// The text position nearest `at`, in window coordinates, in node `id`,
+  /// and whether it is the end of a field's wrapped line rather than the
+  /// start of the next.
+  fn text_index(&self, id: NodeId, at: Point) -> Option<(usize, bool)> {
     let point = self.local_point(id, at)?;
     match &self.node(id)?.kind {
       NodeKind::Input(input) => Some(input.hit(point)),
-      NodeKind::Text(text) if text.selectable => Some(text_hit(text, point)),
+      NodeKind::Text(text) if text.selectable => Some((text_hit(text, point), false)),
       _ => None,
     }
   }
 
-  fn select(&mut self, id: NodeId, how: Select) {
+  fn select(&mut self, id: NodeId, how: Select, upstream: bool) {
     if let Some(NodeKind::Text(_)) = self.node(id).map(|node| &node.kind) {
       self.update(id, |node| match &mut node.kind {
         NodeKind::Text(TextNode {
@@ -138,8 +140,10 @@ impl Tree {
         text,
         cursor,
         anchor,
+        ..
       } = &mut input.edit;
       apply(text, cursor, anchor, how);
+      input.upstream = upstream.then_some(*cursor);
       input.refresh();
     });
   }

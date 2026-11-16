@@ -1,8 +1,9 @@
-//! One line of editable text: the text, the caret and the selection, and
-//! what each key does to them. Positions are byte offsets that always sit
+//! Editable text, one line or many: the text, the caret and the
+//! selection, and what each key does to them. Positions are byte offsets that always sit
 //! between graphemes, so a caret never splits an accented letter or an
 //! emoji.
 
+use std::borrow::Cow;
 use std::ops::Range;
 
 use unicode_segmentation::UnicodeSegmentation;
@@ -18,6 +19,8 @@ pub(crate) struct Edit {
   pub(crate) cursor: usize,
   /// Where the selection started, if there is one.
   pub(crate) anchor: Option<usize>,
+  /// Keeps line breaks, and Enter types one.
+  pub(crate) multiline: bool,
 }
 
 /// What a key did.
@@ -27,7 +30,7 @@ pub(crate) enum Keyed {
   Edited,
   /// Only the caret or the selection moved.
   Moved,
-  /// Enter was pressed.
+  /// Enter was pressed, or Ctrl+Enter in many lines.
   Accept,
   /// Ctrl+C: this selected text is to be copied.
   Copy(String),
@@ -41,13 +44,11 @@ pub(crate) enum Keyed {
 
 impl Edit {
   /// Takes `text` from outside, with the caret at its end. Text that
-  /// typing just wrote comes back the same and changes nothing. A field is
-  /// one line, so line breaks become spaces.
+  /// typing just wrote comes back the same and changes nothing.
   pub(crate) fn set_text(&mut self, text: String) {
-    let text = if text.contains(['\n', '\r']) {
-      text.replace(['\n', '\r'], " ")
-    } else {
-      text
+    let text = match self.clean(&text) {
+      Cow::Borrowed(_) => text,
+      Cow::Owned(cleaned) => cleaned,
     };
     if text == self.text {
       return;
@@ -63,8 +64,21 @@ impl Edit {
     Some(anchor.min(self.cursor)..anchor.max(self.cursor))
   }
 
+  /// `text` as this edit keeps it: on one line, each line break becomes
+  /// a space; on many, `\n`.
+  fn clean<'a>(&self, text: &'a str) -> Cow<'a, str> {
+    if !text.contains('\r') && !(text.contains('\n') && !self.multiline) {
+      Cow::Borrowed(text)
+    } else if self.multiline {
+      Cow::Owned(text.replace("\r\n", "\n").replace('\r', "\n"))
+    } else {
+      Cow::Owned(text.replace(['\n', '\r'], " "))
+    }
+  }
+
   /// Replaces the selection, or inserts at the caret.
   pub(crate) fn insert(&mut self, text: &str) {
+    let text = &*self.clean(text);
     let range = self.selection().unwrap_or(self.cursor..self.cursor);
     self.text.replace_range(range.clone(), text);
     self.cursor = range.start + text.len();
@@ -80,6 +94,7 @@ impl Edit {
     let command = modifiers.ctrl && !modifiers.alt;
     let before = self.clone();
     match &event.key {
+      Key::Enter if self.multiline && !modifiers.ctrl => self.insert("\n"),
       Key::Enter => return Keyed::Accept,
       Key::Character('c' | 'C' | 'x' | 'X') if command && !copyable => return Keyed::Moved,
       Key::Character('c' | 'C') if command => {
@@ -140,8 +155,8 @@ impl Edit {
   /// `start` or end side.
   fn motion(&mut self, extend: bool, to: impl FnOnce(&Edit, usize) -> usize, start: bool) {
     if extend {
-      self.anchor.get_or_insert(self.cursor);
-      self.cursor = to(self, self.cursor);
+      let to = to(self, self.cursor);
+      self.move_to(true, to);
       return;
     }
     if let Some(range) = self.selection() {
@@ -150,6 +165,17 @@ impl Edit {
       self.cursor = to(self, self.cursor);
     }
     self.anchor = None;
+  }
+
+  /// Puts the caret at `at`, extending the selection when `extend`, or
+  /// else dropping it.
+  pub(crate) fn move_to(&mut self, extend: bool, at: usize) {
+    if extend {
+      self.anchor.get_or_insert(self.cursor);
+    } else {
+      self.anchor = None;
+    }
+    self.cursor = at;
   }
 
   /// The position one grapheme, or one word, before `at`.

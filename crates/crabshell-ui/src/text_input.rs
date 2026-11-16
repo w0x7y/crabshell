@@ -1,15 +1,18 @@
-//! [`TextInput`], a one-line text field.
+//! [`TextInput`], a one-line text field, and the field node it shares
+//! with [`TextArea`](crate::TextArea).
 
 use std::rc::Rc;
 
-use cosmic_text::Cursor;
+use cosmic_text::{Affinity, LayoutRun};
 use crabshell_reactive::Signal;
 
 use crate::cx::Cx;
-use crate::edit::{Edit, grapheme_start, graphemes_before};
+use crate::edit::{Edit, Keyed, grapheme_start, graphemes_before};
 use crate::geometry::{Point, Rect};
 use crate::input::Handler;
+use crate::keyboard::{Key, KeyEvent};
 use crate::prop::{IntoProp, Prop};
+use crate::select::{cursor_at, highlights, index_of};
 use crate::style::Style;
 use crate::text::TextNode;
 use crate::tree::{NodeKind, borrow};
@@ -30,6 +33,9 @@ pub(crate) struct InputProps {
   pub(crate) password: Option<Prop<bool>>,
   pub(crate) focus: Option<Prop<bool>>,
   pub(crate) on_accept: Option<AcceptHandler>,
+  /// A text area: many lines.
+  pub(crate) multiline: bool,
+  pub(crate) wrap: Option<Prop<bool>>,
 }
 
 /// A one-line text field. It takes the keyboard focus when clicked, when
@@ -65,6 +71,8 @@ impl TextInput {
         password: None,
         focus: None,
         on_accept: None,
+        multiline: false,
+        wrap: None,
       },
       common: Common::default(),
     }
@@ -139,6 +147,8 @@ pub struct FieldState {
   pub anchor: usize,
   /// Where the caret is drawn, in window coordinates.
   pub caret: Rect,
+  /// A [`TextArea`](crate::TextArea), whose text has line breaks.
+  pub multiline: bool,
 }
 
 impl Window {
@@ -159,26 +169,27 @@ impl Window {
       cursor: input.edit.cursor,
       anchor: input.edit.anchor.unwrap_or(input.edit.cursor),
       caret: tree.window_rect(id, input.caret),
+      multiline: input.edit.multiline,
     })
   }
 
   /// Inserts `text` from an input method at the focused field's caret,
-  /// replacing its selection. A password field takes nothing.
+  /// replacing its selection; in a one-line field, line breaks become
+  /// spaces. A password field takes nothing.
   pub fn commit_text(&self, text: &str) {
-    let text = text.replace(['\n', '\r'], " ");
-    self.edit_field(|edit| edit.insert(&text));
+    self.edit_field(|edit| edit.insert(text));
   }
 
   /// Pastes `text` from the clipboard into the focused field, replacing
-  /// its selection; line breaks become spaces. Unlike an input method's
-  /// text, a paste goes into a password field too.
+  /// its selection; in a one-line field, line breaks become spaces.
+  /// Unlike an input method's text, a paste goes into a password field
+  /// too.
   pub fn paste(&self, text: &str) {
     // An empty clipboard pastes nothing, not even over the selection.
     if text.is_empty() {
       return;
     }
-    let text = text.replace(['\n', '\r'], " ");
-    self.change_field(true, |edit| edit.insert(&text));
+    self.change_field(true, |edit| edit.insert(text));
   }
 
   /// Deletes `before` bytes before the focused field's selection, or its
@@ -289,16 +300,33 @@ pub(crate) struct InputNode {
   pub(crate) preedit: Option<Preedit>,
   /// The line under the preedit, from the last layout.
   pub(crate) underline: Vec<Rect>,
+  /// Where across Up and Down keep the caret, and the caret position it
+  /// led to: a move that lands anywhere else forgets it.
+  pub(crate) goal: Option<(usize, f32)>,
+  /// A caret position shown at the end of a wrapped line rather than at
+  /// the start of the next, where both are the same byte.
+  pub(crate) upstream: Option<usize>,
   /// Kept in the reactive runtime, which drops the user's closure when the
   /// field's owner goes.
   pub(crate) on_accept: Signal<Option<AcceptHandler>>,
 }
 
 impl InputNode {
-  pub(crate) fn new(signal: Signal<String>, on_accept: Signal<Option<AcceptHandler>>) -> InputNode {
+  pub(crate) fn new(
+    signal: Signal<String>,
+    on_accept: Signal<Option<AcceptHandler>>,
+    multiline: bool,
+  ) -> InputNode {
+    let mut text = TextNode::new();
+    if multiline {
+      text.set_max_lines(u32::MAX);
+    }
     InputNode {
-      text: TextNode::new(),
-      edit: Edit::default(),
+      text,
+      edit: Edit {
+        multiline,
+        ..Edit::default()
+      },
       signal,
       placeholder: String::new(),
       password: false,
@@ -310,6 +338,8 @@ impl InputNode {
       area: Rect::default(),
       preedit: None,
       underline: Vec::new(),
+      goal: None,
+      upstream: None,
       on_accept,
     }
   }
@@ -373,19 +403,38 @@ impl InputNode {
     }
   }
 
-  /// How far from the line's left edge the caret before byte `at` of
-  /// what is shown sits. In right-to-left text, the start is on the right.
-  fn x_at(&self, at: usize) -> f32 {
-    self
-      .text
-      .runs()
-      .next()
-      .and_then(|run| run.cursor_position(&Cursor::new(0, at)))
-      .unwrap_or(0.0)
+  /// The line the caret before byte `at` of what is shown is drawn on:
+  /// the first of two that meet there when `upstream`, else the last.
+  fn caret_run(&self, at: usize, upstream: bool) -> Option<LayoutRun<'_>> {
+    let cursor = cursor_at(&self.text.buffer, at);
+    let mut runs = self.text.runs().filter(|run| {
+      run.line_i == cursor.line
+        && (run.glyphs.is_empty() || {
+          let start = run.glyphs.iter().map(|glyph| glyph.start).min();
+          let end = run.glyphs.iter().map(|glyph| glyph.end).max();
+          start.is_some_and(|start| start <= cursor.index)
+            && end.is_some_and(|end| cursor.index <= end)
+        })
+    });
+    if upstream { runs.next() } else { runs.last() }
   }
 
-  /// Scrolls the text to keep the caret inside `content`, then places the
-  /// caret and the selection. Called after the text node's own layout.
+  /// Where the caret before byte `at` of what is shown is, from the
+  /// text's corner: across, the top of its line and the line's height.
+  /// In right-to-left text, the start is on the right.
+  fn caret_spot(&self, at: usize, upstream: bool) -> Option<(f32, f32, f32)> {
+    let run = self
+      .caret_run(at, upstream)
+      .or_else(|| self.text.runs().next())?;
+    let x = run
+      .cursor_position(&cursor_at(&self.text.buffer, at))
+      .unwrap_or(0.0);
+    Some((x, run.line_top, run.line_height))
+  }
+
+  /// Scrolls the text sideways to keep the caret inside `content`, then
+  /// places the caret and the selection. Called after the text node's own
+  /// layout.
   pub(crate) fn place(&mut self, content: Rect) {
     let at = self.shown_index(self.edit.cursor);
     let caret = match &self.preedit {
@@ -396,55 +445,106 @@ impl InputNode {
       }
       None => at,
     };
-    let caret = self.x_at(caret);
-    let width = self.text.runs().next().map_or(0.0, |run| run.line_w);
+    let upstream = self.upstream == Some(self.edit.cursor) && self.preedit.is_none();
+    let (x, top, height) = self
+      .caret_spot(caret, upstream)
+      .unwrap_or((0.0, 0.0, content.height));
+    let width = self.text.runs().map(|run| run.line_w).fold(0.0, f32::max);
     // The caret's own pixel counts as text, so it shows at the end.
     let room = (content.width - 1.0).max(0.0);
     let mut scroll = self.scroll.min((width - room).max(0.0));
-    if caret - scroll > room {
-      scroll = caret - room;
+    if x - scroll > room {
+      scroll = x - room;
     }
-    if caret < scroll {
-      scroll = caret;
+    if x < scroll {
+      scroll = x;
     }
     self.scroll = scroll.max(0.0);
     self.text.origin.x = content.x - self.scroll;
     let origin = self.text.origin;
-    let height = self
-      .text
-      .runs()
-      .next()
-      .map_or(content.height, |run| run.line_height);
-    self.caret = Rect::new(origin.x + caret, origin.y, 1.0, height);
+    self.caret = Rect::new(origin.x + x, origin.y + top, 1.0, height);
     self.area = content;
-    self.selection = match (self.edit.selection(), self.text.runs().next()) {
-      (Some(range), Some(run)) => {
-        let start = Cursor::new(0, self.shown_index(range.start));
-        let end = Cursor::new(0, self.shown_index(range.end));
-        run
-          .highlight(start, end)
-          .map(|(x, width)| Rect::new(origin.x + x, origin.y, width, height))
-          .collect()
-      }
-      _ => Vec::new(),
+    self.selection = match self.edit.selection() {
+      Some(range) => highlights(
+        &self.text,
+        self.shown_index(range.start)..self.shown_index(range.end),
+      ),
+      None => Vec::new(),
     };
-    self.underline = match (&self.preedit, self.text.runs().next()) {
-      (Some(preedit), Some(run)) => run
-        .highlight(Cursor::new(0, at), Cursor::new(0, at + preedit.text.len()))
-        .map(|(x, width)| Rect::new(origin.x + x, origin.y + height - 1.0, width, 1.0))
+    self.underline = match &self.preedit {
+      Some(preedit) => highlights(&self.text, at..at + preedit.text.len())
+        .into_iter()
+        .map(|span| Rect::new(span.x, span.bottom() - 1.0, span.width, 1.0))
         .collect(),
-      _ => Vec::new(),
+      None => Vec::new(),
     };
   }
 
-  /// The text position nearest `point`, in window coordinates.
-  pub(crate) fn hit(&self, point: Point) -> usize {
+  /// The text position nearest `point`, in window coordinates, and
+  /// whether it is the end of a wrapped line rather than the start of the
+  /// next.
+  pub(crate) fn hit(&self, point: Point) -> (usize, bool) {
     let origin = self.text.origin;
-    let at = self
-      .text
-      .buffer
-      .hit(point.x - origin.x, point.y - origin.y)
-      .map_or(0, |cursor| cursor.index);
-    self.text_index(at)
+    let Some(cursor) = self.text.buffer.hit(point.x - origin.x, point.y - origin.y) else {
+      return (0, false);
+    };
+    let at = self.text_index(index_of(&self.text.buffer, cursor));
+    (at, cursor.affinity == Affinity::Before)
+  }
+
+  /// What a key that moves by line does in a text area: Up and Down to
+  /// the line above or below, keeping the caret's place across, PageUp
+  /// and PageDown by `page` logical pixels, and Home and End to the ends
+  /// of the line as it is wrapped. Shift extends the selection. `None`
+  /// for any other key.
+  pub(crate) fn line_key(&mut self, event: &KeyEvent, page: f32) -> Option<Keyed> {
+    let ctrl = event.modifiers.ctrl;
+    let lines = match event.key {
+      Key::Up => -1.0,
+      Key::Down => 1.0,
+      Key::PageUp => -page,
+      Key::PageDown => page,
+      Key::Home | Key::End if !ctrl => 0.0,
+      _ => return None,
+    };
+    let at = self.shown_index(self.edit.cursor);
+    let upstream = self.upstream == Some(self.edit.cursor);
+    let (target, upstream, goal) = if lines == 0.0 {
+      let run = self.caret_run(at, upstream)?;
+      let ends = run.glyphs.iter().map(|glyph| (glyph.start, glyph.end));
+      let index = if event.key == Key::Home {
+        ends.map(|(start, _)| start).min()
+      } else {
+        ends.map(|(_, end)| end).max()
+      };
+      let line = cosmic_text::Cursor::new(run.line_i, index.unwrap_or(0));
+      (
+        index_of(&self.text.buffer, line),
+        event.key == Key::End,
+        None,
+      )
+    } else {
+      let (x, top, height) = self.caret_spot(at, upstream)?;
+      let x = self
+        .goal
+        .filter(|&(cursor, _)| cursor == self.edit.cursor)
+        .map_or(x, |(_, x)| x);
+      let step = if matches!(event.key, Key::Up | Key::Down) {
+        lines * height
+      } else {
+        lines
+      };
+      let cursor = self.text.buffer.hit(x, top + height / 2.0 + step)?;
+      (
+        index_of(&self.text.buffer, cursor),
+        cursor.affinity == Affinity::Before,
+        Some(x),
+      )
+    };
+    let target = self.text_index(target);
+    self.edit.move_to(event.modifiers.shift, target);
+    self.upstream = upstream.then_some(target);
+    self.goal = goal.map(|x| (target, x));
+    Some(Keyed::Moved)
   }
 }

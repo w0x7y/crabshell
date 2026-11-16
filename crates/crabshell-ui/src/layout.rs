@@ -573,6 +573,22 @@ fn measure(
 ) -> taffy::Size<f32> {
   match node.map(|node| &mut node.kind) {
     Some(NodeKind::Text(text)) => text.measure(fonts, known, available),
+    // An area is as tall as its lines, and wraps them at its width, or
+    // else is as wide as its longest, plus the caret.
+    Some(NodeKind::Input(input)) if input.edit.multiline => {
+      let wrap = input.text.wrap;
+      let known = taffy::Size {
+        width: known.width.or(wrap.then_some(DEFAULT_WIDTH)),
+        height: known.height,
+      };
+      let lines = input.text.measure(fonts, known, available);
+      taffy::Size {
+        width: known
+          .width
+          .unwrap_or((lines.width + 1.0).max(DEFAULT_WIDTH)),
+        height: lines.height,
+      }
+    }
     // A field is as tall as a line and doesn't grow as it is typed in.
     Some(NodeKind::Input(input)) => {
       let line = input.text.measure(fonts, known, available);

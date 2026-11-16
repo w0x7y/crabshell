@@ -81,6 +81,7 @@ mod select;
 mod slider;
 mod style;
 mod text;
+mod text_area;
 mod text_input;
 mod timer;
 mod tree;
@@ -115,6 +116,7 @@ pub use style::{
   TextAlign,
 };
 pub use text::{TextMetrics, TextSystem};
+pub use text_area::TextArea;
 pub use text_input::{FieldState, Preedit, TextInput};
 pub use timer::{Timer, fire_timers, next_timer};
 pub use view::{

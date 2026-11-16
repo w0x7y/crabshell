@@ -2,7 +2,9 @@
 
 use crabshell_ui::{FieldState, Rect};
 
-use crate::text_input::surrounding;
+use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::ContentHint;
+
+use crate::text_input::{content_hint, surrounding};
 
 fn state(text: &str, cursor: usize, anchor: usize) -> FieldState {
   FieldState {
@@ -11,7 +13,19 @@ fn state(text: &str, cursor: usize, anchor: usize) -> FieldState {
     cursor,
     anchor,
     caret: Rect::default(),
+    multiline: false,
   }
+}
+
+#[test]
+fn a_text_area_is_hinted_as_many_lines() {
+  let field = state("a\nb", 0, 0);
+  assert_eq!(content_hint(&field), ContentHint::None);
+  let area = FieldState {
+    multiline: true,
+    ..field
+  };
+  assert_eq!(content_hint(&area), ContentHint::Multiline);
 }
 
 #[test]

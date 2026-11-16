@@ -35,6 +35,7 @@ fn at(text: &str, cursor: usize) -> Edit {
     text: text.to_owned(),
     cursor,
     anchor: None,
+    multiline: false,
   }
 }
 
@@ -172,4 +173,35 @@ fn a_word_is_found_around_a_position() {
   assert_eq!(word_at("one two", 3), 3..4, "the space");
   assert_eq!(word_at("one two", 7), 4..7, "the end is the last word");
   assert_eq!(word_at("", 0), 0..0);
+}
+
+#[test]
+fn many_lines_keep_line_breaks_and_enter_breaks_a_line() {
+  let mut edit = Edit {
+    multiline: true,
+    ..Edit::default()
+  };
+  edit.set_text(String::from("a\r\nb\rc"));
+  assert_eq!(edit.text, "a\nb\nc", "every break becomes \\n");
+  edit.insert("x\r\ny");
+  assert_eq!(edit.text, "a\nb\ncx\ny");
+  let mut edit = Edit {
+    multiline: true,
+    ..at("ab", 1)
+  };
+  assert_eq!(edit.key(&key(Key::Enter), true), Keyed::Edited);
+  assert_eq!((edit.text.as_str(), edit.cursor), ("a\nb", 2));
+  let ctrl_enter = KeyEvent {
+    modifiers: Modifiers {
+      ctrl: true,
+      ..Modifiers::default()
+    },
+    ..key(Key::Enter)
+  };
+  assert_eq!(edit.key(&ctrl_enter, true), Keyed::Accept);
+  // One line: a break typed in becomes a space, and Enter accepts.
+  let mut edit = at("ab", 1);
+  edit.insert("\r\n");
+  assert_eq!(edit.text, "a  b");
+  assert_eq!(edit.key(&key(Key::Enter), true), Keyed::Accept);
 }

@@ -763,6 +763,7 @@ impl Tree {
       ElementKind::Input(props) => NodeKind::Input(Box::new(InputNode::new(
         props.text,
         cx.signal(props.on_accept.take()),
+        props.multiline,
       ))),
       ElementKind::Scroll(props) => NodeKind::Scroll(Box::new(ScrollNode {
         signal: props.offset.unwrap_or_else(|| cx.signal(0.0)),
@@ -901,6 +902,11 @@ impl Tree {
           tree.update_input(id, |input| {
             input.placeholder = value;
             input.refresh();
+          });
+        });
+        self.bind_opt(id, props.wrap, "wrap", |tree, id, value| {
+          tree.update_input(id, |input| {
+            input.text.set_wrap(value);
           });
         });
         self.bind_opt(id, props.password, "password", |tree, id, value| {

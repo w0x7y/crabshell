@@ -523,6 +523,9 @@ pub(crate) struct TextNode {
   pub(crate) elide: Elide,
   /// At least 1.
   pub(crate) max_lines: u32,
+  /// More than one line wraps at words; off, each line is as long as it
+  /// is. A text area's setting.
+  pub(crate) wrap: bool,
   pub(crate) buffer: Buffer,
   /// The style the buffer was shaped with; `None` until the first layout.
   style: Option<TextStyle>,
@@ -547,6 +550,7 @@ impl TextNode {
       content: String::new(),
       elide: Elide::None,
       max_lines: 1,
+      wrap: true,
       buffer: Buffer::new_empty(metrics(&Font::DEFAULT.into())),
       style: None,
       fonts_added: 0,
@@ -572,6 +576,10 @@ impl TextNode {
     self.set(|text| &mut text.max_lines, max_lines.max(1))
   }
 
+  pub(crate) fn set_wrap(&mut self, wrap: bool) -> bool {
+    self.set(|text| &mut text.wrap, wrap)
+  }
+
   fn set<T: PartialEq>(&mut self, field: impl FnOnce(&mut TextNode) -> &mut T, value: T) -> bool {
     let slot = field(self);
     if *slot == value {
@@ -585,7 +593,11 @@ impl TextNode {
   /// Whether the text's width depends on the space it gets: it wraps or
   /// is elided. Plain one-line text is always as wide as it is.
   fn fits_width(&self) -> bool {
-    self.elide != Elide::None || self.max_lines > 1
+    self.elide != Elide::None || self.wraps()
+  }
+
+  fn wraps(&self) -> bool {
+    self.max_lines > 1 && self.wrap
   }
 
   /// Shapes the text again if its content, settings or style changed,
@@ -601,7 +613,7 @@ impl TextNode {
     let family = text.family(&font);
     self.buffer.set_metrics(metrics(&style));
     // Words wrap; one too long for a line breaks inside it.
-    self.buffer.set_wrap(if self.max_lines > 1 {
+    self.buffer.set_wrap(if self.wraps() {
       Wrap::WordOrGlyph
     } else {
       Wrap::None

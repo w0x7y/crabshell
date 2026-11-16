@@ -96,6 +96,10 @@ pub struct Modifiers {
   pub logo: bool,
 }
 
+/// How many lines PageUp and PageDown move in a text area outside a
+/// scroll view.
+const PAGE_LINES: f32 = 10.0;
+
 pub(crate) type KeyHandler = Rc<Handler<dyn Fn(&Cx, &KeyEvent) -> bool>>;
 
 /// Who has the keyboard in a window.
@@ -248,12 +252,18 @@ impl Tree {
   /// uses the key.
   fn input_key(&mut self, event: &KeyEvent) -> Option<Typed> {
     let id = self.keyboard.focused?;
+    let view = self.page_height(id);
     let input = match &mut self.node_mut(id)?.kind {
       NodeKind::Input(input) => input,
       NodeKind::Text(text) => return copy_key(text, event).map(Typed::Clipboard),
       _ => return None,
     };
-    let keyed = input.edit.key(event, !input.password);
+    let page = view.unwrap_or(PAGE_LINES * input.text.buffer.metrics().line_height);
+    let keyed = match input.edit.multiline {
+      true => input.line_key(event, page),
+      false => None,
+    };
+    let keyed = keyed.unwrap_or_else(|| input.edit.key(event, !input.password));
     let accept = keyed == Keyed::Accept;
     let typed = match keyed {
       Keyed::Unused => return None,
@@ -285,6 +295,19 @@ impl Tree {
       });
     }
     Some(typed)
+  }
+
+  /// How far PageUp and PageDown move in node `id`: the height of the
+  /// innermost scroll view around it that scrolls up and down, if any.
+  fn page_height(&self, id: NodeId) -> Option<f32> {
+    self
+      .path_to(id)
+      .into_iter()
+      .rev()
+      .find_map(|at| match &self.node(at)?.kind {
+        NodeKind::Scroll(scroll) if !scroll.horizontal => Some(scroll.length),
+        _ => None,
+      })
   }
 
   /// The enabled buttons and the fields in the order they are laid out:

@@ -71,7 +71,7 @@ impl SeatTextInput {
           self.input.enable();
           self
             .input
-            .set_content_type(ContentHint::None, ContentPurpose::Normal);
+            .set_content_type(content_hint(state), ContentPurpose::Normal);
         }
         let (text, cursor, anchor) = surrounding(state);
         self
@@ -87,6 +87,16 @@ impl SeatTextInput {
     }
     self.input.commit();
     self.sent = state;
+  }
+}
+
+/// What the input method is told about the field: a text area takes
+/// line breaks.
+pub(crate) fn content_hint(state: &FieldState) -> ContentHint {
+  if state.multiline {
+    ContentHint::Multiline
+  } else {
+    ContentHint::None
   }
 }
 
