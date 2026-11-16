@@ -202,18 +202,3 @@ impl Affine {
     })
   }
 }
-
-/// Where `rect`, in the innermost space of `chain`, lands in the window:
-/// through each transform from the innermost out, grown by a logical
-/// pixel before each, since a transformed layer is filtered bilinearly
-/// and bleeds up to half a pixel past its content.
-pub(crate) fn through(chain: &[Affine], rect: Rect) -> Rect {
-  chain.iter().rev().fold(rect, |rect, transform| {
-    // A line, empty itself, would cover an area once turned.
-    if rect.is_empty() {
-      rect
-    } else {
-      transform.map_rect(rect.outset(1.0))
-    }
-  })
-}

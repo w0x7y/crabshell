@@ -1,6 +1,8 @@
 //! Colors, fonts and styles.
 
-use crate::{Border, Color, Font, Gradient, GradientShape, Padding, Radii, Rect, Shadow, Style};
+use crate::{
+  Border, Color, Font, Gradient, GradientShape, Mask, Padding, Radii, Rect, Shadow, Style,
+};
 
 #[test]
 fn hex_parses_both_forms_in_either_case() {
@@ -503,5 +505,46 @@ fn a_fading_border_takes_its_dash_from_the_end() {
   assert_eq!(
     solid.lerp(&solid.border_dash(1.0, 1.0), 0.1).border_dash,
     Some((1.0, 1.0))
+  );
+}
+
+#[test]
+fn a_mask_is_a_const_paint_field_that_merges_and_changes_at_once() {
+  const FADE: Gradient = Gradient::linear(180.0, Color::rgb(0, 0, 0), Color::rgba(0, 0, 0, 0));
+  const ROUND: Style = Style::new().mask(Mask::ellipse());
+  const FADING: Style = ROUND.mask(Mask::gradient(FADE));
+  const STAR: Style = Style::new().mask(Mask::image("/star.png"));
+  assert_eq!(ROUND.mask, Some(Mask::Ellipse));
+  assert_eq!(FADING.mask, Some(Mask::Gradient(FADE)));
+  assert_eq!(STAR.mask, Some(Mask::Image("/star.png")));
+  assert_eq!(ROUND.merge(Style::new()).mask, ROUND.mask);
+  assert_eq!(ROUND.merge(STAR).mask, STAR.mask);
+  assert!(ROUND.same_layout(&Style::new()), "a paint property");
+  // A fade takes the end style's mask from its start.
+  for t in [0.0, 0.5] {
+    assert_eq!(ROUND.lerp(&STAR, t).mask, STAR.mask);
+    assert_eq!(ROUND.lerp(&Style::new(), t).mask, None);
+    assert_eq!(Style::new().lerp(&ROUND, t).mask, ROUND.mask);
+  }
+}
+
+#[test]
+fn a_content_shadow_blends_as_a_box_shadow_and_switches_kind_at_once() {
+  let gray = Color::rgba(0, 0, 0, 200);
+  const LIFTED: Shadow = Shadow::new(0.0, 2.0, 4.0, Color::rgb(0, 0, 0)).follow_content();
+  const { assert!(LIFTED.follow_content) };
+  assert!(!LIFTED.cut_out && !Shadow::new(0.0, 0.0, 0.0, gray).follow_content);
+  assert!(LIFTED.cut_out().follow_content, "the two go together");
+  let from = Style::new().shadow(Shadow::new(0.0, 0.0, 2.0, gray));
+  let to = Style::new().shadow(Shadow::new(0.0, 4.0, 10.0, gray).follow_content());
+  let half = from.lerp(&to, 0.5).shadow.expect("both set one");
+  assert_eq!((half.y, half.blur, half.follow_content), (2.0, 6.0, true));
+  let back = to.lerp(&from, 0.5).shadow.expect("both set one");
+  assert!(!back.follow_content);
+  // It reaches past what casts it as far as a box shadow does.
+  let rect = Rect::new(10.0, 10.0, 20.0, 10.0);
+  assert_eq!(
+    LIFTED.reach(rect),
+    Shadow::new(0.0, 2.0, 4.0, gray).reach(rect)
   );
 }

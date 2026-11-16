@@ -621,3 +621,103 @@ fn a_shadow_widens_the_painted_area_and_a_new_one_is_laid_out() {
     "{reach:?} missing from {damage:?}"
   );
 }
+
+#[test]
+fn a_content_shadow_reaches_past_what_casts_it_and_a_child_repaints_its_shadow_too() {
+  use crate::Shadow;
+
+  let mut h = Harness::new();
+  let shadow = Shadow::new(3.0, 4.0, 4.0, Color::rgb(0, 0, 0)).follow_content();
+  let dark = h.cx.signal(true);
+  let row = Row::new().padding(20, 20).align(Align::Start).child(
+    Row::new()
+      .style(Style::new().shadow(shadow))
+      .padding(10, 10)
+      .child(
+        Row::new()
+          .style(move || {
+            let gray = if dark.get() { 9 } else { 200 };
+            Style::new().background(Color::rgb(gray, gray, gray))
+          })
+          .padding(4, 4),
+      ),
+  );
+  let window = h.window(h.panel().child(row), 300.0, 80.0);
+  let parent = rect_at(&window, &[0, 0]);
+  let child = rect_at(&window, &[0, 0, 0]);
+  let window_view = window.view();
+  let view = super::node_at(window_view.root(), &[0, 0]);
+  assert_eq!(view.bounds(), parent.union(shadow.reach(parent)));
+  assert_eq!(view.inner_bounds(), view.bounds());
+  drop(window_view);
+  window.take_damage();
+
+  dark.set(false);
+  h.runtime.flush();
+  assert!(!window.needs_layout());
+  let damage = window.take_damage();
+  let cast = child.union(shadow.reach(child));
+  assert!(
+    damage.iter().any(|area| area.union(cast) == *area),
+    "{cast:?} missing from {damage:?}"
+  );
+}
+
+#[test]
+fn a_content_shadow_turns_with_its_widget() {
+  use crate::Shadow;
+
+  let mut h = Harness::new();
+  let shadow = Shadow::new(0.0, 4.0, 2.0, Color::rgb(0, 0, 0)).follow_content();
+  let row = Row::new().padding(20, 20).align(Align::Start).child(
+    Row::new()
+      .style(
+        Style::new()
+          .background(Color::rgb(9, 9, 9))
+          .shadow(shadow)
+          .translate(10.0, 0.0),
+      )
+      .padding(6, 6),
+  );
+  let window = h.window(h.panel().child(row), 300.0, 80.0);
+  let rect = rect_at(&window, &[0, 0]);
+  let window_view = window.view();
+  let view = super::node_at(window_view.root(), &[0, 0]);
+  let inner = rect.union(shadow.reach(rect));
+  assert_eq!(view.inner_bounds(), inner);
+  let moved = inner.outset(1.0);
+  assert_eq!(
+    view.bounds(),
+    Rect::new(moved.x + 10.0, moved.y, moved.width, moved.height)
+  );
+}
+
+#[test]
+fn a_mask_that_comes_or_goes_repaints_everything_inside_without_a_layout() {
+  use crate::Mask;
+
+  let mut h = Harness::new();
+  let masked = h.cx.signal(false);
+  let row = Row::new().padding(20, 20).align(Align::Start).child(
+    Row::new()
+      .style(move || {
+        let style = Style::new().width(20.0).height(20.0);
+        if masked.get() {
+          style.mask(Mask::ellipse())
+        } else {
+          style
+        }
+      })
+      .child(Text::new("text wider than its box")),
+  );
+  let window = h.window(h.panel().child(row), 300.0, 80.0);
+  window.take_damage();
+  let bounds = super::node_at(window.view().root(), &[0, 0]).bounds();
+  assert!(bounds.width > 20.0, "the text overflows");
+  for on in [true, false] {
+    masked.set(on);
+    h.runtime.flush();
+    assert!(!window.needs_layout());
+    assert_eq!(window.take_damage(), vec![bounds], "masked: {on}");
+  }
+}

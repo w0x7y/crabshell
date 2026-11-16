@@ -21,9 +21,9 @@ use taffy::{
   GridPlacement, JustifyContent, LengthPercentage, LengthPercentageAuto, Line, Overflow, Position,
 };
 
-use crate::geometry::{Affine, Point, Rect, through};
+use crate::geometry::{Affine, Point, Rect};
 use crate::scroll::{BAR_MIN_LENGTH, BAR_WIDTH};
-use crate::style::{Font, Style};
+use crate::style::{Font, Shadow, Style};
 use crate::text::TextSystem;
 use crate::text_input::DEFAULT_WIDTH;
 use crate::tree::{Node, NodeId, NodeKind, ScrollNode, Tree, add_damage, centered, icon_rect};
@@ -187,14 +187,14 @@ impl Tree {
 
   /// The third pass: turns taffy's layout of `id`, relative to its
   /// parent's corner `origin`, into window coordinates, and records damage.
-  /// `chain` holds the transforms of the ancestors, outermost first.
-  /// Returns the bounds of `id` and its descendants, in its parent's
-  /// coordinates.
+  /// `chain` holds the ancestors' transforms and content shadows,
+  /// outermost first. Returns the bounds of `id` and its descendants, in
+  /// its parent's coordinates.
   fn place(
     &mut self,
     id: NodeId,
     origin: Point,
-    chain: &mut Vec<Affine>,
+    chain: &mut Vec<Step>,
     fonts: &mut FontSystem,
   ) -> Rect {
     if self.node(id).is_some_and(|node| !node.visible) {
@@ -268,23 +268,31 @@ impl Tree {
     };
     let transform = displaced(node.shown_style().transform(rect), node.displace);
     node.transform = transform;
-    chain.extend(transform);
+    let own = chain.len();
+    chain.extend(transform.map(Step::Transform));
+    // Inside the transform: the shadow turns with what casts it. A fading
+    // one reaches anywhere between its start and its end.
+    let fading = node.fade.as_ref().map(|fade| fade.from);
+    let shadows = [Some(node.effective_style()), fading]
+      .into_iter()
+      .flatten()
+      .filter_map(|style| style.shadow)
+      .filter(|shadow| shadow.follow_content);
+    chain.extend(shadows.map(Step::Shadow));
     let mut children = Rect::default();
     for child in self.taffy.children(id).unwrap_or_default() {
       children = children.union(self.place(child, origin, chain, fonts));
     }
     self.place_bar(id, rect, chain);
-    let bounds = self.finish_place(id, rect, content, children, chain, fonts);
-    if transform.is_some() {
-      chain.pop();
-    }
+    let bounds = self.finish_place(id, rect, content, children, (chain, own), fonts);
+    chain.truncate(own);
     bounds
   }
 
   /// Places scroll view `id`'s bar along its right or bottom edge, inside
   /// the border, and repaints where its handle was and is when it moves,
   /// comes or goes. `chain` ends with the node's own transform.
-  fn place_bar(&mut self, id: NodeId, rect: Rect, chain: &[Affine]) {
+  fn place_bar(&mut self, id: NodeId, rect: Rect, chain: &[Step]) {
     // Most nodes aren't scroll views, so nothing else is read for them.
     let Some(Node {
       kind: NodeKind::Scroll(scroll),
@@ -331,14 +339,14 @@ impl Tree {
 
   /// The rest of [`place`](Self::place), once the children are placed:
   /// what node `id` paints, its bounds, and the damage. `chain` ends with
-  /// the node's own transform, if it has one.
+  /// the node's own transform and content shadows, from index `own`.
   fn finish_place(
     &mut self,
     id: NodeId,
     rect: Rect,
     content: Rect,
     children: Rect,
-    chain: &[Affine],
+    (chain, own): (&[Step], usize),
     fonts: &mut FontSystem,
   ) -> Rect {
     let Some(node) = self.taffy.get_node_context_mut(id) else {
@@ -351,7 +359,7 @@ impl Tree {
     // A fading shadow is drawn anywhere between its start and its end.
     let fading = node.fade.as_ref().map(|fade| fade.from);
     for style in [Some(node.effective_style()), fading].into_iter().flatten() {
-      if let Some(shadow) = style.shadow {
+      if let Some(shadow) = style.shadow.filter(|shadow| !shadow.follow_content) {
         painted = painted.union(shadow.reach(rect));
       }
     }
@@ -407,10 +415,7 @@ impl Tree {
       add_damage(&mut self.damage, node.window_bounds);
       add_damage(&mut self.damage, window_bounds);
     }
-    let bounds = match node.transform {
-      Some(transform) => through(&[transform], inside),
-      None => inside,
-    };
+    let bounds = through(&chain[own..], inside);
     if let Some(signal) = node.geometry
       && node.written != Some(rect)
     {
@@ -429,12 +434,45 @@ impl Tree {
     node.content = content;
     node.painted = painted;
     node.bounds = bounds;
-    node.inner_bounds = inside;
+    // What casts a content shadow is inside the transform.
+    node.inner_bounds = match chain.get(own) {
+      Some(Step::Transform(_)) => through(&chain[own + 1..], inside),
+      _ => through(&chain[own..], inside),
+    };
     node.window_bounds = window_bounds;
     node.window_painted = window_painted;
     node.changed = false;
     bounds
   }
+}
+
+/// One step out from a node's coordinates to its parent's, for working
+/// out where its painting lands.
+#[derive(Clone, Copy)]
+pub(crate) enum Step {
+  /// The node's transform.
+  Transform(Affine),
+  /// A shadow cast by what the node and its children draw, which reaches
+  /// past what casts it.
+  Shadow(Shadow),
+}
+
+/// Where `rect`, in the innermost space of `chain`, lands in the window:
+/// through each step from the innermost out. A transform grows it by a
+/// logical pixel first, since a transformed layer is filtered bilinearly
+/// and bleeds up to half a pixel past its content; a content shadow adds
+/// the shadow it casts.
+pub(crate) fn through(chain: &[Step], rect: Rect) -> Rect {
+  chain.iter().rev().fold(rect, |rect, step| {
+    // A line, empty itself, would cover an area once turned.
+    if rect.is_empty() {
+      return rect;
+    }
+    match step {
+      Step::Transform(transform) => transform.map_rect(rect.outset(1.0)),
+      Step::Shadow(shadow) => rect.union(shadow.reach(rect)),
+    }
+  })
 }
 
 /// `transform`, then a slide's move `by`, in the parent's coordinates.

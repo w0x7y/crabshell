@@ -481,6 +481,9 @@ pub struct Shadow {
   pub color: Color,
   /// Whether it is left out under the box, as under translucent glass.
   pub cut_out: bool,
+  /// Whether it is cast by what the widget and its children draw,
+  /// through their alpha, instead of by its box.
+  pub follow_content: bool,
 }
 
 impl Shadow {
@@ -494,6 +497,7 @@ impl Shadow {
       spread: 0.0,
       color,
       cut_out: false,
+      follow_content: false,
     }
   }
 
@@ -509,6 +513,27 @@ impl Shadow {
   pub const fn cut_out(self) -> Shadow {
     Shadow {
       cut_out: true,
+      ..self
+    }
+  }
+
+  /// The same shadow cast by what the widget and everything inside it
+  /// draw, through their alpha, instead of by its box, so text and icons
+  /// get a drop shadow, as Qt's `MultiEffect` shadow gives. It is drawn
+  /// under them, offset, spread and blurred as a box shadow is, and
+  /// after a [`mask`](Style::mask), so it follows the masked shape. Cut
+  /// out, it is left out under the content's own alpha.
+  ///
+  /// ```
+  /// use crabshell_ui::{Color, Shadow, Style};
+  ///
+  /// const LABEL: Style = Style::new()
+  ///     .color(Color::hex("#cdd6f4"))
+  ///     .shadow(Shadow::new(0.0, 1.0, 3.0, Color::rgba(0, 0, 0, 160)).follow_content());
+  /// ```
+  pub const fn follow_content(self) -> Shadow {
+    Shadow {
+      follow_content: true,
       ..self
     }
   }
@@ -541,8 +566,9 @@ impl Shadow {
       blur: self.blur.lerp(&to.blur, t),
       spread: self.spread.lerp(&to.spread, t),
       color: self.color.lerp(&to.color, t),
-      // Not a number: it changes at once.
+      // Not numbers: they change at once.
       cut_out: to.cut_out,
+      follow_content: to.follow_content,
     }
   }
 
@@ -552,6 +578,52 @@ impl Shadow {
       color: Color::rgba(self.color.r, self.color.g, self.color.b, 0),
       ..self
     }
+  }
+}
+
+/// Where a widget and everything inside it show, as Qt's `OpacityMask`:
+/// what they draw is kept only where the mask is opaque, its alpha
+/// multiplying theirs, and nothing shows outside the widget's box. Set it
+/// with [`Style::mask`].
+///
+/// ```
+/// use crabshell_ui::{Color, Gradient, Mask, Style};
+///
+/// const AVATAR: Style = Style::new().mask(Mask::ellipse());
+/// // A list that fades out over its last fifth.
+/// const FADING: Style = Style::new().mask(Mask::gradient(
+///     Gradient::linear(180.0, Color::rgb(0, 0, 0), Color::rgba(0, 0, 0, 0))
+///         .stop(0.8, Color::rgb(0, 0, 0)),
+/// ));
+/// const STAR: Style = Style::new().mask(Mask::image("/usr/share/my-shell/star.png"));
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Mask {
+  /// An ellipse filling the box.
+  Ellipse,
+  /// A gradient's alpha, laid over the box as a background's is.
+  Gradient(Gradient),
+  /// A file's alpha, stretched over the box. It is read through the
+  /// [`Image`](crate::Image) loaders and their caps; one that is missing
+  /// or refused is logged once and the widget is drawn unmasked.
+  Image(&'static str),
+}
+
+impl Mask {
+  /// An ellipse filling the box, for round avatars and album art.
+  pub const fn ellipse() -> Mask {
+    Mask::Ellipse
+  }
+
+  /// `gradient`'s alpha laid over the box, for lists and strips that fade
+  /// out at an edge. Only the colors' alpha counts.
+  pub const fn gradient(gradient: Gradient) -> Mask {
+    Mask::Gradient(gradient)
+  }
+
+  /// The alpha of the image file at `path`, stretched over the box.
+  pub const fn image(path: &'static str) -> Mask {
+    Mask::Image(path)
   }
 }
 
@@ -621,6 +693,8 @@ pub struct Style {
   /// From 0.0 (invisible) to 1.0 (opaque), applied to the widget and
   /// everything inside it.
   pub opacity: Option<f32>,
+  /// Where the widget and everything inside it show.
+  pub mask: Option<Mask>,
   /// Whether the children are cut to the inside of the border, following
   /// the rounded corners, like CSS's `overflow: hidden`.
   pub clip: Option<bool>,
@@ -702,6 +776,7 @@ impl Style {
       border: None,
       border_dash: None,
       opacity: None,
+      mask: None,
       clip: None,
       width: None,
       height: None,
@@ -923,6 +998,18 @@ impl Style {
   pub const fn opacity(self, opacity: f32) -> Style {
     Style {
       opacity: Some(opacity),
+      ..self
+    }
+  }
+
+  /// Keeps the widget and everything inside it only where `mask` is
+  /// opaque, as Qt's `OpacityMask`. They are drawn into one layer, the
+  /// one opacity and a transform use, so stacking them costs no extra
+  /// layer, and a clip still cuts inside it. A fade takes the end
+  /// style's mask at once.
+  pub const fn mask(self, mask: Mask) -> Style {
+    Style {
+      mask: Some(mask),
       ..self
     }
   }
@@ -1169,6 +1256,7 @@ impl Style {
       border: or(over.border, self.border),
       border_dash: or(over.border_dash, self.border_dash),
       opacity: or(over.opacity, self.opacity),
+      mask: or(over.mask, self.mask),
       clip: or(over.clip, self.clip),
       width: or(over.width, self.width),
       height: or(over.height, self.height),
