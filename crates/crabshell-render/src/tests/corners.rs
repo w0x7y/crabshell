@@ -307,3 +307,27 @@ fn new_box_drawing_repaints_like_drawing_everything() {
     );
   }
 }
+
+#[test]
+fn a_canvas_is_cut_to_each_corner() {
+  use crabshell_ui::{Canvas, Path, Rect};
+
+  for index in 0..4 {
+    let mut scene = Scene::new();
+    let canvas = Canvas::new(|pen| {
+      pen.fill(&Path::rect(Rect::new(-50.0, -50.0, 200.0, 200.0)), WHITE);
+    })
+    .style(one(index, 16.0).width(40.0).height(40.0));
+    let row = Row::new().padding(10, 20).align(Align::Start).child(canvas);
+    let window = scene.window(scene.panel().child(row), 120.0, 70.0);
+    let buffer = scene.full(&window, 1.0);
+    for (corner, &(x, y)) in CORNERS.iter().enumerate() {
+      let expected = if corner == index { 0 } else { 255 };
+      assert_eq!(
+        buffer.pixel(x, y)[3],
+        expected,
+        "corner {corner} of {index}"
+      );
+    }
+  }
+}
