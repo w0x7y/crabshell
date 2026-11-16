@@ -758,10 +758,10 @@ pub struct Padding {
 /// that sets each, starting with itself and going up. Nothing else
 /// inherits.
 ///
-/// `font`, `text_align`, `line_height`, `padding`, `clip`, the sizes, the flex fields, the alignment,
-/// the absolute position and `span` change the layout, at once; the other
-/// fields only change how the widget is painted. A number that isn't
-/// finite counts as unset.
+/// `font`, `text_align`, `line_height`, `padding`, `clip`, the sizes, the
+/// flex fields, the alignment, the absolute position and `span` change the
+/// layout, at once; the other fields only change how the widget is
+/// painted. A number that isn't finite counts as unset.
 ///
 /// `translate`, `scale`, `rotate` and `origin` move the widget and
 /// everything inside it where it is drawn and where the pointer finds it,

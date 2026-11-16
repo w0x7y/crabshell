@@ -491,10 +491,10 @@ impl TextNode {
   /// The area the glyphs may cover: the lines' box, which can stick out
   /// of a widget too small for it, grown by an em left and right and half
   /// an em above and below, plus half of what a line height under the
-  /// default took. Ink reaches past the line box: stacked accents rise above it,
-  /// and a combining mark at the start hangs left of the text by nearly
-  /// the width of the base it lacks. Aligned lines sit across the width
-  /// the text was laid out in.
+  /// default took. Ink reaches past the line box: stacked accents rise
+  /// above it, and a combining mark at the start hangs left of the text
+  /// by nearly the width of the base it lacks. Aligned lines sit across
+  /// the width the text was laid out in.
   pub(crate) fn ink_box(&self) -> Rect {
     let metrics = self.buffer.metrics();
     let em = metrics.font_size;
