@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crabshell_ui::{
-  Align, Color, Easing, Fit, Image, ImageFilters, ImageTransition, ImageView, PanelWindow, Rect,
-  Row, Stack, Style, Transition, Window, advance_animations,
+  Align, Color, Easing, Fit, Image, ImageFilters, ImageTransition, ImageView, Mask, PanelWindow,
+  Rect, Row, Stack, Style, Transition, Window, advance_animations,
 };
 
 use super::{Buffer, Removed, Scene, assert_golden, capture_logs, fixture, write_png};
@@ -293,6 +293,49 @@ fn repainting_part_of_a_transition_matches_drawing_everything() {
           let mut buffer = Buffer::new(window, scale);
           scene.draw(window, &mut history, &mut buffer);
           let damage = Rect::new(x, y, 23.0, 13.0);
+          super::repaint::repaint(scene, window, &[damage], &mut history, &mut buffer);
+          assert!(
+            buffer.pixels == full.pixels,
+            "a repaint at {x}, {y} at scale {scale} differs from a full draw"
+          );
+        }
+      },
+    );
+  }
+}
+
+#[test]
+fn a_transition_in_an_ellipse_masked_box_repaints_as_a_full_draw() {
+  let (from, to) = (fixture("stripes.png"), fixture("bands.png"));
+  for scale in [1.0, 1.5, 2.0] {
+    let mut scene = Scene::new();
+    partway(
+      &mut scene,
+      (100.0, 70.0),
+      0.5,
+      |next, panel| {
+        panel.child(
+          Row::new().padding(5, 5).align(Align::Start).child(
+            Stack::new()
+              .style(Style::new().mask(Mask::ellipse()).width(90.0).height(60.0))
+              .child(
+                switching(next, &from, &to, ImageTransition::circle(LINEAR))
+                  .width(90)
+                  .height(60)
+                  .fit(Fit::Fill),
+              ),
+          ),
+        )
+      },
+      |scene, window| {
+        let full = scene.full(window, scale);
+        // The ellipse cuts the corners, and the circle's rim crosses it.
+        assert_eq!(full.pixel(6, 6)[3], 0, "outside the ellipse at {scale}");
+        for (x, y) in [(4.0, 3.0), (40.5, 30.0), (70.0, 50.5), (60.0, 8.0)] {
+          let mut history = crate::DamageHistory::new();
+          let mut buffer = Buffer::new(window, scale);
+          scene.draw(window, &mut history, &mut buffer);
+          let damage = Rect::new(x, y, 17.0, 11.0);
           super::repaint::repaint(scene, window, &[damage], &mut history, &mut buffer);
           assert!(
             buffer.pixels == full.pixels,
