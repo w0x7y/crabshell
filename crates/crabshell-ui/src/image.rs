@@ -149,9 +149,14 @@ impl Tree {
           .transition
           .transition()
           .filter(|transition| !transition.is_instant());
-        image.leaving = None;
-        // One not drawn yet has nothing to leave. Mid-transition, the old
-        // picture is the one coming in, drawn last.
+        // Mid-transition, it leaves the picture most of the box shows.
+        let old = match image.leaving.take() {
+          Some(leaving) if leaving.t < 0.5 => Some(leaving.source),
+          _ => old,
+        };
+        // One not drawn yet has nothing to leave, and one going back to
+        // what it shows needs no transition.
+        let old = old.filter(|old| image.source.as_ref() != Some(old));
         if let (Some(old), Some(transition), true) = (old, transition, drawn) {
           image.transitions += 1;
           image.leaving = Some(Leaving {

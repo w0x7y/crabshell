@@ -118,31 +118,53 @@ fn each_kind_reaches_the_view_and_none_is_the_default() {
 }
 
 #[test]
-fn a_new_source_mid_transition_starts_again_from_the_one_coming_in() {
+fn a_new_source_mid_transition_leaves_the_picture_most_of_the_box_shows() {
+  // Before halfway, most of the box shows the picture leaving; from
+  // halfway on, the one coming in.
+  for (ms, left) in [(40, "a.png"), (60, "b.png")] {
+    let mut h = Harness::new();
+    let source = h.cx.signal(path("a.png"));
+    let image = Image::new(move || source.get()).transition(ImageTransition::circle(LINEAR));
+    let window = h.window(h.panel().child(Row::new().child(image)), 100.0, 64.0);
+    source.set(path("b.png"));
+    h.frame(&window);
+    let start = Instant::now();
+    advance_animations(start);
+    advance_animations(start + Duration::from_millis(ms));
+
+    source.set(path("c.png"));
+    h.frame(&window);
+    assert_eq!(
+      shown_at(&window, &[0, 0]),
+      (path("c.png"), Some((path(left), 0.0))),
+      "at {ms} ms"
+    );
+    // The replaced one stops; the new one counts from the clock's last
+    // tick, so it moves at the next.
+    assert!(advance_animations(start + Duration::from_millis(ms + 50)));
+    let (_, leaving) = shown_at(&window, &[0, 0]);
+    let t = leaving.expect("the new one runs").1;
+    assert!((t - 0.5).abs() < 1e-4, "{t}");
+    assert!(!advance_animations(start + Duration::from_millis(ms + 100)));
+    assert_eq!(shown_at(&window, &[0, 0]), (path("c.png"), None));
+  }
+}
+
+#[test]
+fn going_back_early_to_the_picture_still_shown_shows_it_at_once() {
   let mut h = Harness::new();
   let source = h.cx.signal(path("a.png"));
-  let image = Image::new(move || source.get()).transition(ImageTransition::circle(LINEAR));
+  let image = Image::new(move || source.get()).transition(ImageTransition::crossfade(LINEAR));
   let window = h.window(h.panel().child(Row::new().child(image)), 100.0, 64.0);
   source.set(path("b.png"));
   h.frame(&window);
   let start = Instant::now();
   advance_animations(start);
-  advance_animations(start + Duration::from_millis(60));
-
-  source.set(path("c.png"));
+  advance_animations(start + Duration::from_millis(10));
+  source.set(path("a.png"));
   h.frame(&window);
-  assert_eq!(
-    shown_at(&window, &[0, 0]),
-    (path("c.png"), Some((path("b.png"), 0.0)))
-  );
-  // The replaced one stops; the new one counts from the clock's last
-  // tick, so it moves at the next.
-  assert!(advance_animations(start + Duration::from_millis(110)));
-  let (_, leaving) = shown_at(&window, &[0, 0]);
-  let t = leaving.expect("the new one runs").1;
-  assert!((t - 0.5).abs() < 1e-4, "{t}");
-  assert!(!advance_animations(start + Duration::from_millis(160)));
-  assert_eq!(shown_at(&window, &[0, 0]), (path("c.png"), None));
+  assert_eq!(shown_at(&window, &[0, 0]), (path("a.png"), None));
+  assert!(!advance_animations(start + Duration::from_millis(20)));
 }
 
 #[test]

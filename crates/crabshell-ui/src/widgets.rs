@@ -906,8 +906,11 @@ impl Image {
   /// How a new source comes in: [`ImageTransition::None`], the default,
   /// shows it at once; the others bring it in over the old picture on the
   /// animation clock, repainting only the image's box. A new source
-  /// mid-transition starts again from the picture coming in. A new source
-  /// that can't be loaded keeps the old picture.
+  /// mid-transition starts again from the picture most of the box shows:
+  /// the one leaving before halfway, the one coming in from halfway on.
+  /// A new source that can't be loaded keeps the old picture; the clock
+  /// still runs and repaints the box for the transition's length, since
+  /// only the renderer learns the file is bad.
   pub fn transition(mut self, transition: impl IntoProp<ImageTransition>) -> Image {
     self.image.transition = Some(transition.into_prop());
     self
