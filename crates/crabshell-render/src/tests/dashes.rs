@@ -80,6 +80,17 @@ fn a_dashed_border_leaves_gaps_along_its_middle() {
 }
 
 #[test]
+fn a_dash_merged_over_a_border_dashes_it() {
+  let card = Style::new().border(2.0, WHITE);
+  let hovered = bordered(card.merge(Style::new().border_dash(6.0, 4.0)), 1.0);
+  assert_eq!(
+    hovered.pixels,
+    bordered(card.border_dash(6.0, 4.0), 1.0).pixels
+  );
+  assert!(runs(&hovered, 10, 12, 108).len() > 5);
+}
+
+#[test]
 fn a_dotted_border_draws_round_dots() {
   let dotted = bordered(Style::new().border(4.0, WHITE).border_dash(0.0, 8.0), 1.0);
   // Along the border's middle line on the top edge, dots 4 across, 8

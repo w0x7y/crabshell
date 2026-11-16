@@ -687,7 +687,7 @@ impl Painter<'_> {
     if let Some(border) = style.border {
       let width = self.border_width(style);
       let dashed = width >= 1.0
-        && border.dash.is_some_and(|dash| {
+        && style.border_dash.is_some_and(|dash| {
           self.dashed_border(pixmap, (area, corners), width, border.color, dash)
         });
 

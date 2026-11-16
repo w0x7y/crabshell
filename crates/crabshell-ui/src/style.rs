@@ -230,10 +230,6 @@ pub struct Border {
   pub width: f32,
   /// The color.
   pub color: Color,
-  /// Dashes `on` logical pixels long, `off` apart, along the border's
-  /// middle line, or a solid border when `None`. See
-  /// [`Style::border_dash`].
-  pub dash: Option<(f32, f32)>,
 }
 
 /// How round each corner of a widget's box is: the radius in logical
@@ -618,6 +614,10 @@ pub struct Style {
   pub radius: Option<Radii>,
   /// A border inside the edge.
   pub border: Option<Border>,
+  /// Dashes for the border, `on` and `off` logical pixels along its
+  /// middle line, or a solid border when unset. See
+  /// [`border_dash`](Self::border_dash).
+  pub border_dash: Option<(f32, f32)>,
   /// From 0.0 (invisible) to 1.0 (opaque), applied to the widget and
   /// everything inside it.
   pub opacity: Option<f32>,
@@ -700,6 +700,7 @@ impl Style {
       padding: None,
       radius: None,
       border: None,
+      border_dash: None,
       opacity: None,
       clip: None,
       width: None,
@@ -884,15 +885,10 @@ impl Style {
     }
   }
 
-  /// Sets a border of `width` logical pixels, keeping the dash this
-  /// style sets.
+  /// Sets a border of `width` logical pixels.
   pub const fn border(self, width: f32, color: Color) -> Style {
-    let dash = match self.border {
-      Some(border) => border.dash,
-      None => None,
-    };
     Style {
-      border: Some(Border { width, color, dash }),
+      border: Some(Border { width, color }),
       ..self
     }
   }
@@ -903,8 +899,9 @@ impl Style {
   /// middle to middle. The dashes are stretched or squeezed a little so a
   /// whole number of them goes around. A number that isn't finite, a
   /// negative one, an `off` of 0 or a pattern shorter than a pixel draws
-  /// the border solid. On a style with no border it does nothing until
-  /// [`border`](Self::border) sets one.
+  /// the border solid. It is a field of its own, so a hover style can
+  /// dash a border the style under it sets, and with no border it draws
+  /// nothing. A fade takes the end style's dash at once.
   ///
   /// ```
   /// use crabshell_ui::{Color, Style};
@@ -916,19 +913,8 @@ impl Style {
   /// const DOTTED: Style = DROP_ZONE.border_dash(0.0, 5.0);
   /// ```
   pub const fn border_dash(self, on: f32, off: f32) -> Style {
-    let border = match self.border {
-      Some(border) => border,
-      None => Border {
-        width: 0.0,
-        color: Color::rgba(0, 0, 0, 0),
-        dash: None,
-      },
-    };
     Style {
-      border: Some(Border {
-        dash: Some((on, off)),
-        ..border
-      }),
+      border_dash: Some((on, off)),
       ..self
     }
   }
@@ -1181,6 +1167,7 @@ impl Style {
       padding: or(over.padding, self.padding),
       radius: or(over.radius, self.radius),
       border: or(over.border, self.border),
+      border_dash: or(over.border_dash, self.border_dash),
       opacity: or(over.opacity, self.opacity),
       clip: or(over.clip, self.clip),
       width: or(over.width, self.width),
@@ -1323,19 +1310,15 @@ impl Style {
         let from = from.or(to.map(|b| Border {
           width: 0.0,
           color: Color::rgba(b.color.r, b.color.g, b.color.b, 0),
-          ..b
         }));
         let to = to.or(from.map(|b| Border {
           width: 0.0,
           color: Color::rgba(b.color.r, b.color.g, b.color.b, 0),
-          ..b
         }));
         match (from, to) {
-          // The dash isn't a number to blend: the end's is drawn.
           (Some(from), Some(to)) => Some(Border {
             width: from.width.lerp(&to.width, t),
             color: from.color.lerp(&to.color, t),
-            dash: to.dash,
           }),
 
           _ => None,
