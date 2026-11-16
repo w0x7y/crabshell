@@ -222,6 +222,7 @@ impl Renderer {
         bytes: pixels.len(),
       });
     }
+    self.icons.start_frame(history.id());
     let plan = history.plan(damage, scale, width, height, age);
     let mut tiles: Vec<(u32, u32)> = Vec::new();
     for area in plan.repaint.iter().filter(|area| area.area() > 0) {

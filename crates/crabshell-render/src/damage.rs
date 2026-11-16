@@ -164,6 +164,11 @@ impl Default for DamageHistory {
 }
 
 impl DamageHistory {
+  /// Names the history, and so its window, for the caches.
+  pub(crate) fn id(&self) -> u64 {
+    self.id
+  }
+
   /// A history with no frames yet; the first frame repaints everything.
   pub fn new() -> DamageHistory {
     DamageHistory {

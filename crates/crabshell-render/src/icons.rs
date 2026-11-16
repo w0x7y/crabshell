@@ -69,6 +69,10 @@ pub(crate) struct Icons {
   /// Each image file's modification time, looked at once a draw rather
   /// than once a tile.
   modified: HashMap<PathBuf, Option<std::time::SystemTime>>,
+  /// The picture each image last drew as its own, and when.
+  shows: HashMap<u64, (Key, u64)>,
+  /// The damage history of the window being drawn.
+  window: u64,
 }
 
 /// What an image with a transition shows.
@@ -79,7 +83,11 @@ struct Shown {
   /// While a transition runs: the file it leaves, as the view names it,
   /// and the one it draws, the last good one when that can't be loaded.
   leaving: Option<(PathBuf, Option<PathBuf>)>,
+  /// The picture it left at its last draw, held only while drawn.
+  left: Option<Key>,
   used: u64,
+  /// The damage history of the window that last drew it.
+  window: u64,
 }
 
 /// What an image draws: its picture, or two in a transition.
@@ -271,7 +279,14 @@ impl Icons {
       playbacks: HashMap::new(),
       transitions: HashMap::new(),
       modified: HashMap::new(),
+      shows: HashMap::new(),
+      window: 0,
     }
+  }
+
+  /// Starts a draw of the window whose damage history is `window`.
+  pub(crate) fn start_frame(&mut self, window: u64) {
+    self.window = window;
   }
 
   pub(crate) fn set_theme(&mut self, theme: String) {
@@ -364,9 +379,10 @@ impl Icons {
   /// animated GIF, the frame its playback is on, every frame decoded at
   /// once. While a transition runs, the picture it leaves too, at its
   /// first frame. With a transition other than none, a source that can't
-  /// be loaded draws the last one that could, and the picture a
-  /// transition left is dropped as soon as it ends. `None` if nothing can
-  /// be loaded; a failure is logged once.
+  /// be loaded draws the last one that could. The picture a transition
+  /// leaves is held only while a draw uses it, and dropped as soon as the
+  /// transition ends. `None` if nothing can be loaded; a failure is
+  /// logged once.
   pub(crate) fn image(
     &mut self,
     image: &ImageView<'_>,
@@ -388,19 +404,29 @@ impl Icons {
       0
     };
     if image.transition == ImageTransition::None {
-      self.transitions.remove(&image.id);
+      if let Some(left) = self
+        .transitions
+        .remove(&image.id)
+        .and_then(|shown| shown.left)
+      {
+        self.forget(left, image.id, Some(&key));
+      }
+      self.show(image.id, &key);
       return frame(&self.cache, &key, index).map(Drawn::One);
     }
     let from = self.leaving(image, &key, size, scale);
     let shown = self.transitions.entry(image.id).or_default();
     shown.used = self.frame;
+    shown.window = self.window;
     if count == 0 {
       // Keeps the old picture, with no transition.
       let good = shown.good.clone()?;
       let key = self.load(&good, image, size, scale, true);
+      self.show(image.id, &key);
       return frame(&self.cache, &key, 0).map(Drawn::One);
     }
     shown.good = Some(image.path.to_owned());
+    self.show(image.id, &key);
     let to = frame(&self.cache, &key, index)?;
     Some(match (from, image.leaving) {
       (Some(from), Some((_, t))) => Drawn::Two {
@@ -483,14 +509,15 @@ impl Icons {
   ) -> Option<Option<Key>> {
     let shown = self.transitions.entry(image.id).or_default();
     let Some((named, _)) = image.leaving else {
-      let (_, drawn) = shown.leaving.take()?;
-      self.forget(drawn?, image, size, scale);
+      shown.leaving = None;
+      if let Some(left) = shown.left.take() {
+        self.forget(left, image.id, Some(key));
+      }
       return None;
     };
     let drawn = match &shown.leaving {
       Some((before, drawn)) if before == named => drawn.clone(),
       _ => {
-        let replaced = shown.leaving.take().and_then(|(_, drawn)| drawn);
         let good = shown.good.clone();
         let loads = {
           let left = self.load(named, image, size, scale, true);
@@ -502,40 +529,55 @@ impl Icons {
         let drawn = if loads { Some(named.to_owned()) } else { good };
         let shown = self.transitions.entry(image.id).or_default();
         shown.leaving = Some((named.to_owned(), drawn.clone()));
-        if let Some(replaced) = replaced {
-          self.forget(replaced, image, size, scale);
-        }
         drawn
       }
     };
-    let Some(drawn) = drawn else {
-      return Some(None);
+    let nothing = drawn.is_none();
+    let left = match drawn {
+      Some(drawn) => Some(self.load(&drawn, image, size, scale, true)).filter(|left| left != key),
+      None => None,
     };
-    let left = self.load(&drawn, image, size, scale, true);
-    (left != *key).then_some(Some(left))
+    let shown = self.transitions.entry(image.id).or_default();
+    if shown.left != left {
+      let replaced = std::mem::replace(&mut shown.left, left.clone());
+      if let Some(replaced) = replaced {
+        self.forget(replaced, image.id, Some(key));
+      }
+    }
+    match left {
+      Some(left) => Some(Some(left)),
+      None => nothing.then_some(None),
+    }
   }
 
-  /// Drops the picture of the file at `path` drawn as `image` is, which
-  /// its transition no longer leaves, unless the image still shows it,
-  /// another transition still leaves it or something drew it this frame.
-  fn forget(&mut self, path: PathBuf, image: &ImageView<'_>, size: (u32, u32), scale: f32) {
+  /// Drops the picture cached under `key`, which image `id`'s transition
+  /// no longer leaves, unless `id` now shows it as `current`, another
+  /// image showed it within the last [`RECENT`] draws, or another
+  /// transition still leaves it. The image's own earlier showing doesn't
+  /// count: that is the picture it left.
+  fn forget(&mut self, key: Key, id: u64, current: Option<&Key>) {
     let recent = self.frame.saturating_sub(RECENT - 1);
-    let kept = path == image.path
-      || self.transitions.values().any(|shown| {
-        shown.good.as_ref() == Some(&path) && shown.used >= recent
-          || shown.used >= recent
-            && matches!(&shown.leaving, Some((_, Some(left))) if *left == path)
-      });
-    if kept {
-      return;
-    }
-    let key = self.key(&path, image, size, scale);
-    if self
-      .cache
-      .get(&key)
-      .is_some_and(|entry| entry.used < self.frame)
-    {
+    let kept = current == Some(&key)
+      || self
+        .shows
+        .iter()
+        .any(|(&other, (shown, when))| other != id && *shown == key && *when >= recent)
+      || self
+        .transitions
+        .iter()
+        .any(|(&other, shown)| other != id && shown.left.as_ref() == Some(&key));
+    if !kept {
       self.cache.remove(&key);
+    }
+  }
+
+  /// Records that image `id` drew the picture under `key` as its own.
+  fn show(&mut self, id: u64, key: &Key) {
+    match self.shows.get_mut(&id) {
+      Some((shown, when)) if shown == key => *when = self.frame,
+      _ => {
+        self.shows.insert(id, (key.clone(), self.frame));
+      }
     }
   }
 
@@ -779,12 +821,41 @@ impl Icons {
     self.captures.retain(|view, _| !gone.contains(view));
   }
 
+  /// Lets go of what images dropped since the last draw kept, and of the
+  /// picture a transition left that its own window just drew around
+  /// without drawing it: hidden, under opacity 0 or removed. Another
+  /// window's draw leaves it, since frames count every window's draws.
+  fn let_go_of_left_pictures(&mut self) {
+    let mut gone = Vec::new();
+    for id in crabshell_ui::dropped_images() {
+      self.shows.remove(&id);
+      self.playbacks.remove(&id);
+      if let Some(left) = self.transitions.remove(&id).and_then(|shown| shown.left) {
+        gone.push((id, left));
+      }
+    }
+    let (window, frame) = (self.window, self.frame);
+    for (&id, shown) in &mut self.transitions {
+      if shown.window == window && shown.used < frame {
+        shown.leaving = None;
+        if let Some(left) = shown.left.take() {
+          gone.push((id, left));
+        }
+      }
+    }
+    for (id, left) in gone {
+      let current = self.shows.get(&id).map(|(key, _)| key.clone());
+      self.forget(left, id, current.as_ref());
+    }
+  }
+
   /// Ends a draw: past [`CAPACITY`], icons no draw used within the last
   /// [`RECENT`] are dropped, but never the frames of an animation waiting
   /// for its next. Captured frames go after as many draws whatever their
   /// number, since each is as large as its view.
   pub(crate) fn end_frame(&mut self) {
     self.modified.clear();
+    self.let_go_of_left_pictures();
     let recent = self.frame.saturating_sub(RECENT - 1);
     self.captures.retain(|_, kept| kept.used >= recent);
     for playback in self.playbacks.values() {
@@ -801,6 +872,9 @@ impl Icons {
     }
     if self.transitions.len() > CAPACITY {
       self.transitions.retain(|_, shown| shown.used >= recent);
+    }
+    if self.shows.len() > CAPACITY {
+      self.shows.retain(|_, (_, when)| *when >= recent);
     }
     let bytes: usize = self
       .cache

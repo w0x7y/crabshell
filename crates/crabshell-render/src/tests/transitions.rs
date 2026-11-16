@@ -583,3 +583,212 @@ fn a_picture_a_new_transition_replaces_is_dropped_at_once() {
   icons.image(&view(&c, None), (4, 4), 1.0);
   assert_eq!(icons.cached(), 1);
 }
+
+/// A window drawn the way the platform draws it: its own history and
+/// buffer, damage only.
+struct Drawing {
+  window: Window,
+  history: crate::DamageHistory,
+  buffer: Buffer,
+}
+
+impl Drawing {
+  /// A window of `child`, drawn once.
+  fn new(scene: &mut Scene, child: impl crabshell_ui::Widget) -> Drawing {
+    let panel = scene.panel().child(child);
+    let window = scene.window(panel, 40.0, 20.0);
+    let history = crate::DamageHistory::new();
+    let buffer = Buffer::new(&window, 1.0);
+    let mut drawn = Drawing {
+      window,
+      history,
+      buffer,
+    };
+    drawn.draw(scene);
+    drawn
+  }
+
+  fn draw(&mut self, scene: &mut Scene) {
+    scene.frame(&self.window);
+    scene.draw(&self.window, &mut self.history, &mut self.buffer);
+  }
+}
+
+/// Two 4 by 4 pictures, red and blue, in `test`'s directory.
+fn pair(test: &str) -> (Removed, PathBuf, PathBuf) {
+  let dir = dir(test);
+  let a = picture(&dir, "a.png", (4, 4), |_, _| RED);
+  let b = picture(&dir, "b.png", (4, 4), |_, _| BLUE);
+  (dir, a, b)
+}
+
+/// Runs the clock `ms` into transitions started at `start`.
+fn tick(start: Instant, ms: u64) {
+  advance_animations(start + Duration::from_millis(ms));
+}
+
+/// Starts `next`'s transitions and draws `window` halfway through them,
+/// both pictures cached, and returns when they started.
+fn halfway(
+  scene: &mut Scene,
+  next: crabshell_reactive::Signal<bool>,
+  window: &mut Drawing,
+) -> Instant {
+  next.set(true);
+  scene.frame(&window.window);
+  let start = Instant::now();
+  tick(start, 0);
+  tick(start, 50);
+  window.draw(scene);
+  assert_eq!(scene.renderer.cached_icons(), 2, "both pictures, halfway");
+  start
+}
+
+#[test]
+fn an_image_hidden_or_under_opacity_0_mid_transition_lets_the_old_picture_go() {
+  let (_dir, a, b) = pair("hidden");
+  for opacity in [false, true] {
+    let mut scene = Scene::new();
+    let next = scene.cx.signal(false);
+    let shown = scene.cx.signal(true);
+    let image = switching(next, &a, &b, ImageTransition::crossfade(LINEAR))
+      .width(20)
+      .height(20);
+    let mut window = if opacity {
+      let style = move || Style::new().opacity(if shown.get() { 1.0 } else { 0.0 });
+      Drawing::new(&mut scene, Stack::new().style(style).child(image))
+    } else {
+      Drawing::new(
+        &mut scene,
+        Row::new().child(image.visible(move || shown.get())),
+      )
+    };
+    let start = halfway(&mut scene, next, &mut window);
+    shown.set(false);
+    window.draw(&mut scene);
+    assert_eq!(scene.renderer.cached_icons(), 1, "opacity 0: {opacity}");
+    tick(start, 1000);
+  }
+}
+
+#[test]
+fn an_image_removed_or_its_window_closed_mid_transition_lets_the_old_picture_go() {
+  let (_dir, a, b) = pair("removed");
+  // Removed from a list.
+  let mut scene = Scene::new();
+  let next = scene.cx.signal(false);
+  let items = scene.cx.signal(vec![1]);
+  let (from, to) = (a.clone(), b.clone());
+  let list = Row::new().children_keyed(
+    move || items.get(),
+    |item| *item,
+    move |_cx, _item| {
+      switching(next, &from, &to, ImageTransition::crossfade(LINEAR))
+        .width(20)
+        .height(20)
+    },
+  );
+  let mut window = Drawing::new(&mut scene, list);
+  let start = halfway(&mut scene, next, &mut window);
+  items.set(Vec::new());
+  window.draw(&mut scene);
+  assert_eq!(scene.renderer.cached_icons(), 1, "the new picture, aging");
+  tick(start, 1000);
+
+  // A window closed: the next draw of another window lets go of it.
+  let mut scene = Scene::new();
+  let next = scene.cx.signal(false);
+  let image = switching(next, &a, &b, ImageTransition::crossfade(LINEAR))
+    .width(20)
+    .height(20);
+  let mut closing = Drawing::new(&mut scene, image);
+  let other = Image::new(b.clone()).width(20).height(20);
+  let mut other = Drawing::new(&mut scene, other);
+  let start = halfway(&mut scene, next, &mut closing);
+  drop(closing);
+  other.draw(&mut scene);
+  assert_eq!(scene.renderer.cached_icons(), 1, "only b");
+  tick(start, 1000);
+}
+
+#[test]
+fn a_transition_switched_to_none_mid_run_lets_the_old_picture_go() {
+  let (_dir, a, b) = pair("none");
+  let mut scene = Scene::new();
+  let next = scene.cx.signal(false);
+  let kind = scene.cx.signal(ImageTransition::crossfade(LINEAR));
+  let image = switching(next, &a, &b, ImageTransition::None)
+    .transition(move || kind.get())
+    .width(20)
+    .height(20);
+  let mut window = Drawing::new(&mut scene, image);
+  let start = halfway(&mut scene, next, &mut window);
+  kind.set(ImageTransition::None);
+  window.draw(&mut scene);
+  assert_eq!(scene.renderer.cached_icons(), 1);
+  tick(start, 1000);
+}
+
+#[test]
+fn two_windows_mid_transition_keep_their_pictures_between_each_other_s_draws() {
+  let (dir, a, b) = pair("two");
+  let c = picture(&dir, "c.png", (4, 4), |_, _| [0, 255, 0, 255]);
+  let mut scene = Scene::new();
+  let next = scene.cx.signal(false);
+  // Each leaves a picture of its own, so neither keeps the other's.
+  let image = |from: &Path| {
+    switching(next, from, &b, ImageTransition::crossfade(LINEAR))
+      .width(20)
+      .height(20)
+  };
+  let mut first = Drawing::new(&mut scene, image(&a));
+  let mut second = Drawing::new(&mut scene, image(&c));
+  next.set(true);
+  scene.runtime.flush();
+  let start = Instant::now();
+  for ms in [0, 20, 40] {
+    tick(start, ms);
+    first.draw(&mut scene);
+    second.draw(&mut scene);
+  }
+  let decoded = scene.renderer.rasterized_icons();
+  for ms in [60, 80] {
+    tick(start, ms);
+    first.draw(&mut scene);
+    second.draw(&mut scene);
+  }
+  assert_eq!(
+    scene.renderer.rasterized_icons(),
+    decoded,
+    "nothing decoded again"
+  );
+  tick(start, 100);
+  first.draw(&mut scene);
+  second.draw(&mut scene);
+  assert_eq!(scene.renderer.cached_icons(), 1, "both ended");
+}
+
+#[test]
+fn a_picture_left_that_another_window_shows_stays_cached() {
+  let (_dir, a, b) = pair("shown");
+  let mut scene = Scene::new();
+  let next = scene.cx.signal(false);
+  let image = switching(next, &a, &b, ImageTransition::crossfade(LINEAR))
+    .width(20)
+    .height(20);
+  let mut switching_window = Drawing::new(&mut scene, image);
+  let still = Image::new(a.clone()).width(20).height(20);
+  let mut still = Drawing::new(&mut scene, still);
+  let start = halfway(&mut scene, next, &mut switching_window);
+  tick(start, 100);
+  switching_window.draw(&mut scene);
+  assert_eq!(
+    scene.renderer.cached_icons(),
+    2,
+    "a stays: the other window shows it"
+  );
+  let decoded = scene.renderer.rasterized_icons();
+  scene.full(&still.window, 1.0);
+  still.draw(&mut scene);
+  assert_eq!(scene.renderer.rasterized_icons(), decoded);
+}
