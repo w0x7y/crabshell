@@ -30,10 +30,12 @@ jobs:
           base=https://raw.githubusercontent.com/notofonts/notofonts.github.io/025970232f4f8ff349310d9785431e87d20ed27c/fonts
           curl -fsSLO "$base/NotoSans/hinted/ttf/NotoSans-Regular.ttf"
           curl -fsSLO "$base/NotoSans/hinted/ttf/NotoSans-Bold.ttf"
+          curl -fsSLO "$base/NotoSans/hinted/ttf/NotoSans-Italic.ttf"
           curl -fsSLO "$base/NotoZnamennyMusicalNotation/hinted/ttf/NotoZnamennyMusicalNotation-Regular.ttf"
           sha256sum -c <<'EOF'
           478c558ea716033cd60c03438f628dfa75694dcf6b5f6d505a2f05fd2b4f3823  NotoSans-Regular.ttf
           1df075a380fc7cb898acf64c1f7b3b4dd780de3caa860178bf929de35817a913  NotoSans-Bold.ttf
+          467e3f89eeca4108bb8710a2b9e0cf2281ac56d5b0609211a83776d0505eecb5  NotoSans-Italic.ttf
           b6ed2a11d2a653e14137a35e4c6fdaf5093434ac12964791ee195270828e7508  NotoZnamennyMusicalNotation-Regular.ttf
           EOF
           cat > ~/.config/fontconfig/fonts.conf <<'EOF'

@@ -388,32 +388,52 @@ fn dashes() {
 fn check_fonts() {
   let mut scene = Scene::new();
   let bold = Style::new().font(Font::new("sans-serif", 13.0).weight(700));
+  let italic = Style::new().font(Font::new("sans-serif", 13.0).italic());
   let panel = scene.panel().child(
     Row::new()
       .child(Text::new("x"))
-      .child(Text::new("\u{2603}").style(bold)),
+      .child(Text::new("\u{2603}").style(bold))
+      .child(Text::new("x").style(italic)),
   );
   let window = scene.window(panel, 100.0, 30.0);
   let view = window.view();
-  for (index, expected, what) in [
-    (0, "Noto Sans", "`sans-serif`"),
-    (1, "DejaVu Sans", "the snowman's bold fallback"),
+  for (index, expected, what, query) in [
+    (0, "Noto Sans", "`sans-serif`", "sans-serif"),
+    (
+      1,
+      "DejaVu Sans",
+      "the snowman's bold fallback",
+      "sans-serif:bold",
+    ),
+    (
+      2,
+      "Noto Sans Italic",
+      "italic `sans-serif`",
+      "sans-serif:italic",
+    ),
   ] {
     let Content::Text(text) = super::node_at(view.root(), &[0, index]).content() else {
       panic!("a text node has text content");
     };
-    let family = text
+    // Only an italic face counts as italic: an upright one cosmic-text
+    // slants draws other pixels.
+    let face = text
       .runs()
       .flat_map(|run| run.glyphs.iter())
       .next()
       .and_then(|glyph| scene.text.font_system().db().face(glyph.font_id))
-      .and_then(|face| face.families.first())
-      .map(|(name, _)| name.clone())
+      .and_then(|face| {
+        let (name, _) = face.families.first()?;
+        Some(match face.style {
+          cosmic_text::fontdb::Style::Normal => name.clone(),
+          _ => format!("{name} Italic"),
+        })
+      })
       .unwrap_or_default();
     assert_eq!(
-      family, expected,
+      face, expected,
       "the text goldens were drawn with {expected} for {what}, but fontconfig picks \
-             {family:?} here (see `fc-match sans-serif`); they can't match"
+             {face:?} here (see `fc-match {query}`); they can't match"
     );
   }
 }
