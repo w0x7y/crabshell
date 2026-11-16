@@ -127,7 +127,8 @@ impl Tree {
   /// shows the caret outside. The views' signals are written once the
   /// tree is released.
   fn reveal_caret(&mut self, fonts: &mut FontSystem) {
-    let Some(field) = self.reveal.take() else {
+    // A field removed since it asked has no path to walk.
+    let Some(field) = self.reveal.take().filter(|&id| self.node(id).is_some()) else {
       return;
     };
     for view in self.path_to(field).into_iter().rev().skip(1) {

@@ -1388,16 +1388,16 @@ impl Tree {
   /// Changes a field; anything about it may move the caret, so it is laid
   /// out again, and a focused one's caret is shown.
   pub(crate) fn update_input(&mut self, id: NodeId, f: impl FnOnce(&mut InputNode)) {
-    if self.keyboard.focused == Some(id) {
-      self.reveal = Some(id);
-    }
-    self.update(id, |node| match &mut node.kind {
+    let change = self.update(id, |node| match &mut node.kind {
       NodeKind::Input(input) => {
         f(input);
         Change::Layout
       }
       _ => Change::None,
     });
+    if change == Change::Layout && self.keyboard.focused == Some(id) {
+      self.reveal = Some(id);
+    }
   }
 
   pub(crate) fn update_image(&mut self, id: NodeId, f: impl FnOnce(&mut ImageNode) -> Change) {

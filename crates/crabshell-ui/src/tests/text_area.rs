@@ -342,3 +342,22 @@ fn other_moves_forget_the_end_of_a_wrapped_line_and_the_place_across() {
   assert_eq!(window.field().expect("a field").cursor, 9);
   assert_eq!(press(&mut h, &window, key(Key::Down)), 12);
 }
+
+#[test]
+fn an_area_removed_after_an_edit_is_skipped_by_the_next_layout() {
+  let mut h = Harness::new();
+  let text = h.cx.signal(String::new());
+  let shown = h.cx.signal(true);
+  let list = Column::new().children_keyed(
+    move || if shown.get() { vec![()] } else { Vec::new() },
+    |_| (),
+    move |_, _| TextArea::new(text).focus(true),
+  );
+  let view = ScrollView::new(list).style(Style::new().height(2.0 * LINE));
+  let window = h.window(h.panel().child(view), 300.0, 200.0);
+  window.keyboard_enter();
+  window.key(&typed("a"));
+  shown.set(false);
+  h.frame(&window);
+  assert_eq!(window.focused(), None);
+}
