@@ -20,7 +20,7 @@ use tiny_skia::{
 };
 
 use crate::damage::{BufferAge, DamageHistory, PixelRect};
-use crate::icons::Icons;
+use crate::icons::{Drawn, Icons};
 
 mod canvas;
 mod effects;
@@ -1111,8 +1111,12 @@ impl Painter<'_> {
     let Some((x, y, width, height)) = self.picture_area(pixmap, image.rect) else {
       return;
     };
-    if let Some(pixels) = self.icons.image(image, (width, height), self.grid.scale) {
-      transition::blit(pixmap, (x, y), pixels);
+    match self.icons.image(image, (width, height), self.grid.scale) {
+      Some(Drawn::One(pixels)) => transition::blit(pixmap, (x, y), pixels),
+      Some(Drawn::Two { from, to, t }) => {
+        transition::draw(pixmap, (x, y), from, to, t, image.transition);
+      }
+      None => {}
     }
   }
 

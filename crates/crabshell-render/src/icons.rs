@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Instant;
 
-use crabshell_ui::{CaptureFrame, Color, Fit, IconPixels, IconSource, ImageFilters, ImageView};
+use crabshell_ui::{
+  CaptureFrame, Color, Fit, IconPixels, IconSource, ImageFilters, ImageTransition, ImageView,
+};
 use resvg::usvg;
 use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, PixmapRef, Transform};
 
@@ -62,9 +64,34 @@ pub(crate) struct Icons {
   captures: HashMap<u64, Capture>,
   /// Each animated image's place in its GIF, by image id.
   playbacks: HashMap<u64, Playback>,
+  /// What each image with a transition shows, by image id.
+  transitions: HashMap<u64, Shown>,
   /// Each image file's modification time, looked at once a draw rather
   /// than once a tile.
   modified: HashMap<PathBuf, Option<std::time::SystemTime>>,
+}
+
+/// What an image with a transition shows.
+#[derive(Default)]
+struct Shown {
+  /// The last source that loaded, which one that can't falls back to.
+  good: Option<PathBuf>,
+  /// While a transition runs: the file it leaves, as the view names it,
+  /// and the one it draws, the last good one when that can't be loaded.
+  leaving: Option<(PathBuf, Option<PathBuf>)>,
+  used: u64,
+}
+
+/// What an image draws: its picture, or two in a transition.
+pub(crate) enum Drawn<'a> {
+  One(&'a Pixmap),
+  /// The picture left, if any loaded, and the one coming in, `t` of the
+  /// way, eased.
+  Two {
+    from: Option<&'a Pixmap>,
+    to: &'a Pixmap,
+    t: f32,
+  },
 }
 
 /// Where an animated image is in its GIF.
@@ -242,6 +269,7 @@ impl Icons {
       rasterized: 0,
       captures: HashMap::new(),
       playbacks: HashMap::new(),
+      transitions: HashMap::new(),
       modified: HashMap::new(),
     }
   }
@@ -331,17 +359,57 @@ impl Icons {
     self.used(&key)
   }
 
-  /// `image`'s file scaled to `width` by `height` pixels as its fit says
-  /// and run through its filters at `scale`, decoded on first use: for an
+  /// `image`'s file scaled to `size` in pixels as its fit says and run
+  /// through its filters at `scale`, decoded on first use: for an
   /// animated GIF, the frame its playback is on, every frame decoded at
-  /// once. `None` if it can't be loaded; that is logged once.
+  /// once. While a transition runs, the picture it leaves too, at its
+  /// first frame. With a transition other than none, a source that can't
+  /// be loaded draws the last one that could, and the picture a
+  /// transition left is dropped as soon as it ends. `None` if nothing can
+  /// be loaded; a failure is logged once.
   pub(crate) fn image(
     &mut self,
     image: &ImageView<'_>,
     size: (u32, u32),
     scale: f32,
-  ) -> Option<&Pixmap> {
-    self.picture(image, size, scale, true)
+  ) -> Option<Drawn<'_>> {
+    let key = self.load(image.path, image, size, scale, true);
+    // A failure is marked used too, so it isn't read and logged again.
+    let entry = self.cache.get_mut(&key)?;
+    entry.used = self.frame;
+    let count = entry
+      .frames
+      .as_ref()
+      .map_or(0, |frames| frames.frames.len());
+    let index = if count > 1 {
+      self.play(image, &key, count)
+    } else {
+      self.playbacks.remove(&image.id);
+      0
+    };
+    if image.transition == ImageTransition::None {
+      self.transitions.remove(&image.id);
+      return frame(&self.cache, &key, index).map(Drawn::One);
+    }
+    let from = self.leaving(image, &key, size, scale);
+    let shown = self.transitions.entry(image.id).or_default();
+    shown.used = self.frame;
+    if count == 0 {
+      // Keeps the old picture, with no transition.
+      let good = shown.good.clone()?;
+      let key = self.load(&good, image, size, scale, true);
+      return frame(&self.cache, &key, 0).map(Drawn::One);
+    }
+    shown.good = Some(image.path.to_owned());
+    let to = frame(&self.cache, &key, index)?;
+    Some(match (from, image.leaving) {
+      (Some(from), Some((_, t))) => Drawn::Two {
+        from: from.and_then(|from| frame(&self.cache, &from, 0)),
+        to,
+        t,
+      },
+      _ => Drawn::One(to),
+    })
   }
 
   /// The file at `path` scaled to `size` to mask with, unfiltered and
@@ -349,36 +417,136 @@ impl Icons {
   /// is logged once per path, so a box that changes size logs once.
   pub(crate) fn mask(&mut self, path: &Path, size: (u32, u32), scale: f32) -> Option<&Pixmap> {
     let image = ImageView {
-      // Never playing, every mask can share one id.
       id: u64::MAX,
       path,
       rect: crabshell_ui::Rect::default(),
       fit: Fit::Fill,
       filters: ImageFilters::default(),
       playing: false,
-      transition: crabshell_ui::ImageTransition::None,
+      transition: ImageTransition::None,
       leaving: None,
     };
     let log = !self.failed_masks.contains(path);
-    if self.picture(&image, size, scale, log).is_none() {
+    let key = self.load(path, &image, size, scale, log);
+    if self
+      .cache
+      .get(&key)
+      .is_none_or(|entry| entry.frames.is_none())
+    {
       if self.failed_masks.len() > CAPACITY {
         self.failed_masks.clear();
       }
       self.failed_masks.insert(path.to_owned());
       return None;
     }
-    self.picture(&image, size, scale, false)
+    frame(&self.cache, &key, 0)
   }
 
-  /// [`image`](Self::image), logging a failure only with `log`.
-  fn picture(
+  /// What [`image`](Self::image) draws as itself, or coming in, for
+  /// tests.
+  #[cfg(test)]
+  pub(crate) fn picture(
     &mut self,
+    image: &ImageView<'_>,
+    size: (u32, u32),
+    scale: f32,
+  ) -> Option<&Pixmap> {
+    match self.image(image, size, scale)? {
+      Drawn::One(pixmap) | Drawn::Two { to: pixmap, .. } => Some(pixmap),
+    }
+  }
+
+  /// The bytes of every cached picture, for tests.
+  #[cfg(test)]
+  pub(crate) fn cached_bytes(&self) -> usize {
+    self
+      .cache
+      .values()
+      .filter_map(|entry| entry.frames.as_ref())
+      .flat_map(|frames| &frames.frames)
+      .map(|frame| frame.pixmap.data().len())
+      .sum()
+  }
+
+  /// The key of the picture `image`'s transition leaves, `Some(None)` for
+  /// nothing that loads, and `None` while none runs or it leaves `key`
+  /// itself. The file it leaves is looked at once a transition, falling
+  /// back to the last good one, so every tile draws the same. A picture a
+  /// transition stops leaving, as it ends or another replaces it, is
+  /// dropped from the cache at once.
+  fn leaving(
+    &mut self,
+    image: &ImageView<'_>,
+    key: &Key,
+    size: (u32, u32),
+    scale: f32,
+  ) -> Option<Option<Key>> {
+    let shown = self.transitions.entry(image.id).or_default();
+    let Some((named, _)) = image.leaving else {
+      let (_, drawn) = shown.leaving.take()?;
+      self.forget(drawn?, image, size, scale);
+      return None;
+    };
+    let drawn = match &shown.leaving {
+      Some((before, drawn)) if before == named => drawn.clone(),
+      _ => {
+        let replaced = shown.leaving.take().and_then(|(_, drawn)| drawn);
+        let good = shown.good.clone();
+        let loads = {
+          let left = self.load(named, image, size, scale, true);
+          self
+            .cache
+            .get(&left)
+            .is_some_and(|entry| entry.frames.is_some())
+        };
+        let drawn = if loads { Some(named.to_owned()) } else { good };
+        let shown = self.transitions.entry(image.id).or_default();
+        shown.leaving = Some((named.to_owned(), drawn.clone()));
+        if let Some(replaced) = replaced {
+          self.forget(replaced, image, size, scale);
+        }
+        drawn
+      }
+    };
+    let Some(drawn) = drawn else {
+      return Some(None);
+    };
+    let left = self.load(&drawn, image, size, scale, true);
+    (left != *key).then_some(Some(left))
+  }
+
+  /// Drops the picture of the file at `path` drawn as `image` is, which
+  /// its transition no longer leaves, unless the image still shows it,
+  /// another transition still leaves it or something drew it this frame.
+  fn forget(&mut self, path: PathBuf, image: &ImageView<'_>, size: (u32, u32), scale: f32) {
+    let recent = self.frame.saturating_sub(RECENT - 1);
+    let kept = path == image.path
+      || self.transitions.values().any(|shown| {
+        shown.good.as_ref() == Some(&path) && shown.used >= recent
+          || shown.used >= recent
+            && matches!(&shown.leaving, Some((_, Some(left))) if *left == path)
+      });
+    if kept {
+      return;
+    }
+    let key = self.key(&path, image, size, scale);
+    if self
+      .cache
+      .get(&key)
+      .is_some_and(|entry| entry.used < self.frame)
+    {
+      self.cache.remove(&key);
+    }
+  }
+
+  /// The cache key of the file at `path` drawn as `image` is.
+  fn key(
+    &mut self,
+    path: &Path,
     image: &ImageView<'_>,
     (width, height): (u32, u32),
     scale: f32,
-    log: bool,
-  ) -> Option<&Pixmap> {
-    let path = image.path;
+  ) -> Key {
     let modified = match self.modified.get(path) {
       Some(modified) => *modified,
       None => {
@@ -389,44 +557,43 @@ impl Icons {
         modified
       }
     };
-    let key = Key::Image {
+    Key::Image {
       path: path.to_owned(),
       modified,
       width,
       height,
       fit: image.fit,
       filters: FilterKey::new(&image.filters, scale),
-    };
+    }
+  }
+
+  /// The key of the file at `path` drawn as `image` is, decoded into the
+  /// cache on first use, marked used by this draw. A failure is logged
+  /// only with `log`.
+  fn load(
+    &mut self,
+    path: &Path,
+    image: &ImageView<'_>,
+    size: (u32, u32),
+    scale: f32,
+    log: bool,
+  ) -> Key {
+    let key = self.key(path, image, size, scale);
     if !self.cache.contains_key(&key) {
       if !log {
         // Counted as logged already.
         self.failed.insert(key.clone());
       }
       let room = MAX_CACHED_BYTES.saturating_sub(self.bytes_in_use());
-      let rasterized = crate::animation::frames(
-        path,
-        (width, height),
-        image.fit,
-        &image.filters,
-        scale,
-        room,
-      );
+      let rasterized = crate::animation::frames(path, size, image.fit, &image.filters, scale, room);
       self.store(key.clone(), rasterized, || {
         format!("image {}", path.display())
       });
     }
-    // A failure is marked used too, so it isn't read and logged again.
-    let entry = self.cache.get_mut(&key)?;
-    entry.used = self.frame;
-    let count = entry.frames.as_ref()?.frames.len();
-    let index = if count > 1 {
-      self.play(image, &key, count)
-    } else {
-      self.playbacks.remove(&image.id);
-      0
-    };
-    let frames = self.cache.get(&key)?.frames.as_ref()?;
-    Some(&frames.frames.get(index)?.pixmap)
+    if let Some(entry) = self.cache.get_mut(&key) {
+      entry.used = self.frame;
+    }
+    key
   }
 
   /// Marks `image`, an animation of `count` frames in entry `key`, drawn,
@@ -632,6 +799,9 @@ impl Icons {
         .playbacks
         .retain(|_, playback| playback.due.is_some() || playback.used >= recent);
     }
+    if self.transitions.len() > CAPACITY {
+      self.transitions.retain(|_, shown| shown.used >= recent);
+    }
     let bytes: usize = self
       .cache
       .values()
@@ -645,6 +815,11 @@ impl Icons {
     }
     self.frame += 1;
   }
+}
+
+/// Frame `index` of the picture cached under `key`.
+fn frame<'a>(cache: &'a HashMap<Key, Entry>, key: &Key, index: usize) -> Option<&'a Pixmap> {
+  Some(&cache.get(key)?.frames.as_ref()?.frames.get(index)?.pixmap)
 }
 
 /// A short description of `source` for log lines; raw pixels aren't

@@ -336,7 +336,7 @@ fn icons() -> crate::icons::Icons {
 /// frame, 0 for the others.
 fn red(icons: &mut crate::icons::Icons, image: &ImageView<'_>) -> u8 {
   icons
-    .image(image, (4, 4), 1.0)
+    .picture(image, (4, 4), 1.0)
     .and_then(|pixmap| pixmap.pixel(0, 0))
     .expect("drawn")
     .red()
@@ -450,7 +450,7 @@ fn two_images_of_one_gif_play_apart_and_a_new_file_starts_over() {
   assert_eq!(icons.rasterized(), 1, "the frames are shared");
   // Image 1 now shows another file: its first frame, blue.
   let blue = icons
-    .image(&view(1, &other, true), (4, 4), 1.0)
+    .picture(&view(1, &other, true), (4, 4), 1.0)
     .and_then(|pixmap| pixmap.pixel(0, 0))
     .map(|pixel| pixel.blue());
   assert_eq!(blue, Some(255));
@@ -469,7 +469,7 @@ fn a_playing_gif_keeps_its_frames_past_the_byte_budget() {
       path: &stripes,
       ..view(0, &stripes, true)
     };
-    icons.image(&image, (side, 2000), 1.0);
+    icons.picture(&image, (side, 2000), 1.0);
   }
   for _ in 0..20 {
     icons.end_frame();
@@ -552,7 +552,7 @@ fn a_gif_keeps_its_frames_only_within_what_the_cache_has_left() {
   let stripes = super::fixture("stripes.png");
   // Each GIF frame at 500 by 500 is 1,000,000 bytes.
   let draw_gif = |icons: &mut crate::icons::Icons, id| {
-    icons.image(&view(id, &gif, true), (500, 500), 1.0);
+    icons.picture(&view(id, &gif, true), (500, 500), 1.0);
   };
   let mut icons = icons();
   draw_gif(&mut icons, 1);
@@ -577,7 +577,7 @@ fn icons_with_pictures(path: &Path) -> crate::icons::Icons {
   let mut icons = icons();
   for side in [2000, 2001] {
     let image = view(0, path, true);
-    icons.image(&image, (side, 2000), 1.0);
+    icons.picture(&image, (side, 2000), 1.0);
   }
   icons
 }

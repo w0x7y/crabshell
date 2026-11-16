@@ -25,6 +25,7 @@ mod repaint;
 mod shapes;
 mod theme;
 mod transform;
+mod transitions;
 
 use std::io;
 use std::path::{Path, PathBuf};

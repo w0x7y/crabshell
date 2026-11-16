@@ -187,24 +187,24 @@ fn the_cache_keeps_each_filtered_copy_and_filters_once() {
     ..NONE
   };
   let plain = icons
-    .image(&view(Fit::Fill, NONE), (40, 20), 1.0)
+    .picture(&view(Fit::Fill, NONE), (40, 20), 1.0)
     .and_then(|pixmap| pixmap.pixel(2, 10))
     .map(|pixel| pixel.red());
   let dimmed = icons
-    .image(&view(Fit::Fill, dim), (40, 20), 1.0)
+    .picture(&view(Fit::Fill, dim), (40, 20), 1.0)
     .and_then(|pixmap| pixmap.pixel(2, 10))
     .map(|pixel| pixel.red());
   assert_eq!((plain, dimmed), (Some(255), Some(128)));
   assert_eq!(icons.rasterized(), 2);
   for _ in 0..3 {
-    icons.image(&view(Fit::Fill, dim), (40, 20), 1.0);
+    icons.picture(&view(Fit::Fill, dim), (40, 20), 1.0);
     icons.end_frame();
   }
   assert_eq!(icons.rasterized(), 2, "a filtered copy is made once");
   // The same blur at another scale is another copy.
   let blurred = ImageFilters { blur: 2.0, ..NONE };
-  icons.image(&view(Fit::Fill, blurred), (40, 20), 1.0);
-  icons.image(&view(Fit::Fill, blurred), (40, 20), 2.0);
+  icons.picture(&view(Fit::Fill, blurred), (40, 20), 1.0);
+  icons.picture(&view(Fit::Fill, blurred), (40, 20), 2.0);
   assert_eq!(icons.rasterized(), 4);
 }
 
@@ -214,7 +214,7 @@ fn a_contained_blur_blurs_the_picture_alone_and_keeps_the_box_clear() {
   // The 40 by 20 stripes in a 40 by 40 box: rows 10 to 30.
   let blurred = ImageFilters { blur: 3.0, ..NONE };
   let pixmap = icons
-    .image(&view(Fit::Contain, blurred), (40, 40), 1.0)
+    .picture(&view(Fit::Contain, blurred), (40, 40), 1.0)
     .expect("drawn")
     .clone();
   let alpha = |x, y| pixmap.pixel(x, y).expect("inside").alpha();

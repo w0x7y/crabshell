@@ -200,7 +200,7 @@ fn cached<'a>(
   size: (u32, u32),
   fit: Fit,
 ) -> Option<&'a Pixmap> {
-  icons.image(&view(path, fit, ImageFilters::default()), size, 1.0)
+  icons.picture(&view(path, fit, ImageFilters::default()), size, 1.0)
 }
 
 fn icons() -> crate::icons::Icons {
