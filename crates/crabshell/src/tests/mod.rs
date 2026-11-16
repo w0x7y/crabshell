@@ -7,6 +7,7 @@ mod ipc;
 mod logging;
 mod per_output;
 mod persist;
+mod prelude;
 mod switch_log;
 mod window_manager;
 
