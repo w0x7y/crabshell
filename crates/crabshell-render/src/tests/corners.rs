@@ -189,3 +189,121 @@ fn time_a_shadow_per_corner() {
     );
   }
 }
+
+/// A window of everything Phase 16 added to a box: a box whose one
+/// radius fades to four, under a blurred shadow and a dashed border, a
+/// sweep ring and a dotted pill. `fancy` starts the fade.
+fn drawn_boxes(scene: &mut Scene) -> (crabshell_ui::Window, crabshell_reactive::Signal<bool>) {
+  use crabshell_ui::{Gradient, Stack, Transition};
+
+  let fancy = scene.cx.signal(false);
+  let shadow = Shadow::new(0.0, 3.0, 8.0, Color::rgba(0, 0, 0, 200));
+  let panel = scene
+    .panel()
+    .style(Style::new().background(Color::hex("#1e1e2e")))
+    .child(
+      Row::new()
+        .padding(10, 12)
+        .gap(14)
+        .align(Align::Center)
+        .child(Row::new().style(move || {
+          let card = Style::new()
+            .background(Color::hex("#45475a"))
+            .border(2.0, Color::hex("#fab387"))
+            .border_dash(6.0, 4.0)
+            .shadow(shadow)
+            .transition(Transition::new(100))
+            .padding(14, 24);
+          if fancy.get() {
+            card.radii(0.0, 6.0, 14.0, 22.0)
+          } else {
+            card.radius(10.0)
+          }
+        }))
+        .child(
+          Stack::new().style(
+            Style::new()
+              .gradient(Gradient::sweep(30.0, Color::hex("#89b4fa"), WHITE))
+              .border(3.0, Color::hex("#1e1e2e"))
+              .radius(20.0)
+              .width(40.0)
+              .height(40.0),
+          ),
+        )
+        .child(
+          Row::new().style(
+            Style::new()
+              .border(3.0, Color::hex("#f9e2af"))
+              .border_dash(0.0, 7.0)
+              .radius(100.0)
+              .padding(10, 26),
+          ),
+        ),
+    );
+  (scene.window(panel, 240.0, 60.0), fancy)
+}
+
+#[test]
+fn new_box_drawing_repaints_like_drawing_everything() {
+  use crate::{Canvas, DamageHistory, PixelFormat};
+
+  for scale in [1.0, 1.5, 2.0] {
+    let mut scene = Scene::new();
+    let (window, fancy) = drawn_boxes(&mut scene);
+    let full = scene.full(&window, scale);
+    // A repaint whose right edge cuts through every shape, one tile
+    // column after another.
+    for right in (8..240).step_by(19) {
+      let mut history = DamageHistory::new();
+      let mut buffer = Buffer::new(&window, scale);
+      for damage in [
+        Vec::new(),
+        vec![crabshell_ui::Rect::new(0.0, 0.0, right as f32, 60.0)],
+      ] {
+        scene
+          .renderer
+          .draw(
+            &window.view(),
+            &damage,
+            &mut scene.text,
+            &mut history,
+            Canvas {
+              pixels: &mut buffer.pixels,
+              width: buffer.width,
+              height: buffer.height,
+              scale,
+              format: PixelFormat::Abgr8888,
+              age: &mut buffer.age,
+            },
+          )
+          .expect("the test's canvas fits");
+      }
+      assert!(
+        buffer.pixels == full.pixels,
+        "a repaint to x {right} at scale {scale} differs from a full draw"
+      );
+    }
+    // Halfway through the fade from one radius to four, the damage
+    // repainted over the last frame matches a full draw.
+    let mut history = DamageHistory::new();
+    let mut buffer = Buffer::new(&window, scale);
+    scene.draw(&window, &mut history, &mut buffer);
+    fancy.set(true);
+    scene.frame(&window);
+    let start = std::time::Instant::now();
+    for ms in [0, 50] {
+      crabshell_ui::advance_animations(start + std::time::Duration::from_millis(ms));
+      scene.frame(&window);
+      scene.draw(&window, &mut history, &mut buffer);
+    }
+    let halfway = scene.full(&window, scale);
+    assert!(halfway.pixels != full.pixels, "the fade moved");
+    assert!(buffer.pixels == halfway.pixels, "mid-fade at {scale}");
+    crabshell_ui::advance_animations(start + std::time::Duration::from_millis(200));
+    scene.frame(&window);
+    assert!(
+      scene.full(&window, scale).pixels != halfway.pixels,
+      "it was mid-fade"
+    );
+  }
+}
