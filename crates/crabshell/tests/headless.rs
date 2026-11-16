@@ -723,6 +723,15 @@ fn measure_the_counter_bar() {
   let lock = ExampleBar::start(&sway, "lock", true, &[]);
   ipc_call(&sway, "lock", "on");
   report += &format!("lock example locked over IPC, {}\n", measure(&lock));
+  drop(lock);
+  // Then Phase 15's control center, on a private audio server and session
+  // bus, with today's date and its midnight timer, as a user runs it.
+  let desktop = Desktop::new("measure-control");
+  let control = desktop.run(&sway, "control");
+  report += &format!(
+    "control example with audio on a private pipewire-pulse, {}\n",
+    measure(&control)
+  );
   eprint!("{report}");
   let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("headless");
   std::fs::create_dir_all(&dir).expect("create the output directory");
