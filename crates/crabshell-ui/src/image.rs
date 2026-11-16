@@ -2,6 +2,7 @@
 //! image's transition to a new source, and what the platform asks of an
 //! image: a repaint of one GIF's box when its next frame is due.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,6 +15,34 @@ use crate::window::Window;
 /// Numbers every image mounted, in every window, so the renderer's
 /// playback of one GIF and the platform's repaint of it can't mix two up.
 static NEXT_IMAGE: AtomicU64 = AtomicU64::new(0);
+
+/// The most dropped images kept for the renderer to hear of; a shell
+/// without one stops counting there.
+const MAX_DROPPED: usize = 4096;
+
+thread_local! {
+  /// The ids of images dropped since [`dropped_images`] last ran.
+  static DROPPED: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The ids of images removed, or in windows dropped, since the last call,
+/// so a renderer can let go of what it kept for them, such as the picture
+/// a transition was leaving.
+pub fn dropped_images() -> Vec<u64> {
+  DROPPED.with(|dropped| std::mem::take(&mut *dropped.borrow_mut()))
+}
+
+impl Drop for ImageNode {
+  fn drop(&mut self) {
+    // At thread exit the list may be gone already; nobody is left to ask.
+    let _ = DROPPED.try_with(|dropped| {
+      let mut dropped = dropped.borrow_mut();
+      if dropped.len() < MAX_DROPPED {
+        dropped.push(self.id);
+      }
+    });
+  }
+}
 
 impl ImageNode {
   pub(crate) fn new() -> ImageNode {

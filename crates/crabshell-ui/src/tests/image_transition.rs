@@ -263,3 +263,30 @@ fn a_panicking_transition_is_logged_with_its_path_and_the_rest_keeps_working() {
     (path("b.png"), Some((path("a.png"), 0.0)))
   );
 }
+
+#[test]
+fn a_dropped_image_or_window_is_reported_once_for_the_renderer() {
+  let mut h = Harness::new();
+  let shown = h.cx.signal(vec![1]);
+  let list = Row::new().child(Image::new("kept.png")).children_keyed(
+    move || shown.get(),
+    |item| *item,
+    |_cx, _item| Image::new("a.png"),
+  );
+  let window = h.window(h.panel().child(list), 200.0, 64.0);
+  let id = |path: &[usize]| {
+    let view = window.view();
+    match node_at(view.root(), path).content() {
+      Content::Image(image) => image.id,
+      _ => panic!("no image"),
+    }
+  };
+  let (kept, removed) = (id(&[0, 0]), id(&[0, 1]));
+  crate::dropped_images();
+  shown.set(Vec::new());
+  h.frame(&window);
+  assert_eq!(crate::dropped_images(), vec![removed]);
+  assert!(crate::dropped_images().is_empty(), "once");
+  drop(window);
+  assert_eq!(crate::dropped_images(), vec![kept]);
+}
