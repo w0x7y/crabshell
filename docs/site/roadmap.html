@@ -20,7 +20,7 @@
     <header class="site">
       <div class="row">
         <a class="name" href="index.html">crabshell</a>
-        <span class="version">v0.4</span>
+        <span class="version">v0.5</span>
       </div>
       <div class="row">
         <nav class="main" aria-label="main">
@@ -49,12 +49,12 @@
         twenty phases. a phase is done only when its exit check passes. phases 0
         to 6 reach v0.1, a bar for sway. phases 7 to 12 bring most of the rest
         of quickshell and shipped as v0.2. phase 13 checks every quickshell type
-        and shipped as v0.3. phase 14, time and motion, shipped as v0.4. a
-        quickshell config is qml, and most of what it draws and animates comes
-        from qt, so phases 14 to 19 bring what five public configs take from it:
-        timers and motion, layout and the pointer, drawing and effects, text,
-        and outside data like http and the clipboard, then the last quickshell
-        gaps.
+        and shipped as v0.3. phase 14, time and motion, shipped as v0.4, and
+        phases 15 and 16, layout, the pointer and drawing, as v0.5. a quickshell
+        config is qml, and most of what it draws and animates comes from qt, so
+        phases 14 to 19 bring what five public configs take from it: timers and
+        motion, layout and the pointer, drawing and effects, text, and outside
+        data like http and the clipboard, then the last quickshell gaps.
       </p>
 
       <div class="gauges">
@@ -148,6 +148,8 @@
           html += `<li class="milestone"><strong>v0.3</strong>phase 13, every quickshell type</li>`;
         if (p.n === 15)
           html += `<li class="milestone"><strong>v0.4</strong>phase 14, time and motion</li>`;
+        if (p.n === 17)
+          html += `<li class="milestone"><strong>v0.5</strong>phases 15 and 16, layout and drawing</li>`;
         html += `<li class="${p.state}">
     <span class="dot" aria-hidden="true">${p.state === "done" ? cs.ICON.yes : ""}</span>
     <div class="phase-head"><span class="num">phase ${p.n}</span><h3>${p.title}</h3><span class="when">${p.when}</span></div>

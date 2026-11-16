@@ -282,6 +282,7 @@ const PHASES = [
       ["yes", "masks and shadows that follow the content"],
       ["yes", "animated gifs and wallpaper transitions"],
       ["yes", "exit check: the dashboard example on headless sway"],
+      ["yes", "released on crates.io, as 0.5, with phase 15"],
     ],
   },
   {

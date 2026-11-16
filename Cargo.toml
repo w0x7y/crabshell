@@ -12,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT OR Apache-2.0"
@@ -67,8 +67,8 @@ wayland-scanner = "=0.31.11"
 zbus = { version = "=6.2.1", default-features = false, features = ["default-rt", "proxy"] }
 
 # The workspace's own crates.
-crabshell-reactive = { version = "=0.4.0", path = "crates/crabshell-reactive" }
-crabshell-render = { version = "=0.4.0", path = "crates/crabshell-render" }
-crabshell-services = { version = "=0.4.0", path = "crates/crabshell-services" }
-crabshell-ui = { version = "=0.4.0", path = "crates/crabshell-ui" }
-crabshell-wayland = { version = "=0.4.0", path = "crates/crabshell-wayland" }
+crabshell-reactive = { version = "=0.5.0", path = "crates/crabshell-reactive" }
+crabshell-render = { version = "=0.5.0", path = "crates/crabshell-render" }
+crabshell-services = { version = "=0.5.0", path = "crates/crabshell-services" }
+crabshell-ui = { version = "=0.5.0", path = "crates/crabshell-ui" }
+crabshell-wayland = { version = "=0.5.0", path = "crates/crabshell-wayland" }
