@@ -19,8 +19,9 @@ const MOST_COMMANDS: usize = 16_384;
 /// renderer's arithmetic would lose it.
 const MOST_COORDINATE: f32 = 1.0e6;
 
-/// The most dashes one stroke may be cut into, as far as its length can
-/// be told before it is drawn.
+/// The most dashes one run of a paint closure may cut its strokes into,
+/// as far as their lengths can be told before they are drawn. Each tile
+/// a stroke crosses cuts it again.
 const MOST_DASHES: f32 = 100_000.0;
 
 /// How a [`Canvas`] paints a path: in one color, or in a gradient laid
@@ -338,6 +339,8 @@ pub struct Pen {
   size: Size,
   ops: Vec<CanvasOp>,
   commands: usize,
+  /// How many dashes its strokes are cut into, at most.
+  dashes: f32,
   /// Why the first drawing it skipped was skipped.
   skipped: Option<String>,
 }
@@ -348,6 +351,7 @@ impl Pen {
       size,
       ops: Vec::new(),
       commands: 0,
+      dashes: 0.0,
       skipped: None,
     }
   }
@@ -362,7 +366,7 @@ impl Pen {
   pub fn fill(&mut self, path: &Path, paint: impl Into<Paint>) {
     let commands = path.commands.len();
     match check_path(path) {
-      Ok(()) => self.record(CanvasOp::Fill(path.clone(), paint.into()), commands),
+      Ok(()) => self.record(CanvasOp::Fill(path.clone(), paint.into()), commands, 0.0),
       Err(reason) => self.skip(reason),
     }
   }
@@ -374,26 +378,31 @@ impl Pen {
     }
     let checked = check_path(path).and_then(|()| check_stroke(path, stroke));
     match checked {
-      Ok(dash) => {
+      Ok((dash, dashes)) => {
         let commands = path.commands.len() + dash.len();
         let stroke = Stroke {
           dash,
           ..stroke.clone()
         };
-        self.record(CanvasOp::Stroke(path.clone(), stroke), commands);
+        self.record(CanvasOp::Stroke(path.clone(), stroke), commands, dashes);
       }
       Err(reason) => self.skip(reason),
     }
   }
 
-  fn record(&mut self, op: CanvasOp, commands: usize) {
+  fn record(&mut self, op: CanvasOp, commands: usize, dashes: f32) {
     if self.commands + commands > MOST_COMMANDS {
       self.skip(format!(
         "more than {MOST_COMMANDS} path commands and dash lengths in one run"
       ));
       return;
     }
+    if self.dashes + dashes > MOST_DASHES {
+      self.skip(format!("more than {MOST_DASHES} dashes in one run"));
+      return;
+    }
     self.commands += commands;
+    self.dashes += dashes;
     self.ops.push(op);
   }
 
@@ -442,13 +451,14 @@ fn check_path(path: &Path) -> Result<(), String> {
 }
 
 /// Refuses a stroke whose width or dashes the renderer can't draw, and
-/// gives its dash pattern with an even number of lengths.
-fn check_stroke(path: &Path, stroke: &Stroke) -> Result<Vec<f32>, String> {
+/// gives its dash pattern with an even number of lengths and at most how
+/// many dashes it cuts its path into.
+fn check_stroke(path: &Path, stroke: &Stroke) -> Result<(Vec<f32>, f32), String> {
   if !(usable(stroke.width) && stroke.width > 0.0) {
     return Err(format!("a stroke {} wide", stroke.width));
   }
   if stroke.dash.is_empty() {
-    return Ok(Vec::new());
+    return Ok((Vec::new(), 0.0));
   }
   if !usable(stroke.dash_offset) || stroke.dash.iter().any(|&n| !(usable(n) && n >= 0.0)) {
     return Err(format!(
@@ -462,13 +472,10 @@ fn check_stroke(path: &Path, stroke: &Stroke) -> Result<Vec<f32>, String> {
   }
   let interval: f32 = dash.iter().sum();
   let dashes = path_length(path) / interval * (dash.len() / 2) as f32;
-  if !(interval > 0.0 && dashes <= MOST_DASHES) {
-    return Err(format!(
-      "a dash pattern {:?} that cuts its path into more than {MOST_DASHES} dashes",
-      stroke.dash
-    ));
+  if !(interval > 0.0 && dashes.is_finite()) {
+    return Err(format!("a dash pattern {:?}", stroke.dash));
   }
-  Ok(dash)
+  Ok((dash, dashes))
 }
 
 /// At least the length of `path`: the lengths of its control polygons

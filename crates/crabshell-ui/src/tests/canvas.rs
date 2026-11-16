@@ -125,6 +125,24 @@ fn an_idle_canvas_records_nothing_again() {
 }
 
 #[test]
+fn the_dash_budget_is_for_the_whole_run() {
+  let mut h = Harness::new();
+  // Each line cut into 5,000 dashes, 150,000 in all.
+  let canvas = Canvas::new(|pen| {
+    let line = Path::new()
+      .move_to(Point::new(0.0, 0.0))
+      .line_to(Point::new(50_000.0, 0.0));
+    for _ in 0..30 {
+      pen.stroke(&line, &Stroke::new(1.0, RED).dash(&[5.0, 5.0], 0.0));
+    }
+  });
+  let mut window = None;
+  let logs = capture_logs(|| window = Some(h.window(h.panel().child(canvas), 20.0, 20.0)));
+  assert_eq!(ops(&window.expect("built"), &[0]).len(), 20);
+  assert!(logs.contains("more than 100000 dashes"), "{logs}");
+}
+
+#[test]
 fn a_path_started_without_move_to_counts_its_closes_from_its_start() {
   let mut h = Harness::new();
   // As drawn, each piece starts at (1000, 0) and runs out to near the
