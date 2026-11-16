@@ -438,6 +438,38 @@ Column::new()
         all of it.
       </p>
 
+      <h2 id="drawing">drawing and effects</h2>
+      <p>
+        <code>Canvas::new(|pen| ...)</code> draws paths, arcs, curves and dashed
+        strokes with caps and joins, cut to its box. its closure runs again only
+        when its size or a signal it read changes, and repaints only the canvas.
+        a style takes <code>radii</code> for a radius per corner,
+        <code>Gradient::sweep</code>, <code>border_dash</code>,
+        <code>mask</code> with an ellipse, a gradient or an image's alpha, and
+        <code>Shadow::follow_content()</code> for a drop shadow under text and
+        icons. colors have <code>Color::hsl</code>, <code>mix</code>,
+        <code>lighter</code>, <code>darker</code> and <code>with_alpha</code>,
+        all <code>const</code>.
+      </p>
+      <pre class="code" data-lang="rust">
+const GREEN: Color = Color::hex("#a6e3a1");
+
+Canvas::new(move |pen| {
+    let middle = Point::new(pen.size().width / 2.0, pen.size().height / 2.0);
+    let ring = Stroke::new(6.0, GREEN).cap(Cap::Round);
+    pen.stroke(&Path::new().arc(middle, 20.0, -90.0, 360.0 * charge.get()), &ring);
+})</pre>
+      <p>
+        <code>Icon::tint</code> and <code>Image::tint</code> paint a symbolic
+        icon in your color, and an image takes <code>brightness</code>,
+        <code>contrast</code>, <code>saturation</code> and <code>blur</code>,
+        worked out once and cached. a gif plays while it is drawn and wakes
+        nothing while hidden. <code>Image::transition</code> crossfades, wipes,
+        reveals in a circle or pixelates to a new source.
+        <code>examples/dashboard.rs</code> has a battery ring, a cpu graph,
+        tinted icons, blurred album art and a crossfading wallpaper.
+      </p>
+
       <h2 id="services">services</h2>
       <div class="table">
         <table>
