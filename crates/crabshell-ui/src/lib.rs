@@ -107,7 +107,7 @@ pub use region::Region;
 pub use screencopy::{CaptureFrame, CaptureRequest, CaptureSource, ScreencopyView};
 pub use scroll::{ListView, ScrollView};
 pub use slider::Slider;
-pub use style::{Border, Color, Font, Gradient, GradientShape, Padding, Shadow, Style};
+pub use style::{Border, Color, Font, Gradient, GradientShape, Padding, Radii, Shadow, Style};
 pub use text::TextSystem;
 pub use text_input::{FieldState, Preedit, TextInput};
 pub use timer::{Timer, fire_timers, next_timer};
@@ -127,7 +127,7 @@ pub mod prelude {
   pub use crate::{
     Align, Button, Canvas, Cap, Color, Column, CursorShape, Cx, Drag, DragPhase, Edge, Font, Grid,
     GridView, Icon, IconSource, Join, Justify, Layer, Menu, Output, Paint, PanelWindow, Path, Pen,
-    Point, PopupWindow, Rect, Row, ScrollSource, Size, Slider, Spacer, Stack, Stroke, Style, Text,
-    TextSystem, Timer, Wheel, WheelAxis, Widget, Window,
+    Point, PopupWindow, Radii, Rect, Row, ScrollSource, Size, Slider, Spacer, Stack, Stroke, Style,
+    Text, TextSystem, Timer, Wheel, WheelAxis, Widget, Window,
   };
 }

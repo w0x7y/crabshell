@@ -232,6 +232,97 @@ pub struct Border {
   pub color: Color,
 }
 
+/// How round each corner of a widget's box is: the radius in logical
+/// pixels, 0 for a square corner. Each is clamped to half the box's
+/// shorter side, so two on one side never overlap.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Radii {
+  /// The top-left corner.
+  pub top_left: f32,
+  /// The top-right corner.
+  pub top_right: f32,
+  /// The bottom-right corner.
+  pub bottom_right: f32,
+  /// The bottom-left corner.
+  pub bottom_left: f32,
+}
+
+impl Radii {
+  /// Every corner `radius` round.
+  pub const fn all(radius: f32) -> Radii {
+    Radii {
+      top_left: radius,
+      top_right: radius,
+      bottom_right: radius,
+      bottom_left: radius,
+    }
+  }
+
+  /// The four, from the top left clockwise.
+  pub const fn corners(&self) -> [f32; 4] {
+    [
+      self.top_left,
+      self.top_right,
+      self.bottom_right,
+      self.bottom_left,
+    ]
+  }
+
+  /// `t` of the way to `to`, each corner on its own.
+  pub(crate) fn lerp(&self, to: &Radii, t: f32) -> Radii {
+    Radii {
+      top_left: self.top_left.lerp(&to.top_left, t),
+      top_right: self.top_right.lerp(&to.top_right, t),
+      bottom_right: self.bottom_right.lerp(&to.bottom_right, t),
+      bottom_left: self.bottom_left.lerp(&to.bottom_left, t),
+    }
+  }
+
+  /// Whether `point` is inside `rect` with these corners, each clamped
+  /// to half its shorter side, after `inset` is taken off every side and
+  /// every corner.
+  pub(crate) fn contains(&self, rect: Rect, inset: f32, point: Point) -> bool {
+    let most = rect.width.min(rect.height) / 2.0;
+    let inner = Rect::new(
+      rect.x + inset,
+      rect.y + inset,
+      rect.width - 2.0 * inset,
+      rect.height - 2.0 * inset,
+    );
+    if !inner.contains(point) {
+      return false;
+    }
+    let [top_left, top_right, bottom_right, bottom_left] = self
+      .corners()
+      .map(|r| (if r.is_nan() { 0.0 } else { r.clamp(0.0, most) } - inset).max(0.0));
+    let (left, top, right, bottom) = (inner.x, inner.y, inner.right(), inner.bottom());
+    // Each corner's circle, and the side of its middle the corner is on.
+    [
+      (top_left, left + top_left, top + top_left, -1.0, -1.0),
+      (top_right, right - top_right, top + top_right, 1.0, -1.0),
+      (
+        bottom_right,
+        right - bottom_right,
+        bottom - bottom_right,
+        1.0,
+        1.0,
+      ),
+      (
+        bottom_left,
+        left + bottom_left,
+        bottom - bottom_left,
+        -1.0,
+        1.0,
+      ),
+    ]
+    .into_iter()
+    .all(|(r, cx, cy, sx, sy)| {
+      let (dx, dy) = (point.x - cx, point.y - cy);
+      r <= 0.0 || dx * sx <= 0.0 || dy * sy <= 0.0 || dx.hypot(dy) <= r
+    })
+  }
+}
+
 /// Colors that blend into each other across a widget's box, drawn over
 /// its background with the same corners.
 ///
@@ -496,8 +587,8 @@ pub struct Style {
   pub font: Option<Font>,
   /// Space between the edge and the content.
   pub padding: Option<Padding>,
-  /// The corner radius in logical pixels.
-  pub radius: Option<f32>,
+  /// How round each corner is, in logical pixels.
+  pub radius: Option<Radii>,
   /// A border inside the edge.
   pub border: Option<Border>,
   /// From 0.0 (invisible) to 1.0 (opaque), applied to the widget and
@@ -728,10 +819,40 @@ impl Style {
     }
   }
 
-  /// Sets the corner radius in logical pixels.
+  /// Rounds every corner by `radius` logical pixels.
   pub const fn radius(self, radius: f32) -> Style {
     Style {
-      radius: Some(radius),
+      radius: Some(Radii::all(radius)),
+      ..self
+    }
+  }
+
+  /// Rounds each corner on its own, in logical pixels, as CSS's
+  /// `border-radius` with four values. Each is clamped to half the box's
+  /// shorter side. Everything that follows the corners follows each one:
+  /// the background, gradient, border, shadow, a clip and the scroll
+  /// bar's cut.
+  ///
+  /// ```
+  /// use crabshell_ui::Style;
+  ///
+  /// // A tab, round on top only.
+  /// const TAB: Style = Style::new().radii(8.0, 8.0, 0.0, 0.0);
+  /// ```
+  pub const fn radii(
+    self,
+    top_left: f32,
+    top_right: f32,
+    bottom_right: f32,
+    bottom_left: f32,
+  ) -> Style {
+    Style {
+      radius: Some(Radii {
+        top_left,
+        top_right,
+        bottom_right,
+        bottom_left,
+      }),
       ..self
     }
   }
@@ -1177,7 +1298,10 @@ impl Style {
         _ => to.color,
       },
       border,
-      radius: number(self.radius, to.radius, 0.0),
+      radius: match (self.radius, to.radius) {
+        (None, None) => None,
+        (from, to) => Some(from.unwrap_or_default().lerp(&to.unwrap_or_default(), t)),
+      },
       opacity: number(self.opacity, to.opacity, 1.0),
       translate: point(self.translate, to.translate, Point::default()),
       scale: number(self.scale, to.scale, 1.0),

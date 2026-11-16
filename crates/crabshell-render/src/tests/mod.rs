@@ -11,6 +11,7 @@
 mod canvas;
 mod capture;
 mod colors;
+mod corners;
 mod damage;
 mod glyphs;
 mod golden;

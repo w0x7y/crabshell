@@ -513,6 +513,53 @@ fn a_clip_hides_its_children_from_the_pointer_under_its_border() {
 }
 
 #[test]
+fn a_clip_hides_its_children_from_the_pointer_outside_its_corners() {
+  // Just inside each corner of a 200 by 40 box, and 2 pixels further in
+  // along its diagonal, from the top left clockwise.
+  let corners = [(5.0, 5.0), (195.0, 5.0), (195.0, 35.0), (5.0, 35.0)];
+  for (index, &(x, y)) in corners.iter().enumerate() {
+    let mut h = Harness::new();
+    let clicks = Counter::default();
+    let c = clicks.clone();
+    // Only one corner is round, 20 across inside a 2-pixel border.
+    let mut radii = [0.0; 4];
+    radii[index] = 22.0;
+    let [a, b, c_, d] = radii;
+    let row = Row::new()
+      .align(Align::Start)
+      .style(
+        Style::new()
+          .border(2.0, Color::rgb(9, 9, 9))
+          .radii(a, b, c_, d)
+          .clip(true),
+      )
+      .child(Button::new(Icon::new("x").size(200)).on_click(move |_| c.hit()));
+    let window = h.window(h.panel().child(row), 200.0, 40.0);
+    let clicks_at = |x, y| {
+      window.pointer_motion(Point::new(x, y));
+      click(&window, PointerButton::Left);
+      clicks.get()
+    };
+    for (corner, &(cx, cy)) in corners.iter().enumerate() {
+      let before = clicks.get();
+      let expected = if corner == index { before } else { before + 1 };
+      assert_eq!(clicks_at(cx, cy), expected, "corner {corner} of {index}");
+    }
+    // Inside the round corner's curve.
+    let (inward_x, inward_y) = (
+      if x < 100.0 { 11.0 } else { -11.0 },
+      if y < 20.0 { 11.0 } else { -11.0 },
+    );
+    let before = clicks.get();
+    assert_eq!(
+      clicks_at(x + inward_x, y + inward_y),
+      before + 1,
+      "inside {index}"
+    );
+  }
+}
+
+#[test]
 fn hovered_is_true_while_the_pointer_is_over_the_button_or_inside_it() {
   let mut h = Harness::new();
   let (outer, inner) = (h.cx.signal(false), h.cx.signal(false));

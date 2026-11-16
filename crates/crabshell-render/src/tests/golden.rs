@@ -205,6 +205,78 @@ fn shadows() {
   });
 }
 
+#[test]
+fn corners() {
+  check("corners", 240.0, 60.0, |scene| {
+    scene.panel().style(BAR).child(
+      Row::new()
+        .padding(10, 14)
+        .gap(16)
+        .align(Align::Center)
+        // Four different corners, a border and a blurred shadow.
+        .child(
+          Row::new().style(
+            Style::new()
+              .background(Color::hex("#f38ba8"))
+              .border(2.0, Color::hex("#fab387"))
+              .radii(0.0, 6.0, 14.0, 22.0)
+              .shadow(Shadow::new(0.0, 3.0, 8.0, Color::rgba(0, 0, 0, 200)))
+              .padding(14, 22),
+          ),
+        )
+        // A gradient leaf with a sharp spread shadow.
+        .child(
+          Row::new().style(
+            Style::new()
+              .gradient(Gradient::linear(
+                90.0,
+                Color::hex("#a6e3a1"),
+                Color::hex("#89b4fa"),
+              ))
+              .radii(16.0, 2.0, 16.0, 2.0)
+              .shadow(Shadow::new(3.0, 3.0, 0.0, Color::hex("#11111b")).spread(1.0))
+              .padding(12, 18),
+          ),
+        )
+        // A clip cutting a taller child at two corners.
+        .child(
+          Row::new()
+            .align(Align::Start)
+            .style(
+              Style::new()
+                .border(1.0, Color::hex("#cdd6f4"))
+                .radii(14.0, 0.0, 14.0, 0.0)
+                .clip(true)
+                .width(36.0)
+                .height(30.0),
+            )
+            .child(
+              Row::new().style(
+                Style::new()
+                  .background(Color::hex("#f9e2af"))
+                  .width(36.0)
+                  .height(40.0),
+              ),
+            ),
+        )
+        // Glass with a cut-out glow round at two corners.
+        .child(
+          Row::new().style(
+            Style::new()
+              .background(Color::rgba(255, 255, 255, 40))
+              .radii(0.0, 12.0, 0.0, 12.0)
+              .shadow(
+                Shadow::new(0.0, 0.0, 6.0, Color::hex("#cba6f7"))
+                  .spread(1.0)
+                  .cut_out(),
+              )
+              .padding(12, 16),
+          ),
+        ),
+    )
+  });
+}
+
 /// Fails unless the fonts the text goldens were drawn with are the ones
 /// fontconfig picks here: other fonts draw other pixels.
 fn check_fonts() {

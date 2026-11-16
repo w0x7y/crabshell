@@ -1,6 +1,6 @@
 //! Colors, fonts and styles.
 
-use crate::{Border, Color, Font, Gradient, GradientShape, Padding, Rect, Shadow, Style};
+use crate::{Border, Color, Font, Gradient, GradientShape, Padding, Radii, Rect, Shadow, Style};
 
 #[test]
 fn hex_parses_both_forms_in_either_case() {
@@ -38,7 +38,7 @@ fn builders_set_their_fields_and_nothing_else() {
         bottom: 2,
         left: 8
       }),
-      radius: Some(4.0),
+      radius: Some(Radii::all(4.0)),
       ..Style::new()
     }
   );
@@ -136,7 +136,7 @@ fn a_style_blends_its_paint_fields_and_takes_the_rest_from_the_end() {
     (border.width, border.color),
     (2.0, Color::rgba(200, 0, 0, 128))
   );
-  assert_eq!(half.radius, Some(0.0));
+  assert_eq!(half.radius, Some(Radii::all(0.0)));
   assert_eq!(half.opacity, Some(0.5), "unset opacity is 1");
   assert_eq!(
     half.font,
@@ -382,4 +382,58 @@ fn with_alpha_and_mix_work_on_srgb_channels() {
     Color::rgb(0, 100, 200).mix(Color::rgb(100, 0, 0), 0.25),
     Color::rgb(25, 75, 150)
   );
+}
+
+#[test]
+fn radii_sets_each_corner_and_radius_all_four() {
+  const TAB: Style = Style::new().radii(8.0, 8.0, 0.0, 2.0);
+  assert_eq!(
+    TAB.radius,
+    Some(Radii {
+      top_left: 8.0,
+      top_right: 8.0,
+      bottom_right: 0.0,
+      bottom_left: 2.0,
+    })
+  );
+  assert_eq!(Style::new().radius(3.0).radius, Some(Radii::all(3.0)));
+  assert_eq!(
+    Style::new().radius(3.0).radius,
+    Style::new().radii(3.0, 3.0, 3.0, 3.0).radius
+  );
+  // The style on top takes all four corners.
+  assert_eq!(
+    TAB.merge(Style::new().radius(1.0)).radius,
+    Some(Radii::all(1.0))
+  );
+  assert_eq!(Style::new().radius(1.0).merge(TAB).radius, TAB.radius);
+  assert!(Style::new().same_layout(&TAB), "corners are paint only");
+}
+
+#[test]
+fn a_fade_moves_each_corner_from_where_it_was() {
+  let round = Style::new().radius(4.0);
+  let tab = Style::new().radii(0.0, 8.0, 16.0, 4.0);
+  let half = round.lerp(&tab, 0.5).radius.expect("both set corners");
+  assert_eq!(
+    [
+      half.top_left,
+      half.top_right,
+      half.bottom_right,
+      half.bottom_left
+    ],
+    [2.0, 6.0, 10.0, 4.0]
+  );
+  // Corners only one side sets fade from or to square ones.
+  let appearing = Style::new().lerp(&tab, 0.25).radius.expect("on its way");
+  assert_eq!(
+    appearing,
+    Radii::all(0.0).lerp(&tab.radius.expect("set"), 0.25)
+  );
+  assert_eq!(appearing.bottom_right, 4.0);
+  let going = tab
+    .lerp(&Style::new(), 0.75)
+    .radius
+    .expect("on its way out");
+  assert_eq!(going.bottom_right, 4.0);
 }

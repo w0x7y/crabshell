@@ -551,7 +551,7 @@ impl Painter<'_> {
   /// area's own pixels, on the same fixed grid as everything else, so a
   /// repaint cuts every edge exactly as a full draw does.
   fn clipped_children(&mut self, pixmap: &mut PixmapMut<'_>, node: NodeView<'_>, style: &Style) {
-    let Some((area, radius)) = self.box_shape(node.rect(), style) else {
+    let Some((area, corners)) = self.box_shape(node.rect(), style) else {
       return;
     };
     let width = self.border_width(style);
@@ -563,8 +563,8 @@ impl Painter<'_> {
     ) else {
       return;
     };
-    let radius = (radius - width).max(0.0);
-    self.through_mask(pixmap, node.rect(), (inside, radius), |painter, layer| {
+    let corners = inset(corners, width);
+    self.through_mask(pixmap, node.rect(), (inside, corners), |painter, layer| {
       for child in node.children() {
         painter.node(layer, child);
       }
@@ -581,7 +581,7 @@ impl Painter<'_> {
     &mut self,
     pixmap: &mut PixmapMut<'_>,
     cover: Rect,
-    (shape, radius): (tiny_skia::Rect, f32),
+    (shape, corners): (tiny_skia::Rect, Corners),
     draw: impl FnOnce(&mut Painter<'_>, &mut PixmapMut<'_>),
   ) {
     if !visible(pixmap, shape) {
@@ -606,7 +606,7 @@ impl Painter<'_> {
     };
     draw(&mut inner, &mut layer.as_mut());
     let mut path = PathBuilder::new();
-    rounded_rect(&mut path, shape, radius);
+    rounded_rect(&mut path, shape, corners);
     let Some(path) = path.finish() else {
       return;
     };
@@ -621,15 +621,17 @@ impl Painter<'_> {
     );
   }
 
-  /// A widget's rectangle on the pixel grid and its corner radius in
-  /// pixels, clamped to half the shorter side. `None` if it covers no
-  /// pixel.
-  fn box_shape(&self, rect: Rect, style: &Style) -> Option<(tiny_skia::Rect, f32)> {
+  /// A widget's rectangle on the pixel grid and each corner's radius in
+  /// pixels, clamped to half the shorter side, so two on one side never
+  /// overlap. `None` if it covers no pixel.
+  fn box_shape(&self, rect: Rect, style: &Style) -> Option<(tiny_skia::Rect, Corners)> {
     let area = self.grid.rect(rect)?;
-    let radius = (style.radius.unwrap_or(0.0) * self.grid.scale)
-      .clamp(0.0, area.width().min(area.height()) / 2.0);
-    let radius = if radius.is_nan() { 0.0 } else { radius };
-    Some((area, radius))
+    let most = area.width().min(area.height()) / 2.0;
+    let corners = style.radius.unwrap_or_default().corners().map(|radius| {
+      let radius = (radius * self.grid.scale).clamp(0.0, most);
+      if radius.is_nan() { 0.0 } else { radius }
+    });
+    Some((area, corners))
   }
 
   /// The border's width in pixels: as in CSS, rounded down to whole
@@ -651,7 +653,7 @@ impl Painter<'_> {
     if style.background.is_none() && style.gradient.is_none() && style.border.is_none() {
       return;
     }
-    let Some((area, radius)) = self.box_shape(rect, style) else {
+    let Some((area, corners)) = self.box_shape(rect, style) else {
       return;
     };
     if !visible(pixmap, area) {
@@ -660,12 +662,12 @@ impl Painter<'_> {
 
     if let Some(color) = style.background {
       let mut path = PathBuilder::new();
-      rounded_rect(&mut path, area, radius);
+      rounded_rect(&mut path, area, corners);
       fill(pixmap, path, color, FillRule::Winding);
     }
     if let Some(gradient) = style.gradient {
       let mut path = PathBuilder::new();
-      rounded_rect(&mut path, area, radius);
+      rounded_rect(&mut path, area, corners);
       if let (Some(path), Some(shader)) = (path.finish(), self.shader(&gradient, area)) {
         let paint = Paint {
           shader,
@@ -686,14 +688,14 @@ impl Painter<'_> {
       if width >= 1.0 {
         // A ring: the outer shape with the inner one cut out.
         let mut path = PathBuilder::new();
-        rounded_rect(&mut path, area, radius);
+        rounded_rect(&mut path, area, corners);
         if let Some(inner) = tiny_skia::Rect::from_ltrb(
           area.left() + width,
           area.top() + width,
           area.right() - width,
           area.bottom() - width,
         ) {
-          rounded_rect(&mut path, inner, (radius - width).max(0.0));
+          rounded_rect(&mut path, inner, inset(corners, width));
         }
         fill(pixmap, path, border.color, FillRule::EvenOdd);
       }
@@ -712,7 +714,7 @@ impl Painter<'_> {
     if shadow.color.a == 0 || !numbers.iter().all(|n| n.is_finite()) {
       return;
     }
-    let Some((area, radius)) = self.box_shape(rect, style) else {
+    let Some((area, corners)) = self.box_shape(rect, style) else {
       return;
     };
     // The shape in buffer pixels.
@@ -727,12 +729,15 @@ impl Painter<'_> {
     };
     // As CSS: a corner smaller than the spread grows by less, so a square
     // box keeps square corners.
-    let radius = if spread > 0.0 && radius < spread {
-      radius + spread * (1.0 + (radius / spread - 1.0).powi(3))
-    } else {
-      radius + spread
-    };
-    let radius = radius.clamp(0.0, shape.width().min(shape.height()) / 2.0);
+    let most = shape.width().min(shape.height()) / 2.0;
+    let corners = corners.map(|radius| {
+      let radius = if spread > 0.0 && radius < spread {
+        radius + spread * (1.0 + (radius / spread - 1.0).powi(3))
+      } else {
+        radius + spread
+      };
+      radius.clamp(0.0, most)
+    });
     // A cut-out shadow leaves clear what the box's background covers.
     let cut = if shadow.cut_out {
       self.box_mask(pixmap, rect, style)
@@ -746,7 +751,7 @@ impl Painter<'_> {
       let Some(shape) = shape.transform(Transform::from_translate(-left, -top)) else {
         return;
       };
-      rounded_rect(&mut path, shape, radius);
+      rounded_rect(&mut path, shape, corners);
       let Some(path) = path.finish() else {
         return;
       };
@@ -770,7 +775,7 @@ impl Painter<'_> {
     if columns.is_empty() || rows.is_empty() {
       return;
     }
-    let blurred = BlurredBox::new(shape, radius, sigma);
+    let blurred = BlurredBox::new(shape, corners, sigma);
     let mut mask = Vec::with_capacity(columns.len() * rows.len());
     for row in rows.clone() {
       let xs = columns.clone().map(|column| left + column as f32 + 0.5);
@@ -796,9 +801,9 @@ impl Painter<'_> {
   /// How much of each of this pixmap's pixels the box `rect` with
   /// `style`'s corners covers, as its background fills it.
   fn box_mask(&self, pixmap: &PixmapMut<'_>, rect: Rect, style: &Style) -> Option<Mask> {
-    let (area, radius) = self.box_shape(rect, style)?;
+    let (area, corners) = self.box_shape(rect, style)?;
     let mut path = PathBuilder::new();
-    rounded_rect(&mut path, area, radius);
+    rounded_rect(&mut path, area, corners);
     let mut mask = Mask::new(pixmap.width(), pixmap.height())?;
     let (rule, at) = (FillRule::Winding, Transform::identity());
     mask.fill_path(&path.finish()?, rule, true, at);
@@ -906,7 +911,7 @@ impl Painter<'_> {
     let Some(area) = self.grid.rect(input.area) else {
       return;
     };
-    self.through_mask(pixmap, input.area, (area, 0.0), |painter, layer| {
+    self.through_mask(pixmap, input.area, (area, [0.0; 4]), |painter, layer| {
       painter.input_contents(layer, input);
     });
   }
@@ -1045,9 +1050,18 @@ fn fill(pixmap: &mut PixmapMut<'_>, path: PathBuilder, color: Color, rule: FillR
   pixmap.fill_path(&path, &paint, rule, Transform::identity(), None);
 }
 
-/// Adds a rectangle with circular corners of `radius` to `path`.
-fn rounded_rect(path: &mut PathBuilder, rect: tiny_skia::Rect, radius: f32) {
-  if radius <= 0.0 {
+/// Each corner's radius in pixels, from the top left clockwise.
+type Corners = [f32; 4];
+
+/// `corners` for a shape `by` pixels inside the edge.
+fn inset(corners: Corners, by: f32) -> Corners {
+  corners.map(|radius| (radius - by).max(0.0))
+}
+
+/// Adds a rectangle with circular `corners` to `path`, clockwise from
+/// the end of its top-left one.
+fn rounded_rect(path: &mut PathBuilder, rect: tiny_skia::Rect, corners: Corners) {
+  if corners.iter().all(|&radius| radius <= 0.0) {
     path.push_rect(rect);
     return;
   }
@@ -1055,16 +1069,29 @@ fn rounded_rect(path: &mut PathBuilder, rect: tiny_skia::Rect, radius: f32) {
   // follow a quarter circle closely.
   const KAPPA: f32 = 0.552_284_8;
   let (l, t, r, b) = (rect.left(), rect.top(), rect.right(), rect.bottom());
-  let k = radius * (1.0 - KAPPA);
-  path.move_to(l + radius, t);
-  path.line_to(r - radius, t);
-  path.cubic_to(r - k, t, r, t + k, r, t + radius);
-  path.line_to(r, b - radius);
-  path.cubic_to(r, b - k, r - k, b, r - radius, b);
-  path.line_to(l + radius, b);
-  path.cubic_to(l + k, b, l, b - k, l, b - radius);
-  path.line_to(l, t + radius);
-  path.cubic_to(l, t + k, l + k, t, l + radius, t);
+  let [top_left, top_right, bottom_right, bottom_left] = corners;
+  let k = |radius: f32| radius * (1.0 - KAPPA);
+  path.move_to(l + top_left, t);
+  path.line_to(r - top_right, t);
+  if top_right > 0.0 {
+    let k = k(top_right);
+    path.cubic_to(r - k, t, r, t + k, r, t + top_right);
+  }
+  path.line_to(r, b - bottom_right);
+  if bottom_right > 0.0 {
+    let k = k(bottom_right);
+    path.cubic_to(r, b - k, r - k, b, r - bottom_right, b);
+  }
+  path.line_to(l + bottom_left, b);
+  if bottom_left > 0.0 {
+    let k = k(bottom_left);
+    path.cubic_to(l + k, b, l, b - k, l, b - bottom_left);
+  }
+  path.line_to(l, t + top_left);
+  if top_left > 0.0 {
+    let k = k(top_left);
+    path.cubic_to(l, t + k, l + k, t, l + top_left, t);
+  }
   path.close();
 }
 
@@ -1149,23 +1176,26 @@ const SAMPLES: usize = 8;
 /// covers each point. Away from the corners it is a plain rectangle,
 /// whose blur is the product of each axis's, from the error function.
 /// Near a corner, each row's span is blurred across and the rows are
-/// summed over eight samples of the Gaussian down.
+/// summed over eight samples of the Gaussian down. Each corner has its
+/// own radius; the largest says where the corners' rows begin.
 struct BlurredBox {
   middle: (f32, f32),
   half: (f32, f32),
-  radius: f32,
+  corners: Corners,
+  largest: f32,
   sigma: f32,
 }
 
 impl BlurredBox {
-  fn new(shape: tiny_skia::Rect, radius: f32, sigma: f32) -> BlurredBox {
+  fn new(shape: tiny_skia::Rect, corners: Corners, sigma: f32) -> BlurredBox {
     BlurredBox {
       middle: (
         (shape.left() + shape.right()) / 2.0,
         (shape.top() + shape.bottom()) / 2.0,
       ),
       half: (shape.width() / 2.0, shape.height() / 2.0),
-      radius,
+      corners,
+      largest: corners.into_iter().fold(0.0, f32::max),
       sigma,
     }
   }
@@ -1177,20 +1207,20 @@ impl BlurredBox {
     let (half_width, half_height) = self.half;
     let reach = 3.0 * self.sigma;
     let down = self.along(y, half_height);
-    let clear_of_corners = y.abs() <= half_height - self.radius - reach;
+    let clear_of_corners = y.abs() <= half_height - self.largest - reach;
     let rows = if clear_of_corners {
-      [(0.0, 0.0); SAMPLES]
+      [(0.0, 0.0, 0.0); SAMPLES]
     } else {
       self.rows_near(y)
     };
     for x in xs {
       let x = x - self.middle.0;
-      let coverage = if clear_of_corners || x.abs() <= half_width - self.radius - reach {
+      let coverage = if clear_of_corners || x.abs() <= half_width - self.largest - reach {
         self.along(x, half_width) * down
       } else {
         let sum: f32 = rows
           .iter()
-          .map(|&(span, weight)| self.along(x, span) * weight)
+          .map(|&(left, right, weight)| self.between(x, left, right) * weight)
           .sum();
         sum.clamp(0.0, 1.0)
       };
@@ -1198,20 +1228,26 @@ impl BlurredBox {
     }
   }
 
-  /// The blur of the span from `-half` to `half` at `p`. One the blur
-  /// stays inside of is covered whole.
+  /// The blur of the span from `-half` to `half` at `p`.
   fn along(&self, p: f32, half: f32) -> f32 {
-    if p.abs() <= half - 3.0 * self.sigma {
+    self.between(p, half, half)
+  }
+
+  /// The blur of the span from `-left` to `right` at `p`. One the blur
+  /// stays inside of is covered whole.
+  fn between(&self, p: f32, left: f32, right: f32) -> f32 {
+    let reach = 3.0 * self.sigma;
+    if -(left - reach) <= p && p <= right - reach {
       return 1.0;
     }
     let scale = std::f32::consts::FRAC_1_SQRT_2 / self.sigma;
-    0.5 * (erf((p + half) * scale) - erf((p - half) * scale))
+    0.5 * (erf((p + left) * scale) - erf((p - right) * scale))
   }
 
   /// The rows of the shape a point at height `y` near a corner sums: for
-  /// each sample within the shape and the Gaussian's reach, the row's
-  /// half span and its weight.
-  fn rows_near(&self, y: f32) -> [(f32, f32); SAMPLES] {
+  /// each sample within the shape and the Gaussian's reach, how far the
+  /// row reaches left and right of the middle, and its weight.
+  fn rows_near(&self, y: f32) -> [(f32, f32, f32); SAMPLES] {
     let (half_width, half_height) = self.half;
     let reach = 3.0 * self.sigma;
     let start = (y - half_height).clamp(-reach, reach);
@@ -1222,12 +1258,20 @@ impl BlurredBox {
       // How far into a corner's rows this one is, and how much it
       // narrows there.
       let row = y - offset;
-      let into_corner = (row.abs() - (half_height - self.radius)).max(0.0);
-      let span = half_width - self.radius
-        + (self.radius * self.radius - into_corner * into_corner)
-          .max(0.0)
-          .sqrt();
-      (span, gaussian(offset, self.sigma) * step)
+      let [top_left, top_right, bottom_right, bottom_left] = self.corners;
+      let (left, right) = if row < 0.0 {
+        (top_left, top_right)
+      } else {
+        (bottom_left, bottom_right)
+      };
+      let span = |radius: f32| {
+        let into_corner = (row.abs() - (half_height - radius)).max(0.0);
+        half_width - radius
+          + (radius * radius - into_corner * into_corner)
+            .max(0.0)
+            .sqrt()
+      };
+      (span(left), span(right), gaussian(offset, self.sigma) * step)
     })
   }
 }

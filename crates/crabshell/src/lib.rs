@@ -108,7 +108,7 @@ pub mod prelude {
     Column, CursorShape, Cx, Drag, DragPhase, Easing, Edge, Fit, FloatingWindow, Font, Gradient,
     GradientShape, Grid, GridView, Icon, IconPixels, IconSource, Image, Join, Justify, Key,
     KeyEvent, KeyboardFocus, Layer, ListView, Margins, Menu, MenuEntry, MenuToggle, Modifiers,
-    Output, Padding, Paint, PanelWindow, Path, Pen, Point, PopupWindow, Rect, Region, Row,
+    Output, Padding, Paint, PanelWindow, Path, Pen, Point, PopupWindow, Radii, Rect, Region, Row,
     ScreencopyView, ScrollSource, ScrollView, SessionLock, Shadow, Size, Slider, Spacer, Spring,
     Stack, Stroke, Style, Text, TextInput, Timer, Transition, Wheel, WheelAxis, Widget,
   };

@@ -528,15 +528,10 @@ impl Tree {
       return None;
     }
     let style = node.effective_style();
-    // A clip hides its children under its border too.
+    // A clip hides its children under its border and past its corners.
     let border = style.border.map_or(0.0, |border| border.width.max(0.0));
-    let inside = Rect::new(
-      rect.x + border,
-      rect.y + border,
-      rect.width - 2.0 * border,
-      rect.height - 2.0 * border,
-    );
-    let children = if node.clips() && !inside.contains(point) {
+    let corners = style.radius.unwrap_or_default();
+    let children = if node.clips() && !corners.contains(rect, border, point) {
       Vec::new()
     } else {
       self.drawn_children(id)
