@@ -3779,6 +3779,13 @@ fn the_control_centers_day_sleeps_until_midnight_and_goes_with_its_context() {
     .dispatch(Some(Duration::from_millis(20)))
     .expect("the connection works");
   assert_eq!(today.get_untracked(), crabshell::jiff::Zoned::now().date());
+  // Armed, and due at midnight.
+  let due = crabshell_ui::next_timer().expect("the day's timer is armed");
+  let midnight = control::until_midnight(&crabshell::jiff::Zoned::now()).expect("a midnight");
+  let off = due
+    .saturating_duration_since(Instant::now())
+    .abs_diff(midnight);
+  assert!(off < Duration::from_secs(1), "due {off:?} from midnight");
   let before = shell.platform().stats().iterations;
   let started = Instant::now();
   shell
@@ -3790,6 +3797,32 @@ fn the_control_centers_day_sleeps_until_midnight_and_goes_with_its_context() {
   child.owner().dispose();
   runtime.flush();
   assert_eq!(runtime.node_count(), nodes, "the day's timer was freed");
+}
+
+/// The wait until the next midnight in the time zone of `at`, from the
+/// control example.
+fn until_midnight_from(at: &str) -> Duration {
+  let now: crabshell::jiff::Zoned = at.parse().expect("a zoned time");
+  control::until_midnight(&now).expect("a midnight")
+}
+
+#[test]
+fn the_control_center_waits_until_midnight_however_long_the_day() {
+  assert_eq!(
+    until_midnight_from("2026-11-16T23:59:30+00:00[UTC]"),
+    Duration::from_secs(30)
+  );
+  // New York's clocks go forward an hour on 2026-03-08 and back on
+  // 2026-11-01, so those days last 23 and 25 hours.
+  let hours = |h: u64| Duration::from_secs(h * 3600);
+  assert_eq!(
+    until_midnight_from("2026-03-08T00:00:00-05:00[America/New_York]"),
+    hours(23)
+  );
+  assert_eq!(
+    until_midnight_from("2026-11-01T00:00:00-04:00[America/New_York]"),
+    hours(25)
+  );
 }
 
 /// The control example's highlight and panel colors, from

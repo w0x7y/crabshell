@@ -112,13 +112,7 @@ pub fn today(cx: &Cx) -> ReadSignal<Date> {
     if let Some(old) = day.take() {
       old.owner().dispose();
     }
-    let now = Zoned::now();
-    let Some(wait) = now
-      .tomorrow()
-      .and_then(|tomorrow| tomorrow.start_of_day())
-      .ok()
-      .and_then(|midnight| Duration::try_from(now.duration_until(&midnight)).ok())
-    else {
+    let Some(wait) = until_midnight(&Zoned::now()) else {
       return;
     };
     let child = parent.child();
@@ -126,6 +120,14 @@ pub fn today(cx: &Cx) -> ReadSignal<Date> {
     day = Some(child);
   });
   today.read_only()
+}
+
+/// How long from `now` until the next day starts in its time zone: 23 or
+/// 25 hours from one midnight to the next on a day the clocks change.
+/// `None` past the last date jiff knows.
+pub fn until_midnight(now: &Zoned) -> Option<Duration> {
+  let midnight = now.tomorrow().ok()?.start_of_day().ok()?;
+  Duration::try_from(now.duration_until(&midnight)).ok()
 }
 
 /// The control center on `output`, for `sink`, `today` and the
