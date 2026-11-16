@@ -306,3 +306,39 @@ fn dropping_an_area_frees_what_it_made() {
   drop(window);
   assert_eq!(h.runtime.node_count(), before);
 }
+
+#[test]
+fn other_moves_forget_the_end_of_a_wrapped_line_and_the_place_across() {
+  let mut h = Harness::new();
+  let text = h.cx.signal("a".repeat(12));
+  let window = area(&mut h, text, |area| area.style(Style::new().width(45.0)));
+  press(&mut h, &window, with(Key::Home, CTRL));
+  let end = press(&mut h, &window, key(Key::End));
+  press(&mut h, &window, key(Key::Right));
+  // Back at the same byte by an arrow: the start of the second line.
+  assert_eq!(press(&mut h, &window, key(Key::Left)), end);
+  let (rect, caret) = shown(&window);
+  assert_eq!(caret.y, rect.y + LINE);
+
+  let text = h.cx.signal(String::from("abcdef\nab\nabcdef"));
+  let window = area(&mut h, text, |area| area);
+  press(&mut h, &window, with(Key::Home, CTRL));
+  press(&mut h, &window, key(Key::End));
+  assert_eq!(press(&mut h, &window, key(Key::Down)), 9);
+  press(&mut h, &window, key(Key::Left));
+  press(&mut h, &window, key(Key::Right));
+  // From where the arrows left it, not from the first line's end.
+  assert_eq!(press(&mut h, &window, key(Key::Down)), 12);
+
+  // A click at the same byte forgets it too.
+  press(&mut h, &window, with(Key::Home, CTRL));
+  press(&mut h, &window, key(Key::End));
+  assert_eq!(press(&mut h, &window, key(Key::Down)), 9);
+  let (_, caret) = shown(&window);
+  window.pointer_motion_at(Point::new(caret.x + 30.0, caret.y + 4.0), 0);
+  window.pointer_button_at(PointerButton::Left, true, 0);
+  window.pointer_button_at(PointerButton::Left, false, 10);
+  h.frame(&window);
+  assert_eq!(window.field().expect("a field").cursor, 9);
+  assert_eq!(press(&mut h, &window, key(Key::Down)), 12);
+}

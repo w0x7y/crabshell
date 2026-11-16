@@ -263,7 +263,12 @@ impl Tree {
       true => input.line_key(event, page),
       false => None,
     };
-    let keyed = keyed.unwrap_or_else(|| input.edit.key(event, !input.password));
+    let keyed = keyed.unwrap_or_else(|| {
+      // Any other move forgets the line's end and the place across.
+      input.upstream = None;
+      input.goal = None;
+      input.edit.key(event, !input.password)
+    });
     let accept = keyed == Keyed::Accept;
     let typed = match keyed {
       Keyed::Unused => return None,

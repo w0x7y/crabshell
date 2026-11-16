@@ -144,6 +144,7 @@ impl Tree {
       } = &mut input.edit;
       apply(text, cursor, anchor, how);
       input.upstream = upstream.then_some(*cursor);
+      input.goal = None;
       input.refresh();
     });
   }
