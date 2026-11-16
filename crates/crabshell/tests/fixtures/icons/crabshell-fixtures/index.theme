@@ -1,0 +1,11 @@
+# The few symbolic icons the dashboard's goldens draw, under a name no
+# machine's own theme shadows.
+[Icon Theme]
+Name=crabshell-fixtures
+Directories=symbolic
+
+[symbolic]
+Size=16
+Type=Scalable
+MinSize=8
+MaxSize=512

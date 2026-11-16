@@ -1341,6 +1341,7 @@ fn run_as_child() {
         cpu: pinned_cpu,
       };
       dashboard::shell(cx, feeds);
+      cx.set_icon_theme(FIXTURE_ICONS);
     }),
     Ok("ipc") => crabshell::run(|cx| {
       let count = cx.signal(0_i64);
@@ -4237,6 +4238,10 @@ fn the_control_center_sets_the_volume_flings_its_list_and_sleeps() {
   assert!(wakeups.is_empty(), "woke while idle: {wakeups:?}");
 }
 
+/// The icon theme in `tests/fixtures/icons` the pinned dashboard draws
+/// its symbolic icons from.
+const FIXTURE_ICONS: &str = "crabshell-fixtures";
+
 /// A battery at 72% with 2 h 10 min left, as UPower's display device
 /// gives one.
 fn pinned_battery() -> PowerDevice {
@@ -4353,8 +4358,9 @@ impl DashboardFiles {
     path
   }
 
-  /// The pinned dashboard's environment: its pictures, and icons only
-  /// from the fixtures' theme, never the machine's.
+  /// The pinned dashboard's environment: its pictures, and the fixtures'
+  /// icon theme, under a name no theme in `~/.icons` or the machine's
+  /// data directories takes.
   fn env(&self) -> Vec<(&'static str, String)> {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     vec![
@@ -4362,7 +4368,6 @@ impl DashboardFiles {
       ("WALLPAPER", self.path("wallpaper.png")),
       ("DASHBOARD_ART", self.path("art.png")),
       ("XDG_DATA_DIRS", fixtures.display().to_string()),
-      ("XDG_DATA_HOME", self.path("no-data")),
     ]
   }
 }
