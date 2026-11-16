@@ -112,6 +112,7 @@ impl Tree {
     }
 
     self.place(root, Point::default(), &mut Vec::new(), fonts);
+    self.reveal_caret(fonts);
     if font_added {
       let whole = Rect::new(0.0, 0.0, self.size.width, self.size.height);
       add_damage(&mut self.damage, whole);
@@ -119,6 +120,50 @@ impl Tree {
     self.needs_layout = false;
     self.needs_place = false;
     self.pointer_after_layout();
+  }
+
+  /// Scrolls each view around the field that asked, innermost first, the
+  /// least that shows its caret, and places the window again, so no frame
+  /// shows the caret outside. The views' signals are written once the
+  /// tree is released.
+  fn reveal_caret(&mut self, fonts: &mut FontSystem) {
+    let Some(field) = self.reveal.take() else {
+      return;
+    };
+    for view in self.path_to(field).into_iter().rev().skip(1) {
+      let caret = match self.node(field).map(|node| &node.kind) {
+        Some(NodeKind::Input(input)) => input.caret,
+        _ => return,
+      };
+      let Some(Node {
+        kind: NodeKind::Scroll(scroll),
+        content,
+        ..
+      }) = self.taffy.get_node_context_mut(view)
+      else {
+        continue;
+      };
+      let (start, end, low, high) = if scroll.horizontal {
+        (caret.x, caret.right(), content.x, content.right())
+      } else {
+        (caret.y, caret.bottom(), content.y, content.bottom())
+      };
+      let to = if start < low {
+        scroll.shown - (low - start)
+      } else if end > high {
+        scroll.shown + (end - high)
+      } else {
+        continue;
+      };
+      let to = to.clamp(0.0, scroll.most);
+      if to == scroll.shown {
+        continue;
+      }
+      scroll.offset = to;
+      self.offsets.push((scroll.signal, to));
+      let root = self.root;
+      self.place(root, Point::default(), &mut Vec::new(), fonts);
+    }
   }
 
   /// The size the window's content wants, in whole logical pixels and at

@@ -883,6 +883,51 @@ fn selectable_text() {
   }
 }
 
+/// A focused text area whose first line wraps, with a selection from the
+/// first line into the second and the caret at its end.
+#[test]
+fn text_area() {
+  use crabshell_ui::{Key, KeyEvent, Modifiers};
+
+  let press = |window: &Window, key, ctrl, shift| {
+    window.key(&KeyEvent {
+      key,
+      text: None,
+      modifiers: Modifiers {
+        ctrl,
+        shift,
+        ..Modifiers::default()
+      },
+      repeat: false,
+    });
+  };
+  for (scale, suffix) in SCALES {
+    let mut scene = Scene::new();
+    let note = scene
+      .cx
+      .signal(String::from("a note that wraps onto\nthe next line"));
+    let panel = scene.panel().style(BAR).child(
+      Row::new().padding(4, 4).align(Align::Start).child(
+        crabshell_ui::TextArea::new(note).focus(true).style(
+          Style::new()
+            .width(100.0)
+            .padding(2, 4)
+            .background(Color::hex("#313244"))
+            .radius(4.0),
+        ),
+      ),
+    );
+    let window = scene.window(panel, 120.0, 64.0);
+    window.keyboard_enter();
+    press(&window, Key::Home, true, false);
+    press(&window, Key::Right, true, false);
+    press(&window, Key::Down, false, true);
+    scene.frame(&window);
+    let buffer = scene.full(&window, scale);
+    assert_golden(&format!("text_area@{suffix}"), &buffer);
+  }
+}
+
 #[test]
 fn a_field_draws_only_inside_its_content_box() {
   let mut scene = Scene::new();

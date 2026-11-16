@@ -23,7 +23,8 @@ use crate::widgets::{Common, Element, ElementKind, Widget, visibility_methods};
 /// around it, or 10 lines.
 ///
 /// The area is as tall as its lines, at least one. Put it in a
-/// `ScrollView` to cap its height.
+/// `ScrollView` to cap its height; when the caret leaves the view, the
+/// view scrolls the least that shows it.
 ///
 /// ```
 /// use crabshell_ui::{Cx, ScrollView, Style, TextArea};

@@ -212,6 +212,44 @@ fn page_keys_move_ten_lines_or_a_scroll_view_high() {
 }
 
 #[test]
+fn the_caret_leaving_a_scroll_view_scrolls_it_the_least_that_shows_it() {
+  let mut h = Harness::new();
+  let text = h.cx.signal(String::from("1\n2\n3\n4\n5"));
+  let offset = h.cx.signal(0.0_f32);
+  let view = ScrollView::new(
+    TextArea::new(text)
+      .focus(true)
+      .style(Style::new().width(100.0)),
+  )
+  .offset(offset)
+  .style(Style::new().height(2.0 * LINE));
+  let window = h.window(h.panel().child(Column::new().child(view)), 300.0, 200.0);
+  window.keyboard_enter();
+  window.key(&with(Key::Home, CTRL));
+  h.frame(&window);
+  assert_eq!(offset.get(), 0.0);
+  window.key(&with(Key::End, CTRL));
+  // One layout scrolls it, with no frame showing the caret outside.
+  h.frame(&window);
+  assert_eq!(offset.get(), 3.0 * LINE);
+  let view = node_at(window.view().root(), &[0, 0]).rect();
+  let caret = match node_at(window.view().root(), &[0, 0, 0]).content() {
+    Content::Input(input) => input.caret.expect("a caret"),
+    _ => panic!("not an area"),
+  };
+  assert_eq!(caret.bottom(), view.bottom());
+  window.key(&key(Key::Up));
+  h.frame(&window);
+  assert_eq!(offset.get(), 3.0 * LINE, "still in view: nothing scrolls");
+  // Up to the second line, which starts 16 down.
+  window.key(&key(Key::Up));
+  window.key(&key(Key::Up));
+  h.frame(&window);
+  assert_eq!(offset.get(), LINE);
+  assert!(!window.needs_layout());
+}
+
+#[test]
 fn ctrl_enter_runs_on_accept_and_a_panic_there_is_logged_with_its_path() {
   let mut h = Harness::new();
   let text = h.cx.signal(String::from("a"));

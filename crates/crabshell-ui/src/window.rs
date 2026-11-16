@@ -632,22 +632,26 @@ impl Window {
   /// again, until nothing moves or 8 layouts have run.
   pub fn layout(&self, text: &mut TextSystem) {
     for _ in 0..GEOMETRY_ROUNDS {
-      let (moved, measured) = {
+      let (moved, measured, offsets) = {
         let mut tree = borrow(&self.tree);
         // Both borrows end before the effects below run.
         tree.layout(&mut text.fonts());
         (
           std::mem::take(&mut tree.geometry),
           std::mem::take(&mut tree.measured),
+          std::mem::take(&mut tree.offsets),
         )
       };
       // Nothing new to tell, so no effects run here.
-      if moved.is_empty() && measured.is_empty() {
+      if moved.is_empty() && measured.is_empty() && offsets.is_empty() {
         return;
       }
       // Written with the tree released, so an effect may lay it out.
       for (signal, rect) in moved {
         signal.try_set(rect);
+      }
+      for (signal, offset) in offsets {
+        signal.try_set(offset);
       }
       for (measure, size) in measured {
         measure(size);

@@ -21,7 +21,7 @@ use crabshell_reactive::{ReadSignal, Runtime, Signal};
 use crabshell_ui::{
   Adjust, Align, Button, Color, Column, Content, Cx, Edge, Key, KeyEvent, KeyboardFocus, Margins,
   Output, PanelWindow, PopupWindow, Rect, Region, Row, ScrollView, Slider, Spacer, Style, Text,
-  TextInput, Window,
+  TextArea, TextInput, Window,
 };
 use crabshell_ui::{CaptureFrame, CaptureSource, FloatingWindow, ScreencopyView, Transition};
 use crabshell_ui::{Layer, Lock, SessionLock};
@@ -83,6 +83,8 @@ struct Setup {
   keyboard: KeyboardFocus,
   /// Whether the bar's text field takes the focus as it is built.
   field: bool,
+  /// Whether that field is a text area instead.
+  area: bool,
   /// Whether the bar has a box whose width animates with `wide`.
   animated: bool,
 }
@@ -95,6 +97,7 @@ const PLAIN: Setup = Setup {
   margins: Margins::all(0),
   keyboard: KeyboardFocus::None,
   field: false,
+  area: false,
   animated: false,
 };
 
@@ -289,6 +292,9 @@ fn bar(cx: &Cx, output: &str, knobs: Knobs) -> Window {
           },
           |_| (),
           move |cx, _| {
+            if knobs.setup.area {
+              return Row::new().child(TextArea::new(knobs.typed).focus(true));
+            }
             Row::new()
               .child(TextInput::new(knobs.typed).focus(true))
               .child(TextInput::new(cx.signal(String::new())).password(true))
@@ -1354,6 +1360,56 @@ fn an_input_method_composes_and_commits_into_a_text_field() {
       !method.active()
     },
   );
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_text_area_takes_keys_and_input_method_text_and_then_sleeps() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let mut keyboard = VirtualKeyboard::new(&sway);
+  let mut method = InputMethod::new(&sway);
+  let setup = Setup {
+    keyboard: KeyboardFocus::Exclusive,
+    field: true,
+    area: true,
+    ..PLAIN
+  };
+  let mut shell = Shell::build(&sway, setup);
+  shell.wait_for_bar("HEADLESS-1");
+  let typed = shell.knobs.typed;
+  for key in [keys::H, keys::ENTER, keys::I] {
+    keyboard.tap(key);
+  }
+  run_until(&mut shell.event_loop, "two typed lines", |_| {
+    typed.get_untracked() == "h\ni"
+  });
+  run_until(
+    &mut shell.event_loop,
+    "the input method to activate",
+    |_| {
+      method.poll();
+      method.active()
+    },
+  );
+  method.commit("你");
+  run_until(&mut shell.event_loop, "the committed text", |_| {
+    typed.get_untracked() == "h\ni你"
+  });
+  // The input method is told the text with its line break.
+  run_until(&mut shell.event_loop, "the surrounding text", |_| {
+    method.poll();
+    method.surrounding() == "h\ni你"
+  });
+  // A focused area wakes nothing while nothing happens. One event comes
+  // after the input method's last change, as it does for a one-line
+  // field, and then the loop sleeps.
+  settle(&mut shell.event_loop);
+  shell
+    .event_loop
+    .dispatch(Some(Duration::from_secs(1)))
+    .expect("the connection works");
+  sleeps_through(&mut shell.event_loop, Duration::from_secs(2));
 }
 
 /// The rectangle of the first text field in the bar.

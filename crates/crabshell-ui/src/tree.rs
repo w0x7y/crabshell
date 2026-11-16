@@ -78,6 +78,12 @@ pub(crate) struct Tree {
   pub(crate) geometry: Vec<(Signal<Rect>, Rect)>,
   /// The sizes to tell widgets' `measure` once the tree is released.
   pub(crate) measured: Vec<(Measure, Size)>,
+  /// The focused field changed, so the next layout scrolls the views
+  /// around it to show its caret.
+  pub(crate) reveal: Option<NodeId>,
+  /// Scroll offsets that showing a caret moved, for the window to write
+  /// to the views' signals once the tree is released.
+  pub(crate) offsets: Vec<(Signal<f32>, f32)>,
   /// Widgets shown again since the last layout, which gives the focus to
   /// a field in them that asks for it.
   pub(crate) shown_since_layout: Vec<NodeId>,
@@ -535,6 +541,8 @@ impl Tree {
       images: Vec::new(),
       geometry: Vec::new(),
       measured: Vec::new(),
+      reveal: None,
+      offsets: Vec::new(),
       shown_since_layout: Vec::new(),
     }
   }
@@ -1377,8 +1385,11 @@ impl Tree {
   }
 
   /// Changes a field; anything about it may move the caret, so it is laid
-  /// out again.
+  /// out again, and a focused one's caret is shown.
   pub(crate) fn update_input(&mut self, id: NodeId, f: impl FnOnce(&mut InputNode)) {
+    if self.keyboard.focused == Some(id) {
+      self.reveal = Some(id);
+    }
     self.update(id, |node| match &mut node.kind {
       NodeKind::Input(input) => {
         f(input);
