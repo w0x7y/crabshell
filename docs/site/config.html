@@ -402,6 +402,42 @@ let icon = Icon::new("view-refresh").style(move || Style::new().rotate(turn.get(
         spinner and toasts that slide in and out.
       </p>
 
+      <h2 id="layout">layout, pointer and views</h2>
+      <p>
+        a style sizes a child with <code>grow</code>, <code>shrink</code>,
+        <code>basis</code> and min and max sizes, places it with
+        <code>align_self</code>, or takes it out of the flow with
+        <code>left</code>, <code>top</code>, <code>right</code> and
+        <code>bottom</code>; <code>z</code> orders siblings.
+        <code>Grid</code> lays children out in equal columns,
+        <code>Row::wrap</code> starts new lines, and
+        <code>Row::reverse</code> runs right to left. every widget takes
+        <code>visible(...)</code>, which frees its space, and
+        <code>geometry(signal)</code>, which writes where it was laid out.
+      </p>
+      <pre class="code" data-lang="rust">
+let volume = cx.signal(0.5);
+let held = cx.signal(false);
+Column::new()
+    .child(Slider::new(volume).dragging(held))
+    .child(Row::new().wrap(true).gap(6).children_keyed(chips, |c| c.id, chip))
+    .child(Grid::new().columns(7).children_keyed(days, |d| *d, day))</pre>
+      <p>
+        a button gets <code>on_release</code>, <code>on_double_click</code>,
+        <code>on_long_press</code>, <code>on_drag</code>,
+        <code>on_wheel</code> with both axes and a touchpad's pixels, the side
+        buttons, a <code>cursor</code>, <code>enabled</code> and
+        <code>focus</code>, and <code>pointer_position(signal)</code>.
+        <code>drag_data</code> and <code>on_drop</code> drag a value onto
+        another button, and <code>.displaced(transition)</code> after
+        <code>children_keyed</code> slides the others into place. scroll views
+        fling and overshoot, scroll sideways and show a scroll bar;
+        <code>ListView</code> takes rows of any height and a highlight that
+        follows <code>current</code>, and <code>GridView</code> builds only the
+        cells in view. <code>examples/control.rs</code> is a control center with
+        all of it.
+      </p>
+
       <h2 id="services">services</h2>
       <div class="table">
         <table>

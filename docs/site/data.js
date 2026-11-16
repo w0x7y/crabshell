@@ -258,21 +258,23 @@ const PHASES = [
   {
     n: 15,
     title: "layout, pointer and views",
-    state: "next",
-    when: "up next",
+    state: "done",
+    when: "passed 16 nov",
     items: [
-      ["no", "per-child sizes, absolute positions, grids and wrapping rows"],
-      ["no", "pointer position, drag, long press and horizontal scroll"],
-      ["no", "every cursor shape, and focus set from code"],
-      ["no", "a widget's rectangle as a signal"],
-      ["no", "a slider, kinetic scrolling, a scroll bar and grid views"],
+      ["yes", "per-child sizes, absolute positions, grids and wrapping rows"],
+      ["yes", "pointer position, drag, long press and horizontal scroll"],
+      ["yes", "every cursor shape, and focus set from code"],
+      ["yes", "a widget's rectangle as a signal"],
+      ["yes", "a slider, kinetic scrolling, a scroll bar and grid views"],
+      ["yes", "drag and drop, and children that slide into place"],
+      ["yes", "exit check: the control example on headless sway"],
     ],
   },
   {
     n: 16,
     title: "drawing and effects",
-    state: "later",
-    when: "later",
+    state: "next",
+    when: "up next",
     items: [
       ["no", "a canvas with paths, arcs and dashes"],
       ["no", "sweep gradients and a radius per corner"],
@@ -395,7 +397,7 @@ const Q = {
     [
       "QsWindow",
       "part",
-      "panels, popups and floating windows, each with a mask; item-to-window mapping comes in phase 15",
+      "panels, popups and floating windows, each with a mask; a widget's rectangle in its window through .geometry(signal)",
     ],
     [
       "Quickshell",
@@ -432,8 +434,8 @@ const Q = {
     ["SystemClock", "yes", "cx.clock(Precision)"],
     [
       "TransformWatcher",
-      "no",
-      "widget positions aren't exposed yet; a popup anchors to the widget that opened it; a widget's rectangle comes in phase 15",
+      "part",
+      "a widget's laid-out rectangle in its window through .geometry(signal), so two widgets in one window map to each other; paint transforms and other windows aren't included",
     ],
     ["Variants", "yes", "cx.per_output and children_keyed"],
   ],
