@@ -533,6 +533,12 @@ pub(crate) struct TextNode {
   stale: bool,
   /// The top-left corner of the first line, set by layout.
   pub(crate) origin: Point,
+  /// Takes the pointer and selects, as `Text::selectable` says.
+  pub(crate) selectable: bool,
+  /// Where a selection ends and starts, in bytes of `content`, while the
+  /// text is selectable.
+  pub(crate) cursor: usize,
+  pub(crate) anchor: Option<usize>,
 }
 
 impl TextNode {
@@ -546,6 +552,9 @@ impl TextNode {
       fonts_added: 0,
       stale: true,
       origin: Point::default(),
+      selectable: false,
+      cursor: 0,
+      anchor: None,
     }
   }
 

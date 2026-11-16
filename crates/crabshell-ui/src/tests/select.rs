@@ -3,10 +3,11 @@
 
 use crabshell_reactive::Signal;
 
+use super::{Counter, rect_at};
 use super::{Harness, node_at};
 use crate::{
-  Clipboard, Column, Icon, Key, KeyEvent, Modifiers, Point, PointerButton, Row, ScrollView, Style,
-  TextInput, Window,
+  Button, Clipboard, Column, Content, CursorShape, Icon, Key, KeyEvent, Modifiers, Point,
+  PointerButton, Rect, Row, ScrollView, Style, Text, TextInput, Window,
 };
 
 /// Ctrl+C, and what it copied.
@@ -148,4 +149,156 @@ fn dragging_a_field_in_a_scroll_view_selects_instead_of_scrolling() {
   h.frame(&window);
   assert_eq!(offset.get(), 0.0);
   assert_eq!(copied(&window).as_deref(), Some("abcdef"));
+}
+
+/// A 200 by 30 window with the keyboard and `child` in a row.
+fn label(h: &mut Harness, child: impl crate::Widget) -> Window {
+  let window = h.window(h.panel().child(Row::new().child(child)), 200.0, 30.0);
+  window.keyboard_enter();
+  window
+}
+
+/// Drags the left button from `from` to `to`.
+fn drag(window: &Window, from: Point, to: Point, time: u32) {
+  window.pointer_motion_at(from, time);
+  window.pointer_button_at(PointerButton::Left, true, time);
+  window.pointer_motion_at(to, time + 10);
+  window.pointer_button_at(PointerButton::Left, false, time + 20);
+}
+
+/// The selection the text at `path` draws.
+fn selection(window: &Window, path: &[usize]) -> Vec<Rect> {
+  match node_at(window.view().root(), path).content() {
+    Content::Text(text) => text.selection(),
+    _ => panic!("not a text"),
+  }
+}
+
+#[test]
+fn a_selectable_text_selects_by_dragging_and_copies_while_focused() {
+  let mut h = Harness::new();
+  let window = label(&mut h, Text::new("hello world").selectable(true));
+  window.pointer_motion(Point::new(5.0, 10.0));
+  assert_eq!(window.cursor(), CursorShape::Text);
+  drag(&window, Point::new(1.0, 10.0), Point::new(190.0, 10.0), 0);
+  h.frame(&window);
+  assert_eq!(
+    window.focused().as_deref(),
+    Some("PanelWindow[DP-1]/Row/Text[0]")
+  );
+  assert_eq!(copied(&window).as_deref(), Some("hello world"));
+  let text = rect_at(&window, &[0, 0]);
+  let shown = selection(&window, &[0, 0]);
+  assert_eq!(shown.len(), 1);
+  assert!(shown[0].width > text.width / 2.0, "{shown:?} in {text:?}");
+}
+
+#[test]
+fn a_text_selects_nothing_unless_it_is_selectable() {
+  let mut h = Harness::new();
+  let on = h.cx.signal(false);
+  let clicks = Counter::default();
+  let c = clicks.clone();
+  let button =
+    Button::new(Text::new("hello").selectable(move || on.get())).on_click(move |_| c.hit());
+  let window = label(&mut h, button);
+  drag(&window, Point::new(1.0, 10.0), Point::new(3.0, 10.0), 0);
+  assert_eq!(clicks.get(), 1, "the press goes to the button");
+  assert_eq!(window.focused(), None);
+  // Selectable, the text is the deepest target and takes the press.
+  on.set(true);
+  h.frame(&window);
+  drag(
+    &window,
+    Point::new(1.0, 10.0),
+    Point::new(190.0, 10.0),
+    1000,
+  );
+  assert_eq!(clicks.get(), 1);
+  assert_eq!(copied(&window).as_deref(), Some("hello"));
+  // Turned off, it drops its selection and the focus.
+  on.set(false);
+  h.frame(&window);
+  assert_eq!(window.focused(), None);
+  assert!(selection(&window, &[0, 0, 0]).is_empty());
+}
+
+#[test]
+fn a_press_elsewhere_or_a_new_text_drops_the_selection() {
+  let mut h = Harness::new();
+  let words = h.cx.signal(String::from("hello world"));
+  let row = Row::new()
+    .child(Text::new(move || words.get()).selectable(true))
+    .child(Icon::new("x").size(20));
+  let window = label(&mut h, row);
+  let icon = rect_at(&window, &[0, 0, 1]);
+  drag(&window, Point::new(1.0, 10.0), Point::new(190.0, 10.0), 0);
+  assert_eq!(copied(&window).as_deref(), Some("hello world"));
+  window.pointer_motion_at(Point::new(icon.x + 5.0, 10.0), 1000);
+  window.pointer_button_at(PointerButton::Left, true, 1000);
+  window.pointer_button_at(PointerButton::Left, false, 1010);
+  h.frame(&window);
+  assert_eq!(window.focused(), None);
+  assert!(selection(&window, &[0, 0, 0]).is_empty());
+
+  drag(
+    &window,
+    Point::new(1.0, 10.0),
+    Point::new(190.0, 10.0),
+    2000,
+  );
+  // Longer, so the old selection's bytes would still be there.
+  words.set(String::from("bye bye bye bye"));
+  h.frame(&window);
+  assert_eq!(copied(&window), None);
+}
+
+#[test]
+fn tab_skips_a_selectable_text() {
+  let mut h = Harness::new();
+  let text = h.cx.signal(String::new());
+  let row = Row::new()
+    .child(Text::new("label").selectable(true))
+    .child(TextInput::new(text));
+  let window = label(&mut h, row);
+  window.key(&KeyEvent {
+    key: Key::Tab,
+    text: None,
+    modifiers: Modifiers::default(),
+    repeat: false,
+  });
+  assert_eq!(
+    window.focused().as_deref(),
+    Some("PanelWindow[DP-1]/Row/Row[0]/TextInput[1]")
+  );
+}
+
+#[test]
+fn a_selection_runs_across_the_lines_of_a_text() {
+  let mut h = Harness::new();
+  let window = label(&mut h, Text::new("one\ntwo").max_lines(2));
+  // Not selectable: nothing to show.
+  assert!(selection(&window, &[0, 0]).is_empty());
+  let window = label(&mut h, Text::new("one\ntwo").max_lines(2).selectable(true));
+  let text = rect_at(&window, &[0, 0]);
+  drag(
+    &window,
+    Point::new(text.x + 1.0, text.y + 2.0),
+    Point::new(190.0, text.bottom() - 2.0),
+    0,
+  );
+  h.frame(&window);
+  assert_eq!(copied(&window).as_deref(), Some("one\ntwo"));
+  let shown = selection(&window, &[0, 0]);
+  assert_eq!(shown.len(), 2, "{shown:?}");
+  assert!(shown[1].y > shown[0].y);
+  // A double click on the second line selects its word.
+  let second = Point::new(text.x + 5.0, text.bottom() - 4.0);
+  for time in [5000, 5100] {
+    window.pointer_motion_at(second, time);
+    window.pointer_button_at(PointerButton::Left, true, time);
+    window.pointer_button_at(PointerButton::Left, false, time + 10);
+  }
+  assert_eq!(copied(&window).as_deref(), Some("two"));
+  assert_eq!(selection(&window, &[0, 0]).len(), 1, "the first line isn't");
 }

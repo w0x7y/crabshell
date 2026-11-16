@@ -9,6 +9,7 @@ use crate::canvas::CanvasOp;
 use crate::geometry::{Affine, Point, Rect, Size};
 use crate::image::ImageTransition;
 use crate::screencopy::CaptureFrame;
+use crate::select::{highlights, text_selection};
 use crate::style::{Color, Style};
 use crate::text::TextNode;
 use crate::tree::{Node, NodeId, NodeKind, Tree, centered, icon_rect};
@@ -316,6 +317,13 @@ impl<'a> TextView<'a> {
   /// Whether to draw a line through the glyphs, in the text's color.
   pub fn strikethrough(&self) -> bool {
     self.strikethrough
+  }
+
+  /// Where a selectable text's selection shows, in window coordinates,
+  /// to be drawn behind it: a rectangle for each line it covers, or more
+  /// where right-to-left and left-to-right text mix.
+  pub fn selection(&self) -> Vec<Rect> {
+    text_selection(self.text).map_or_else(Vec::new, |range| highlights(self.text, range))
   }
 }
 

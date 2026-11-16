@@ -845,6 +845,44 @@ fn input() {
   }
 }
 
+/// A selectable text on two lines, selected from the middle of the first
+/// to the middle of the second by a drag.
+#[test]
+fn selectable_text() {
+  for (scale, suffix) in SCALES {
+    let mut scene = Scene::new();
+    let panel = scene.panel().style(BAR).child(
+      Row::new().padding(4, 6).child(
+        Text::new("hello world\nselect me")
+          .max_lines(2)
+          .selectable(true),
+      ),
+    );
+    let window = scene.window(panel, 120.0, 44.0);
+    let text = window
+      .view()
+      .root()
+      .children()
+      .next()
+      .expect("a row")
+      .children()
+      .next()
+      .expect("a text")
+      .rect();
+    let (top, bottom) = (
+      text.y + text.height / 4.0,
+      text.bottom() - text.height / 4.0,
+    );
+    window.pointer_motion(crabshell_ui::Point::new(text.x + 20.0, top));
+    window.pointer_button(crabshell_ui::PointerButton::Left, true);
+    window.pointer_motion(crabshell_ui::Point::new(text.x + 30.0, bottom));
+    window.pointer_button(crabshell_ui::PointerButton::Left, false);
+    scene.frame(&window);
+    let buffer = scene.full(&window, scale);
+    assert_golden(&format!("selectable_text@{suffix}"), &buffer);
+  }
+}
+
 #[test]
 fn a_field_draws_only_inside_its_content_box() {
   let mut scene = Scene::new();

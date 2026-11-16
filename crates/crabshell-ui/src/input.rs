@@ -548,6 +548,7 @@ impl Tree {
     let takes = match &node.kind {
       NodeKind::Button(button) => button.enabled,
       NodeKind::Input(_) => true,
+      NodeKind::Text(text) => text.selectable,
       _ => false,
     };
     if rect.contains(point) && takes {
@@ -647,7 +648,7 @@ impl Tree {
       .and_then(|id| self.node(id))
       .map(|node| &node.kind)
     {
-      Some(NodeKind::Input(_)) => CursorShape::Text,
+      Some(NodeKind::Input(_) | NodeKind::Text(_)) => CursorShape::Text,
       Some(NodeKind::Button(button)) => button.cursor,
       _ => CursorShape::Default,
     }
@@ -782,6 +783,9 @@ impl Tree {
   }
 
   fn press(&mut self, button: PointerButton, time: u32) -> Vec<Call> {
+    if button == PointerButton::Left {
+      self.press_away(self.pointer.hovered);
+    }
     // A scroll bar is drawn over what is under it, so it takes the press.
     if let (PointerButton::Left, None, Some(at)) =
       (button, self.pointer.pressed, self.pointer.position)

@@ -586,7 +586,10 @@ impl Painter<'_> {
     }
     self.draw_box(pixmap, node.rect(), style);
     match node.content() {
-      Content::Text(text) => self.text(pixmap, &text),
+      Content::Text(text) => {
+        self.selection(pixmap, &text.selection(), text.color());
+        self.text(pixmap, &text);
+      }
       Content::Icon(icon) => self.icon(pixmap, &icon),
       Content::Image(image) => self.image(pixmap, &image),
       Content::Capture(capture) => self.capture(pixmap, &capture),
@@ -1134,15 +1137,7 @@ impl Painter<'_> {
   /// caret in the text's color.
   fn input_contents(&mut self, pixmap: &mut PixmapMut<'_>, input: &InputView<'_>) {
     let color = input.text.color();
-    for selection in input.selection {
-      let Some(area) = self.grid.rect(*selection) else {
-        continue;
-      };
-      let mut path = PathBuilder::new();
-      path.push_rect(area);
-      let tint = Color::rgba(color.r, color.g, color.b, color.a / 3);
-      fill(pixmap, path, tint, FillRule::Winding);
-    }
+    self.selection(pixmap, input.selection, color);
     self.text(pixmap, &input.text);
     for line in input.underline {
       if let Some(area) = self.grid.rect(*line) {
@@ -1164,6 +1159,18 @@ impl Painter<'_> {
         let mut path = PathBuilder::new();
         path.push_rect(area);
         fill(pixmap, path, color, FillRule::Winding);
+      }
+    }
+  }
+
+  /// A selection, behind text in `color`, in a third of it.
+  fn selection(&mut self, pixmap: &mut PixmapMut<'_>, spans: &[Rect], color: Color) {
+    let tint = Color::rgba(color.r, color.g, color.b, color.a / 3);
+    for span in spans {
+      if let Some(area) = self.grid.rect(*span) {
+        let mut path = PathBuilder::new();
+        path.push_rect(area);
+        fill(pixmap, path, tint, FillRule::Winding);
       }
     }
   }

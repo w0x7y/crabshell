@@ -15,6 +15,7 @@ use crabshell_reactive::{Signal, untrack};
 use crate::cx::Cx;
 use crate::edit::Keyed;
 use crate::input::{Handler, run_isolated};
+use crate::select::copy_key;
 use crate::text_input::AcceptHandler;
 use crate::tree::{Change, NodeId, NodeKind, Tree, borrow};
 use crate::window::Window;
@@ -234,6 +235,9 @@ impl Tree {
           input.refresh();
         });
       }
+      if let Some(old) = old {
+        self.drop_selection(old);
+      }
       self.show_focus(old, false);
       let entered = self.keyboard.entered;
       self.show_focus(id, entered);
@@ -244,8 +248,10 @@ impl Tree {
   /// uses the key.
   fn input_key(&mut self, event: &KeyEvent) -> Option<Typed> {
     let id = self.keyboard.focused?;
-    let NodeKind::Input(input) = &mut self.node_mut(id)?.kind else {
-      return None;
+    let input = match &mut self.node_mut(id)?.kind {
+      NodeKind::Input(input) => input,
+      NodeKind::Text(text) => return copy_key(text, event).map(Typed::Clipboard),
+      _ => return None,
     };
     let keyed = input.edit.key(event, !input.password);
     let accept = keyed == Keyed::Accept;

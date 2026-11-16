@@ -145,6 +145,7 @@ pub(crate) struct TextProps {
   pub(crate) text: Prop<String>,
   pub(crate) elide: Option<Prop<Elide>>,
   pub(crate) max_lines: Option<Prop<u32>>,
+  pub(crate) selectable: Option<Prop<bool>>,
 }
 
 pub(crate) struct IconProps {
@@ -739,9 +740,20 @@ impl Text {
         text: text.into_prop(),
         elide: None,
         max_lines: None,
+        selectable: None,
       },
       common: Common::default(),
     }
+  }
+
+  /// When on, the text takes the pointer with an I-beam: a press, a drag,
+  /// a double click and Shift+click select it, as in a text field, and a
+  /// press takes the keyboard focus, so Ctrl+C copies the selection.
+  /// Inside a [`Button`], it takes the press, so the button doesn't
+  /// click. Tab doesn't stop on it. Off by default.
+  pub fn selectable(mut self, selectable: impl IntoProp<bool>) -> Text {
+    self.text.selectable = Some(selectable.into_prop());
+    self
   }
 
   /// When on, text that doesn't fit ends in "…" instead of being cut off.
