@@ -286,3 +286,39 @@ fn a_current_cell_set_before_the_items_arrive_is_shown_once_they_do() {
   h.frame(&window);
   assert_eq!(offset.get(), 0.0);
 }
+
+#[test]
+fn a_current_cell_that_changes_during_a_fling_leaves_the_view_moving() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0);
+  let current = h.cx.signal(Some(0));
+  let window = grid(&mut h, 1000, 100.0, offset, |grid| {
+    grid.current(move || current.get()).highlight(HIGHLIGHT)
+  });
+  let top = move || Some((offset.get() / 20.0).floor() as usize * 5);
+  window.pointer_motion(Point::new(10.0, 1.0));
+  for n in 0..5 {
+    window.pointer_scroll_at(super::pixels(10.0), n * 10);
+  }
+  window.pointer_scroll_at(super::lift(), 45);
+  current.set(top());
+  h.frame(&window);
+  let start = Instant::now();
+  let mut ticks = 0;
+  while animating() {
+    assert!(ticks < 1000);
+    advance_animations(start + Duration::from_millis(16 * ticks));
+    h.frame(&window);
+    current.set(top());
+    h.frame(&window);
+    ticks += 1;
+  }
+  let gone = offset.get() - 50.0;
+  assert!(
+    (gone - 1000.0 * 1000.0 / 3000.0).abs() < 2.0,
+    "{gone} in {ticks} ticks"
+  );
+  let index = current.get().expect("a current cell");
+  let start = cell(&window, index as u32).expect("it shows").y + offset.get();
+  assert_eq!(highlight(&window).map(|(at, _)| at.y), Some(start));
+}

@@ -1,6 +1,7 @@
 //! [`GridView`], a scrolling grid of cells of one size that builds only
 //! the rows of cells in view.
 
+use std::cell::Cell;
 use std::hash::Hash;
 use std::rc::Rc;
 
@@ -110,7 +111,8 @@ impl GridView {
   /// Keeps the cell at this index in view, scrolling as little as needed
   /// whenever it, the height or the number of columns changes. An index
   /// past the end is scrolled to once the items reach it; `None` scrolls
-  /// nothing.
+  /// nothing. While the grid moves, a change scrolls nothing, as in
+  /// [`ListView::current`](crate::ListView::current).
   pub fn current(mut self, index: impl IntoProp<Option<usize>>) -> GridView {
     self.props.current = Some(index.into_prop());
     self
@@ -260,9 +262,11 @@ where
   // then the current one. The current one is shown too when it, the
   // height or the cells' height changes, or when the items first reach
   // it, but not for a width that keeps the columns.
+  let moving = Rc::new(Cell::new(false));
   let current = current.map(Prop::shared);
   {
     let current = current.clone();
+    let moving = Rc::clone(&moving);
     let mut was = None;
     let mut asked = None;
     cx.effect(move || {
@@ -296,7 +300,8 @@ where
         let wanted = index.filter(|&index| index < count);
         let ask = (index, viewport, row);
         let fresh = asked.replace((ask, wanted.is_some())) != Some((ask, true));
-        if let Some(index) = wanted.filter(|_| regrid || fresh) {
+        // A view in motion goes on, as Qt's does.
+        if let Some(index) = wanted.filter(|_| (regrid || fresh) && !moving.get()) {
           let start = (index / columns) as f32 * row;
           next = keep_in_view(start, start + row, viewport, next);
         }
@@ -370,6 +375,7 @@ where
     }
   }));
   let mut scroll = ScrollView::new(Built(Some(content))).offset(offset);
+  scroll.scroll.moving = Some(moving);
   if let Some(bar) = scroll_bar {
     scroll = scroll.scroll_bar(bar);
   }

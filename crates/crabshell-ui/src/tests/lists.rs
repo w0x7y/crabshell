@@ -682,3 +682,103 @@ fn rows_measured_as_the_items_change_keep_their_lengths() {
     Some(100.0_f32 * 100.0 / 320.0)
   );
 }
+
+/// Five touchpad moves of `step` pixels 10 ms apart, then the lift:
+/// `step` × 100 pixels a second.
+fn swipe(window: &Window, step: f32) {
+  for n in 0..5 {
+    window.pointer_scroll_at(pixels(step), n * 10);
+  }
+  window.pointer_scroll_at(super::lift(), 45);
+}
+
+#[test]
+fn a_current_row_that_changes_during_a_fling_moves_the_highlight_but_not_the_view() {
+  let mut h = Harness::new();
+  let items = h.cx.signal((0..1000).collect());
+  let offset = h.cx.signal(0.0);
+  let current = h.cx.signal(Some(0));
+  let window = list(
+    &mut h,
+    items,
+    |_| 20,
+    offset,
+    |list| list.current(move || current.get()).highlight(HIGHLIGHT),
+  );
+  // As a hover at the top edge would: the row there, often half shown.
+  let top = move || Some((offset.get() / 20.0).floor() as usize);
+  window.pointer_motion(Point::new(10.0, 1.0));
+  swipe(&window, 10.0);
+  current.set(top());
+  h.frame(&window);
+  let start = Instant::now();
+  let mut ticks = 0;
+  while animating() {
+    assert!(ticks < 1000);
+    advance_animations(start + std::time::Duration::from_millis(16 * ticks));
+    h.frame(&window);
+    current.set(top());
+    h.frame(&window);
+    ticks += 1;
+  }
+  // 1000 pixels a second goes 333 more after the swipe's 50, unhindered.
+  let gone = offset.get() - 50.0;
+  assert!(
+    (gone - 1000.0 * 1000.0 / 3000.0).abs() < 2.0,
+    "{gone} in {ticks} ticks"
+  );
+  assert!((40..=50).contains(&ticks), "{ticks} ticks");
+  // The highlight is on the current row; the view stays where it rested.
+  let rested = offset.get();
+  let index = current.get().expect("a current row");
+  let start = row(&window, index as u32).expect("it shows").y + rested;
+  assert_eq!(highlight(&window).map(|(at, _)| at.y), Some(start));
+  h.frame(&window);
+  assert_eq!(offset.get(), rested, "the end of a motion scrolls nothing");
+  // At rest, a new current row is kept in view again.
+  current.set(Some(index + 10));
+  h.frame(&window);
+  assert_eq!(
+    row(&window, index as u32 + 10).map(|rect| rect.bottom()),
+    Some(100.0)
+  );
+}
+
+#[test]
+fn a_view_stopped_by_a_press_a_slow_lift_or_a_notch_keeps_current_in_view_again() {
+  let mut h = Harness::new();
+  let items = h.cx.signal((0..1000).collect());
+  let offset = h.cx.signal(0.0);
+  let current = h.cx.signal(None);
+  let window = list(
+    &mut h,
+    items,
+    |_| 20,
+    offset,
+    |list| list.current(move || current.get()),
+  );
+  window.pointer_motion(Point::new(10.0, 50.0));
+  // Shows row `n` and says whether the view scrolled to it.
+  let shown_after = |h: &mut Harness, n: usize| {
+    current.set(Some(n));
+    h.frame(&window);
+    row(&window, n as u32).is_some_and(|rect| rect.y >= 0.0 && rect.bottom() <= 100.0)
+  };
+  // A press stops a fling, even while it is held.
+  swipe(&window, 10.0);
+  h.frame(&window);
+  window.pointer_button_at(crate::PointerButton::Left, true, 100);
+  assert!(shown_after(&mut h, 200), "while pressed");
+  window.pointer_button_at(crate::PointerButton::Left, false, 110);
+  // Fingers that lift too slowly to fling.
+  window.pointer_scroll_at(pixels(1.0), 1000);
+  window.pointer_scroll_at(pixels(1.0), 1090);
+  window.pointer_scroll_at(super::lift(), 1095);
+  h.frame(&window);
+  assert!(shown_after(&mut h, 400), "after a slow lift");
+  // A wheel's notch stops a fling too.
+  swipe(&window, -10.0);
+  h.frame(&window);
+  window.pointer_scroll(wheel(120));
+  assert!(shown_after(&mut h, 600), "after a notch");
+}

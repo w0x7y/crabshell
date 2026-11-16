@@ -153,6 +153,7 @@ impl ScrollNode {
   /// Stops the motion on the clock where it is, and the gesture's speed;
   /// a touch carries on from the overshoot shown.
   fn halt(&mut self) {
+    self.set_moving(false);
     self.motion.generation += 1;
     self.motion.samples.clear();
     self.motion.raw = self.unrubber(self.overshoot);
@@ -160,6 +161,7 @@ impl ScrollNode {
 
   /// Stops any motion and shows no overshoot, at once.
   pub(crate) fn stop_overshoot(&mut self) -> Change {
+    self.set_moving(false);
     self.motion.generation += 1;
     self.motion.samples.clear();
     self.motion.raw = 0.0;
@@ -177,6 +179,7 @@ impl ScrollNode {
     let Some(now) = self.current() else {
       return (None, Change::None);
     };
+    self.set_moving(true);
     let total = now + self.motion.raw + delta;
     let offset = total.clamp(0.0, self.most);
     self.motion.raw = if self.overshoots { total - offset } else { 0.0 };
@@ -190,6 +193,13 @@ impl ScrollNode {
       Change::None
     };
     ((offset != now).then_some(offset), change)
+  }
+
+  /// Tells a list whether the view is moving.
+  fn set_moving(&self, moving: bool) {
+    if let Some(cell) = &self.moving {
+      cell.set(moving);
+    }
   }
 
   /// The speed of the moves in the 100 ms before `time`, in logical
@@ -387,6 +397,7 @@ impl Tree {
     } else if scroll.kinetic && speed.abs() >= MIN_FLING {
       Phase::Fling { v: speed }
     } else {
+      scroll.set_moving(false);
       return;
     };
     self.start_motion(id, phase);
@@ -495,6 +506,9 @@ impl Tree {
       if to != offset {
         *written = to;
         write = Some((scroll.signal, to));
+      }
+      if !running {
+        scroll.set_moving(false);
       }
       if std::mem::replace(&mut scroll.overshoot, overshoot) != overshoot {
         Change::Place

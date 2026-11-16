@@ -35,6 +35,10 @@ pub(crate) struct ScrollProps {
   /// What a list moved the offset by to keep the rows shown still, which
   /// a fling takes as its own motion rather than a write that stops it.
   pub(crate) shifts: Option<Rc<Cell<f32>>>,
+  /// Whether the view is moving: a touchpad gesture or a drag of its
+  /// child, a fling or a spring-back. A list doesn't scroll to its current
+  /// row meanwhile.
+  pub(crate) moving: Option<Rc<Cell<bool>>>,
 }
 
 /// A box that shows part of its child, which may be taller, and scrolls
@@ -48,7 +52,7 @@ pub(crate) struct ScrollProps {
 ///     .style(Style::new().height(200.0));
 /// ```
 pub struct ScrollView {
-  scroll: ScrollProps,
+  pub(crate) scroll: ScrollProps,
   common: Common,
   child: Box<dyn Widget>,
 }
@@ -64,6 +68,7 @@ impl ScrollView {
         overshoot: None,
         scroll_bar: None,
         shifts: None,
+        moving: None,
       },
       common: Common::default(),
       child: Box::new(child),
@@ -252,7 +257,10 @@ impl ListView {
   /// Keeps the row at this index in view, scrolling as little as needed
   /// whenever it changes. A row not built yet is found by `row_height`,
   /// then shown whole once it is measured. An index past the end is
-  /// scrolled to once the items reach it; `None` scrolls nothing.
+  /// scrolled to once the items reach it; `None` scrolls nothing. While
+  /// the list moves, in a fling, a drag, a touchpad gesture or a
+  /// spring-back, a change scrolls nothing, though a highlight still
+  /// follows it, and the motion's end doesn't scroll back to it.
   pub fn current(mut self, index: impl IntoProp<Option<usize>>) -> ListView {
     self.props.current = Some(index.into_prop());
     self
@@ -565,9 +573,11 @@ where
       }
     });
   }
+  let moving = Rc::new(Cell::new(false));
   let current = current.map(Prop::shared);
   if let Some(current) = current.clone() {
     let lengths = Rc::clone(&lengths);
+    let moving = Rc::clone(&moving);
     let mut asked = None;
     cx.effect(move || {
       let index = current();
@@ -580,7 +590,10 @@ where
         lengths.borrow_mut().seek = None;
         return;
       };
-      if !fresh {
+      // A view in motion goes on, as Qt's does; the highlight still
+      // follows, and the motion's end scrolls nothing.
+      if !fresh || moving.get() {
+        lengths.borrow_mut().seek = None;
         return;
       }
       let viewport = ask.2;
@@ -689,6 +702,7 @@ where
     .offset(offset)
     .horizontal(move || horizontal.get());
   scroll.scroll.shifts = Some(shifts);
+  scroll.scroll.moving = Some(moving);
   if let Some(bar) = scroll_bar {
     scroll = scroll.scroll_bar(bar);
   }

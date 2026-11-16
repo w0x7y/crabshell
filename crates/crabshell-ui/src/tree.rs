@@ -233,6 +233,8 @@ pub(crate) struct ScrollNode {
   pub(crate) motion: Motion,
   /// What a list moved the offset by since a motion last looked.
   pub(crate) shifts: Option<Rc<Cell<f32>>>,
+  /// Told whether the view is moving.
+  pub(crate) moving: Option<Rc<Cell<bool>>>,
 }
 
 pub(crate) struct ImageNode {
@@ -748,6 +750,7 @@ impl Tree {
         overshoot: 0.0,
         motion: Motion::default(),
         shifts: props.shifts.take(),
+        moving: props.moving.take(),
       })),
       ElementKind::Image(_) => NodeKind::Image(ImageNode {
         source: None,
