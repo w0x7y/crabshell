@@ -419,3 +419,206 @@ fn a_list_turned_sideways_measures_its_items_again() {
     Some(100.0)
   );
 }
+
+const HIGHLIGHT: Style = Style::new()
+  .background(crate::Color::rgb(0x45, 0x47, 0x5a))
+  .transition(crate::Transition::new(100).easing(crate::Easing::Linear));
+
+/// The highlight under the content at `content`, if it shows: where it
+/// is moved to and its box's size.
+fn highlight_at(window: &Window, content: &[usize]) -> Option<(Point, crate::Size)> {
+  let view = window.view();
+  let first = node_at(view.root(), content).children().next()?;
+  // The spacer has no children; the highlight has its box.
+  let shape = first.children().next()?.rect();
+  Some((
+    first.style().translate.unwrap_or_default(),
+    crate::Size::new(shape.width, shape.height),
+  ))
+}
+
+/// A vertical list's highlight.
+fn highlight(window: &Window) -> Option<(Point, crate::Size)> {
+  highlight_at(window, &[0, 0, 0])
+}
+
+fn at(x: f32, y: f32) -> Option<Point> {
+  Some(Point::new(x, y))
+}
+
+#[test]
+fn the_highlight_moves_to_the_new_current_row_over_its_transition() {
+  let mut h = Harness::new();
+  let items = h.cx.signal((0..100).collect());
+  let offset = h.cx.signal(0.0);
+  let current = h.cx.signal(Some(1));
+  let window = list(&mut h, items, every_third_tall, offset, |list| {
+    list.current(move || current.get()).highlight(HIGHLIGHT)
+  });
+  // Row 1 is 20 tall, after row 0's 40; the box spans the row.
+  assert_eq!(
+    highlight(&window),
+    Some((Point::new(0.0, 40.0), crate::Size::new(100.0, 20.0)))
+  );
+  current.set(Some(3));
+  h.frame(&window);
+  let start = Instant::now();
+  advance_animations(start);
+  advance_animations(start + std::time::Duration::from_millis(50));
+  assert!(
+    !window.tree.borrow().needs_layout,
+    "a move places the window again without laying it out"
+  );
+  h.frame(&window);
+  // Halfway from 40 to row 3's 80, with row 3's height at once.
+  assert_eq!(
+    highlight(&window),
+    Some((Point::new(0.0, 60.0), crate::Size::new(100.0, 40.0)))
+  );
+  advance_animations(start + std::time::Duration::from_millis(100));
+  h.frame(&window);
+  assert_eq!(highlight(&window).map(|(at, _)| at), at(0.0, 80.0));
+  assert!(
+    !animating() && crate::next_timer().is_none() && !window.needs_layout(),
+    "a highlight at rest wakes nothing"
+  );
+}
+
+#[test]
+fn no_current_row_or_no_style_draws_no_highlight() {
+  let mut h = Harness::new();
+  let items = h.cx.signal((0..10).collect());
+  let offset = h.cx.signal(0.0);
+  let current = h.cx.signal(None);
+  let style = h.cx.signal(Some(HIGHLIGHT));
+  let window = list(
+    &mut h,
+    items,
+    |_| 20,
+    offset,
+    |list| {
+      list
+        .current(move || current.get())
+        .highlight(move || style.get())
+    },
+  );
+  assert_eq!(highlight(&window), None);
+  current.set(Some(2));
+  h.frame(&window);
+  // It appears where the row is, without sliding there.
+  assert_eq!(highlight(&window).map(|(at, _)| at), at(0.0, 40.0));
+  assert!(!animating());
+  style.set(None);
+  h.frame(&window);
+  assert_eq!(highlight(&window), None);
+  style.set(Some(HIGHLIGHT));
+  current.set(Some(12));
+  h.frame(&window);
+  assert_eq!(highlight(&window), None, "past the end");
+}
+
+#[test]
+fn a_row_measured_late_moves_the_highlight_at_once() {
+  let mut h = Harness::new();
+  let items = h.cx.signal((0..100).collect());
+  let offset = h.cx.signal(0.0);
+  let current = h.cx.signal(Some(1));
+  // Every row is 40, twice the estimate.
+  let window = list(
+    &mut h,
+    items,
+    |_| 40,
+    offset,
+    |list| list.current(move || current.get()).highlight(HIGHLIGHT),
+  );
+  assert_eq!(highlight(&window).map(|(at, _)| at), at(0.0, 40.0));
+  // Far off, found by the estimate, then measured in the same layout:
+  // it is there before the first tick, not on its way to the estimate.
+  current.set(Some(50));
+  h.frame(&window);
+  let start = Instant::now();
+  advance_animations(start);
+  h.frame(&window);
+  let shown = row(&window, 50).expect("row 50 shows").y + offset.get();
+  assert_eq!(highlight(&window).map(|(at, _)| at), at(0.0, shown));
+  assert!(shown > 1000.0, "past the estimate's 1000: {shown}");
+}
+
+#[test]
+fn the_highlight_follows_its_row_when_the_items_change_mid_move() {
+  let mut h = Harness::new();
+  let items = h.cx.signal((0..10).collect::<Vec<u32>>());
+  let offset = h.cx.signal(0.0);
+  let current = h.cx.signal(Some(0));
+  let window = list(&mut h, items, every_third_tall, offset, |list| {
+    list.current(move || current.get()).highlight(HIGHLIGHT)
+  });
+  current.set(Some(4));
+  h.frame(&window);
+  let start = Instant::now();
+  advance_animations(start);
+  advance_animations(start + std::time::Duration::from_millis(50));
+  h.frame(&window);
+  // On the way to row 4 at 120, two rows go: index 4 is row 6, at 100,
+  // and the move turns there.
+  let before = highlight(&window).map(|(at, _)| at.y);
+  items.set((2..10).collect());
+  h.frame(&window);
+  advance_animations(start + std::time::Duration::from_millis(66));
+  h.frame(&window);
+  let turning = highlight(&window).map(|(at, _)| at.y);
+  assert!(
+    turning > before && turning < Some(100.0),
+    "{before:?} {turning:?}"
+  );
+  advance_animations(start + std::time::Duration::from_millis(250));
+  h.frame(&window);
+  assert_eq!(highlight(&window).map(|(at, _)| at), at(0.0, 100.0));
+  items.set((0..3).collect());
+  h.frame(&window);
+  assert_eq!(highlight(&window), None, "its row is gone");
+}
+
+#[test]
+fn a_horizontal_lists_highlight_moves_sideways_and_is_as_tall_as_the_list() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0);
+  let current = h.cx.signal(Some(1));
+  let window = across(&mut h, 100, every_third_tall, offset, |list| {
+    list.current(move || current.get()).highlight(HIGHLIGHT)
+  });
+  assert_eq!(
+    highlight_at(&window, &[0, 0, 0, 0]),
+    Some((Point::new(40.0, 0.0), crate::Size::new(20.0, 40.0)))
+  );
+}
+
+#[test]
+fn a_highlight_that_panics_is_logged_with_the_lists_path_and_the_list_runs_on() {
+  let mut h = Harness::new();
+  let items = h.cx.signal((0..10).collect());
+  let offset = h.cx.signal(0.0);
+  let current = h.cx.signal(Some(1));
+  let logs = super::capture_logs(|| {
+    let window = list(
+      &mut h,
+      items,
+      |_| 20,
+      offset,
+      |list| {
+        list.current(move || current.get()).highlight(move || {
+          assert!(current.get() != Some(3), "highlight failure");
+          Some(HIGHLIGHT)
+        })
+      },
+    );
+    current.set(Some(3));
+    h.frame(&window);
+    current.set(Some(8));
+    h.frame(&window);
+    assert_eq!(offset.get(), 80.0, "current still scrolls");
+    assert_eq!(row(&window, 8).map(|rect| rect.bottom()), Some(100.0));
+  });
+  assert!(logs.contains("PanelWindow[DP-1]/ListView"), "{logs}");
+  assert!(logs.contains("highlight failure"), "{logs}");
+}

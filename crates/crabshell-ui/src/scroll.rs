@@ -9,7 +9,7 @@ use std::rc::Rc;
 use crabshell_reactive::{Memo, Signal, untrack};
 
 use crate::cx::Cx;
-use crate::geometry::Size;
+use crate::geometry::{Point, Size};
 use crate::prop::{IntoProp, Prop};
 use crate::style::Style;
 use crate::widgets::{
@@ -188,6 +188,7 @@ struct ListProps {
   kinetic: Option<Prop<bool>>,
   overshoot: Option<Prop<bool>>,
   horizontal: Option<Prop<bool>>,
+  highlight: Option<Prop<Option<Style>>>,
 }
 
 impl ListView {
@@ -220,6 +221,7 @@ impl ListView {
         kinetic: None,
         overshoot: None,
         horizontal: None,
+        highlight: None,
       },
       common: Common::default(),
     }
@@ -253,6 +255,17 @@ impl ListView {
   /// end, scrolls nothing.
   pub fn current(mut self, index: impl IntoProp<Option<usize>>) -> ListView {
     self.props.current = Some(index.into_prop());
+    self
+  }
+
+  /// Draws a box in this style behind the [`current`](Self::current)
+  /// row, as long as the row and across the list. When the current row
+  /// changes, the box moves to it over the style's `transition` rather
+  /// than jumping, and takes its length at once. It is drawn moved, so a
+  /// move repaints but doesn't lay the window out. No current row, or
+  /// `None`, the default, draws none.
+  pub fn highlight(mut self, style: impl IntoProp<Option<Style>>) -> ListView {
+    self.props.highlight = Some(style.into_prop());
     self
   }
 
@@ -384,6 +397,7 @@ where
     kinetic,
     overshoot,
     horizontal,
+    highlight: highlight_style,
   } = props;
   let offset = offset.unwrap_or_else(|| cx.signal(0.0));
   let horizontal = cx.memo(prop_fn(horizontal, false));
@@ -418,6 +432,8 @@ where
   // Set whenever `measured` changes, and whenever a row is measured.
   let remeasure = cx.signal(());
   let measured = cx.signal(());
+  // How often the items changed.
+  let changes = cx.signal(0_u64);
   let all = cx.signal(Vec::<T>::new());
   {
     let (key, lengths) = (Rc::clone(&key), Rc::clone(&lengths));
@@ -438,6 +454,7 @@ where
       lengths.pending.clear();
       drop(lengths);
       all.set(list);
+      changes.update(|n| *n += 1);
       remeasure.set(());
     });
   }
@@ -539,8 +556,8 @@ where
       }
     });
   }
-  if let Some(current) = current {
-    let current = current.shared();
+  let current = current.map(Prop::shared);
+  if let Some(current) = current.clone() {
     let lengths = Rc::clone(&lengths);
     cx.effect(move || {
       let index = current();
@@ -562,8 +579,34 @@ where
       lengths.seek = unmeasured.then_some(index);
     });
   }
-  let rows = Column::new()
-    .style(move || along(horizontal.get(), Style::new(), total()))
+  let mut rows = Column::new().style(move || along(horizontal.get(), Style::new(), total()));
+  // How wide the rows are, or how tall in a horizontal list, for the
+  // highlight.
+  let cross = cx.signal(0.0_f32);
+  if let (Some(style), Some(current)) = (highlight_style, current) {
+    let spot = cx.memo(move || {
+      let index = current()?;
+      let (start, end) =
+        starts.with(|starts| Some((*starts.get(index)?, *starts.get(index + 1)?)))?;
+      let target = (index, changes.get());
+      let (length, across) = (end - start, cross.get());
+      Some(if horizontal.get() {
+        Spot {
+          at: Point::new(start, 0.0),
+          size: Size::new(length, across),
+          target,
+        }
+      } else {
+        Spot {
+          at: Point::new(0.0, start),
+          size: Size::new(across, length),
+          target,
+        }
+      })
+    });
+    rows = rows.child(highlight(cx, cx.memo(prop_fn(Some(style), None)), spot));
+  }
+  let rows = rows
     .child(Stack::new().style(move || {
       let first = starts.with(|starts| starts[range.get().start]);
       along(horizontal.get(), Style::new(), first).shrink(0.0)
@@ -613,6 +656,16 @@ where
       },
     );
   let mut rows = Box::new(rows).into_element();
+  rows.common.measure = Some(Rc::new(move |size: Size| {
+    let across = if horizontal.get_untracked() {
+      size.height
+    } else {
+      size.width
+    };
+    if cross.get_untracked() != across {
+      cross.set(across);
+    }
+  }));
   if let ElementKind::Flex(flex) = &mut rows.kind {
     flex.column_binding = Some((move || !horizontal.get()).into_prop());
   }
@@ -644,6 +697,49 @@ fn along(horizontal: bool, style: Style, length: f32) -> Style {
   } else {
     style.height(length)
   }
+}
+
+/// Where a view's highlight goes in its content: the current item's
+/// corner and size.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) struct Spot {
+  pub(crate) at: Point,
+  pub(crate) size: Size,
+  /// The item it is on: its index and how often the items changed. A
+  /// spot that moves with the same target, as a row is measured, jumps.
+  pub(crate) target: (usize, u64),
+}
+
+/// A box drawn in `style` at `spot`, behind what follows it. The outer
+/// box is moved there by a paint translate over the style's transition,
+/// and the inner one takes the size and the style, so a move fades
+/// without a layout while a new size comes at once.
+pub(crate) fn highlight(cx: &Cx, style: Memo<Option<Style>>, spot: Memo<Option<Spot>>) -> Stack {
+  // A new size alone leaves the move as it is.
+  let place = cx.memo(move || spot.get().map(|spot| (spot.at, spot.target)));
+  let shape = Stack::new().style(move || {
+    let own = style.get().unwrap_or_default();
+    match spot.get() {
+      Some(spot) => own.width(spot.size.width).height(spot.size.height),
+      None => own,
+    }
+  });
+  let mut last = None;
+  Stack::new()
+    .visible(move || style.with(Option::is_some) && spot.with(Option::is_some))
+    .style(move || {
+      // Hidden, so where doesn't matter, and shown again it jumps.
+      let Some((at, target)) = place.get() else {
+        return Style::new().left(0.0).top(0.0);
+      };
+      let moved = last.replace(target) != Some(target);
+      let mover = Style::new().left(0.0).top(0.0).translate(at.x, at.y);
+      match style.get().and_then(|style| style.transition) {
+        Some(transition) if moved => mover.transition(transition),
+        _ => mover,
+      }
+    })
+    .child(shape)
 }
 
 /// `prop` as a closure, or `default` when unset.
