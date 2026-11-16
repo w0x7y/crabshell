@@ -344,6 +344,25 @@ fn other_moves_forget_the_end_of_a_wrapped_line_and_the_place_across() {
 }
 
 #[test]
+fn focusing_a_field_below_a_scroll_views_end_scrolls_it_into_view() {
+  let mut h = Harness::new();
+  let text = h.cx.signal(String::from("x"));
+  let offset = h.cx.signal(0.0_f32);
+  let content = Column::new()
+    .child(crate::Icon::new("x").size(100))
+    .child(TextArea::new(text));
+  let view = ScrollView::new(content)
+    .offset(offset)
+    .style(Style::new().height(2.0 * LINE));
+  let window = h.window(h.panel().child(Column::new().child(view)), 300.0, 200.0);
+  window.keyboard_enter();
+  window.key(&key(Key::Tab));
+  h.frame(&window);
+  // The area's one line ends 100 + 16 down, and the view is 32 high.
+  assert_eq!(offset.get(), 100.0 + LINE - 2.0 * LINE);
+}
+
+#[test]
 fn an_area_removed_after_an_edit_is_skipped_by_the_next_layout() {
   let mut h = Harness::new();
   let text = h.cx.signal(String::new());

@@ -245,6 +245,10 @@ impl Tree {
       self.show_focus(old, false);
       let entered = self.keyboard.entered;
       self.show_focus(id, entered);
+      // The next layout scrolls a newly focused field's caret into view.
+      if let Some(id) = id {
+        self.update_input(id, |_| {});
+      }
     }
   }
 
