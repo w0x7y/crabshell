@@ -433,7 +433,6 @@ impl Painter<'_> {
       // The layer covers what the subtree paints in this area, and for a
       // content shadow what casts the part of it here too.
       let mut area = (x as f32, y as f32, (x + width) as f32, (y + height) as f32);
-      let mut shadow = shadow;
       if let Some(cast) = shadow {
         let (dx, dy, reach) = self.shadow_reach(&cast);
         let Grid {
@@ -455,12 +454,7 @@ impl Painter<'_> {
           area.2.max(area.2 - dx + reach).min(x1 + past),
           area.3.max(area.3 - dy + reach).min(y1 + past),
         );
-        if (grown.2 - grown.0) * (grown.3 - grown.1) <= LAYER_LIMIT as f32 {
-          area = grown;
-        } else {
-          tracing::debug!("{}'s content shadow reaches too far to draw", node.path());
-          shadow = None;
-        }
+        area = grown;
       }
       let (left, top, right, bottom) = area;
       let Some(mut layer) = Pixmap::new((right - left) as u32, (bottom - top) as u32) else {
@@ -551,8 +545,8 @@ impl Painter<'_> {
       inner.height * scale,
     );
     // For a content shadow, the layer holds what casts the part of it
-    // shown here too, unless that is too large to draw.
-    let mut shadow = effects::cast_by_content(style);
+    // shown here too.
+    let shadow = effects::cast_by_content(style);
     let layer_area = |shadow: Option<Shadow>| {
       let (shown, drawn) = match (shown, drawn, shadow) {
         (Some(shown), Some(drawn), Some(cast)) => {
@@ -573,17 +567,10 @@ impl Painter<'_> {
         .and_then(|area| area.outset(LAYER_MARGIN, LAYER_MARGIN))
         .and_then(|area| area.round_out())
     };
-    let mut area = layer_area(shadow);
-    let pixels = |area: tiny_skia::IntRect| u64::from(area.width()) * u64::from(area.height());
-    if shadow.is_some() && area.is_none_or(|area| pixels(area) > LAYER_LIMIT) {
-      tracing::debug!("{}'s content shadow reaches too far to draw", node.path());
-      shadow = None;
-      area = layer_area(None);
-    }
-    let Some(area) = area else {
+    let Some(area) = layer_area(shadow) else {
       return;
     };
-    let pixels = pixels(area);
+    let pixels = u64::from(area.width()) * u64::from(area.height());
     if pixels > LAYER_LIMIT {
       tracing::debug!(
         "{} is transformed into a layer too large to draw",

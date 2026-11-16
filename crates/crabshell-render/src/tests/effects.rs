@@ -472,3 +472,22 @@ fn time_content_shadows() {
     }
   }
 }
+
+#[test]
+fn a_content_shadow_is_drawn_whole_up_to_64_pixels_of_reach_and_not_past() {
+  for scale in [1.0, 1.5, 2.0] {
+    let drawn = |blur: f32| {
+      let mut scene = Scene::new();
+      let shadow = Shadow::new(0.0, 0.0, blur, BLACK).follow_content();
+      let window = window(&mut scene, Style::new().shadow(shadow), 10.0);
+      scene.full(&window, scale)
+    };
+    let plain = {
+      let mut scene = Scene::new();
+      let window = window(&mut scene, Style::new(), 10.0);
+      scene.full(&window, scale)
+    };
+    assert!(drawn(42.0).pixels != plain.pixels, "63 pixels at {scale}");
+    assert!(drawn(43.0).pixels == plain.pixels, "64.5 pixels at {scale}");
+  }
+}

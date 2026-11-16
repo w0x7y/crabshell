@@ -721,3 +721,45 @@ fn a_mask_that_comes_or_goes_repaints_everything_inside_without_a_layout() {
     assert_eq!(window.take_damage(), vec![bounds], "masked: {on}");
   }
 }
+
+#[test]
+fn a_content_shadow_reaching_past_64_pixels_is_left_out_and_logged_once() {
+  use crate::Shadow;
+
+  let mut h = Harness::new();
+  let far = h.cx.signal(true);
+  let logs = super::capture_logs(|| {
+    let row = Row::new().padding(20, 20).align(Align::Start).child(
+      Row::new()
+        .style(move || {
+          // 1.5 blurs and the spread's size: 66 past, then 63.
+          let blur = if far.get() { 40.0 } else { 38.0 };
+          let shadow = Shadow::new(0.0, 0.0, blur, Color::rgb(0, 0, 0)).spread(-6.0);
+          Style::new()
+            .background(Color::rgb(9, 9, 9))
+            .shadow(shadow.follow_content())
+            .width(20.0 + blur)
+        })
+        .padding(6, 6),
+    );
+    let window = h.window(h.panel().child(row), 300.0, 80.0);
+    let rect = rect_at(&window, &[0, 0]);
+    let bounds = super::node_at(window.view().root(), &[0, 0]).bounds();
+    assert_eq!(bounds, rect, "no reach past the box");
+    // Laid out again, still too far: no second line.
+    far.set(false);
+    h.frame(&window);
+    far.set(true);
+    h.frame(&window);
+    far.set(false);
+    h.frame(&window);
+    let rect = rect_at(&window, &[0, 0]);
+    let bounds = super::node_at(window.view().root(), &[0, 0]).bounds();
+    assert!(bounds.width > rect.width, "63 is drawn");
+  });
+  assert_eq!(
+    logs.matches("PanelWindow[DP-1]/Row/Row").count(),
+    1,
+    "{logs}"
+  );
+}

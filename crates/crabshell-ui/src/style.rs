@@ -538,6 +538,16 @@ impl Shadow {
     }
   }
 
+  /// Whether this shadow is cast by the content and can be: its numbers
+  /// are finite and it reaches at most 64 logical pixels past what casts
+  /// it, the size of its spread plus one and a half blurs. One reaching
+  /// farther is left out whole and the content drawn without it, so the
+  /// work of casting it stays bounded.
+  pub fn casts_from_content(&self) -> bool {
+    let reach = self.spread.abs() + 1.5 * self.blur.max(0.0);
+    self.follow_content && [self.x, self.y, reach].iter().all(|n| n.is_finite()) && reach <= 64.0
+  }
+
   /// The area this shadow of `rect` covers: its shape, grown by one and a
   /// half blurs, past which the blur fades below a 255th. A spread that
   /// swallows the box still reaches between the edges it would have, so

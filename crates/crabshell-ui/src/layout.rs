@@ -273,11 +273,21 @@ impl Tree {
     // Inside the transform: the shadow turns with what casts it. A fading
     // one reaches anywhere between its start and its end.
     let fading = node.fade.as_ref().map(|fade| fade.from);
+    let refused = node
+      .effective_style()
+      .shadow
+      .is_some_and(|shadow| shadow.follow_content && !shadow.casts_from_content());
+    if refused && !std::mem::replace(&mut node.shadow_refused, true) {
+      tracing::warn!(
+        "{}: a content shadow reaching more than 64 pixels past its content isn't drawn",
+        node.path
+      );
+    }
     let shadows = [Some(node.effective_style()), fading]
       .into_iter()
       .flatten()
       .filter_map(|style| style.shadow)
-      .filter(|shadow| shadow.follow_content);
+      .filter(Shadow::casts_from_content);
     chain.extend(shadows.map(Step::Shadow));
     let mut children = Rect::default();
     for child in self.taffy.children(id).unwrap_or_default() {

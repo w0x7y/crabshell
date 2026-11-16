@@ -152,9 +152,7 @@ impl Painter<'_> {
 /// casts one that shows.
 pub(super) fn cast_by_content(style: &Style) -> Option<Shadow> {
   let shadow = style.shadow?;
-  let numbers = [shadow.x, shadow.y, shadow.blur, shadow.spread];
-  (shadow.follow_content && shadow.color.a > 0 && numbers.iter().all(|n| n.is_finite()))
-    .then_some(shadow)
+  (shadow.casts_from_content() && shadow.color.a > 0).then_some(shadow)
 }
 
 /// Runs `op` on every row of `values`, then on every column, each time
