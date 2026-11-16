@@ -400,10 +400,12 @@ impl ExampleBar {
   /// is the private Sway's, never this process's. Its `PULSE_SERVER` is
   /// a socket that doesn't exist, unless `extra` names a private server:
   /// unset, libpulse could find the desktop's through HOME's client.conf.
+  /// Its `PATH` is this process's, unless `extra` gives one.
   fn spawn(sway: &Sway, mut command: Command, extra: &[(&str, &str)]) -> ExampleBar {
     command.env_clear();
     let nowhere = sway.runtime_dir().join("no-pulse-server");
     command.env("PULSE_SERVER", format!("unix:{}", nowhere.display()));
+    command.env("PATH", std::env::var_os("PATH").unwrap_or_default());
     for (name, value) in extra {
       command.env(name, value);
     }
@@ -412,7 +414,6 @@ impl ExampleBar {
       .map(|name| name.to_string_lossy().into_owned())
       .unwrap_or_default();
     let mut child = command
-      .env("PATH", std::env::var_os("PATH").unwrap_or_default())
       .env("HOME", std::env::var_os("HOME").unwrap_or_default())
       .env("XDG_RUNTIME_DIR", sway.runtime_dir())
       .env("WAYLAND_DISPLAY", sway.display())
@@ -1439,6 +1440,8 @@ fn run_as_child() {
       cx.effect(move || eprintln!("the session is locked: {}", shown.get()));
       cx.per_output(counter::bar);
     }),
+    // The notes example, whose links panic instead of opening.
+    Ok("notes") => crabshell::run(|cx| notes::shell(cx, |_, _| panic!("no browser"))),
     // The dashboard example with each of its feeds pinned.
     Ok("dashboard") => crabshell::run(|cx| {
       let art = std::env::var("DASHBOARD_ART").unwrap_or_default();
@@ -2548,20 +2551,26 @@ impl Desktop {
 
   /// [`notify`](Self::notify) with `body`.
   fn notify_with(&self, summary: &str, body: &str, timeout_ms: i32) -> String {
-    let output = Command::new("gdbus")
-      .args(["call", "--address", &self.session.address])
-      .args(["--dest", "org.freedesktop.Notifications"])
-      .args(["--object-path", "/org/freedesktop/Notifications"])
-      .args(["--method", "org.freedesktop.Notifications.Notify"])
-      .args(["exit-check", "0", "", summary, body, "[]", "{}"])
-      .arg(timeout_ms.to_string())
-      .env_clear()
-      .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-      .output()
-      .expect("gdbus runs");
-    assert!(output.status.success(), "gdbus: {output:?}");
-    String::from_utf8_lossy(&output.stdout).into_owned()
+    notify_on(&self.session.address, summary, body, timeout_ms)
   }
+}
+
+/// Sends a notification on the bus at `address`, as an app would, and
+/// returns gdbus's answer.
+fn notify_on(address: &str, summary: &str, body: &str, timeout_ms: i32) -> String {
+  let output = Command::new("gdbus")
+    .args(["call", "--address", address])
+    .args(["--dest", "org.freedesktop.Notifications"])
+    .args(["--object-path", "/org/freedesktop/Notifications"])
+    .args(["--method", "org.freedesktop.Notifications.Notify"])
+    .args(["exit-check", "0", "", summary, body, "[]", "{}"])
+    .arg(timeout_ms.to_string())
+    .env_clear()
+    .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+    .output()
+    .expect("gdbus runs");
+  assert!(output.status.success(), "gdbus: {output:?}");
+  String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 /// Waits until two screenshots in a row, 300 ms apart, are the same.
@@ -4834,6 +4843,9 @@ const NOTES_SENT: [(&str, &str); 3] = [
   ),
 ];
 
+/// Where the link in [`NOTES_SENT`] goes.
+const NOTES_LINK: &str = "https://example.org/log";
+
 /// `at` as the notes example's clock shows it.
 fn notes_time(at: &str) -> crabshell::jiff::Zoned {
   let at: crabshell::jiff::civil::DateTime = at.parse().expect("a date and time");
@@ -4854,10 +4866,68 @@ fn notes_notifications() -> Vec<Notification> {
     .collect()
 }
 
+/// Sends [`NOTES_SENT`] on the bus at `address`, once something serves
+/// notifications there.
+fn notify_notes(address: &str) {
+  let deadline = Instant::now() + TIMEOUT;
+  let served = || {
+    let output = Command::new("gdbus")
+      .args(["call", "--address", address])
+      .args(["--dest", "org.freedesktop.DBus"])
+      .args(["--object-path", "/org/freedesktop/DBus"])
+      .args(["--method", "org.freedesktop.DBus.NameHasOwner"])
+      .arg("org.freedesktop.Notifications")
+      .output()
+      .expect("gdbus runs");
+    String::from_utf8_lossy(&output.stdout).contains("true")
+  };
+  while !served() {
+    assert!(Instant::now() < deadline, "nothing serves notifications");
+    std::thread::sleep(Duration::from_millis(50));
+  }
+  for (summary, body) in NOTES_SENT {
+    notify_on(address, summary, body, 0);
+  }
+}
+
 /// Where the notes panel is in an output's logical pixels: 8 in from the
 /// top right of an output `layout` wide.
 fn notes_origin(layout: (u32, u32)) -> (f32, f32) {
   ((layout.0 - 8 - notes::WIDTH) as f32, 8.0)
+}
+
+/// The notes panel's link in [`NOTES_SENT`]: the middle of its glyphs in
+/// the window, and its text's widget path.
+fn notes_link(platform: &Platform) -> ((f32, f32), String) {
+  let id = window_named(platform, "notes");
+  let (_, window) = platform
+    .windows()
+    .find(|(held, _)| *held == id)
+    .expect("the panel is held");
+  let body = parse_markup(NOTES_SENT[2].1);
+  // A glyph's metadata is its span's index plus one.
+  let link = 1
+    + body
+      .iter()
+      .position(|span| span.link.is_some())
+      .expect("a link");
+  fn find(node: NodeView<'_>, link: usize) -> Option<((f32, f32), String)> {
+    if let Content::Text(text) = node.content() {
+      for run in text.runs() {
+        let glyphs: Vec<_> = run.glyphs.iter().filter(|g| g.metadata == link).collect();
+        if let (Some(first), Some(last)) = (glyphs.first(), glyphs.last())
+          && run.text.contains("the log")
+        {
+          let origin = text.origin();
+          let x = origin.x + (first.x + last.x + last.w) / 2.0;
+          let y = origin.y + run.line_top + run.line_height / 2.0;
+          return Some(((x, y), node.path().to_owned()));
+        }
+      }
+    }
+    node.children().find_map(|child| find(child, link))
+  }
+  find(window.view().root(), link).expect("the link is laid out")
 }
 
 /// The middle of the notes panel's note area, in the window.
@@ -4875,6 +4945,29 @@ fn notes_area(platform: &Platform) -> (f32, f32) {
   }
   let area = find(window.view().root()).expect("the note area");
   (area.x + area.width / 2.0, area.y + area.height / 2.0)
+}
+
+/// The notes panel for [`notes_notifications`] at `scale`, built in this
+/// process with plain signals, as the example lays it out: where its
+/// link is on an output `layout` big, and its path. Nothing is clicked,
+/// so the desktop's session bus is never asked for notifications.
+fn notes_link_on_screen(sway: &Sway, layout: (u32, u32)) -> ((u32, u32), String) {
+  let mut shell = Shell::new(sway.connect(), |cx| {
+    let feeds = notes::Feeds {
+      now: cx.signal(notes_time(NOTES_NOW)).read_only(),
+      notifications: cx.signal(notes_notifications()).read_only(),
+      open: |_, _| {},
+    };
+    cx.per_output(move |cx, output| notes::panel(cx, output, feeds));
+  })
+  .expect("the root closure runs");
+  run_until(&mut shell, "the panel's first frame", |platform| {
+    shown_on(platform, "HEADLESS-1").is_some()
+  });
+  settle(&mut shell);
+  let ((x, y), path) = notes_link(shell.platform());
+  let (left, top) = notes_origin(layout);
+  (((left + x) as u32, (top + y) as u32), path)
 }
 
 /// Part of Phase 17's exit check, in this process with plain signals for
@@ -4976,4 +5069,140 @@ fn the_notes_clock_holds_its_width_and_its_note_takes_keys_and_input_method_text
     .dispatch(Some(Duration::from_secs(1)))
     .expect("the connection works");
   sleeps(&mut shell);
+}
+
+/// A fake `xdg-open` in its own directory, which writes the URL it is
+/// given to `opened` beside it, for a `PATH` that finds it first.
+struct FakeOpener {
+  dir: PathBuf,
+}
+
+impl FakeOpener {
+  fn new() -> FakeOpener {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("opener-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("the opener's directory");
+    let script = dir.join("xdg-open");
+    let body = "#!/bin/sh\nprintf '%s' \"$1\" > \"$(dirname \"$0\")/opened.part\"\n\
+                mv \"$(dirname \"$0\")/opened.part\" \"$(dirname \"$0\")/opened\"\n";
+    std::fs::write(&script, body).expect("write the opener");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+      .expect("make it runnable");
+    FakeOpener { dir }
+  }
+
+  /// This directory, then this process's `PATH`.
+  fn path(&self) -> String {
+    let rest = std::env::var("PATH").unwrap_or_default();
+    format!("{}:{rest}", self.dir.display())
+  }
+
+  /// The URL it was run with, once it has been.
+  fn opened(&self) -> String {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+      if let Ok(url) = std::fs::read_to_string(self.dir.join("opened")) {
+        return url;
+      }
+      assert!(Instant::now() < deadline, "xdg-open never ran");
+      std::thread::sleep(Duration::from_millis(50));
+    }
+  }
+}
+
+impl Drop for FakeOpener {
+  fn drop(&mut self) {
+    let _ = std::fs::remove_dir_all(&self.dir);
+  }
+}
+
+/// Phase 17's exit check: the notes example, on a private session bus
+/// with its clock stopped at 11:11:11 and three notifications sent with
+/// markup, matches its goldens at all five scales; a click on the link in
+/// a body runs `xdg-open` with its URL, a fake one first on a private
+/// `PATH`; and then the shell wakes nothing for a minute.
+#[test]
+#[ignore = "needs headless Sway"]
+fn the_notes_example_shows_markup_opens_a_link_and_sleeps() {
+  let bus = PrivateBus::start();
+  let opener = FakeOpener::new();
+  let path = opener.path();
+  let env = [
+    ("DBUS_SESSION_BUS_ADDRESS", bus.address.as_str()),
+    ("NOTES_NOW", NOTES_NOW),
+    ("PATH", path.as_str()),
+  ];
+  for scale in ["1", "1.25", "1.5", "1.75", "2"] {
+    let sway = Sway::start();
+    sway.msg(&["output", "HEADLESS-1", "mode", CONTROL_MODE, "scale", scale]);
+    let shell = ExampleBar::start(&sway, "notes", true, &env);
+    shell.wait_for(FIRST_FRAME);
+    notify_notes(&bus.address);
+    let shot = steady_shot(&sway, "HEADLESS-1");
+    check_golden(&format!("notes@{scale}x"), &shot, shot.height);
+  }
+
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", CONTROL_MODE, "scale", "1"]);
+  let ((x, y), _) = notes_link_on_screen(&sway, CONTROL_LAYOUT);
+  let mut pointer = VirtualPointer::new(&sway);
+  let shell = ExampleBar::start(&sway, "notes", true, &env);
+  shell.wait_for(FIRST_FRAME);
+  notify_notes(&bus.address);
+  steady_shot(&sway, "HEADLESS-1");
+  pointer.move_to(x, y, CONTROL_LAYOUT);
+  pointer.click();
+  assert_eq!(opener.opened(), NOTES_LINK);
+
+  // Asleep: no wakeups for a minute.
+  shell.wait_until_quiet();
+  let wakeups = shell.wakeups_for(Duration::from_secs(60));
+  assert!(wakeups.is_empty(), "woke while idle: {wakeups:?}");
+}
+
+/// Part of Phase 17's exit check: a link handler in the notes panel that
+/// panics is logged with its widget path, and the shell runs on, its
+/// server still taking notifications.
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_panicking_link_in_the_notes_panel_is_logged_with_its_path_and_the_shell_runs_on() {
+  run_as_child();
+  let bus = PrivateBus::start();
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", CONTROL_MODE, "scale", "1"]);
+  let ((x, y), path) = notes_link_on_screen(&sway, CONTROL_LAYOUT);
+  let mut pointer = VirtualPointer::new(&sway);
+  let mut shell = ExampleBar::spawn(
+    &sway,
+    this_as_shell(
+      "a_panicking_link_in_the_notes_panel_is_logged_with_its_path_and_the_shell_runs_on",
+    ),
+    &[
+      (CHILD, "notes"),
+      ("DBUS_SESSION_BUS_ADDRESS", &bus.address),
+      ("NOTES_NOW", NOTES_NOW),
+    ],
+  );
+  shell.wait_for(FIRST_FRAME);
+  notify_notes(&bus.address);
+  steady_shot(&sway, "HEADLESS-1");
+  pointer.move_to(x, y, CONTROL_LAYOUT);
+  pointer.click();
+  let line = shell.wait_for("on_link panicked");
+  // A keyed child's index in a path is its place when it was built, and
+  // here the cards came one at a time, the link's last.
+  let (card, text) = path
+    .split_once("/Button[0]/")
+    .expect("the link is in the first card");
+  let expected = format!("handler {card}/Button[2]/{text}.on_link panicked and is disabled");
+  assert!(line.contains(&expected), "{line:?} names {expected:?}");
+  notify_on(&bus.address, "After", "the panic", 0);
+  assert!(
+    shell
+      .child
+      .try_wait()
+      .expect("the shell's status")
+      .is_none(),
+    "the shell runs on"
+  );
 }
