@@ -4556,18 +4556,21 @@ fn own_rss_mib() -> f64 {
 /// loop sleeps. Run it in a release build for the frame time:
 /// `env -u SWAYSOCK cargo test --release -p crabshell --test headless a_1080p -- --ignored --nocapture`.
 ///
-/// It runs again as a child with glibc's mmap threshold pinned at 1 MiB.
-/// Left to move, the threshold rises to the size of a large block once
-/// one is freed, so the next picture is put on the heap, and a picture
-/// freed there leaves the RSS at its high-water mark.
+/// It runs again as a child with the `GLIBC_TUNABLES` the supervisor
+/// starts every shell with, so it checks what `crabshell run` gives a
+/// real shell: glibc's mmap threshold pinned at 128 KiB. Left to move, the
+/// threshold rises to the size of a large block once one is freed, so the
+/// next picture is put on the heap, and a picture freed there leaves the
+/// RSS at its high-water mark. Run with `GLIBC_TUNABLES` set to anything
+/// else, it checks that process as it is.
 #[test]
 #[ignore = "needs headless Sway"]
 fn a_1080p_wallpaper_crossfade_holds_both_pictures_only_while_it_runs() {
-  const THRESHOLD: &str = "MALLOC_MMAP_THRESHOLD_";
-  if std::env::var_os(THRESHOLD).is_none() {
+  if std::env::var_os("GLIBC_TUNABLES").is_none() {
     let status =
       this_as_shell("a_1080p_wallpaper_crossfade_holds_both_pictures_only_while_it_runs")
-        .env(THRESHOLD, "1048576")
+        // crabshell-cli's `supervise::TUNABLE`.
+        .env("GLIBC_TUNABLES", "glibc.malloc.mmap_threshold=131072")
         .status()
         .expect("the test runs again");
     assert!(status.success(), "the crossfade check failed: {status}");
