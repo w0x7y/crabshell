@@ -131,8 +131,7 @@ pub fn shell(cx: &Cx, feeds: Feeds) {
   cx.set_icon_theme(ICON_THEME);
   let wallpaper = cx.signal(std::env::var_os("WALLPAPER").map(PathBuf::from));
   cx.ipc("wallpaper", "set", move |args| {
-    let path = args.first().ok_or("set takes the picture's path")?;
-    wallpaper.set(Some(PathBuf::from(path)));
+    wallpaper.set(Some(wallpaper_path(args)?));
     Ok(String::new())
   });
   let outputs = cx.outputs();
@@ -153,6 +152,16 @@ pub fn shell(cx: &Cx, feeds: Feeds) {
   cx.ipc("dashboard", "open", move |_| show(true));
   cx.ipc("dashboard", "close", move |_| show(false));
   dashboard(cx, shown.read_only(), feeds);
+}
+
+/// The picture `wallpaper set` names. A relative path would resolve
+/// against the shell's own directory, so only an absolute one is taken.
+pub fn wallpaper_path(args: &[String]) -> Result<PathBuf, String> {
+  args
+    .first()
+    .map(PathBuf::from)
+    .filter(|path| path.is_absolute())
+    .ok_or_else(|| String::from("set takes an absolute path"))
 }
 
 /// What the dashboard shows, so the tests can pin each of them.

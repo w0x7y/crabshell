@@ -4680,3 +4680,16 @@ fn opening_an_open_dashboard_keeps_its_windows_and_cpu_history() {
     "the same CPU history"
   );
 }
+
+#[test]
+fn the_dashboards_wallpaper_takes_absolute_paths_only() {
+  let args = |args: &[&str]| args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+  assert_eq!(
+    dashboard::wallpaper_path(&args(&["/home/me/hills.jpg"])),
+    Ok(PathBuf::from("/home/me/hills.jpg"))
+  );
+  let refused = Err(String::from("set takes an absolute path"));
+  for bad in [&[][..], &[""], &["hills.jpg"], &["./hills.jpg"]] {
+    assert_eq!(dashboard::wallpaper_path(&args(bad)), refused, "{bad:?}");
+  }
+}
