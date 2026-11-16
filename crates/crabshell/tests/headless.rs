@@ -4433,6 +4433,9 @@ fn the_dashboard_reads_album_art_from_file_urls_only() {
 fn the_dashboard_reads_the_cpus_use_from_proc_stat() {
   let stat = "cpu  100 5 50 800 45 0 0 0 0 0\ncpu0 50 2 25 400 20 0 0 0 0 0\n";
   assert_eq!(dashboard::cpu_times(stat), Some((155, 1000)));
+  // Guest time is already counted in user and nice time.
+  let guests = "cpu  100 5 50 800 45 0 0 0 30 2\n";
+  assert_eq!(dashboard::cpu_times(guests), Some((155, 1000)));
   assert_eq!(
     dashboard::usage((155, 1000), (205, 1100)),
     Some(0.5),

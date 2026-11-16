@@ -594,7 +594,8 @@ fn read_cpu() -> Option<(u64, u64)> {
 
 /// The busy and total time of all CPUs from the first line of
 /// `/proc/stat`, in its ticks, or `None` for one that doesn't parse. Idle
-/// and waiting for I/O count as not busy.
+/// and waiting for I/O count as not busy. Only the first eight fields
+/// count: the kernel counts guest time in user and nice time already.
 pub fn cpu_times(stat: &str) -> Option<(u64, u64)> {
   let mut fields = stat.lines().next()?.split_whitespace();
   if fields.next()? != "cpu" {
@@ -603,6 +604,7 @@ pub fn cpu_times(stat: &str) -> Option<(u64, u64)> {
   let times: Vec<u64> = fields.map(str::parse).collect::<Result<_, _>>().ok()?;
   let total = times
     .iter()
+    .take(8)
     .try_fold(0_u64, |sum, time| sum.checked_add(*time))?;
   let idle = times.get(3)? + times.get(4).copied().unwrap_or(0);
   Some((total.checked_sub(idle)?, total))
