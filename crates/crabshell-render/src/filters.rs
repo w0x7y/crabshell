@@ -15,7 +15,7 @@ pub(crate) fn apply(pixmap: &mut Pixmap, filters: &ImageFilters, scale: f32) {
   }
   colors(pixmap.data_mut(), filters);
   let sigma = filters.blur * scale;
-  if sigma.is_finite() && sigma > 0.0 {
+  if sigma > 0.0 {
     let (width, height) = (pixmap.width() as usize, pixmap.height() as usize);
     blur(pixmap.data_mut(), width, height, sigma);
   }
@@ -83,9 +83,12 @@ fn colors(data: &mut [u8], filters: &ImageFilters) {
 /// approximation the Filter Effects spec allows. Pixels past an edge
 /// repeat the edge pixel, so the picture's edge stays as opaque as it was.
 pub(crate) fn blur(data: &mut [u8], width: usize, height: usize, sigma: f32) {
-  if width == 0 || height == 0 {
+  if width == 0 || height == 0 || sigma.is_nan() || sigma <= 0.0 {
     return;
   }
+  // Past the longer side, every pixel is the same edge-weighted average,
+  // and box sums stay well inside a u32.
+  let sigma = sigma.min(width.max(height) as f32);
   let mut scratch = vec![0; data.len()];
   for radius in box_radii(sigma) {
     if radius == 0 {

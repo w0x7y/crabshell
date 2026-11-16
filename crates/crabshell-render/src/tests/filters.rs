@@ -311,3 +311,31 @@ fn repainting_part_of_a_filtered_image_matches_drawing_everything() {
     }
   }
 }
+
+#[test]
+fn a_huge_blur_is_the_blur_of_the_picture_s_longer_side_and_ends_quickly() {
+  let (width, height) = (24, 12);
+  let picture: Vec<u8> = (0..width * height)
+    .flat_map(|index| [(index * 7 % 256) as u8, 0, 0, 255])
+    .collect();
+  let blurred = |sigma| {
+    let mut data = picture.clone();
+    blur(&mut data, width, height, sigma);
+    data
+  };
+  let longest = blurred(24.0);
+  let started = std::time::Instant::now();
+  assert_eq!(blurred(1e9), longest);
+  assert_eq!(blurred(f32::MAX), longest);
+  assert_eq!(blurred(f32::INFINITY), longest);
+  assert!(started.elapsed() < std::time::Duration::from_secs(1));
+  // Through the filters, where blur times scale overflows to infinity.
+  let mut pixmap = Pixmap::new(width as u32, height as u32).expect("a pixmap");
+  pixmap.data_mut().copy_from_slice(&picture);
+  let huge = ImageFilters {
+    blur: f32::MAX,
+    ..NONE
+  };
+  apply(&mut pixmap, &huge, 2.0);
+  assert_eq!(pixmap.data(), longest);
+}
