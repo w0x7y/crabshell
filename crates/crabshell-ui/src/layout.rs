@@ -630,6 +630,7 @@ fn taffy_style(node: &Node, parent: Parent, size: crate::Size) -> taffy::Style {
     | NodeKind::Icon(_)
     | NodeKind::Image(_)
     | NodeKind::Capture(_)
+    | NodeKind::Canvas(_)
     | NodeKind::Input(_) => {}
   }
   if !node.visible {

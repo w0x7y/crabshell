@@ -67,6 +67,7 @@ pub(crate) enum ElementKind {
   Icon(IconProps),
   Image(ImageProps),
   Capture(ScreencopyProps),
+  Canvas(Box<dyn FnMut(&mut crate::canvas::Pen)>),
   // Boxed: a button's handlers make it the largest by far.
   Button(Box<ButtonProps>),
   // Boxed: its scroll bar's style makes it large.

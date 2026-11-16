@@ -18,6 +18,7 @@ use crabshell_reactive::Signal;
 use taffy::TaffyTree;
 
 use crate::animation::{self, Transition};
+use crate::canvas::CanvasNode;
 use crate::cx::{Anchor, Cx};
 use crate::floating::FloatingState;
 use crate::geometry::{Affine, Point, Rect, Size};
@@ -177,6 +178,7 @@ pub(crate) enum NodeKind {
   Icon(IconNode),
   Image(ImageNode),
   Capture(CaptureNode),
+  Canvas(CanvasNode),
   // Boxed: its scroll bar's style makes it large.
   Scroll(Box<ScrollNode>),
   Input(Box<InputNode>),
@@ -439,6 +441,7 @@ impl Node {
         | NodeKind::Icon(_)
         | NodeKind::Image(_)
         | NodeKind::Capture(_)
+        | NodeKind::Canvas(_)
         | NodeKind::Input(_)
     ) || style.background.is_some()
       || style.gradient.is_some()
@@ -759,6 +762,7 @@ impl Tree {
         fit: Fit::default(),
       }),
       ElementKind::Capture(_) => NodeKind::Capture(CaptureNode::new()),
+      ElementKind::Canvas(_) => NodeKind::Canvas(CanvasNode::default()),
       ElementKind::Icon(_) => NodeKind::Icon(IconNode {
         source: None,
         size: crate::Icon::DEFAULT_SIZE,
@@ -945,6 +949,7 @@ impl Tree {
         });
       }
       ElementKind::Capture(props) => self.bind_capture(id, props),
+      ElementKind::Canvas(paint) => self.bind_canvas(id, paint),
       ElementKind::Icon(props) => {
         self.bind(id, props.source, "icon", |tree, id, value| {
           tree.update_icon(id, |icon| match replace(&mut icon.source, Some(value)) {

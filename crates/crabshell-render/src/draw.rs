@@ -532,7 +532,7 @@ impl Painter<'_> {
       Content::Image(image) => self.image(pixmap, &image),
       Content::Capture(capture) => self.capture(pixmap, &capture),
       Content::Input(input) => self.input(pixmap, &input),
-      Content::None => {}
+      Content::Canvas(_) | Content::None => {}
     }
     if node.clips() {
       self.clipped_children(pixmap, node, style);

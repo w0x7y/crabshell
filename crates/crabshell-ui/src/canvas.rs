@@ -1,7 +1,27 @@
-//! The plain data a canvas draws: [`Path`], [`Paint`] and [`Stroke`].
+//! [`Canvas`], a widget a config draws on with paths, and the plain data
+//! it records: [`Path`], [`Paint`] and [`Stroke`]. ui only records the
+//! drawing; `crabshell-render` draws it.
 
-use crate::geometry::{Point, Rect};
-use crate::style::{Color, Gradient};
+use std::rc::Rc;
+
+use crate::geometry::{Point, Rect, Size};
+use crate::style::{Color, Gradient, Style};
+use crate::tree::{Change, NodeId, NodeKind, Tree, borrow};
+use crate::widgets::{Common, Element, ElementKind, Widget, visibility_methods};
+
+/// The most path commands and dash lengths one run of a paint closure
+/// keeps, so a runaway loop can't eat memory: 16,384 is eight lines
+/// across a 2048-pixel-wide graph, a point a pixel, at about 0.5 MiB.
+const MOST_COMMANDS: usize = 16_384;
+
+/// The largest number a canvas takes as a coordinate, radius, width or
+/// dash, in logical pixels. Past it a number is a mistake, and the
+/// renderer's arithmetic would lose it.
+const MOST_COORDINATE: f32 = 1.0e6;
+
+/// The most dashes one stroke may be cut into, as far as its length can
+/// be told before it is drawn.
+const MOST_DASHES: f32 = 100_000.0;
 
 /// How a [`Canvas`] paints a path: in one color, or in a gradient laid
 /// over the canvas's box, as a style's is.
@@ -300,5 +320,310 @@ impl Stroke {
     self.dash = pattern.to_vec();
     self.dash_offset = offset;
     self
+  }
+}
+
+/// One drawing a paint closure recorded, for the renderer.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CanvasOp {
+  /// The inside of a path, by the nonzero winding rule.
+  Fill(Path, Paint),
+  /// Along a path.
+  Stroke(Path, Stroke),
+}
+
+/// What a [`Canvas`]'s paint closure draws with. Each run starts with a
+/// clean canvas, and what it draws replaces the last run's drawing.
+pub struct Pen {
+  size: Size,
+  ops: Vec<CanvasOp>,
+  commands: usize,
+  /// Why the first drawing it skipped was skipped.
+  skipped: Option<String>,
+}
+
+impl Pen {
+  fn new(size: Size) -> Pen {
+    Pen {
+      size,
+      ops: Vec::new(),
+      commands: 0,
+      skipped: None,
+    }
+  }
+
+  /// The canvas's size in logical pixels, from its last layout.
+  pub fn size(&self) -> Size {
+    self.size
+  }
+
+  /// Fills the inside of `path` with `paint`, a [`Color`] or a
+  /// [`Gradient`] laid over the canvas's box.
+  pub fn fill(&mut self, path: &Path, paint: impl Into<Paint>) {
+    let commands = path.commands.len();
+    match check_path(path) {
+      Ok(()) => self.record(CanvasOp::Fill(path.clone(), paint.into()), commands),
+      Err(reason) => self.skip(reason),
+    }
+  }
+
+  /// Draws along `path` with `stroke`.
+  pub fn stroke(&mut self, path: &Path, stroke: &Stroke) {
+    if stroke.width == 0.0 {
+      return;
+    }
+    let checked = check_path(path).and_then(|()| check_stroke(path, stroke));
+    match checked {
+      Ok(dash) => {
+        let commands = path.commands.len() + dash.len();
+        let stroke = Stroke {
+          dash,
+          ..stroke.clone()
+        };
+        self.record(CanvasOp::Stroke(path.clone(), stroke), commands);
+      }
+      Err(reason) => self.skip(reason),
+    }
+  }
+
+  fn record(&mut self, op: CanvasOp, commands: usize) {
+    if self.commands + commands > MOST_COMMANDS {
+      self.skip(format!(
+        "more than {MOST_COMMANDS} path commands and dash lengths in one run"
+      ));
+      return;
+    }
+    self.commands += commands;
+    self.ops.push(op);
+  }
+
+  fn skip(&mut self, reason: String) {
+    self.skipped.get_or_insert(reason);
+  }
+}
+
+/// Whether `n` is a number a canvas takes.
+fn usable(n: f32) -> bool {
+  n.is_finite() && n.abs() <= MOST_COORDINATE
+}
+
+/// Refuses a path with a number that isn't finite, is past
+/// [`MOST_COORDINATE`], or is a negative radius.
+fn check_path(path: &Path) -> Result<(), String> {
+  for command in &path.commands {
+    let (points, numbers): (&[Point], &[f32]) = match command {
+      PathCommand::MoveTo(point) | PathCommand::LineTo(point) => (std::slice::from_ref(point), &[]),
+      PathCommand::QuadTo { control, to } => (&[*control, *to], &[]),
+      PathCommand::CubicTo { first, second, to } => (&[*first, *second, *to], &[]),
+      PathCommand::Arc {
+        center,
+        radius,
+        start,
+        sweep,
+      } => {
+        if *radius < 0.0 {
+          return Err(format!("an arc with a negative radius, {radius}"));
+        }
+        (std::slice::from_ref(center), &[*radius, *start, *sweep])
+      }
+      PathCommand::Close => (&[], &[]),
+    };
+    let all = points
+      .iter()
+      .flat_map(|p| [p.x, p.y])
+      .chain(numbers.iter().copied());
+    if let Some(bad) = all.into_iter().find(|&n| !usable(n)) {
+      return Err(format!(
+        "a path holding {bad}, which isn't a finite number within {MOST_COORDINATE}"
+      ));
+    }
+  }
+  Ok(())
+}
+
+/// Refuses a stroke whose width or dashes the renderer can't draw, and
+/// gives its dash pattern with an even number of lengths.
+fn check_stroke(path: &Path, stroke: &Stroke) -> Result<Vec<f32>, String> {
+  if !(usable(stroke.width) && stroke.width > 0.0) {
+    return Err(format!("a stroke {} wide", stroke.width));
+  }
+  if stroke.dash.is_empty() {
+    return Ok(Vec::new());
+  }
+  if !usable(stroke.dash_offset) || stroke.dash.iter().any(|&n| !(usable(n) && n >= 0.0)) {
+    return Err(format!(
+      "a dash pattern {:?} at offset {}",
+      stroke.dash, stroke.dash_offset
+    ));
+  }
+  let mut dash = stroke.dash.clone();
+  if dash.len() % 2 == 1 {
+    dash.extend_from_within(..);
+  }
+  let interval: f32 = dash.iter().sum();
+  let dashes = path_length(path) / interval * (dash.len() / 2) as f32;
+  if !(interval > 0.0 && dashes <= MOST_DASHES) {
+    return Err(format!(
+      "a dash pattern {:?} that cuts its path into more than {MOST_DASHES} dashes",
+      stroke.dash
+    ));
+  }
+  Ok(dash)
+}
+
+/// At least the length of `path`: the lengths of its control polygons
+/// and arcs.
+fn path_length(path: &Path) -> f32 {
+  /// The distance from `at` to `to`, which becomes where the path is.
+  fn step(at: &mut Option<Point>, to: Point) -> f32 {
+    let from = at.replace(to).unwrap_or(to);
+    (to.x - from.x).hypot(to.y - from.y)
+  }
+  let (mut length, mut at, mut start) = (0.0, None, Point::default());
+  for command in &path.commands {
+    length += match *command {
+      PathCommand::MoveTo(to) => {
+        (at, start) = (Some(to), to);
+        0.0
+      }
+      PathCommand::LineTo(to) => step(&mut at, to),
+      PathCommand::QuadTo { control, to } => step(&mut at, control) + step(&mut at, to),
+      PathCommand::CubicTo { first, second, to } => {
+        step(&mut at, first) + step(&mut at, second) + step(&mut at, to)
+      }
+      PathCommand::Arc {
+        center,
+        radius,
+        start: from,
+        sweep,
+      } => {
+        let point = |degrees: f32| {
+          let (sin, cos) = degrees.to_radians().sin_cos();
+          Point::new(center.x + radius * cos, center.y + radius * sin)
+        };
+        let sweep = sweep.clamp(-360.0, 360.0);
+        let line = step(&mut at, point(from));
+        at = Some(point(from + sweep));
+        line + radius * sweep.abs().to_radians()
+      }
+      PathCommand::Close => step(&mut at, start),
+    };
+  }
+  length
+}
+
+/// A box a config draws on with paths, arcs, curves and dashed strokes,
+/// for progress rings, graphs and audio visualizers.
+///
+/// The paint closure gets a [`Pen`] and runs when the canvas is first
+/// laid out, when its laid-out size changes, and when a signal it read
+/// changes; each run replaces the drawing, and repaints only the
+/// canvas's box. Coordinates are logical pixels from the canvas's
+/// top-left, and the drawing is cut to its box and rounded corners. Size
+/// it with its style's `width` and `height`, or let its parent stretch
+/// it, as any box. A panic in the closure is logged with the canvas's
+/// path, such as `PanelWindow[DP-1]/Row/Canvas[2].paint`, and the last
+/// drawing stays.
+///
+/// ```
+/// use crabshell_ui::{Canvas, Cap, Color, Path, Point, Stroke, Style};
+///
+/// # let cx = crabshell_ui::Cx::new(crabshell_reactive::Runtime::current().new_owner());
+/// let charge = cx.signal(0.6_f32);
+/// let ring = Canvas::new(move |pen| {
+///     let size = pen.size();
+///     let middle = Point::new(size.width / 2.0, size.height / 2.0);
+///     let radius = size.width.min(size.height) / 2.0 - 3.0;
+///     let arc = Path::new().arc(middle, radius, -90.0, 360.0 * charge.get());
+///     pen.stroke(&arc, &Stroke::new(4.0, Color::hex("#a6e3a1")).cap(Cap::Round));
+/// })
+/// .style(Style::new().width(24.0).height(24.0));
+/// ```
+pub struct Canvas {
+  paint: Box<dyn FnMut(&mut Pen)>,
+  common: Common,
+}
+
+impl Canvas {
+  /// A canvas `paint` draws on.
+  pub fn new(paint: impl FnMut(&mut Pen) + 'static) -> Canvas {
+    Canvas {
+      paint: Box::new(paint),
+      common: Common::default(),
+    }
+  }
+
+  /// Sets the style: its `width` and `height` size the canvas, and its
+  /// background and border are drawn under the drawing.
+  pub fn style(mut self, style: impl crate::IntoProp<Style>) -> Canvas {
+    self.common.style = Some(style.into_prop());
+    self
+  }
+
+  visibility_methods!();
+}
+
+impl Widget for Canvas {
+  fn into_element(self: Box<Self>) -> Element {
+    Element {
+      name: "Canvas",
+      common: self.common,
+      kind: ElementKind::Canvas(self.paint),
+      children: Vec::new(),
+    }
+  }
+}
+
+/// What a canvas node holds: the last run's drawing.
+#[derive(Default)]
+pub(crate) struct CanvasNode {
+  pub(crate) ops: Vec<CanvasOp>,
+}
+
+impl Tree {
+  /// Runs `paint` in an effect under the canvas's owner once the canvas
+  /// has a size, and again whenever that size or a signal it read
+  /// changes, storing what it drew.
+  pub(crate) fn bind_canvas(&mut self, id: NodeId, mut paint: Box<dyn FnMut(&mut Pen)>) {
+    let Some(node) = self.node_mut(id) else {
+      return;
+    };
+    let cx = node.cx.clone();
+    let path = Rc::clone(&node.path);
+    // `None` until the first layout says how large it is.
+    let size = cx.signal(None::<Size>);
+    node.measure = Some(Rc::new(move |laid: Size| {
+      size.try_set(Some(laid));
+    }));
+    let tree = self.this.clone();
+    let label = format!("{path}.paint");
+    let mut logged = false;
+    cx.effect(move || {
+      let Some(size) = size.get() else {
+        return;
+      };
+      let mut pen = Pen::new(size);
+      // The user's closure runs before the tree is borrowed.
+      paint(&mut pen);
+      let Pen { ops, skipped, .. } = pen;
+      if let Some(reason) = skipped
+        && !std::mem::replace(&mut logged, true)
+      {
+        tracing::warn!(
+          "{path}.paint drew {reason}, so that drawing is skipped; later ones aren't logged"
+        );
+      }
+      let Some(tree) = tree.upgrade() else {
+        return;
+      };
+      borrow(&tree).update(id, |node| match &mut node.kind {
+        NodeKind::Canvas(canvas) if canvas.ops != ops => {
+          canvas.ops = ops;
+          Change::Paint
+        }
+        _ => Change::None,
+      });
+    })
+    .named(label);
   }
 }

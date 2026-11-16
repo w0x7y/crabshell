@@ -92,7 +92,7 @@ mod tests;
 pub use animation::{
   Animate, Animation, Easing, Spring, Transition, advance_animations, animating,
 };
-pub use canvas::{Cap, Join, Paint, Path, PathCommand, Stroke};
+pub use canvas::{Canvas, CanvasOp, Cap, Join, Paint, Path, PathCommand, Pen, Stroke};
 pub use cx::Cx;
 pub use floating::{FloatingConfig, FloatingWindow, WindowRequest};
 pub use geometry::{Affine, Point, Rect, Size};
@@ -112,7 +112,7 @@ pub use text::TextSystem;
 pub use text_input::{FieldState, Preedit, TextInput};
 pub use timer::{Timer, fire_timers, next_timer};
 pub use view::{
-  CaptureView, Content, IconView, ImageView, InputView, NodeView, TextView, WindowView,
+  CanvasView, CaptureView, Content, IconView, ImageView, InputView, NodeView, TextView, WindowView,
 };
 pub use widgets::{
   Align, Button, Column, Element, Fit, Grid, Icon, IconPixels, IconSource, Image, Justify, Row,
@@ -125,8 +125,8 @@ pub use window::{
 /// What a bar's code needs, in one `use`.
 pub mod prelude {
   pub use crate::{
-    Align, Button, Cap, Color, Column, CursorShape, Cx, Drag, DragPhase, Edge, Font, Grid,
-    GridView, Icon, IconSource, Join, Justify, Layer, Menu, Output, Paint, PanelWindow, Path,
+    Align, Button, Canvas, Cap, Color, Column, CursorShape, Cx, Drag, DragPhase, Edge, Font, Grid,
+    GridView, Icon, IconSource, Join, Justify, Layer, Menu, Output, Paint, PanelWindow, Path, Pen,
     Point, PopupWindow, Rect, Row, ScrollSource, Size, Slider, Spacer, Stack, Stroke, Style, Text,
     TextSystem, Timer, Wheel, WheelAxis, Widget, Window,
   };

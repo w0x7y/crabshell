@@ -104,11 +104,11 @@ pub mod prelude {
     WifiNetwork, WifiSecurity, Workspace,
   };
   pub use crabshell_ui::{
-    Adjust, Align, Anchors, Animate, Animation, Border, Button, Cap, CaptureSource, Color, Column,
-    CursorShape, Cx, Drag, DragPhase, Easing, Edge, Fit, FloatingWindow, Font, Gradient,
+    Adjust, Align, Anchors, Animate, Animation, Border, Button, Canvas, Cap, CaptureSource, Color,
+    Column, CursorShape, Cx, Drag, DragPhase, Easing, Edge, Fit, FloatingWindow, Font, Gradient,
     GradientShape, Grid, GridView, Icon, IconPixels, IconSource, Image, Join, Justify, Key,
     KeyEvent, KeyboardFocus, Layer, ListView, Margins, Menu, MenuEntry, MenuToggle, Modifiers,
-    Output, Padding, Paint, PanelWindow, Path, Point, PopupWindow, Rect, Region, Row,
+    Output, Padding, Paint, PanelWindow, Path, Pen, Point, PopupWindow, Rect, Region, Row,
     ScreencopyView, ScrollSource, ScrollView, SessionLock, Shadow, Size, Slider, Spacer, Spring,
     Stack, Stroke, Style, Text, TextInput, Timer, Transition, Wheel, WheelAxis, Widget,
   };

@@ -5,6 +5,7 @@ use std::path::Path;
 
 use cosmic_text::{Buffer, LayoutRun};
 
+use crate::canvas::CanvasOp;
 use crate::geometry::{Affine, Point, Rect, Size};
 use crate::screencopy::CaptureFrame;
 use crate::style::{Color, Style};
@@ -178,6 +179,10 @@ impl<'a> NodeView<'a> {
         }),
         None => Content::None,
       },
+      NodeKind::Canvas(canvas) => Content::Canvas(CanvasView {
+        ops: &canvas.ops,
+        rect: self.node.rect.unwrap_or_default(),
+      }),
       _ => Content::None,
     }
   }
@@ -214,6 +219,17 @@ pub enum Content<'a> {
   Capture(CaptureView<'a>),
   /// A text field.
   Input(InputView<'a>),
+  /// A canvas's drawing.
+  Canvas(CanvasView<'a>),
+}
+
+/// A canvas's drawing, ready to draw: each op in order, in logical pixels
+/// from the corner of `rect`, cut to it and its style's rounded corners.
+pub struct CanvasView<'a> {
+  /// What the paint closure drew at its last run that didn't panic.
+  pub ops: &'a [CanvasOp],
+  /// Where: the canvas's rectangle.
+  pub rect: Rect,
 }
 
 /// A text field, ready to draw: the selection behind the text, then the
