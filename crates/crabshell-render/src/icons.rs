@@ -62,6 +62,9 @@ pub(crate) struct Icons {
   captures: HashMap<u64, Capture>,
   /// Each animated image's place in its GIF, by image id.
   playbacks: HashMap<u64, Playback>,
+  /// Each image file's modification time, looked at once a draw rather
+  /// than once a tile.
+  modified: HashMap<PathBuf, Option<std::time::SystemTime>>,
 }
 
 /// Where an animated image is in its GIF.
@@ -239,6 +242,7 @@ impl Icons {
       rasterized: 0,
       captures: HashMap::new(),
       playbacks: HashMap::new(),
+      modified: HashMap::new(),
     }
   }
 
@@ -375,9 +379,16 @@ impl Icons {
     log: bool,
   ) -> Option<&Pixmap> {
     let path = image.path;
-    let modified = std::fs::metadata(path)
-      .and_then(|metadata| metadata.modified())
-      .ok();
+    let modified = match self.modified.get(path) {
+      Some(modified) => *modified,
+      None => {
+        let modified = std::fs::metadata(path)
+          .and_then(|metadata| metadata.modified())
+          .ok();
+        self.modified.insert(path.to_owned(), modified);
+        modified
+      }
+    };
     let key = Key::Image {
       path: path.to_owned(),
       modified,
@@ -606,6 +617,7 @@ impl Icons {
   /// for its next. Captured frames go after as many draws whatever their
   /// number, since each is as large as its view.
   pub(crate) fn end_frame(&mut self) {
+    self.modified.clear();
     let recent = self.frame.saturating_sub(RECENT - 1);
     self.captures.retain(|_, kept| kept.used >= recent);
     for playback in self.playbacks.values() {

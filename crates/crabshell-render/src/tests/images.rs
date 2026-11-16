@@ -220,10 +220,14 @@ fn a_file_rewritten_or_appearing_later_is_read_again() {
   let dir = scratch("rewritten");
   let path = dir.join("cover.png");
   let mut icons = icons();
+  // Each read is a draw of its own: a file's time is looked at once a
+  // draw.
   let top_left = |icons: &mut crate::icons::Icons| {
-    cached(icons, &path, (20, 20), Fit::Fill)
+    let pixel = cached(icons, &path, (20, 20), Fit::Fill)
       .and_then(|pixmap| pixmap.pixel(0, 0))
-      .map(|pixel| [pixel.red(), pixel.blue()])
+      .map(|pixel| [pixel.red(), pixel.blue()]);
+    icons.end_frame();
+    pixel
   };
   // Missing at first: drawn as nothing.
   assert_eq!(top_left(&mut icons), None);
@@ -260,4 +264,28 @@ fn cached_pictures_past_the_byte_budget_are_dropped_once_unused() {
     icons.end_frame();
   }
   assert_eq!(icons.cached(), 1);
+}
+
+#[test]
+fn an_image_is_copied_where_opaque_and_blended_where_not() {
+  let dir = scratch("blit");
+  let path = dir.join("row.png");
+  // One row: opaque red, clear, and half-covered blue.
+  let row = [RED, CLEAR, [0, 0, 255, 128]].concat();
+  super::write_png(&path, &row, 3, 1);
+  let mut scene = super::Scene::new();
+  let panel = scene
+    .panel()
+    .style(crabshell_ui::Style::new().background(crabshell_ui::Color::rgb(0, 200, 0)))
+    .child(crabshell_ui::Image::new(path).width(3).height(1));
+  let window = scene.window(panel, 3.0, 1.0);
+  let buffer = scene.full(&window, 1.0);
+  assert_eq!(buffer.pixel(0, 0), RED);
+  assert_eq!(
+    buffer.pixel(1, 0),
+    [0, 200, 0, 255],
+    "clear shows what is under"
+  );
+  assert_eq!(buffer.pixel(2, 0), [0, 100, 128, 255], "half over green");
+  let _ = std::fs::remove_dir_all(&dir);
 }

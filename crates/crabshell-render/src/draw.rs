@@ -24,6 +24,7 @@ use crate::icons::Icons;
 
 mod canvas;
 mod effects;
+mod transition;
 
 /// The side of a tile, in buffer pixels. tiny-skia cuts a curve where it
 /// leaves the pixmap, which changes the antialiasing beside the cut, so
@@ -1111,7 +1112,7 @@ impl Painter<'_> {
       return;
     };
     if let Some(pixels) = self.icons.image(image, (width, height), self.grid.scale) {
-      draw_at(pixmap, x, y, pixels);
+      transition::blit(pixmap, (x, y), pixels);
     }
   }
 
