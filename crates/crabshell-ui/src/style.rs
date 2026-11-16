@@ -230,6 +230,10 @@ pub struct Border {
   pub width: f32,
   /// The color.
   pub color: Color,
+  /// Dashes `on` logical pixels long, `off` apart, along the border's
+  /// middle line, or a solid border when `None`. See
+  /// [`Style::border_dash`].
+  pub dash: Option<(f32, f32)>,
 }
 
 /// How round each corner of a widget's box is: the radius in logical
@@ -880,10 +884,51 @@ impl Style {
     }
   }
 
-  /// Sets a border of `width` logical pixels.
+  /// Sets a border of `width` logical pixels, keeping the dash this
+  /// style sets.
   pub const fn border(self, width: f32, color: Color) -> Style {
+    let dash = match self.border {
+      Some(border) => border.dash,
+      None => None,
+    };
     Style {
-      border: Some(Border { width, color }),
+      border: Some(Border { width, color, dash }),
+      ..self
+    }
+  }
+
+  /// Dashes the border: `on` logical pixels drawn, `off` left out, along
+  /// the middle of the border, so the dashes follow its corners. An `on`
+  /// of 0 draws round dots the border's width across, `off` apart from
+  /// middle to middle. The dashes are stretched or squeezed a little so a
+  /// whole number of them goes around. A number that isn't finite, a
+  /// negative one, an `off` of 0 or a pattern shorter than a pixel draws
+  /// the border solid. On a style with no border it does nothing until
+  /// [`border`](Self::border) sets one.
+  ///
+  /// ```
+  /// use crabshell_ui::{Color, Style};
+  ///
+  /// const DROP_ZONE: Style = Style::new()
+  ///     .border(2.0, Color::hex("#89b4fa"))
+  ///     .border_dash(6.0, 4.0)
+  ///     .radius(8.0);
+  /// const DOTTED: Style = DROP_ZONE.border_dash(0.0, 5.0);
+  /// ```
+  pub const fn border_dash(self, on: f32, off: f32) -> Style {
+    let border = match self.border {
+      Some(border) => border,
+      None => Border {
+        width: 0.0,
+        color: Color::rgba(0, 0, 0, 0),
+        dash: None,
+      },
+    };
+    Style {
+      border: Some(Border {
+        dash: Some((on, off)),
+        ..border
+      }),
       ..self
     }
   }
@@ -1278,16 +1323,21 @@ impl Style {
         let from = from.or(to.map(|b| Border {
           width: 0.0,
           color: Color::rgba(b.color.r, b.color.g, b.color.b, 0),
+          ..b
         }));
         let to = to.or(from.map(|b| Border {
           width: 0.0,
           color: Color::rgba(b.color.r, b.color.g, b.color.b, 0),
+          ..b
         }));
         match (from, to) {
+          // The dash isn't a number to blend: the end's is drawn.
           (Some(from), Some(to)) => Some(Border {
             width: from.width.lerp(&to.width, t),
             color: from.color.lerp(&to.color, t),
+            dash: to.dash,
           }),
+
           _ => None,
         }
       }

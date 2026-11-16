@@ -12,8 +12,9 @@ use crabshell_ui::{
   NodeView, Rect, Shadow, Size, Style, TextSystem, TextView, WindowView,
 };
 use tiny_skia::{
-  FillRule, FilterQuality, GradientStop, LinearGradient, Mask, Paint, PathBuilder, Pixmap,
-  PixmapMut, PixmapPaint, RadialGradient, Shader, SpreadMode, SweepGradient, Transform,
+  FillRule, FilterQuality, GradientStop, LineCap, LineJoin, LinearGradient, Mask, Paint,
+  PathBuilder, PathSegment, Pixmap, PixmapMut, PixmapPaint, RadialGradient, Shader, SpreadMode,
+  Stroke, StrokeDash, SweepGradient, Transform,
 };
 
 use crate::damage::{BufferAge, DamageHistory, PixelRect};
@@ -685,7 +686,12 @@ impl Painter<'_> {
     }
     if let Some(border) = style.border {
       let width = self.border_width(style);
-      if width >= 1.0 {
+      let dashed = width >= 1.0
+        && border.dash.is_some_and(|dash| {
+          self.dashed_border(pixmap, (area, corners), width, border.color, dash)
+        });
+
+      if width >= 1.0 && !dashed {
         // A ring: the outer shape with the inner one cut out.
         let mut path = PathBuilder::new();
         rounded_rect(&mut path, area, corners);
@@ -700,6 +706,92 @@ impl Painter<'_> {
         fill(pixmap, path, border.color, FillRule::EvenOdd);
       }
     }
+  }
+
+  /// A border `width` pixels wide inside `area`, dashed by `on` and `off`
+  /// logical pixels along its middle line, so the dashes follow the
+  /// corners. The line is laid out and dashed in buffer pixels and moved
+  /// onto the pixmap, so tiles cut the dashes in the same places. `false`
+  /// when the pattern or the box can't take dashes, to draw it solid.
+  fn dashed_border(
+    &self,
+    pixmap: &mut PixmapMut<'_>,
+    (area, corners): (tiny_skia::Rect, Corners),
+    width: f32,
+    color: Color,
+    (on, off): (f32, f32),
+  ) -> bool {
+    let Grid {
+      scale, left, top, ..
+    } = self.grid;
+    let half = width / 2.0;
+    let Some(middle) = tiny_skia::Rect::from_ltrb(
+      area.left() + left + half,
+      area.top() + top + half,
+      area.right() + left - half,
+      area.bottom() + top - half,
+    ) else {
+      return false;
+    };
+    let corners = inset(corners, half);
+    // Each corner trades two radii of straight line for a quarter circle.
+    let rounding: f32 = corners
+      .iter()
+      .map(|radius| (2.0 - std::f32::consts::FRAC_PI_2) * radius)
+      .sum();
+    let perimeter = 2.0 * (middle.width() + middle.height()) - rounding;
+    let Some((on, off)) = fit_dash(perimeter, on * scale, off * scale) else {
+      return false;
+    };
+    let mut path = PathBuilder::new();
+    rounded_rect(&mut path, middle, corners);
+    let (Some(path), Some(dash)) = (path.finish(), StrokeDash::new(vec![on, off], 0.0)) else {
+      return false;
+    };
+    let Some(dashes) = path.dash(&dash, 1.0) else {
+      return true;
+    };
+    // Every tile the border crosses would stroke every dash, so only the
+    // dashes near this one are kept. A closed outline that misses the
+    // tile adds nothing inside it, so the pixels are the same. A miter
+    // reaches at most twice the width past its line.
+    let reach = 2.0 * width + 1.0;
+    let near = [
+      left - reach,
+      top - reach,
+      left + pixmap.width() as f32 + reach,
+      top + pixmap.height() as f32 + reach,
+    ];
+    let mut kept = PathBuilder::new();
+    let mut contour = Vec::new();
+    for segment in dashes.segments() {
+      if matches!(segment, PathSegment::MoveTo(_)) {
+        keep_near(&mut kept, &contour, near);
+        contour.clear();
+      }
+      contour.push(segment);
+    }
+    keep_near(&mut kept, &contour, near);
+    let Some(kept) = kept.finish() else {
+      return true;
+    };
+    let stroke = Stroke {
+      width,
+      // A dash of 0 is a dot.
+      line_cap: if on == 0.0 {
+        LineCap::Round
+      } else {
+        LineCap::Butt
+      },
+      line_join: LineJoin::Miter,
+      ..Stroke::default()
+    };
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(color.r, color.g, color.b, color.a);
+    paint.anti_alias = true;
+    let moved = Transform::from_translate(-left, -top);
+    pixmap.stroke_path(&kept, &paint, &stroke, moved, None);
+    true
   }
 
   /// `shadow` of the box `rect` with `style`'s corners. A sharp one is a
@@ -1350,4 +1442,53 @@ fn blend_rgba(
       over(data, (y * stride + x) * 4, source);
     }
   }
+}
+
+/// Adds `contour` to `kept` when the box around its points reaches into
+/// `near`, given as left, top, right and bottom.
+fn keep_near(
+  kept: &mut PathBuilder,
+  contour: &[PathSegment],
+  [left, top, right, bottom]: [f32; 4],
+) {
+  let (mut low, mut high) = (
+    (f32::INFINITY, f32::INFINITY),
+    (f32::NEG_INFINITY, f32::NEG_INFINITY),
+  );
+  let points = contour.iter().flat_map(|segment| match *segment {
+    PathSegment::MoveTo(a) | PathSegment::LineTo(a) => [Some(a), None, None],
+    PathSegment::QuadTo(a, b) => [Some(a), Some(b), None],
+    PathSegment::CubicTo(a, b, c) => [Some(a), Some(b), Some(c)],
+    PathSegment::Close => [None; 3],
+  });
+  for point in points.flatten() {
+    low = (low.0.min(point.x), low.1.min(point.y));
+    high = (high.0.max(point.x), high.1.max(point.y));
+  }
+  if low.0 > right || low.1 > bottom || high.0 < left || high.1 < top {
+    return;
+  }
+  for segment in contour {
+    match *segment {
+      PathSegment::MoveTo(a) => kept.move_to(a.x, a.y),
+      PathSegment::LineTo(a) => kept.line_to(a.x, a.y),
+      PathSegment::QuadTo(a, b) => kept.quad_to(a.x, a.y, b.x, b.y),
+      PathSegment::CubicTo(a, b, c) => kept.cubic_to(a.x, a.y, b.x, b.y, c.x, c.y),
+      PathSegment::Close => kept.close(),
+    }
+  }
+}
+
+/// A dash of `on` pixels and a gap of `off`, stretched or squeezed so a
+/// whole number of them goes around `perimeter`, at least one. `None` for
+/// a pattern that can't be drawn: a number that isn't finite or is
+/// negative, no gap, or a period shorter than a pixel.
+pub(crate) fn fit_dash(perimeter: f32, on: f32, off: f32) -> Option<(f32, f32)> {
+  let period = on + off;
+  if !(on >= 0.0 && off > 0.0 && period.is_finite() && period >= 1.0 && perimeter > 0.0) {
+    return None;
+  }
+  let count = (perimeter / period).round().max(1.0);
+  let stretch = perimeter / (count * period);
+  Some((on * stretch, off * stretch))
 }

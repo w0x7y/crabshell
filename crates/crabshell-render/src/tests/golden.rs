@@ -330,6 +330,58 @@ fn sweep() {
   });
 }
 
+#[test]
+fn dashes() {
+  check("dashes", 240.0, 60.0, |scene| {
+    scene.panel().style(BAR).child(
+      Row::new()
+        .padding(10, 12)
+        .gap(12)
+        .align(Align::Center)
+        // Dashes around rounded corners, over a background.
+        .child(
+          Row::new().style(
+            Style::new()
+              .background(Color::hex("#313244"))
+              .border(2.0, Color::hex("#89b4fa"))
+              .border_dash(6.0, 4.0)
+              .radius(8.0)
+              .padding(12, 22),
+          ),
+        )
+        // Round dots around a pill.
+        .child(
+          Row::new().style(
+            Style::new()
+              .border(3.0, Color::hex("#f9e2af"))
+              .border_dash(0.0, 7.0)
+              .radius(100.0)
+              .padding(10, 24),
+          ),
+        )
+        // Long dashes, round at two corners only.
+        .child(
+          Row::new().style(
+            Style::new()
+              .border(2.0, Color::hex("#a6e3a1"))
+              .border_dash(10.0, 3.0)
+              .radii(0.0, 12.0, 0.0, 12.0)
+              .padding(12, 18),
+          ),
+        )
+        // A thin, fine dash on square corners.
+        .child(
+          Row::new().style(
+            Style::new()
+              .border(1.0, Color::hex("#cba6f7"))
+              .border_dash(3.0, 2.0)
+              .padding(12, 16),
+          ),
+        ),
+    )
+  });
+}
+
 /// Fails unless the fonts the text goldens were drawn with are the ones
 /// fontconfig picks here: other fonts draw other pixels.
 fn check_fonts() {

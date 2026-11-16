@@ -13,6 +13,7 @@ mod capture;
 mod colors;
 mod corners;
 mod damage;
+mod dashes;
 mod glyphs;
 mod golden;
 mod icons;

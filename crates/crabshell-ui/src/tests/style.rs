@@ -47,7 +47,8 @@ fn builders_set_their_fields_and_nothing_else() {
     bordered.border,
     Some(Border {
       width: 1.5,
-      color: Color::rgb(1, 2, 3)
+      color: Color::rgb(1, 2, 3),
+      dash: None,
     })
   );
   assert_eq!(bordered.opacity, Some(0.5));
@@ -453,4 +454,45 @@ fn a_sweep_gradient_blends_with_another_sweep_only() {
   let linear = Style::new().gradient(Gradient::linear(0.0, RED, BLUE));
   assert_eq!(from.lerp(&linear, 0.5).gradient, linear.gradient);
   assert_eq!(linear.lerp(&from, 0.5).gradient, from.gradient);
+}
+
+#[test]
+fn border_dash_sets_the_dash_and_border_keeps_it() {
+  const DASHED: Style = Style::new()
+    .border(2.0, Color::rgb(1, 2, 3))
+    .border_dash(6.0, 4.0);
+  let border = DASHED.border.expect("set by the builder");
+  assert_eq!((border.width, border.dash), (2.0, Some((6.0, 4.0))));
+  // Either order gives the same border.
+  const DOTTED: Style = Style::new()
+    .border_dash(0.0, 4.0)
+    .border(2.0, Color::rgb(1, 2, 3));
+  assert_eq!(DOTTED.border.and_then(|b| b.dash), Some((0.0, 4.0)));
+  assert_eq!(DOTTED.border.map(|b| b.width), Some(2.0));
+  // A dash alone is a border nobody sees.
+  let alone = Style::new().border_dash(1.0, 1.0).border.expect("a border");
+  assert_eq!((alone.width, alone.color.a), (0.0, 0));
+  assert!(Style::new().same_layout(&DASHED), "a dash is paint only");
+}
+
+#[test]
+fn a_fading_border_takes_its_dash_from_the_end() {
+  let solid = Style::new().border(2.0, Color::rgb(0, 0, 0));
+  let dashed = Style::new()
+    .border(4.0, Color::rgb(0, 0, 0))
+    .border_dash(6.0, 4.0);
+  let half = solid.lerp(&dashed, 0.5).border.expect("both set one");
+  assert_eq!((half.width, half.dash), (3.0, Some((6.0, 4.0))));
+  assert_eq!(dashed.lerp(&solid, 0.5).border.and_then(|b| b.dash), None);
+  // One fading out keeps its dash as it thins.
+  let going = dashed
+    .lerp(&Style::new(), 0.5)
+    .border
+    .expect("on its way out");
+  assert_eq!((going.width, going.dash), (2.0, Some((6.0, 4.0))));
+  let coming = Style::new()
+    .lerp(&dashed, 0.5)
+    .border
+    .expect("on its way in");
+  assert_eq!((coming.width, coming.dash), (2.0, Some((6.0, 4.0))));
 }
