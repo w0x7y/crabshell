@@ -125,6 +125,22 @@ fn an_idle_canvas_records_nothing_again() {
 }
 
 #[test]
+fn a_path_started_without_move_to_counts_its_closes_from_its_start() {
+  let mut h = Harness::new();
+  // As drawn, each piece starts at (1000, 0) and runs out to near the
+  // corner and back: 20,000 pixels in all, so 200,000 dashes.
+  let canvas = Canvas::new(|pen| {
+    let path = (0..10).fold(Path::new().line_to(Point::new(1000.0, 0.0)), |path, k| {
+      path.line_to(Point::new(0.0, k as f32)).close()
+    });
+    pen.stroke(&path, &Stroke::new(1.0, RED).dash(&[0.05, 0.05], 0.0));
+  });
+  let mut window = None;
+  let logs = capture_logs(|| window = Some(h.window(h.panel().child(canvas), 20.0, 20.0)));
+  assert!(ops(&window.expect("built"), &[0]).is_empty(), "{logs}");
+}
+
+#[test]
 fn a_panicking_paint_is_logged_with_its_path_and_the_last_drawing_stays() {
   let mut h = Harness::new();
   let n = h.cx.signal(0);

@@ -481,6 +481,28 @@ fn path_length(path: &Path) -> f32 {
   }
   let (mut length, mut at, mut start) = (0.0, None, Point::default());
   for command in &path.commands {
+    // As drawn, a path that doesn't start with a move starts a piece at
+    // the first point of its first command.
+    if at.is_none() {
+      let first = match *command {
+        PathCommand::MoveTo(point) | PathCommand::LineTo(point) => Some(point),
+        PathCommand::QuadTo { control, .. } => Some(control),
+        PathCommand::CubicTo { first, .. } => Some(first),
+        PathCommand::Arc {
+          center,
+          radius,
+          start,
+          ..
+        } => {
+          let (sin, cos) = start.to_radians().sin_cos();
+          Some(Point::new(center.x + radius * cos, center.y + radius * sin))
+        }
+        PathCommand::Close => None,
+      };
+      if let Some(first) = first {
+        (at, start) = (Some(first), first);
+      }
+    }
     length += match *command {
       PathCommand::MoveTo(to) => {
         (at, start) = (Some(to), to);
