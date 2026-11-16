@@ -403,10 +403,10 @@ struct Painter<'a> {
 }
 
 impl Painter<'_> {
-  /// Draws `node` and everything inside it. With an opacity below 1 or a
-  /// mask, they are drawn into one layer first, which is masked and
-  /// blended in at that opacity, so overlapping children don't show
-  /// through each other.
+  /// Draws `node` and everything inside it. With an opacity below 1, a
+  /// mask or a content shadow, they are drawn into one layer first, which
+  /// is masked, given its shadow and blended in at that opacity, so
+  /// overlapping children don't show through each other.
   fn node(&mut self, pixmap: &mut PixmapMut<'_>, node: NodeView<'_>) {
     // Nothing the node or its descendants paint reaches this area.
     let Some((x, y, width, height)) =
@@ -426,27 +426,64 @@ impl Painter<'_> {
     if opacity == 0.0 {
       return;
     }
+    let shadow = effects::cast_by_content(&style);
     if let Some(transform) = node.transform() {
       self.transformed(pixmap, node, &style, transform, opacity);
-    } else if opacity < 1.0 || style.mask.is_some() {
-      // The layer covers only what the subtree paints in this area.
-      let Some(mut layer) = Pixmap::new(width, height) else {
+    } else if opacity < 1.0 || style.mask.is_some() || shadow.is_some() {
+      // The layer covers what the subtree paints in this area, and for a
+      // content shadow what casts the part of it here too.
+      let mut area = (x as f32, y as f32, (x + width) as f32, (y + height) as f32);
+      let mut shadow = shadow;
+      if let Some(cast) = shadow {
+        let (dx, dy, reach) = self.shadow_reach(&cast);
+        let Grid {
+          scale, left, top, ..
+        } = self.grid;
+        // The subtree's bounds in this pixmap's pixels, uncut, and as far
+        // past them as the shadow's blur and spread carry what they cast.
+        let bounds = node.bounds();
+        let past = reach + 1.0;
+        let (x0, y0) = (
+          (bounds.x * scale).floor() - left,
+          (bounds.y * scale).floor() - top,
+        );
+        let x1 = (bounds.right() * scale).ceil() - left;
+        let y1 = (bounds.bottom() * scale).ceil() - top;
+        let grown = (
+          area.0.min(area.0 - dx - reach).max(x0 - past),
+          area.1.min(area.1 - dy - reach).max(y0 - past),
+          area.2.max(area.2 - dx + reach).min(x1 + past),
+          area.3.max(area.3 - dy + reach).min(y1 + past),
+        );
+        if (grown.2 - grown.0) * (grown.3 - grown.1) <= LAYER_LIMIT as f32 {
+          area = grown;
+        } else {
+          tracing::debug!("{}'s content shadow reaches too far to draw", node.path());
+          shadow = None;
+        }
+      }
+      let (left, top, right, bottom) = area;
+      let Some(mut layer) = Pixmap::new((right - left) as u32, (bottom - top) as u32) else {
         return;
       };
       self.work.layer_pixels += u64::from(layer.width()) * u64::from(layer.height());
       let mut inner = Painter {
-        grid: self.grid.moved(x, y),
+        grid: Grid {
+          left: self.grid.left + left,
+          top: self.grid.top + top,
+          ..self.grid
+        },
         glyphs: &mut *self.glyphs,
         icons: &mut *self.icons,
         fonts: &mut *self.fonts,
         work: &mut *self.work,
       };
-      inner.layer_contents(&mut layer.as_mut(), node, &style);
+      inner.layer_contents(&mut layer.as_mut(), node, &style, shadow);
       let paint = PixmapPaint {
         opacity,
         ..PixmapPaint::default()
       };
-      let (x, y) = (x as i32, y as i32);
+      let (x, y) = (left as i32, top as i32);
       pixmap.draw_pixmap(x, y, layer.as_ref(), &paint, Transform::identity(), None);
     } else {
       self.node_contents(pixmap, node, &style);
@@ -454,11 +491,21 @@ impl Painter<'_> {
   }
 
   /// What `node_contents` draws into a fresh `layer`, kept only where the
-  /// style's mask is opaque.
-  fn layer_contents(&mut self, layer: &mut PixmapMut<'_>, node: NodeView<'_>, style: &Style) {
+  /// style's mask is opaque, with `shadow` cast by what is left put under
+  /// it.
+  fn layer_contents(
+    &mut self,
+    layer: &mut PixmapMut<'_>,
+    node: NodeView<'_>,
+    style: &Style,
+    shadow: Option<Shadow>,
+  ) {
     self.node_contents(layer, node, style);
     if let Some(mask) = &style.mask {
       self.mask(layer, node.rect(), mask);
+    }
+    if let Some(shadow) = shadow {
+      self.content_shadow(layer, &shadow);
     }
   }
 
@@ -503,15 +550,40 @@ impl Painter<'_> {
       inner.width * scale,
       inner.height * scale,
     );
-    let Some(area) = shown
-      .zip(drawn)
-      .and_then(|(shown, drawn)| shown.intersect(&drawn))
-      .and_then(|area| area.outset(LAYER_MARGIN, LAYER_MARGIN))
-      .and_then(|area| area.round_out())
-    else {
+    // For a content shadow, the layer holds what casts the part of it
+    // shown here too, unless that is too large to draw.
+    let mut shadow = effects::cast_by_content(style);
+    let layer_area = |shadow: Option<Shadow>| {
+      let (shown, drawn) = match (shown, drawn, shadow) {
+        (Some(shown), Some(drawn), Some(cast)) => {
+          let (dx, dy, reach) = self.shadow_reach(&cast);
+          let shown = tiny_skia::Rect::from_ltrb(
+            shown.left().min(shown.left() - dx - reach),
+            shown.top().min(shown.top() - dy - reach),
+            shown.right().max(shown.right() - dx + reach),
+            shown.bottom().max(shown.bottom() - dy + reach),
+          );
+          (shown, drawn.outset(reach, reach))
+        }
+        _ => (shown, drawn),
+      };
+      shown
+        .zip(drawn)
+        .and_then(|(shown, drawn)| shown.intersect(&drawn))
+        .and_then(|area| area.outset(LAYER_MARGIN, LAYER_MARGIN))
+        .and_then(|area| area.round_out())
+    };
+    let mut area = layer_area(shadow);
+    let pixels = |area: tiny_skia::IntRect| u64::from(area.width()) * u64::from(area.height());
+    if shadow.is_some() && area.is_none_or(|area| pixels(area) > LAYER_LIMIT) {
+      tracing::debug!("{}'s content shadow reaches too far to draw", node.path());
+      shadow = None;
+      area = layer_area(None);
+    }
+    let Some(area) = area else {
       return;
     };
-    let pixels = u64::from(area.width()) * u64::from(area.height());
+    let pixels = pixels(area);
     if pixels > LAYER_LIMIT {
       tracing::debug!(
         "{} is transformed into a layer too large to draw",
@@ -535,7 +607,7 @@ impl Painter<'_> {
       fonts: &mut *self.fonts,
       work: &mut *self.work,
     };
-    inner.layer_contents(&mut layer.as_mut(), node, style);
+    inner.layer_contents(&mut layer.as_mut(), node, style, shadow);
     let paint = PixmapPaint {
       opacity,
       quality: FilterQuality::Bilinear,
@@ -553,7 +625,8 @@ impl Painter<'_> {
 
   fn node_contents(&mut self, pixmap: &mut PixmapMut<'_>, node: NodeView<'_>, style: &Style) {
     self.work.nodes += 1;
-    if let Some(shadow) = style.shadow {
+    // A content shadow is cast by the layer this is drawn into.
+    if let Some(shadow) = style.shadow.filter(|shadow| !shadow.follow_content) {
       self.shadow(pixmap, node.rect(), style, &shadow);
     }
     self.draw_box(pixmap, node.rect(), style);

@@ -1,6 +1,6 @@
-//! Masks.
+//! Masks, and shadows cast by what a widget draws.
 
-use crabshell_ui::{Align, Color, Gradient, Mask, Row, Stack, Style, Text, Window};
+use crabshell_ui::{Align, Color, Gradient, Mask, Row, Shadow, Stack, Style, Text, Window};
 
 use super::{Buffer, Scene, capture_logs, fixture};
 use crate::DamageHistory;
@@ -128,12 +128,143 @@ fn a_clip_with_its_own_corners_cuts_inside_a_mask() {
   assert_eq!(buffer.pixel(61, 30)[3], 0, "past the box");
 }
 
+#[test]
+fn a_content_shadow_follows_what_is_drawn_not_the_box() {
+  // A 10 pixel square in the box casts a sharp shadow 20 to the right.
+  let cast = Shadow::new(20.0, 0.0, 0.0, BLACK);
+  let buffer = boxed(Style::new().shadow(cast.follow_content()), 10.0);
+  assert_eq!(buffer.pixel(25, 15), [255, 255, 255, 255], "the square");
+  assert_eq!(buffer.pixel(45, 15), [0, 0, 0, 255], "its shadow");
+  assert_eq!(buffer.pixel(45, 25)[3], 0, "below the square's shadow");
+  assert_eq!(buffer.pixel(32, 15)[3], 0, "between them");
+  // A box shadow would fill the box moved right.
+  let boxy = boxed(Style::new().shadow(cast), 10.0);
+  assert_eq!(boxy.pixel(45, 25), [0, 0, 0, 255]);
+}
+
+#[test]
+fn a_content_shadow_is_drawn_under_its_content_and_spread_by_whole_pixels() {
+  let cast = |spread| {
+    Shadow::new(0.0, 0.0, 0.0, Color::rgb(255, 0, 0))
+      .spread(spread)
+      .follow_content()
+  };
+  let grown = boxed(Style::new().shadow(cast(2.0)), 10.0);
+  assert_eq!(
+    grown.pixel(25, 15),
+    [255, 255, 255, 255],
+    "under the square"
+  );
+  assert_eq!(grown.pixel(31, 15), [255, 0, 0, 255], "2 past its edge");
+  assert_eq!(grown.pixel(32, 15)[3], 0, "3 past");
+  // A negative spread shrinks it inside the square, where it is hidden.
+  let shrunk = boxed(Style::new().shadow(cast(-2.0)), 10.0);
+  assert!(shrunk.pixels == boxed(Style::new(), 10.0).pixels);
+}
+
+#[test]
+fn a_content_shadow_cast_across_a_tile_edge_is_whole_on_both_sides() {
+  // The square spans 20 to 30, so its shadow 39 to the right centers on
+  // the first tile edge, at 64, or at 65 moved a pixel.
+  for (moved, middle) in [(0.0, 64), (1.0, 65)] {
+    for blur in [0.0, 3.0, 9.0] {
+      let shadow = Shadow::new(39.0, 0.0, blur, BLACK).follow_content();
+      let style = Style::new().shadow(shadow).translate(moved, 0.0);
+      let buffer = boxed(style, 10.0);
+      assert!(buffer.pixel(middle, 15)[3] > 100, "{moved} {blur}");
+      for step in 0..20 {
+        let (left, right) = (
+          buffer.pixel(middle - 1 - step, 15),
+          buffer.pixel(middle + step, 15),
+        );
+        assert!(
+          left[3].abs_diff(right[3]) <= 1,
+          "moved {moved}, blur {blur}: {left:?} and {right:?} {step} from the middle"
+        );
+      }
+    }
+  }
+}
+
+#[test]
+fn a_blurred_content_shadow_falls_off_as_a_box_shadow_does() {
+  // A square filling the box casts what the box itself would.
+  for blur in [2.0, 3.0, 8.0, 13.0] {
+    let shadow = Shadow::new(0.0, 4.0, blur, BLACK);
+    let clear = Style::new().background(Color::rgba(0, 0, 0, 0));
+    let content = boxed(clear.shadow(shadow.follow_content()), 40.0);
+    let boxy = boxed(clear.shadow(shadow), 40.0);
+    let mut worst = 0;
+    for y in 0..70 {
+      for x in 0..120 {
+        worst = worst.max(content.pixel(x, y)[3].abs_diff(boxy.pixel(x, y)[3]));
+      }
+    }
+    assert!(worst <= 10, "blur {blur}: off by {worst}");
+  }
+}
+
+#[test]
+fn a_cut_out_content_shadow_is_left_out_by_the_contents_alpha() {
+  let cast = |half: u8, cut: bool| {
+    let shadow = Shadow::new(0.0, 0.0, 6.0, BLACK).follow_content();
+    let shadow = if cut { shadow.cut_out() } else { shadow };
+    let mut scene = Scene::new();
+    let square = Style::new()
+      .background(Color::rgba(255, 255, 255, half))
+      .width(10.0)
+      .height(10.0);
+    let row = Row::new().padding(10, 20).align(Align::Start).child(
+      Stack::new()
+        .style(Style::new().shadow(shadow).width(40.0).height(40.0))
+        .child(Row::new().style(square)),
+    );
+    let window = scene.window(scene.panel().child(row), 120.0, 70.0);
+    scene.full(&window, 1.0)
+  };
+  let (cut, kept) = (cast(255, true), cast(255, false));
+  assert!(cut.pixels == kept.pixels, "opaque content hides it anyway");
+  let (cut, kept) = (cast(128, true), cast(128, false));
+  // Under translucent content, it is multiplied by what shows through.
+  let (under_cut, under_kept) = (cut.pixel(25, 15)[3], kept.pixel(25, 15)[3]);
+  assert!(
+    under_cut > 128 && under_cut < under_kept,
+    "{under_cut} {under_kept}"
+  );
+  assert_eq!(cut.pixel(32, 15), kept.pixel(32, 15), "beside it");
+  assert!(cut.pixel(32, 15)[3] > 0);
+}
+
+#[test]
+fn a_content_shadow_is_cast_by_the_masked_shape() {
+  let shadow = Shadow::new(10.0, 10.0, 0.0, BLACK).follow_content();
+  let buffer = boxed(Style::new().mask(Mask::ellipse()).shadow(shadow), 40.0);
+  // The ellipse's shadow, not the box's: clear off its corner.
+  assert_eq!(buffer.pixel(68, 58)[3], 0, "past the ellipse's corner");
+  assert_eq!(buffer.pixel(50, 58), [0, 0, 0, 255], "under its bottom");
+}
+
+#[test]
+fn a_content_shadow_too_large_to_draw_leaves_the_content() {
+  for blur in [4000.0, 1e30, f32::MAX] {
+    let huge = Shadow::new(0.0, 0.0, blur, BLACK).follow_content();
+    for style in [Style::new(), Style::new().translate(1.0, 0.0)] {
+      let buffer = boxed(style.shadow(huge), 10.0);
+      assert!(
+        buffer.pixels == boxed(style, 10.0).pixels,
+        "blur {blur}, {style:?}"
+      );
+    }
+  }
+}
+
 /// A window with an ellipse-masked turned card, a list faded at its
-/// bottom by a gradient, an image-masked box and text; `on` changes the
-/// card's mask and the text's color.
+/// bottom by a gradient, an image-masked box and text in a row that
+/// casts its shadow; `on` changes the card's mask and the text's color.
 fn effects(scene: &mut Scene, on: crabshell_reactive::Signal<bool>) -> Window {
   let star = leaked("shapes.svg");
   let fade = Gradient::linear(180.0, BLACK, Color::rgba(0, 0, 0, 0)).stop(0.6, BLACK);
+  let shadow = Shadow::new(1.0, 2.0, 3.0, Color::rgba(0, 0, 0, 200));
   let row = |text: &'static str| Text::new(text);
   let panel = scene
     .panel()
@@ -151,6 +282,7 @@ fn effects(scene: &mut Scene, on: crabshell_reactive::Signal<bool>) -> Window {
                 .width(36.0)
                 .height(30.0)
                 .rotate(20.0)
+                .shadow(shadow.follow_content())
                 .transition(crabshell_ui::Transition::new(100));
               if on.get() {
                 card.mask(Mask::ellipse()).opacity(0.8)
@@ -176,20 +308,31 @@ fn effects(scene: &mut Scene, on: crabshell_reactive::Signal<bool>) -> Window {
               .height(30.0),
           ),
         )
-        .child(Row::new().child(Text::new("shadow").style(move || {
-          let color = if on.get() {
-            WHITE
-          } else {
-            Color::hex("#f9e2af")
-          };
-          Style::new().color(color)
-        }))),
+        .child(
+          // Its shadow reaches past the text's own ink box.
+          Row::new()
+            .style(
+              Style::new().shadow(
+                Shadow::new(16.0, 14.0, 4.0, BLACK)
+                  .spread(1.0)
+                  .follow_content(),
+              ),
+            )
+            .child(Text::new("shadow").style(move || {
+              let color = if on.get() {
+                WHITE
+              } else {
+                Color::hex("#f9e2af")
+              };
+              Style::new().color(color)
+            })),
+        ),
     );
   scene.window(panel, 260.0, 60.0)
 }
 
 #[test]
-fn masks_repaint_like_drawing_everything() {
+fn masks_and_content_shadows_repaint_like_drawing_everything() {
   use crate::{Canvas, PixelFormat};
 
   for scale in [1.0, 1.5, 2.0] {
@@ -266,4 +409,42 @@ fn a_mask_changes_at_once_in_a_fade() {
     style.opacity.is_some_and(|o| o > 0.95),
     "opacity still fades"
   );
+}
+
+/// How long a full draw of a 13 pixel line of text and a 64 pixel icon,
+/// each with a content shadow, takes at scale 2, and without. Run it in a
+/// release build:
+/// `cargo test --release -p crabshell-render --lib time_content_shadows -- --ignored --nocapture`.
+#[test]
+#[ignore = "a measurement, not a check"]
+fn time_content_shadows() {
+  let shadow = Shadow::new(0.0, 2.0, 6.0, Color::rgba(0, 0, 0, 160)).follow_content();
+  for (what, style) in [
+    ("with a content shadow", Style::new().shadow(shadow)),
+    ("without", Style::new()),
+  ] {
+    for name in ["13 px text", "64 px icon"] {
+      let mut scene = Scene::new();
+      let row = Row::new().padding(8, 8).align(Align::Start);
+      let row = if name == "13 px text" {
+        row.child(Text::new("Wednesday 16 November  14:05").style(style))
+      } else {
+        row.child(
+          crabshell_ui::Icon::new(fixture("shapes.svg").as_path())
+            .size(64)
+            .style(style),
+        )
+      };
+      let window = scene.window(scene.panel().child(row), 300.0, 80.0);
+      let draws = 50;
+      let start = std::time::Instant::now();
+      for _ in 0..draws {
+        scene.full(&window, 2.0);
+      }
+      println!(
+        "{name} {what}: {:.3} ms a full draw at scale 2",
+        start.elapsed().as_secs_f64() * 1000.0 / f64::from(draws)
+      );
+    }
+  }
 }

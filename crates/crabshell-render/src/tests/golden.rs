@@ -877,3 +877,52 @@ fn masks() {
     )
   });
 }
+
+/// Text and an icon casting shadows through their alpha: one soft and
+/// low, one sharp and spread, and one cut out under translucent text.
+#[test]
+fn content_shadows() {
+  check_fonts();
+  check("content_shadows", 220.0, 48.0, |scene| {
+    let soft = Shadow::new(0.0, 2.0, 4.0, Color::rgba(0, 0, 0, 220)).follow_content();
+    let sharp = Shadow::new(1.0, 1.0, 0.0, Color::hex("#f38ba8"))
+      .spread(1.0)
+      .follow_content();
+    let glow = Shadow::new(0.0, 0.0, 6.0, Color::hex("#89b4fa"))
+      .spread(2.0)
+      .follow_content()
+      .cut_out();
+    scene
+      .panel()
+      .style(
+        Style::new()
+          .background(Color::hex("#45475a"))
+          .color(Color::hex("#cdd6f4")),
+      )
+      .child(
+        Row::new()
+          .padding(6, 10)
+          .gap(12)
+          .align(Align::Center)
+          .child(
+            Text::new("14:05").style(
+              Style::new()
+                .font(Font::new("sans-serif", 22.0))
+                .shadow(soft),
+            ),
+          )
+          .child(
+            Icon::new(fixture("shapes.svg").as_path())
+              .size(32)
+              .style(Style::new().shadow(sharp)),
+          )
+          .child(
+            Text::new("glow").style(
+              Style::new()
+                .color(Color::rgba(255, 255, 255, 140))
+                .shadow(glow),
+            ),
+          ),
+      )
+  });
+}
