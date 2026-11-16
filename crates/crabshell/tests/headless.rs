@@ -4394,6 +4394,13 @@ fn the_dashboard_matches_its_goldens() {
     ]);
     let shell = ExampleBar::spawn(&sway, this_as_shell(TEST), &env);
     shell.wait_for(FIRST_FRAME);
+    // The first frame logged may be the wallpaper's; the dashboard's,
+    // with its art blurred in a debug build, can come far later.
+    let factor: f32 = scale.parse().expect("a scale");
+    wait_for_shot(&sway, "HEADLESS-1", "the album art", |shot| {
+      let [r, g, b] = rgb(shot, (70.0 * factor) as u32, (200.0 * factor) as u32);
+      r.abs_diff(0xf3) <= 6 && g.abs_diff(0x8b) <= 6 && b.abs_diff(0xa8) <= 6
+    });
     let shot = steady_shot(&sway, "HEADLESS-1");
     check_golden(&format!("dashboard@{scale}x"), &shot, shot.height);
   }
