@@ -100,20 +100,28 @@ fn an_idle_canvas_records_nothing_again() {
   let mut h = Harness::new();
   let runs = Counter::default();
   let counted = runs.clone();
-  let unread = h.cx.signal(0);
-  let canvas = Canvas::new(move |pen| {
-    counted.hit();
-    pen.fill(&Path::circle(Point::new(10.0, 10.0), 8.0), RED);
-  });
-  let window = h.window(h.panel().child(canvas), 20.0, 20.0);
+  let sibling = h.cx.signal(RED);
+  let row = Row::new()
+    .child(Row::new().style(move || Style::new().width(10.0).background(sibling.get())))
+    .child(
+      Canvas::new(move |pen| {
+        counted.hit();
+        pen.fill(&Path::circle(Point::new(10.0, 10.0), 8.0), RED);
+      })
+      .style(Style::new().width(20.0).height(20.0)),
+    );
+  let window = h.window(h.panel().child(row), 40.0, 20.0);
   window.take_damage();
+  let beside = node_at(window.view().root(), &[0, 0]).bounds();
   for n in 1..20 {
-    unread.set(n);
-    h.frame(&window);
-    assert!(!window.needs_layout());
+    // A sibling's paint changes, and the window is laid out again at the
+    // same size.
+    sibling.set(Color::rgb(0, n, 0));
+    h.runtime.flush();
+    window.layout(&mut h.text);
+    assert_eq!(window.take_damage(), [beside], "only the sibling repaints");
   }
   assert_eq!(runs.get(), 1);
-  assert!(!window.has_damage(), "and repaints nothing");
 }
 
 #[test]
