@@ -444,14 +444,23 @@ where
       let old = std::mem::take(&mut lengths.measured);
       let mut index = HashMap::with_capacity(keys.len());
       let mut measured = Vec::with_capacity(keys.len());
+      // Where each old index went, for rows measured but not yet looked at.
+      let mut moved = vec![None; old.len()];
       for (at, item_key) in keys.into_iter().enumerate() {
-        measured.push(lengths.index.get(&item_key).and_then(|&was| old[was]));
+        let was = lengths.index.get(&item_key).copied();
+        if let Some(was) = was {
+          moved[was].get_or_insert(at);
+        }
+        measured.push(was.and_then(|was| old[was]));
         index.entry(item_key).or_insert(at);
       }
       lengths.index = index;
       lengths.measured = measured;
-      // Measured against the old indexes.
-      lengths.pending.clear();
+      let pending = std::mem::take(&mut lengths.pending);
+      lengths.pending = pending
+        .into_iter()
+        .filter_map(|(was, length)| Some((moved.get(was).copied().flatten()?, length)))
+        .collect();
       drop(lengths);
       all.set(list);
       changes.update(|n| *n += 1);

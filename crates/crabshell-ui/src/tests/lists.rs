@@ -652,3 +652,33 @@ fn a_current_row_set_before_the_items_arrive_is_shown_once_they_do() {
   h.frame(&window);
   assert_eq!(row(&window, 50).map(|rect| rect.bottom()), Some(100.0));
 }
+
+#[test]
+fn rows_measured_as_the_items_change_keep_their_lengths() {
+  let mut h = Harness::new();
+  let items = h.cx.signal((0..10).collect::<Vec<u32>>());
+  let offset = h.cx.signal(0.0);
+  let geometry = h.cx.signal(Rect::default());
+  // The items read the list's own rectangle, written in the same layout
+  // that measures its first rows, so both reach the same flush.
+  let list = ListView::new(
+    move || {
+      geometry.get();
+      items.get()
+    },
+    |n| *n,
+    |_, n| labeled(n.get_untracked(), 40),
+  )
+  .row_height(20)
+  .height(100)
+  .offset(offset)
+  .scroll_bar(Style::new())
+  .geometry(geometry);
+  let window = h.window(h.panel().child(list), 100.0, 200.0);
+  // Six rows built and measured 40, and four counted 20: 320.
+  let handle = node_at(window.view().root(), &[0, 0]).scroll_bar();
+  assert_eq!(
+    handle.map(|(rect, _)| rect.height),
+    Some(100.0_f32 * 100.0 / 320.0)
+  );
+}
