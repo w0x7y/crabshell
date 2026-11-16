@@ -1494,6 +1494,71 @@ fn dragging_selects_in_a_field_past_the_bar_and_shift_click_extends() {
 }
 
 #[test]
+#[ignore = "needs headless Sway"]
+fn shift_released_while_the_keyboard_is_elsewhere_doesnt_extend_a_click() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let mut keyboard = VirtualKeyboard::new(&sway);
+  let mut pointer = VirtualPointer::new(&sway);
+  let setup = Setup {
+    keyboard: KeyboardFocus::Exclusive,
+    field: true,
+    ..PLAIN
+  };
+  let mut shell = Shell::build(&sway, setup);
+  let id = shell.wait_for_bar("HEADLESS-1");
+  let knobs = shell.knobs;
+  knobs.typed.set(String::from("hello"));
+  settle(&mut shell.event_loop);
+  let field = |platform: &Platform| {
+    platform
+      .windows()
+      .find(|(held, _)| *held == id)
+      .and_then(|(_, window)| window.field())
+  };
+  let rect = shell
+    .event_loop
+    .platform()
+    .windows()
+    .find(|(held, _)| *held == id)
+    .and_then(|(_, window)| field_rect(window.view().root()))
+    .expect("a field");
+  let y = (rect.y + rect.height / 2.0) as u32;
+  let mut click = |x: u32| {
+    // Slower than a double click, which picks a word.
+    std::thread::sleep(Duration::from_millis(450));
+    pointer.move_to(x, y, (1920, 1080));
+    pointer.press(VirtualPointer::LEFT);
+    pointer.release(VirtualPointer::LEFT);
+  };
+  click(rect.x as u32 + 1);
+  run_until(
+    &mut shell.event_loop,
+    "the caret at the start",
+    |platform| field(platform).is_some_and(|field| (field.anchor, field.cursor) == (0, 0)),
+  );
+  keyboard.shift(true);
+  settle(&mut shell.event_loop);
+  // The keyboard goes to another program, and Shift comes up there.
+  knobs.keyboard.set(KeyboardFocus::None);
+  settle(&mut shell.event_loop);
+  let app = AppWindow::new(&sway, "org.example.App", "another program");
+  run_until(&mut shell.event_loop, "the keyboard to leave", |platform| {
+    field(platform).is_none()
+  });
+  keyboard.shift(false);
+  click(rect.right() as u32 - 1);
+  settle(&mut shell.event_loop);
+  drop(app);
+  knobs.keyboard.set(KeyboardFocus::Exclusive);
+  run_until(&mut shell.event_loop, "the keyboard back", |platform| {
+    field(platform).is_some()
+  });
+  let state = field(shell.event_loop.platform()).expect("the field");
+  assert_eq!((state.anchor, state.cursor), (5, 5), "a plain click");
+}
+
+#[test]
 #[ignore = "needs headless Sway and wl-clipboard"]
 fn ctrl_c_copies_a_field_to_other_programs_and_ctrl_v_pastes_from_them() {
   let sway = Sway::start();

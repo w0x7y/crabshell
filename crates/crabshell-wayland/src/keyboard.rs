@@ -120,6 +120,8 @@ impl Platform {
 
   /// Takes `keyboard` out of the window it was in.
   pub(crate) fn keyboard_leave(&mut self, index: usize) {
+    // Keys let go elsewhere are never told, so none count as held.
+    self.keyboards[index].modifiers = Modifiers::default();
     let Some(id) = self.keyboards[index].focus.take() else {
       return;
     };
