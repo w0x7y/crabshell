@@ -14,13 +14,14 @@ use tiny_skia::Pixmap;
 use crate::icons::{premultiplied, read_capped};
 use crate::images::{MAX_BYTES, MAX_PIXELS, Picture, check, filtered, finish};
 
-/// The most pixels a GIF's frames may hold together, counting each frame
-/// at the larger of the GIF's canvas and the size drawn: 64 Mi, 256 MiB
-/// at most. Every frame is composed and scaled on the loop's thread and
-/// kept while shown, so this bounds both the first draw's work and the
-/// memory kept; it still takes a 480 by 270 sticker of 500 frames, or a
-/// 128 by 128 avatar of 4,000. Past it, the first frame shows.
-const MAX_FRAME_PIXELS: u64 = 64 * 1024 * 1024;
+/// The most canvas pixels a GIF's frames may come to together: each is
+/// composed on the canvas on the loop's thread at its first draw, so this
+/// bounds that work. Past it, the first frame shows.
+const MAX_DECODED_PIXELS: u64 = 64 * 1024 * 1024;
+
+/// The most pixels at the size drawn one GIF's frames may keep, 32 MiB,
+/// within what the picture cache has left. Past it, the first frame shows.
+const MAX_KEPT_PIXELS: u64 = 8 * 1024 * 1024;
 
 /// What an image file draws as: one picture, or a GIF's frames.
 pub(crate) struct Frames {
@@ -47,33 +48,50 @@ pub(crate) struct Frame {
   pub(crate) delay: Duration,
 }
 
-/// The file at `path` as `filtered` draws it, every frame of a GIF so.
-/// A GIF past [`MAX_FRAME_PIXELS`] shows its first frame, and one with a
-/// broken frame stops on the last good one; both are logged.
+/// The file at `path` as `filtered` draws it, every frame of a GIF so,
+/// keeping at most `room` bytes of frames. A GIF past that,
+/// [`MAX_KEPT_PIXELS`] or [`MAX_DECODED_PIXELS`] shows its first frame,
+/// and one with a broken frame stops on the last good one; both are
+/// logged. A blurred GIF shows its first frame, still.
 pub(crate) fn frames(
   path: &Path,
   size: (u32, u32),
   fit: Fit,
   filters: &ImageFilters,
   scale: f32,
+  room: usize,
 ) -> Result<Frames, String> {
-  frames_within(path, size, fit, filters, scale, MAX_FRAME_PIXELS)
+  let limits = Limits {
+    work: MAX_DECODED_PIXELS,
+    kept: MAX_KEPT_PIXELS.min(room as u64 / 4),
+  };
+  frames_within(path, size, fit, filters, scale, limits)
 }
 
-/// [`frames`] with a cap of `cap` pixels instead, for tests.
+/// How many canvas pixels a GIF may decode and how many pixels at the
+/// size drawn its frames may keep.
+#[derive(Clone, Copy)]
+pub(crate) struct Limits {
+  pub(crate) work: u64,
+  pub(crate) kept: u64,
+}
+
+/// [`frames`] within `limits`.
 pub(crate) fn frames_within(
   path: &Path,
   size: (u32, u32),
   fit: Fit,
   filters: &ImageFilters,
   scale: f32,
-  cap: u64,
+  limits: Limits,
 ) -> Result<Frames, String> {
   let is_gif = path
     .extension()
     .and_then(|extension| extension.to_str())
     .is_some_and(|extension| extension.eq_ignore_ascii_case("gif"));
-  if !is_gif {
+  // The blur is for still pictures: blurring every frame would stall the
+  // first draw.
+  if !is_gif || filters.blur > 0.0 {
     return filtered(path, size, fit, filters, scale).map(Frames::still);
   }
   if size.0 == 0 || size.1 == 0 {
@@ -81,8 +99,8 @@ pub(crate) fn frames_within(
   }
   let data = read_capped(path, MAX_BYTES)?;
   let mut gif = Gif::open(&data)?;
-  let canvas = u64::from(gif.width) * u64::from(gif.height);
-  let each = canvas.max(u64::from(size.0) * u64::from(size.1));
+  let canvas_pixels = u64::from(gif.width) * u64::from(gif.height);
+  let drawn = u64::from(size.0) * u64::from(size.1);
   let mut frames = Vec::new();
   let mut broken = false;
   loop {
@@ -96,10 +114,20 @@ pub(crate) fn frames_within(
         break;
       }
     };
-    if !frames.is_empty() && (frames.len() as u64 + 1) * each > cap {
+    // Counted once a frame is read, so a GIF that ends in time isn't cut;
+    // at most one more canvas is read past the limit.
+    let count = frames.len() as u64 + 1;
+    let past = if count.saturating_mul(canvas_pixels) > limits.work {
+      Some(("decoding", limits.work))
+    } else if count.saturating_mul(drawn) > limits.kept {
+      Some(("keeping", limits.kept))
+    } else {
+      None
+    };
+    if let Some((what, limit)) = past.filter(|_| count > 1) {
       tracing::warn!(
         image = %path.display(),
-        "a GIF's frames are past {cap} pixels at this size, so it shows its first"
+        "{what} a GIF's frames at this size is past {limit} pixels, so it shows its first"
       );
       frames.truncate(1);
       break;
@@ -129,6 +157,8 @@ impl<'a> Gif<'a> {
   pub(crate) fn open(data: &'a [u8]) -> Result<Gif<'a>, String> {
     let mut options = gif::DecodeOptions::new();
     options.set_color_output(gif::ColorOutput::RGBA);
+    // A frame past the canvas is an error, before its pixels are read.
+    options.check_frame_consistency(true);
     if let Some(limit) = NonZeroU64::new(MAX_PIXELS * 4) {
       options.set_memory_limit(gif::MemoryLimit::Bytes(limit));
     }
@@ -159,17 +189,15 @@ impl<'a> Gif<'a> {
       return Err(String::from("a GIF frame with no pixels"));
     }
     let (left, top) = (u32::from(frame.left), u32::from(frame.top));
-    let frame_width = usize::from(frame.width);
+    // The decoder checks this too; the slices below rely on it.
+    if left + u32::from(frame.width) > self.width || top + u32::from(frame.height) > self.height {
+      return Err(String::from("a GIF frame past its canvas"));
+    }
+    let columns = usize::from(frame.width);
     let previous = (frame.dispose == DisposalMethod::Previous).then(|| self.canvas.clone());
-    // The part of the frame on the canvas: rows and columns past it are
-    // cut off.
-    let columns = frame_width.min(self.width.saturating_sub(left) as usize);
     let mut rows = Vec::new();
-    for (row, line) in frame.buffer.chunks_exact(frame_width * 4).enumerate() {
+    for (row, line) in frame.buffer.chunks_exact(columns * 4).enumerate() {
       let y = top + row as u32;
-      if y >= self.height {
-        break;
-      }
       let start = (y as usize * self.width as usize + left as usize) * 4;
       rows.push(start);
       let target = &mut self.canvas[start..start + columns * 4];

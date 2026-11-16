@@ -885,7 +885,9 @@ impl Image {
   /// Blurs the picture, as CSS's `blur()`: the Gaussian's standard
   /// deviation in logical pixels, 0 by default. Pixels past the picture's
   /// edge count as its edge pixels, so a blurred picture keeps its edges
-  /// opaque. A number that isn't finite or is below 0 counts as 0.
+  /// opaque. A number that isn't finite or is below 0 counts as 0. The
+  /// blur is for still pictures, such as album art and wallpapers: a
+  /// blurred GIF shows its first frame, still.
   pub fn blur(mut self, blur: impl IntoProp<f32>) -> Image {
     self.image.blur = Some(blur.into_prop());
     self

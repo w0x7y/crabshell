@@ -248,6 +248,17 @@ impl Icons {
     self.cache.len()
   }
 
+  /// The number of frames held over every cached picture, for tests.
+  #[cfg(test)]
+  pub(crate) fn frames_cached(&self) -> usize {
+    self
+      .cache
+      .values()
+      .filter_map(|entry| entry.frames.as_ref())
+      .map(|frames| frames.frames.len())
+      .sum()
+  }
+
   /// The number of times an icon was rasterized, for tests.
   #[cfg(test)]
   pub(crate) fn rasterized(&self) -> usize {
@@ -335,8 +346,15 @@ impl Icons {
       filters: FilterKey::new(&image.filters, scale),
     };
     if !self.cache.contains_key(&key) {
-      let rasterized =
-        crate::animation::frames(path, (width, height), image.fit, &image.filters, scale);
+      let room = MAX_CACHED_BYTES.saturating_sub(self.bytes_in_use());
+      let rasterized = crate::animation::frames(
+        path,
+        (width, height),
+        image.fit,
+        &image.filters,
+        scale,
+        room,
+      );
       self.store(key.clone(), rasterized, || {
         format!("image {}", path.display())
       });
@@ -511,6 +529,26 @@ impl Icons {
     let entry = self.cache.get_mut(key)?;
     entry.used = self.frame;
     Some(&entry.frames.as_ref()?.frames.first()?.pixmap)
+  }
+
+  /// The bytes of the pictures [`end_frame`](Self::end_frame) would keep:
+  /// those a recent draw used and a waiting animation's frames.
+  fn bytes_in_use(&self) -> usize {
+    let recent = self.frame.saturating_sub(RECENT - 1);
+    let waiting: HashSet<&Key> = self
+      .playbacks
+      .values()
+      .filter(|playback| playback.due.is_some())
+      .map(|playback| &playback.key)
+      .collect();
+    self
+      .cache
+      .iter()
+      .filter(|(key, entry)| entry.used >= recent || waiting.contains(key))
+      .filter_map(|(_, entry)| entry.frames.as_ref())
+      .flat_map(|frames| &frames.frames)
+      .map(|frame| frame.pixmap.data().len())
+      .sum()
   }
 
   /// Drops what views `gone` kept.

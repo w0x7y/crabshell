@@ -9,7 +9,7 @@ use crabshell_ui::{Fit, ImageFilters, ImageView, Rect};
 use gif::{DisposalMethod, Repeat};
 
 use super::{Removed, capture_logs};
-use crate::animation::{Frames, frames_within};
+use crate::animation::{Frames, Limits, frames_within};
 
 /// Index 0 is red, 1 green, 2 blue, 3 clear.
 const PALETTE: [u8; 12] = [255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0];
@@ -71,9 +71,22 @@ fn file(name: &str, bytes: &[u8]) -> Removed {
   Removed(path)
 }
 
-fn decode(path: &Path, cap: u64) -> Frames {
-  frames_within(path, (4, 4), Fit::Fill, &ImageFilters::default(), 1.0, cap)
-    .unwrap_or_else(|error| panic!("{error}"))
+/// No limit on decoding or keeping frames.
+const ANY: Limits = Limits {
+  work: u64::MAX,
+  kept: u64::MAX,
+};
+
+fn decode(path: &Path, limits: Limits) -> Frames {
+  frames_within(
+    path,
+    (4, 4),
+    Fit::Fill,
+    &ImageFilters::default(),
+    1.0,
+    limits,
+  )
+  .unwrap_or_else(|error| panic!("{error}"))
 }
 
 /// Each frame's pixel at `x`, `y`, as RGBA.
@@ -106,7 +119,7 @@ fn every_frame_is_decoded_with_its_delay_and_the_loop_count() {
       Some(Repeat::Infinite),
     ),
   );
-  let frames = decode(&gif, u64::MAX);
+  let frames = decode(&gif, ANY);
   assert_eq!(pixels_at(&frames, 1, 1), [RED, GREEN, BLUE]);
   let delays: Vec<_> = frames.frames.iter().map(|frame| frame.delay).collect();
   let ms = Duration::from_millis;
@@ -120,7 +133,7 @@ fn every_frame_is_decoded_with_its_delay_and_the_loop_count() {
       Some(Repeat::Finite(2)),
     ),
   );
-  assert_eq!(decode(&twice, u64::MAX).repeats, Some(2));
+  assert_eq!(decode(&twice, ANY).repeats, Some(2));
   let once = file(
     "once",
     &encode(
@@ -128,7 +141,7 @@ fn every_frame_is_decoded_with_its_delay_and_the_loop_count() {
       None,
     ),
   );
-  assert_eq!(decode(&once, u64::MAX).repeats, Some(0), "no loop count");
+  assert_eq!(decode(&once, ANY).repeats, Some(0), "no loop count");
 }
 
 #[test]
@@ -155,7 +168,7 @@ fn frames_are_composed_as_their_disposal_says() {
       None,
     ),
   );
-  let frames = decode(&gif, u64::MAX);
+  let frames = decode(&gif, ANY);
   assert_eq!(frames.frames.len(), 4);
   assert_eq!(pixels_at(&frames, 0, 0), [RED, GREEN, NOTHING, NOTHING]);
   assert_eq!(pixels_at(&frames, 3, 3), [RED, RED, BLUE, RED]);
@@ -176,17 +189,16 @@ fn a_broken_frame_stops_the_animation_on_the_last_good_one() {
   bytes.truncate(bytes.len() - 6);
   let gif = file("broken", &bytes);
   let mut frames = None;
-  let logs = capture_logs(|| frames = Some(decode(&gif, u64::MAX)));
+  let logs = capture_logs(|| frames = Some(decode(&gif, ANY)));
   let frames = frames.expect("decoded");
   assert_eq!(pixels_at(&frames, 0, 0), [RED, GREEN]);
   assert_eq!(frames.repeats, Some(0), "plays once and stops");
   assert!(logs.contains("a GIF stops at a broken frame"), "{logs}");
 }
 
-#[test]
-fn a_gif_past_the_cap_shows_its_first_frame_and_says_so() {
-  let gif = file(
-    "capped",
+fn three_frames(name: &str) -> Removed {
+  file(
+    name,
     &encode(
       &[
         patch((0, 0, 4, 4), 0, 5),
@@ -195,26 +207,111 @@ fn a_gif_past_the_cap_shows_its_first_frame_and_says_so() {
       ],
       Some(Repeat::Infinite),
     ),
-  );
-  // Three 4 by 4 frames are 48 pixels.
-  assert_eq!(decode(&gif, 48).frames.len(), 3);
+  )
+}
+
+/// `gif` decoded within `limits`, and what that logged.
+fn decode_logged(
+  gif: &Path,
+  size: (u32, u32),
+  filters: ImageFilters,
+  limits: Limits,
+) -> (Frames, String) {
   let mut frames = None;
-  let logs = capture_logs(|| frames = Some(decode(&gif, 47)));
-  let frames = frames.expect("decoded");
-  assert_eq!(pixels_at(&frames, 0, 0), [RED]);
+  let logs = capture_logs(|| {
+    frames = Some(
+      frames_within(gif, size, Fit::Fill, &filters, 1.0, limits)
+        .unwrap_or_else(|error| panic!("{error}")),
+    );
+  });
+  (frames.expect("decoded"), logs)
+}
+
+#[test]
+fn a_gif_past_the_decoding_limit_shows_its_first_frame_and_says_so() {
+  let gif = three_frames("work");
+  // Three frames on a 4 by 4 canvas are 48 pixels of decoding, whatever
+  // the size drawn.
+  let at = |work| Limits { work, ..ANY };
+  assert_eq!(decode(&gif, at(48)).frames.len(), 3);
+  let (frames, logs) = decode_logged(&gif, (1, 1), ImageFilters::default(), at(47));
+  assert_eq!(frames.frames.len(), 1);
   assert_eq!(frames.repeats, Some(0));
   assert!(logs.contains("shows its first"), "{logs}");
-  // The larger of the canvas and the size drawn counts: 8 by 8 is 64.
-  let large = frames_within(
-    &gif,
-    (8, 8),
-    Fit::Fill,
-    &ImageFilters::default(),
-    1.0,
-    3 * 64 - 1,
+}
+
+#[test]
+fn a_gif_whose_frames_would_keep_too_much_shows_its_first_frame_and_says_so() {
+  let gif = three_frames("kept");
+  // Kept at 8 by 8, three frames are 192 pixels, however small the canvas.
+  let at = |kept| Limits { kept, ..ANY };
+  let (frames, _) = decode_logged(&gif, (8, 8), ImageFilters::default(), at(192));
+  assert_eq!(frames.frames.len(), 3);
+  let (frames, logs) = decode_logged(&gif, (8, 8), ImageFilters::default(), at(191));
+  assert_eq!(frames.frames.len(), 1);
+  assert_eq!(frames.repeats, Some(0));
+  assert!(logs.contains("shows its first"), "{logs}");
+}
+
+#[test]
+fn a_blurred_gif_shows_its_first_frame_still() {
+  let gif = three_frames("blurred");
+  let blurred = ImageFilters {
+    blur: 1.0,
+    ..ImageFilters::default()
+  };
+  let (frames, _) = decode_logged(&gif, (4, 4), blurred, ANY);
+  assert_eq!(frames.frames.len(), 1);
+  assert_eq!(frames.repeats, Some(0));
+  assert_eq!(pixels_at(&frames, 0, 0), [RED]);
+}
+
+/// A GIF of a good red frame and then one at `rect`.
+fn then(name: &str, rect: (u16, u16, u16, u16)) -> Removed {
+  file(
+    name,
+    &encode(
+      &[patch((0, 0, 4, 4), 0, 5), patch(rect, 1, 5)],
+      Some(Repeat::Infinite),
+    ),
   )
-  .expect("decoded");
-  assert_eq!(large.frames.len(), 1);
+}
+
+#[test]
+fn a_frame_off_or_past_its_canvas_stops_the_animation_on_the_last_good_one() {
+  for (name, rect) in [
+    ("right", (200, 0, 2, 2)),
+    ("below", (0, 200, 2, 2)),
+    ("far", (60000, 60000, 2, 2)),
+    ("part-right", (3, 0, 2, 2)),
+    ("part-below", (0, 3, 2, 2)),
+    ("larger", (0, 0, 5, 5)),
+  ] {
+    let gif = then(name, rect);
+    let (frames, logs) = decode_logged(&gif, (4, 4), ImageFilters::default(), ANY);
+    assert_eq!(pixels_at(&frames, 0, 0), [RED], "{name}");
+    assert_eq!(frames.repeats, Some(0), "{name}");
+    assert!(
+      logs.contains("a GIF stops at a broken frame"),
+      "{name}: {logs}"
+    );
+  }
+}
+
+#[test]
+fn a_first_frame_off_or_larger_than_its_canvas_is_refused() {
+  for (name, rect) in [
+    ("first-right", (200, 0, 2, 2)),
+    ("first-part", (3, 3, 2, 2)),
+    ("first-larger", (0, 0, 8, 8)),
+  ] {
+    let gif = file(name, &encode(&[patch(rect, 0, 5)], None));
+    let result = frames_within(&gif, (4, 4), Fit::Fill, &ImageFilters::default(), 1.0, ANY);
+    assert!(result.is_err(), "{name}");
+    // A still GIF's first frame, as colors and the cache read it.
+    let data = std::fs::read(&*gif).expect("read");
+    assert!(crate::images::gif(&data).is_err(), "{name}");
+  }
 }
 
 /// What an `Image` `id` of the GIF at `path` hands the renderer.
@@ -445,4 +542,40 @@ fn a_gif_frame_repaints_its_box_and_matches_a_full_draw() {
   );
   assert!(buffer.pixels == scene.full(&window, 2.0).pixels);
   assert!(scene.renderer.next_image_frame(due).is_some());
+}
+
+#[test]
+fn a_gif_keeps_its_frames_only_within_what_the_cache_has_left() {
+  let gif = red_then_green("cache-budget");
+  let stripes = super::fixture("stripes.png");
+  // Each GIF frame at 500 by 500 is 1,000,000 bytes.
+  let draw_gif = |icons: &mut crate::icons::Icons, id| {
+    icons.image(&view(id, &gif, true), (500, 500), 1.0);
+  };
+  let mut icons = icons();
+  draw_gif(&mut icons, 1);
+  assert_eq!(icons.frames_cached(), 2, "room for both frames");
+
+  // Two pictures in use hold 32,000,000 of the 33,554,432 bytes, so the
+  // GIF has room for one frame only.
+  let mut icons = icons_with_pictures(&stripes);
+  let logs = capture_logs(|| draw_gif(&mut icons, 1));
+  assert_eq!(icons.frames_cached(), 3, "two pictures and one frame");
+  assert!(logs.contains("shows its first"), "{logs}");
+  let start = Instant::now();
+  assert_eq!(
+    icons.next_frame(start),
+    None,
+    "a still frame waits for nothing"
+  );
+}
+
+/// A cache holding two 2000 by 2000 pictures, both used by this draw.
+fn icons_with_pictures(path: &Path) -> crate::icons::Icons {
+  let mut icons = icons();
+  for side in [2000, 2001] {
+    let image = view(0, path, true);
+    icons.image(&image, (side, 2000), 1.0);
+  }
+  icons
 }
