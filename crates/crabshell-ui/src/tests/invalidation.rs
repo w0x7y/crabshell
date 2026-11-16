@@ -763,3 +763,32 @@ fn a_content_shadow_reaching_past_64_pixels_is_left_out_and_logged_once() {
     "{logs}"
   );
 }
+
+#[test]
+fn an_instant_change_of_a_content_shadow_repaints_what_every_child_casts() {
+  use crate::{Point, Shadow};
+
+  let mut h = Harness::new();
+  let shadow = |color| Shadow::new(2.0, 2.0, 2.0, color).follow_content();
+  // The child is drawn twice its size, past the button's box.
+  let child = Row::new()
+    .style(Style::new().background(Color::rgb(9, 9, 9)).scale(2.0))
+    .padding(6, 6);
+  let button = Button::new(child)
+    .style(Style::new().shadow(shadow(Color::rgb(0, 0, 0))))
+    .hover_style(Style::new().shadow(shadow(Color::rgb(255, 0, 0))));
+  let row = Row::new().padding(30, 40).align(Align::Start).child(button);
+  let window = h.window(h.panel().child(row), 300.0, 100.0);
+  window.take_damage();
+  let rect = rect_at(&window, &[0, 0]);
+
+  window.pointer_motion(Point::new(rect.x + 2.0, rect.y + 2.0));
+  h.frame(&window);
+  let bounds = super::node_at(window.view().root(), &[0, 0]).bounds();
+  assert!(bounds.width > rect.width + 12.0, "the child overflows");
+  let damage = window.take_damage();
+  assert!(
+    damage.iter().any(|area| area.union(bounds) == *area),
+    "{bounds:?} missing from {damage:?}"
+  );
+}

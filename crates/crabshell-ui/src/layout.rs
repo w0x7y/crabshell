@@ -417,8 +417,12 @@ impl Tree {
     let inside = painted.union(children);
     let window_bounds = through(chain, inside);
     // A clip that came, went or changed shape shows or hides parts of
-    // children that themselves didn't change.
-    if (clips || node.clips)
+    // children that themselves didn't change, and a content shadow that
+    // did is cast by every child too.
+    let casts = chain[own..]
+      .iter()
+      .any(|step| matches!(step, Step::Shadow(_)));
+    if (clips || node.clips || casts || node.casts)
       && node.rect.is_some()
       && (node.changed || node.window_bounds != window_bounds)
     {
@@ -440,6 +444,7 @@ impl Tree {
       self.measured.push((Rc::clone(measure), size));
     }
     node.clips = clips;
+    node.casts = casts;
     node.rect = Some(rect);
     node.content = content;
     node.painted = painted;

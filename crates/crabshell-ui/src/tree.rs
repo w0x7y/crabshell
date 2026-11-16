@@ -142,6 +142,8 @@ pub(crate) struct Node {
   pub(crate) transform: Option<Affine>,
   /// Whether its style clipped its children at the last layout.
   pub(crate) clips: bool,
+  /// Whether it cast a content shadow at the last layout.
+  pub(crate) casts: bool,
   /// Whether a content shadow it couldn't cast was logged.
   pub(crate) shadow_refused: bool,
   /// A style change fading in, and the count of fades started, which
@@ -393,6 +395,7 @@ impl Node {
       drawn: Rect::default(),
       transform: None,
       clips: false,
+      casts: false,
       shadow_refused: false,
       fade: None,
       fades: 0,
