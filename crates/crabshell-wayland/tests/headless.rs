@@ -4583,3 +4583,51 @@ fn a_shown_gif_wakes_only_at_its_frames_and_a_still_paused_or_hidden_one_wakes_n
   assert!(commits >= 5, "{commits} frames in 1 s");
   let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn an_image_transition_draws_while_it_runs_and_then_nothing_wakes() {
+  let sway = Sway::start();
+  let fixtures =
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../crabshell-render/tests/fixtures");
+  let (stripes, bands) = (fixtures.join("stripes.png"), fixtures.join("bands.png"));
+  let runtime = Runtime::current();
+  let cx = Cx::new(runtime.new_owner());
+  let next = cx.signal(false);
+  let bar = PanelWindow::new(&Output::new("HEADLESS-1"))
+    .anchors(Edge::Top | Edge::Left | Edge::Right)
+    .height(30)
+    .child(
+      Row::new().child(
+        crabshell_ui::Image::new(move || {
+          if next.get() {
+            bands.clone()
+          } else {
+            stripes.clone()
+          }
+        })
+        .width(60)
+        .height(30)
+        .transition(crabshell_ui::ImageTransition::crossfade(Transition::new(
+          500,
+        ))),
+      ),
+    );
+  let mut event_loop = sway.connect();
+  let id = event_loop.platform().add_window(Window::new(&cx, bar));
+  run_until(&mut event_loop, "the bar's first frame", |platform| {
+    platform
+      .window_info(id)
+      .is_some_and(|info| info.commits > 0)
+  });
+  settle(&mut event_loop);
+  assert_eq!(run_for(&mut event_loop, Duration::from_secs(1)), (1, 0));
+
+  // While it runs, it draws on the animation clock; once it ends,
+  // nothing wakes.
+  next.set(true);
+  let (_, commits) = run_for(&mut event_loop, Duration::from_millis(500));
+  assert!(commits >= 10, "{commits} frames in the 500 ms it runs");
+  settle(&mut event_loop);
+  assert_eq!(run_for(&mut event_loop, Duration::from_secs(2)), (1, 0));
+}
