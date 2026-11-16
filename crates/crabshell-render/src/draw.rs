@@ -21,6 +21,7 @@ use crate::damage::{BufferAge, DamageHistory, PixelRect};
 use crate::icons::Icons;
 
 mod canvas;
+mod effects;
 
 /// The side of a tile, in buffer pixels. tiny-skia cuts a curve where it
 /// leaves the pixmap, which changes the antialiasing beside the cut, so
@@ -402,9 +403,10 @@ struct Painter<'a> {
 }
 
 impl Painter<'_> {
-  /// Draws `node` and everything inside it. With an opacity below 1, they
-  /// are drawn into a layer first, which is then blended in at that
-  /// opacity, so overlapping children don't show through each other.
+  /// Draws `node` and everything inside it. With an opacity below 1 or a
+  /// mask, they are drawn into one layer first, which is masked and
+  /// blended in at that opacity, so overlapping children don't show
+  /// through each other.
   fn node(&mut self, pixmap: &mut PixmapMut<'_>, node: NodeView<'_>) {
     // Nothing the node or its descendants paint reaches this area.
     let Some((x, y, width, height)) =
@@ -426,7 +428,7 @@ impl Painter<'_> {
     }
     if let Some(transform) = node.transform() {
       self.transformed(pixmap, node, &style, transform, opacity);
-    } else if opacity < 1.0 {
+    } else if opacity < 1.0 || style.mask.is_some() {
       // The layer covers only what the subtree paints in this area.
       let Some(mut layer) = Pixmap::new(width, height) else {
         return;
@@ -439,7 +441,7 @@ impl Painter<'_> {
         fonts: &mut *self.fonts,
         work: &mut *self.work,
       };
-      inner.node_contents(&mut layer.as_mut(), node, &style);
+      inner.layer_contents(&mut layer.as_mut(), node, &style);
       let paint = PixmapPaint {
         opacity,
         ..PixmapPaint::default()
@@ -448,6 +450,15 @@ impl Painter<'_> {
       pixmap.draw_pixmap(x, y, layer.as_ref(), &paint, Transform::identity(), None);
     } else {
       self.node_contents(pixmap, node, &style);
+    }
+  }
+
+  /// What `node_contents` draws into a fresh `layer`, kept only where the
+  /// style's mask is opaque.
+  fn layer_contents(&mut self, layer: &mut PixmapMut<'_>, node: NodeView<'_>, style: &Style) {
+    self.node_contents(layer, node, style);
+    if let Some(mask) = &style.mask {
+      self.mask(layer, node.rect(), mask);
     }
   }
 
@@ -524,7 +535,7 @@ impl Painter<'_> {
       fonts: &mut *self.fonts,
       work: &mut *self.work,
     };
-    inner.node_contents(&mut layer.as_mut(), node, style);
+    inner.layer_contents(&mut layer.as_mut(), node, style);
     let paint = PixmapPaint {
       opacity,
       quality: FilterQuality::Bilinear,

@@ -4,8 +4,8 @@
 use std::rc::Rc;
 
 use crabshell_ui::{
-  Align, Color, Column, Content, Fit, Font, Gradient, Icon, IconPixels, IconSource, Image, Menu,
-  MenuEntry, MenuToggle, Row, Shadow, Stack, Style, Text, Window,
+  Align, Color, Column, Content, Fit, Font, Gradient, Icon, IconPixels, IconSource, Image, Mask,
+  Menu, MenuEntry, MenuToggle, Row, Shadow, Stack, Style, Text, Window,
 };
 
 use super::{Scene, assert_golden, fixture};
@@ -823,6 +823,56 @@ fn transforms() {
                   .padding(20, 40),
               ),
             ),
+        ),
+    )
+  });
+}
+
+/// An image in an ellipse, a list fading out at its bottom, and a sweep
+/// cut to the shapes picture's alpha, the last turned and faded.
+#[test]
+fn masks() {
+  check_fonts();
+  let shapes: &'static str = fixture("shapes.svg").display().to_string().leak();
+  check("masks", 200.0, 64.0, |scene| {
+    let fade = Gradient::linear(180.0, Color::rgb(0, 0, 0), Color::rgba(0, 0, 0, 0))
+      .stop(0.5, Color::rgb(0, 0, 0));
+    scene.panel().style(BAR).child(
+      Row::new()
+        .padding(6, 10)
+        .gap(14)
+        .align(Align::Start)
+        .child(
+          Stack::new()
+            .style(Style::new().mask(Mask::ellipse()))
+            .child(Image::new(fixture("stripes.png")).width(48).height(48)),
+        )
+        .child(
+          Column::new()
+            .style(
+              Style::new()
+                .mask(Mask::gradient(fade))
+                .height(52.0)
+                .clip(true),
+            )
+            .child(Text::new("Firefox"))
+            .child(Text::new("Terminal"))
+            .child(Text::new("Files"))
+            .child(Text::new("Settings")),
+        )
+        .child(
+          Stack::new().style(
+            Style::new()
+              .gradient(
+                Gradient::sweep(0.0, Color::hex("#89b4fa"), Color::hex("#89b4fa"))
+                  .stop(0.5, Color::hex("#f38ba8")),
+              )
+              .mask(Mask::image(shapes))
+              .width(44.0)
+              .height(44.0)
+              .rotate(-12.0)
+              .opacity(0.9),
+          ),
         ),
     )
   });
