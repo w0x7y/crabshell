@@ -1,0 +1,11 @@
+# The few symbolic icons the dashboard's goldens draw, so they don't
+# change with the Adwaita a machine has installed.
+[Icon Theme]
+Name=Adwaita
+Directories=symbolic
+
+[symbolic]
+Size=16
+Type=Scalable
+MinSize=8
+MaxSize=512

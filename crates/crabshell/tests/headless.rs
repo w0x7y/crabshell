@@ -74,6 +74,13 @@ mod control;
 
 #[allow(
   dead_code,
+  reason = "the example's dashboard is tested; its main isn't run here"
+)]
+#[path = "../examples/dashboard.rs"]
+mod dashboard;
+
+#[allow(
+  dead_code,
   reason = "the example's lock screen is tested; its main isn't run here"
 )]
 #[path = "../examples/lock.rs"]
@@ -732,6 +739,37 @@ fn measure_the_counter_bar() {
     "control example with audio on a private pipewire-pulse and notifications on a private bus, {}\n",
     measure(&control)
   );
+  drop(control);
+  // Then Phase 16's dashboard over a 1920x1080 wallpaper, on private buses
+  // with no UPower and no player. It samples the CPU each second while it
+  // shows, so it is hidden over IPC to be idle.
+  let mut desktop = Desktop::new("measure-dashboard");
+  let files = DashboardFiles::new();
+  desktop
+    .env
+    .push(("WALLPAPER", files.wallpaper_1080p().display().to_string()));
+  let dashboard = desktop.run(&sway, "dashboard");
+  // Shown, it never rests, so its wakeups are counted from the first frame.
+  let first_frame_ms = dashboard.first_frame_ms();
+  let shown: u64 = dashboard
+    .wakeups_for(Duration::from_secs(60))
+    .iter()
+    .map(|(_, switches)| switches)
+    .sum();
+  report += &format!(
+    "dashboard example over a 1920x1080 wallpaper, release build, one 1920x1080 headless \
+     output at scale 1: first frame {first_frame_ms:.1} ms after run(); shown and sampling \
+     the CPU, RSS {:.1} MiB after 60 s and {shown} context switches in them",
+    dashboard.rss_kib() as f64 / 1024.0
+  );
+  ipc_call(&sway, "dashboard", "close");
+  dashboard.wait_until_quiet();
+  let wakeups = dashboard.wakeups_for(Duration::from_secs(60));
+  let idle: u64 = wakeups.iter().map(|(_, switches)| switches).sum();
+  report += &format!(
+    "; then hidden over IPC: RSS {:.1} MiB, {idle} context switches in 60 idle s\n",
+    dashboard.rss_kib() as f64 / 1024.0
+  );
   eprint!("{report}");
   let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("headless");
   std::fs::create_dir_all(&dir).expect("create the output directory");
@@ -1293,6 +1331,16 @@ fn run_as_child() {
       let shown = cx.session_lock(lock_screen(move || locked.get()));
       cx.effect(move || eprintln!("the session is locked: {}", shown.get()));
       cx.per_output(counter::bar);
+    }),
+    // The dashboard example with each of its feeds pinned.
+    Ok("dashboard") => crabshell::run(|cx| {
+      let art = std::env::var("DASHBOARD_ART").unwrap_or_default();
+      let feeds = dashboard::Feeds {
+        battery: cx.signal(Some(pinned_battery())).read_only(),
+        players: cx.signal(vec![pinned_player(&art)]).read_only(),
+        cpu: pinned_cpu,
+      };
+      dashboard::shell(cx, feeds);
     }),
     Ok("ipc") => crabshell::run(|cx| {
       let count = cx.signal(0_i64);
@@ -4187,4 +4235,283 @@ fn the_control_center_sets_the_volume_flings_its_list_and_sleeps() {
   shell.wait_until_quiet();
   let wakeups = shell.wakeups_for(Duration::from_secs(60));
   assert!(wakeups.is_empty(), "woke while idle: {wakeups:?}");
+}
+
+/// A battery at 72% with 2 h 10 min left, as UPower's display device
+/// gives one.
+fn pinned_battery() -> PowerDevice {
+  PowerDevice {
+    path: String::from("/org/freedesktop/UPower/devices/DisplayDevice"),
+    kind: DeviceKind::Battery,
+    icon_name: String::from("battery-level-70-symbolic"),
+    present: true,
+    state: BatteryState::Discharging,
+    percent: 72.0,
+    time_to_empty: Some(Duration::from_secs(130 * 60)),
+    ..PowerDevice::default()
+  }
+}
+
+/// A player playing a track whose art is the file at `art`.
+fn pinned_player(art: &str) -> Player {
+  Player {
+    id: String::from("org.mpris.MediaPlayer2.test"),
+    identity: String::from("Test Player"),
+    desktop_entry: String::new(),
+    status: PlaybackStatus::Playing,
+    title: String::from("Northern Lights"),
+    artists: vec![String::from("The Exit Checks")],
+    album: String::from("Phase 16"),
+    art_url: format!("file://{art}"),
+    length: Some(Duration::from_secs(215)),
+    can_play: true,
+    can_pause: true,
+    can_go_next: true,
+    can_go_previous: false,
+    can_seek: true,
+    can_control: true,
+    volume: Some(1.0),
+    shuffle: None,
+    loop_status: None,
+    rate: 1.0,
+    position: Duration::ZERO,
+    position_known_at: Instant::now(),
+  }
+}
+
+/// A minute of CPU samples that rise and fall, the same each run.
+fn pinned_cpu(cx: &Cx) -> ReadSignal<Vec<f32>> {
+  let samples = (0..dashboard::HISTORY)
+    .map(|at| {
+      let at = at as f32;
+      0.35 + 0.2 * (at / 6.0).sin() + if at as usize % 17 == 9 { 0.3 } else { 0.0 }
+    })
+    .collect();
+  cx.signal(samples).read_only()
+}
+
+/// A PNG `width` by `height` at `path`, its pixel at x, y `color(x, y)`.
+fn pattern_png(path: &Path, width: u32, height: u32, color: impl Fn(u32, u32) -> [u8; 3]) {
+  let file = std::fs::File::create(path).expect("create the PNG");
+  let mut encoder = png::Encoder::new(file, width, height);
+  encoder.set_color(png::ColorType::Rgb);
+  let mut writer = encoder.write_header().expect("the header");
+  let pixels: Vec<u8> = (0..height)
+    .flat_map(|y| (0..width).map(move |x| (x, y)))
+    .flat_map(|(x, y)| color(x, y))
+    .collect();
+  writer.write_image_data(&pixels).expect("the pixels");
+}
+
+/// The pictures the dashboard's tests show, in a temporary directory: a
+/// wallpaper of two colors and album art of colored squares.
+struct DashboardFiles {
+  dir: PathBuf,
+}
+
+impl DashboardFiles {
+  fn new() -> DashboardFiles {
+    let dir = std::env::temp_dir().join(format!("crabshell-dashboard-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("the pictures' directory");
+    small_png(
+      &dir.join("wallpaper.png"),
+      &[[0x24, 0x27, 0x3a], [0x5b, 0x4a, 0x7a]],
+    );
+    const SQUARES: [[u8; 3]; 4] = [
+      [0xf3, 0x8b, 0xa8],
+      [0xf9, 0xe2, 0xaf],
+      [0x89, 0xdc, 0xeb],
+      [0xcb, 0xa6, 0xf7],
+    ];
+    pattern_png(&dir.join("art.png"), 64, 64, |x, y| {
+      SQUARES[((x / 16 + y / 16) % 4) as usize]
+    });
+    DashboardFiles { dir }
+  }
+
+  fn path(&self, name: &str) -> String {
+    self.dir.join(name).display().to_string()
+  }
+
+  /// A 1920 by 1080 wallpaper, a picture as large as a 1080p screen, from
+  /// blue at the top left to orange at the bottom right.
+  fn wallpaper_1080p(&self) -> PathBuf {
+    let path = self.dir.join("wallpaper-1080p.png");
+    pattern_png(&path, 1920, 1080, |x, y| {
+      let t = (x + y) as f32 / (1920 + 1080) as f32;
+      let mix = |from: u8, to: u8| (f32::from(from) + (f32::from(to) - f32::from(from)) * t) as u8;
+      [mix(0x1e, 0xfe), mix(0x66, 0x64), mix(0xf5, 0x0b)]
+    });
+    path
+  }
+
+  /// The pinned dashboard's environment: its pictures, and icons only
+  /// from the fixtures' theme, never the machine's.
+  fn env(&self) -> Vec<(&'static str, String)> {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    vec![
+      (CHILD, String::from("dashboard")),
+      ("WALLPAPER", self.path("wallpaper.png")),
+      ("DASHBOARD_ART", self.path("art.png")),
+      ("XDG_DATA_DIRS", fixtures.display().to_string()),
+      ("XDG_DATA_HOME", self.path("no-data")),
+    ]
+  }
+}
+
+impl Drop for DashboardFiles {
+  fn drop(&mut self) {
+    let _ = std::fs::remove_dir_all(&self.dir);
+  }
+}
+
+/// The dashboard example's output: 1260 by 840 is a whole number of
+/// logical pixels at every scale from 1 to 2 in quarters, and wide
+/// enough for the dashboard at 2.
+const DASHBOARD_MODE: &str = "1260x840";
+
+/// Part of Phase 16's exit check: the dashboard example, its battery,
+/// CPU samples, player and pictures pinned and its icons from the
+/// fixtures' theme, matches its goldens at all five scales.
+#[test]
+#[ignore = "needs headless Sway"]
+fn the_dashboard_matches_its_goldens() {
+  const TEST: &str = "the_dashboard_matches_its_goldens";
+  run_as_child();
+  let files = DashboardFiles::new();
+  let env = files.env();
+  let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+  for scale in ["1", "1.25", "1.5", "1.75", "2"] {
+    let sway = Sway::start();
+    sway.msg(&[
+      "output",
+      "HEADLESS-1",
+      "mode",
+      DASHBOARD_MODE,
+      "scale",
+      scale,
+    ]);
+    let shell = ExampleBar::spawn(&sway, this_as_shell(TEST), &env);
+    shell.wait_for(FIRST_FRAME);
+    let shot = steady_shot(&sway, "HEADLESS-1");
+    check_golden(&format!("dashboard@{scale}x"), &shot, shot.height);
+  }
+}
+
+#[test]
+fn the_dashboard_reads_album_art_from_file_urls_only() {
+  assert_eq!(
+    dashboard::art_path("file:///home/me/Music/Cover%20Art%2Fx.png"),
+    Some(PathBuf::from("/home/me/Music/Cover Art/x.png"))
+  );
+  // A stray or short escape stays as it is.
+  assert_eq!(
+    dashboard::art_path("file:///tmp/100%.png%4"),
+    Some(PathBuf::from("/tmp/100%.png%4"))
+  );
+  assert_eq!(dashboard::art_path("https://example.com/art.png"), None);
+  assert_eq!(dashboard::art_path("file://relative.png"), None);
+  assert_eq!(dashboard::art_path(""), None);
+}
+
+#[test]
+fn the_dashboard_reads_the_cpus_use_from_proc_stat() {
+  let stat = "cpu  100 5 50 800 45 0 0 0 0 0\ncpu0 50 2 25 400 20 0 0 0 0 0\n";
+  assert_eq!(dashboard::cpu_times(stat), Some((155, 1000)));
+  assert_eq!(
+    dashboard::usage((155, 1000), (205, 1100)),
+    Some(0.5),
+    "50 of 100 ticks busy"
+  );
+  assert_eq!(dashboard::usage((155, 1000), (155, 1000)), None, "no time");
+  assert_eq!(dashboard::usage((155, 1000), (100, 900)), None, "went back");
+  for bad in [
+    "",
+    "intr 1 2 3",
+    "cpu  1 2 x 4",
+    "cpu  1 2 3",
+    "cpu0 1 2 3 4",
+  ] {
+    assert_eq!(dashboard::cpu_times(bad), None, "{bad:?}");
+  }
+  // This machine's parses.
+  let real = std::fs::read_to_string("/proc/stat").expect("/proc/stat");
+  assert!(dashboard::cpu_times(&real).is_some(), "{real}");
+}
+
+/// Whether a dashboard window is shown.
+fn dashboard_shown(platform: &mut Platform) -> bool {
+  platform
+    .windows()
+    .any(|(_, window)| window.surface().namespace == "dashboard")
+}
+
+/// Part of Phase 16's exit check: the dashboard samples the CPU once a
+/// second, each sample a frame, only while it shows. Hidden, its window
+/// and its sampling go, its nodes are freed and nothing wakes the loop;
+/// shown again, it samples again.
+#[test]
+#[ignore = "needs headless Sway"]
+fn the_dashboard_samples_the_cpu_only_while_it_shows() {
+  let sway = Sway::start();
+  let runtime = Runtime::current();
+  let held: Rc<std::cell::Cell<Option<Signal<bool>>>> = Rc::default();
+  let into = Rc::clone(&held);
+  let mut shell = Shell::new(sway.connect(), move |cx| {
+    let shown = cx.signal(false);
+    let feeds = dashboard::Feeds {
+      battery: cx.signal(None).read_only(),
+      players: cx.signal(Vec::new()).read_only(),
+      cpu: dashboard::cpu_usage,
+    };
+    dashboard::dashboard(cx, shown.read_only(), feeds);
+    into.set(Some(shown));
+  })
+  .expect("the root closure runs");
+  let shown = held.take().expect("the root closure ran");
+  shell
+    .dispatch(Some(Duration::from_millis(20)))
+    .expect("the connection works");
+  runtime.flush();
+  let nodes = runtime.node_count();
+  assert!(
+    crabshell_ui::next_timer().is_none(),
+    "hidden, nothing samples"
+  );
+
+  shown.set(true);
+  run_until(&mut shell, "the dashboard", dashboard_shown);
+  let due = crabshell_ui::next_timer().expect("the sampling is armed");
+  assert!(due <= Instant::now() + Duration::from_secs(1));
+  // Past its first frames: the samples come a second apart.
+  settle(&mut shell);
+  let before = shell.platform().stats();
+  let started = Instant::now();
+  let mut wakes = 0;
+  while let Some(left) =
+    (started + Duration::from_millis(3500)).checked_duration_since(Instant::now())
+  {
+    shell.dispatch(Some(left)).expect("the connection works");
+    wakes += 1;
+  }
+  let frames = shell.platform().stats().commits - before.commits;
+  assert!(
+    (3..=4).contains(&frames),
+    "{frames} frames in 3.5 s of sampling"
+  );
+  assert!(wakes <= 4 * 4, "{wakes} wakeups for {frames} samples");
+
+  shown.set(false);
+  run_until(&mut shell, "the dashboard to go", |platform| {
+    !dashboard_shown(platform)
+  });
+  runtime.flush();
+  assert!(crabshell_ui::next_timer().is_none(), "the sampling stopped");
+  assert_eq!(runtime.node_count(), nodes, "everything it made was freed");
+  sleeps(&mut shell);
+
+  shown.set(true);
+  run_until(&mut shell, "the dashboard again", dashboard_shown);
+  assert!(crabshell_ui::next_timer().is_some(), "sampling again");
 }
