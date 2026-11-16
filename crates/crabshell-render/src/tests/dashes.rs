@@ -182,6 +182,63 @@ fn a_dash_longer_than_a_tile_is_drawn_in_every_tile_it_crosses() {
   assert_eq!(runs(&buffer, 10, 180, 308), [128]);
 }
 
+#[test]
+fn a_dot_across_a_tile_edge_is_drawn_whole_on_both_sides() {
+  // A dot sits on the dotted line's start, the middle line's top-left
+  // corner. At each scale the box goes where that dot's middle falls
+  // just right of the tile edge at x 64, so the tile left of the edge
+  // draws its left part from a dot whose middle it doesn't hold.
+  for scale in [1.0_f32, 1.5, 2.0] {
+    let half = (3.0 * scale).floor() / 2.0;
+    let left = (20..70)
+      .find(|&x| {
+        let middle = (x as f32 * scale).round() + half;
+        middle > 64.0 && middle < 64.0 + half
+      })
+      .expect("a place for the box");
+    let mut scene = Scene::new();
+    let dotted = Style::new()
+      .border(3.0, WHITE)
+      .border_dash(0.0, 20.0)
+      .width(60.0)
+      .height(40.0);
+    let row = Row::new()
+      .padding(10, left)
+      .align(Align::Start)
+      .child(Row::new().style(dotted));
+    let window = scene.window(scene.panel().child(row), 160.0, 60.0);
+    let buffer = scene.full(&window, scale);
+    let middle = (
+      (left as f32 * scale).round() + half,
+      (10.0 * scale).round() + half,
+    );
+    let y = middle.1 as u32;
+    // Only this dot: the next is 20 logical pixels on.
+    let (from, to) = (
+      (middle.0 - 3.0 * half) as u32,
+      (middle.0 + 3.0 * half) as u32,
+    );
+    let covered: Vec<u32> = (from..to)
+      .filter(|&x| buffer.pixel(x, y)[3] >= 128)
+      .collect();
+    let (before, after) = (
+      covered
+        .iter()
+        .filter(|&&x| (x as f32 + 0.5) < middle.0)
+        .count(),
+      covered
+        .iter()
+        .filter(|&&x| (x as f32 + 0.5) > middle.0)
+        .count(),
+    );
+    assert!(
+      before > 0 && before == after,
+      "at {scale}: {covered:?} around {middle:?}"
+    );
+    assert_eq!(runs(&buffer, y, from, to).len(), 1, "at {scale}: one dot");
+  }
+}
+
 /// How long a full draw of an 1880 pixel wide box with a dotted border,
 /// a dashed one and a solid one takes at scale 2. Each tile the border
 /// crosses dashes its whole line. Run it in a release build:
