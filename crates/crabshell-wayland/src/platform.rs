@@ -360,6 +360,9 @@ pub struct Platform {
   /// The one calloop timer for the config's timers and the deadline it is
   /// armed at, in the loop only while one of them runs.
   timers: Option<(RegistrationToken, Instant)>,
+  /// The calloop timer for the next frame of the GIFs drawn and the time
+  /// it is armed at, in the loop only while one plays.
+  images: Option<(RegistrationToken, Instant)>,
   pub(crate) renderer: Renderer,
   /// The icon theme set, for snapshots' renderers.
   icon_theme: Option<String>,
@@ -469,6 +472,7 @@ impl Platform {
       button_held: false,
       ticking: false,
       timers: None,
+      images: None,
       renderer: Renderer::new(),
       icon_theme: None,
       text: TextSystem::new(),
@@ -546,6 +550,41 @@ impl Platform {
     match armed {
       Ok(token) => self.timers = Some((token, deadline)),
       Err(error) => tracing::warn!(%error, "couldn't start the timer"),
+    }
+  }
+
+  /// Arms a calloop timer for when the renderer says the next frame of a
+  /// GIF it drew is due, moves it when that changes, and takes it out of
+  /// the loop while none is. When it fires, the GIFs due move on a frame
+  /// and their boxes repaint; a GIF not drawn then waits for nothing.
+  fn arm_images(&mut self) {
+    let next = self.renderer.next_image_frame(Instant::now());
+    if self.images.map(|(_, due)| due) == next {
+      return;
+    }
+    if let Some((token, _)) = self.images.take() {
+      self.handle.remove(token);
+    }
+    let Some(due) = next else {
+      return;
+    };
+    let armed = self.handle.insert_source(
+      Timer::from_deadline(due),
+      |_, _, platform: &mut Platform| {
+        platform.images = None;
+        for id in platform.renderer.advance_images(Instant::now()) {
+          for entry in &platform.windows.entries {
+            if entry.window.repaint_image(id) {
+              break;
+            }
+          }
+        }
+        TimeoutAction::Drop
+      },
+    );
+    match armed {
+      Ok(token) => self.images = Some((token, due)),
+      Err(error) => tracing::warn!(%error, "couldn't start the GIF timer"),
     }
   }
 
@@ -733,6 +772,7 @@ impl Platform {
     self.sync_text_inputs();
     self.tick_animations();
     self.arm_timers();
+    self.arm_images();
     self.commit_windowsets();
     if let Err(error) = self.connection.flush() {
       tracing::warn!(%error, "couldn't flush the Wayland connection");

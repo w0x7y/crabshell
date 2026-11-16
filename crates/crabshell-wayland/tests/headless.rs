@@ -4485,3 +4485,101 @@ fn a_virtual_pointer_drags_a_slider_and_a_touchpad_flings_a_view_to_rest() {
   settle(&mut shell.event_loop);
   sleeps_through(&mut shell.event_loop, Duration::from_secs(2));
 }
+
+/// A 1 by 1 GIF that loops for ever between red and green, 100 ms each.
+fn blinking_gif() -> Vec<u8> {
+  let mut gif = b"GIF89a\x01\x00\x01\x00\x80\x00\x00".to_vec();
+  gif.extend_from_slice(&[255, 0, 0, 0, 255, 0]);
+  gif.extend_from_slice(b"\x21\xff\x0bNETSCAPE2.0\x03\x01\x00\x00\x00");
+  // Each frame: a 100 ms delay, then index 0 or 1 in two bytes of LZW.
+  for data in [[0x44, 0x01], [0x4c, 0x01]] {
+    gif.extend_from_slice(&[0x21, 0xf9, 4, 0, 10, 0, 0, 0]);
+    gif.extend_from_slice(&[0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2]);
+    gif.extend_from_slice(&data);
+    gif.push(0);
+  }
+  gif.push(0x3b);
+  gif
+}
+
+/// Applies what the test set, then runs the loop for `time` and returns
+/// how many iterations and commits that took.
+fn run_for(event_loop: &mut EventLoop, time: Duration) -> (u64, u64) {
+  event_loop
+    .dispatch(Some(Duration::ZERO))
+    .expect("the connection works");
+  let stats = event_loop.platform().stats();
+  let end = Instant::now() + time;
+  while let Some(left) = end.checked_duration_since(Instant::now()) {
+    event_loop
+      .dispatch(Some(left))
+      .expect("the connection works");
+  }
+  let after = event_loop.platform().stats();
+  (
+    after.iterations - stats.iterations,
+    after.commits - stats.commits,
+  )
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_shown_gif_wakes_only_at_its_frames_and_a_still_paused_or_hidden_one_wakes_nothing() {
+  let sway = Sway::start();
+  let dir = std::env::temp_dir().join(format!("crabshell-gif-{}", std::process::id()));
+  std::fs::create_dir_all(&dir).expect("a directory for the GIF");
+  let path = dir.join("blink.gif");
+  std::fs::write(&path, blinking_gif()).expect("write the GIF");
+  let still = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    .join("../crabshell-render/tests/fixtures/stripes.png");
+  let runtime = Runtime::current();
+  let cx = Cx::new(runtime.new_owner());
+  let playing = cx.signal(true);
+  let shown = cx.signal(true);
+  let bar = PanelWindow::new(&Output::new("HEADLESS-1"))
+    .anchors(Edge::Top | Edge::Left | Edge::Right)
+    .height(30)
+    .child(
+      Row::new()
+        .child(crabshell_ui::Image::new(still).width(40).height(20))
+        .child(
+          crabshell_ui::Image::new(path.clone())
+            .width(20)
+            .height(20)
+            .playing(move || playing.get())
+            .visible(move || shown.get()),
+        ),
+    );
+  let mut event_loop = sway.connect();
+  let id = event_loop.platform().add_window(Window::new(&cx, bar));
+  run_until(&mut event_loop, "the bar's first frame", |platform| {
+    platform
+      .window_info(id)
+      .is_some_and(|info| info.commits > 0)
+  });
+
+  // Shown, it draws a frame each 100 ms and wakes for little else.
+  let (iterations, commits) = run_for(&mut event_loop, Duration::from_secs(2));
+  assert!((14..=24).contains(&commits), "{commits} frames in 2 s");
+  assert!(iterations <= commits * 2 + 4, "{iterations} wakeups");
+
+  // Paused, it stays on its frame and nothing wakes.
+  playing.set(false);
+  settle(&mut event_loop);
+  assert_eq!(run_for(&mut event_loop, Duration::from_secs(2)), (1, 0));
+
+  // Hidden while it plays, it may wake once for the frame it waited for,
+  // and then nothing.
+  playing.set(true);
+  let (_, commits) = run_for(&mut event_loop, Duration::from_millis(500));
+  assert!(commits >= 2, "{commits} frames in 500 ms");
+  shown.set(false);
+  settle(&mut event_loop);
+  assert_eq!(run_for(&mut event_loop, Duration::from_secs(2)), (1, 0));
+
+  // Shown again, it plays again.
+  shown.set(true);
+  let (_, commits) = run_for(&mut event_loop, Duration::from_secs(1));
+  assert!(commits >= 5, "{commits} frames in 1 s");
+  let _ = std::fs::remove_dir_all(&dir);
+}
