@@ -745,7 +745,11 @@ impl Painter<'_> {
     };
     let mut path = PathBuilder::new();
     rounded_rect(&mut path, middle, corners);
-    let (Some(path), Some(dash)) = (path.finish(), StrokeDash::new(vec![on, off], 0.0)) else {
+    // The line starts at the end of the top-left corner. A dash centered
+    // there runs across the start, so tiny-skia joins its two halves
+    // with a miter, and a square corner there is filled, as CSS draws it.
+    let phase = on / 2.0;
+    let (Some(path), Some(dash)) = (path.finish(), StrokeDash::new(vec![on, off], phase)) else {
       return false;
     };
     let Some(dashes) = path.dash(&dash, 1.0) else {

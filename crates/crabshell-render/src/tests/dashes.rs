@@ -91,6 +91,28 @@ fn a_dash_merged_over_a_border_dashes_it() {
 }
 
 #[test]
+fn a_dash_is_centered_on_the_top_left_corner_so_square_corners_are_filled() {
+  // 224 pixels around the middle line, 22 dashes: one is centered on the
+  // top-left corner, where the line starts, and one on the bottom-right,
+  // half way round.
+  let buffer = bordered(Style::new().border(4.0, WHITE).border_dash(6.0, 4.0), 1.0);
+  for (x, y) in [
+    (10, 10),
+    (11, 11),
+    (13, 10),
+    (10, 13),
+    (109, 29),
+    (106, 29),
+    (109, 26),
+  ] {
+    assert_eq!(buffer.pixel(x, y), [255, 255, 255, 255], "at {x}, {y}");
+  }
+  // The dash at the corner reaches half a dash, 3 pixels, past the
+  // middle line's corner at 12.
+  assert_eq!(runs(&buffer, 10, 10, 30)[0], 5);
+}
+
+#[test]
 fn a_dotted_border_draws_round_dots() {
   let dotted = bordered(Style::new().border(4.0, WHITE).border_dash(0.0, 8.0), 1.0);
   // Along the border's middle line on the top edge, dots 4 across, 8
@@ -141,8 +163,10 @@ fn a_dashed_border_of_no_width_draws_nothing() {
 
 #[test]
 fn a_dash_longer_than_a_tile_is_drawn_in_every_tile_it_crosses() {
-  // Two dashes around a 300 by 20 box, the first along the whole top
-  // edge, past both ends of the tiles from 64 to 256.
+  // Two dashes around a 300 by 20 box, 304 and 12 pixels on its 632
+  // pixel middle line. The first is centered on the top-left corner, and
+  // the second runs from x 175 along the rest of the top edge and on,
+  // past both ends of the tiles from 192 to 256.
   let mut scene = Scene::new();
   let row = Row::new().padding(10, 10).align(Align::Start).child(
     Row::new().style(
@@ -155,7 +179,7 @@ fn a_dash_longer_than_a_tile_is_drawn_in_every_tile_it_crosses() {
   );
   let window = scene.window(scene.panel().child(row), 320.0, 40.0);
   let buffer = scene.full(&window, 1.0);
-  assert_eq!(runs(&buffer, 10, 12, 308), [296]);
+  assert_eq!(runs(&buffer, 10, 180, 308), [128]);
 }
 
 /// How long a full draw of an 1880 pixel wide box with a dotted border,
