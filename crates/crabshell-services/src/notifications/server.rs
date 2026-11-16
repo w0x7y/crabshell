@@ -30,6 +30,16 @@ const MAX_IMAGE_BYTES: usize = 1024 * 1024;
 /// What the server offers: action buttons, a body, a still image, and a
 /// history that outlasts the popups.
 const CAPABILITIES: [&str; 4] = ["actions", "body", "icon-static", "persistence"];
+/// The same with markup in the body: `b`, `i`, `u` and links. Not
+/// `body-images`, since an `img` shows its alt text.
+const MARKUP_CAPABILITIES: [&str; 6] = [
+  "actions",
+  "body",
+  "body-hyperlinks",
+  "body-markup",
+  "icon-static",
+  "persistence",
+];
 
 /// What the server offers, for callers that look before calling.
 const INTROSPECTION: &str = r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
@@ -81,7 +91,7 @@ pub(super) async fn answer(service: &Rc<Service>, connection: &Connection, call:
     _ if !service.serving() => refuse(UNKNOWN_METHOD, "not serving notifications"),
     (Some(NOTIFICATIONS_PATH), "Notify") => match body.deserialize::<NotifyArgs<'_>>() {
       Ok(args) => {
-        let (replaces, notification) = notification(args);
+        let (replaces, notification) = notification(args, service.body_markup.get());
         reply.build(&service.notify(replaces, notification))
       }
       Err(_) => refuse(INVALID_ARGS, "not a notification"),
@@ -90,7 +100,10 @@ pub(super) async fn answer(service: &Rc<Service>, connection: &Connection, call:
       Ok(id) if service.close(&[id], CloseReason::CloseRequested) => reply.build(&()),
       _ => refuse(INVALID_ARGS, "no such notification"),
     },
-    (Some(NOTIFICATIONS_PATH), "GetCapabilities") => reply.build(&CAPABILITIES.as_slice()),
+    (Some(NOTIFICATIONS_PATH), "GetCapabilities") => match service.body_markup.get() {
+      true => reply.build(&MARKUP_CAPABILITIES.as_slice()),
+      false => reply.build(&CAPABILITIES.as_slice()),
+    },
     (Some(NOTIFICATIONS_PATH), "GetServerInformation") => {
       let version = env!("CARGO_PKG_VERSION");
       reply.build(&("crabshell", "crabshell", version, "1.2"))
@@ -123,8 +136,9 @@ type NotifyArgs<'a> = (
   i32,
 );
 
-/// The id a `Notify` call replaces, and its notification, with id 0.
-fn notification(args: NotifyArgs<'_>) -> (u32, Notification) {
+/// The id a `Notify` call replaces, and its notification, with id 0. Its
+/// body keeps its markup if `markup`, or else is shown as plain text.
+fn notification(args: NotifyArgs<'_>, markup: bool) -> (u32, Notification) {
   let (app_name, replaces, app_icon, summary, body, actions, hints, timeout) = args;
   let text = |key: &str| match hints.get(key) {
     Some(Hint::Text(text)) => cut(text, MAX_TEXT),
@@ -151,11 +165,14 @@ fn notification(args: NotifyArgs<'_>) -> (u32, Notification) {
     id: 0,
     app_name: cut(app_name, MAX_TEXT),
     summary: cut(summary, MAX_SUMMARY),
-    // Read past the cap only so far, since tags and entities shrink.
-    body: cut(
-      &plain(&body[..body.floor_char_boundary(MAX_BODY * 4)]),
-      MAX_BODY,
-    ),
+    body: match markup {
+      true => cut(body, MAX_BODY),
+      // Read past the cap only so far, since tags and entities shrink.
+      false => cut(
+        &plain(&body[..body.floor_char_boundary(MAX_BODY * 4)]),
+        MAX_BODY,
+      ),
+    },
     actions: actions
       .as_chunks::<2>()
       .0
@@ -184,8 +201,8 @@ fn notification(args: NotifyArgs<'_>) -> (u32, Notification) {
   (replaces, notification)
 }
 
-/// `body` as the text it shows. The server doesn't offer `body-markup`,
-/// but many apps send it anyway, so tags are taken out and XML's five
+/// `body` as the text it shows. Unless a config turns `body-markup` on,
+/// the server doesn't offer it, but many apps send it anyway, so tags are taken out and XML's five
 /// entities and numeric ones decoded. An unknown entity and a `<` with no
 /// `>` stay as they are.
 fn plain(body: &str) -> String {

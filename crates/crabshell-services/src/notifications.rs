@@ -14,7 +14,7 @@ mod server;
 #[cfg(test)]
 mod tests;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::future::poll_fn;
 use std::panic::{self, AssertUnwindSafe, Location};
 use std::pin::Pin;
@@ -114,7 +114,9 @@ pub struct Notification {
   /// One line about it, at most 1 KiB.
   pub summary: String,
   /// The text under that, at most 4 KiB, as plain text: tags an app sent
-  /// are taken out and entities decoded.
+  /// are taken out and entities decoded. While
+  /// [`set_body_markup`](Notifications::set_body_markup) is on, it is the
+  /// markup as sent, for `parse_markup`.
   pub body: String,
   /// The actions the user can pick, as (key, label), at most 16. The
   /// app means `default` for a click on the notification itself.
@@ -182,6 +184,16 @@ impl Notifications {
   pub fn invoke(&self, id: u32, key: &str) {
     if let Some(service) = &self.service {
       service.invoke(id, key);
+    }
+  }
+
+  /// When on, the server tells apps it shows `body-markup` and
+  /// `body-hyperlinks`, so they send the spec's markup, and keeps each body
+  /// as sent, for `Text::rich(parse_markup(&body))`. Off by default, when
+  /// tags are taken out. Notifications already kept stay as they came.
+  pub fn set_body_markup(&self, on: bool) {
+    if let Some(service) = &self.service {
+      service.body_markup.set(on);
     }
   }
 
@@ -270,6 +282,8 @@ pub(crate) fn notifications(cx: &Cx) -> Notifications {
 pub(crate) struct Service {
   shared: Rc<Shared>,
   state: RefCell<Option<State>>,
+  /// Whether bodies are kept as markup, from `set_body_markup`.
+  body_markup: Cell<bool>,
 }
 
 struct State {
@@ -321,6 +335,7 @@ impl Service {
     Service {
       shared,
       state: RefCell::new(None),
+      body_markup: Cell::new(false),
     }
   }
 

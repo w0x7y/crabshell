@@ -937,3 +937,47 @@ fn markup_in_a_body_shows_as_its_text() {
     "Bold & <not a tag> \u{a9} \u{263a} ab &unknown; <"
   );
 }
+
+#[test]
+fn body_markup_follows_the_setting_in_the_capabilities_and_the_body() {
+  let bus = PrivateBus::start();
+  let (mut shell, notifications, app) = serve(&bus, online(&bus));
+  let capabilities = |shell: &mut Harness| -> Vec<String> {
+    let reply = call(shell, &app, "GetCapabilities", ()).expect("the capabilities");
+    reply.body().deserialize().expect("as")
+  };
+  let plain = ["actions", "body", "icon-static", "persistence"];
+  assert_eq!(capabilities(&mut shell), plain, "off by default");
+
+  notifications.set_body_markup(true);
+  assert_eq!(
+    capabilities(&mut shell),
+    [
+      "actions",
+      "body",
+      "body-hyperlinks",
+      "body-markup",
+      "icon-static",
+      "persistence"
+    ]
+  );
+  let markup = "<b>Bold</b> &amp; <a href=\"https://example.org\">a link</a>";
+  let mut sent = note("markup");
+  sent.body = markup.to_owned();
+  let id = notify(&mut shell, &app, sent).expect("an id");
+  let list = notifications.list();
+  let body = |id: u32| {
+    let list = list.get_untracked();
+    list.iter().find(|n| n.id == id).map(|n| n.body.clone())
+  };
+  wait_for(&mut shell, "the notification", || body(id).is_some());
+  assert_eq!(body(id).as_deref(), Some(markup), "kept as sent");
+
+  notifications.set_body_markup(false);
+  assert_eq!(capabilities(&mut shell), plain);
+  let mut sent = note("plain again");
+  sent.body = markup.to_owned();
+  let id = notify(&mut shell, &app, sent).expect("an id");
+  wait_for(&mut shell, "the notification", || body(id).is_some());
+  assert_eq!(body(id).as_deref(), Some("Bold & a link"));
+}
