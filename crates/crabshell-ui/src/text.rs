@@ -557,8 +557,14 @@ pub(crate) struct TextNode {
   /// The text shown; a rich text's spans, joined.
   pub(crate) content: String,
   /// A rich text's spans. Each glyph's metadata is its span's index plus
-  /// one, and 0 for text outside any span, such as an ellipsis.
+  /// one, or 0 for plain text. cosmic-text shapes the ellipsis with the
+  /// first span's attributes, metadata included, so a glyph counts as a
+  /// span's only through [`glyph_span`](Self::glyph_span).
   pub(crate) spans: Vec<Span>,
+  /// Where each span starts in `content`, in bytes.
+  span_starts: Vec<usize>,
+  /// Where each of the buffer's lines starts in `content`, in bytes.
+  line_starts: Vec<usize>,
   pub(crate) elide: Elide,
   /// At least 1.
   pub(crate) max_lines: u32,
@@ -590,6 +596,8 @@ impl TextNode {
     TextNode {
       content: String::new(),
       spans: Vec::new(),
+      span_starts: Vec::new(),
+      line_starts: Vec::new(),
       elide: Elide::None,
       max_lines: 1,
       wrap: true,
@@ -613,6 +621,14 @@ impl TextNode {
 
   pub(crate) fn set_spans(&mut self, spans: Vec<Span>) -> bool {
     let content = spans.iter().map(|span| span.text.as_str()).collect();
+    self.span_starts = spans
+      .iter()
+      .scan(0, |start, span| {
+        let this = *start;
+        *start += span.text.len();
+        Some(this)
+      })
+      .collect();
     let changed = self.set(|text| &mut text.spans, spans);
     self.set_content(content) | changed
   }
@@ -697,6 +713,16 @@ impl TextNode {
     if gained {
       self.shape(&fonts, &families, &style, text);
     }
+    self.line_starts = self
+      .buffer
+      .lines
+      .iter()
+      .scan(0, |start, line| {
+        let this = *start;
+        *start += line.text().len() + line.ending().as_str().len();
+        Some(this)
+      })
+      .collect();
     self.style = Some(style);
     self.fonts_added = fonts_added();
     self.stale = false;
@@ -845,6 +871,19 @@ impl TextNode {
     )
   }
 
+  /// The index of the span `glyph`, on the buffer's line `line`, is part
+  /// of: the one its metadata names, if all its bytes are in that span.
+  /// The ellipsis holds no bytes, and a ligature across two spans isn't
+  /// either's, so both take the text's own style.
+  pub(crate) fn glyph_span(&self, line: usize, glyph: &LayoutGlyph) -> Option<usize> {
+    let index = glyph.metadata.checked_sub(1)?;
+    let from = *self.span_starts.get(index)?;
+    let to = from + self.spans.get(index)?.text.len();
+    let line_start = *self.line_starts.get(line)?;
+    let (start, end) = (line_start + glyph.start, line_start + glyph.end);
+    (start < end && from <= start && end <= to).then_some(index)
+  }
+
   /// The index of the link span whose glyph box holds `point`, in the
   /// coordinates `origin` is in, if the text has an `on_link`.
   pub(crate) fn link_at(&self, point: Point) -> Option<usize> {
@@ -857,8 +896,8 @@ impl TextNode {
       .glyphs
       .iter()
       .find(|glyph| x >= glyph.x && x < glyph.x + glyph.w)?;
-    let index = glyph.metadata.checked_sub(1)?;
-    self.spans.get(index)?.link.as_ref()?;
+    let index = self.glyph_span(run.line_i, glyph)?;
+    self.spans[index].link.as_ref()?;
     Some(index)
   }
 

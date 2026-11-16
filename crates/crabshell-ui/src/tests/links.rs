@@ -43,7 +43,8 @@ fn span_point(window: &Window, path: &[usize], span: usize, line: usize) -> Poin
   let glyphs: Vec<_> = run
     .glyphs
     .iter()
-    .filter(|glyph| glyph.metadata == span + 1)
+    // The ellipsis carries the first span's metadata but no bytes.
+    .filter(|glyph| glyph.metadata == span + 1 && glyph.start < glyph.end)
     .collect();
   let start = glyphs.first().expect("the span is on the line").x;
   let last = glyphs.last().expect("the span is on the line");
@@ -206,4 +207,41 @@ fn a_panicking_on_link_is_logged_and_the_window_runs_on() {
   let other = node_at(window.view().root(), &[0, 1]).rect();
   click(&window, Point::new(other.x + 2.0, other.y + 5.0), 1000);
   assert_eq!(clicks.get(), 1);
+}
+
+#[test]
+fn the_ellipsis_after_a_leading_link_is_not_part_of_it() {
+  let mut h = Harness::new();
+  // cosmic-text shapes the "…" with the first span's attributes.
+  let (text, opened) = linked(vec![
+    Span::new("link").link("https://e.org"),
+    Span::new(" and a great deal more plain text than fits"),
+  ]);
+  let text = text
+    .elide(crate::Elide::End)
+    .style(Style::new().width(90.0));
+  let window = window(&mut h, text);
+  let ellipsis = {
+    let view = window.view();
+    let Content::Text(text) = node_at(view.root(), &[0, 0]).content() else {
+      panic!("not a text");
+    };
+    let run = text.runs().next().expect("one line");
+    let glyph = run.glyphs.last().expect("the ellipsis ends the line");
+    // The ellipsis holds no bytes of the text.
+    assert_eq!(glyph.start, glyph.end, "the last glyph is the ellipsis");
+    assert_eq!(glyph.metadata, 1, "cosmic-text gave it the link's");
+    assert!(text.span(run.line_i, glyph).is_none());
+    let origin = text.origin();
+    Point::new(
+      origin.x + glyph.x + glyph.w / 2.0,
+      origin.y + run.line_top + run.line_height / 2.0,
+    )
+  };
+  window.pointer_motion(ellipsis);
+  assert_eq!(window.cursor(), CursorShape::Default);
+  click(&window, ellipsis, 0);
+  assert!(opened.borrow().is_empty(), "{:?}", opened.borrow());
+  click(&window, span_point(&window, &[0, 0], 0, 0), 1000);
+  assert_eq!(*opened.borrow(), ["https://e.org"]);
 }

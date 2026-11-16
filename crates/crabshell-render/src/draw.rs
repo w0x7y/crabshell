@@ -1037,7 +1037,8 @@ impl Painter<'_> {
         continue;
       }
       for glyph in run.glyphs {
-        let color = span_color(glyph.color_opt, text.color());
+        let span = text.span(run.line_i, glyph);
+        let color = span.and_then(|span| span.color).unwrap_or(text.color());
         if color.a == 0 {
           continue;
         }
@@ -1069,8 +1070,15 @@ impl Painter<'_> {
       // A span's own lines run across its glyphs on the line, each in its
       // color. cosmic-text's decoration spans join two decorated spans
       // across the text between them, so they aren't used.
-      for glyphs in run.glyphs.chunk_by(|a, b| a.metadata == b.metadata) {
-        let Some(span) = text.span(&glyphs[0]) else {
+      let same_span = |a: &LayoutGlyph, b: &LayoutGlyph| match (
+        text.span(run.line_i, a),
+        text.span(run.line_i, b),
+      ) {
+        (Some(a), Some(b)) => std::ptr::eq(a, b),
+        (a, b) => a.is_none() && b.is_none(),
+      };
+      for glyphs in run.glyphs.chunk_by(same_span) {
+        let Some(span) = text.span(run.line_i, &glyphs[0]) else {
           continue;
         };
         let lines = (span.underline, span.strikethrough);
@@ -1538,14 +1546,6 @@ fn erf(x: f32) -> f32 {
 ///
 /// cosmic-text doesn't re-export swash's `Source`, and swash isn't a
 /// dependency of this crate, so the variant is read from its name.
-/// A span's color, carried by its glyphs, or else the text's.
-fn span_color(span: Option<cosmic_text::Color>, text: Color) -> Color {
-  span.map_or(text, |color| {
-    let [r, g, b, a] = color.as_rgba();
-    Color::rgba(r, g, b, a)
-  })
-}
-
 fn is_color_outline(image: &SwashImage) -> bool {
   format!("{:?}", image.source).starts_with("ColorOutline")
 }

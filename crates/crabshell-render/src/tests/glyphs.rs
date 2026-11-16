@@ -127,3 +127,48 @@ fn the_glyph_cache_is_cleared_once_it_grows_large() {
   scene.full(&small, 1.0);
   assert!((1..=2048).contains(&scene.renderer.cached_glyphs()));
 }
+
+#[test]
+fn an_ellipsis_takes_the_texts_color_not_the_first_spans() {
+  use crabshell_ui::{Color, Elide, Span};
+  let mut scene = Scene::new();
+  // cosmic-text shapes the "…" with the first span's attributes.
+  let spans = vec![
+    Span::new("red")
+      .color(Color::rgb(255, 0, 0))
+      .underline()
+      .link("https://e.org"),
+    Span::new(" and a great deal more text than fits"),
+  ];
+  let panel = scene.panel().child(
+    Row::new().padding(4, 4).child(
+      Text::rich(spans)
+        .elide(Elide::End)
+        .style(Style::new().width(90.0).color(Color::rgb(0, 0, 255))),
+    ),
+  );
+  let window = scene.window(panel, 120.0, 30.0);
+  let buffer = scene.full(&window, 1.0);
+  let view = window.view();
+  let text = view
+    .root()
+    .children()
+    .next()
+    .and_then(|row| row.children().next());
+  let Some(Content::Text(text)) = text.map(|node| node.content()) else {
+    panic!("a text");
+  };
+  let run = text.runs().next().expect("one line");
+  let ellipsis = run.glyphs.last().expect("the ellipsis ends the line");
+  let origin = text.origin();
+  let (x0, x1) = (origin.x + ellipsis.x, origin.x + ellipsis.x + ellipsis.w);
+  let mut inked = 0;
+  for x in x0.floor() as u32..x1.ceil() as u32 {
+    for y in 0..30 {
+      let [r, _, b, a] = buffer.pixel(x, y);
+      assert!(r == 0, "red at {x},{y} under the ellipsis");
+      inked += u32::from(a > 0 && b > 0);
+    }
+  }
+  assert!(inked > 0, "the ellipsis was drawn");
+}

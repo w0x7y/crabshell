@@ -310,9 +310,12 @@ impl<'a> TextView<'a> {
     self.color
   }
 
-  /// The span `glyph` of a rich text belongs to, if any.
-  pub fn span(&self, glyph: &LayoutGlyph) -> Option<&'a Span> {
-    self.text.spans.get(glyph.metadata.checked_sub(1)?)
+  /// The span of a rich text that `glyph`, on the run of buffer line
+  /// `line`, belongs to, if any. The ellipsis belongs to none, though
+  /// cosmic-text gives it the first span's color.
+  pub fn span(&self, line: usize, glyph: &LayoutGlyph) -> Option<&'a Span> {
+    let index = self.text.glyph_span(line, glyph)?;
+    self.text.spans.get(index)
   }
 
   /// Whether to draw a line under the glyphs, in the text's color.
