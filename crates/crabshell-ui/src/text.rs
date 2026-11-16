@@ -27,6 +27,7 @@ use fontconfig::{CharSet, FC_FAMILY, FC_SLANT, FC_SLANT_ITALIC, FC_WEIGHT, Fontc
 use taffy::AvailableSpace;
 
 use crate::geometry::{Point, Rect};
+use crate::input::LinkHandler;
 use crate::rich::Span;
 use crate::style::{Font, Style, TextAlign};
 use crate::widgets::Elide;
@@ -580,6 +581,8 @@ pub(crate) struct TextNode {
   /// text is selectable.
   pub(crate) cursor: usize,
   pub(crate) anchor: Option<usize>,
+  /// What a click on a link span runs, from `Text::on_link`.
+  pub(crate) on_link: Option<LinkHandler>,
 }
 
 impl TextNode {
@@ -598,6 +601,7 @@ impl TextNode {
       selectable: false,
       cursor: 0,
       anchor: None,
+      on_link: None,
     }
   }
 
@@ -832,6 +836,23 @@ impl TextNode {
       width.ceil() + 2.0 * em,
       self.height() + em + 2.0 * squeezed,
     )
+  }
+
+  /// The index of the link span whose glyph box holds `point`, in the
+  /// coordinates `origin` is in, if the text has an `on_link`.
+  pub(crate) fn link_at(&self, point: Point) -> Option<usize> {
+    self.on_link.as_ref()?;
+    let (x, y) = (point.x - self.origin.x, point.y - self.origin.y);
+    let run = self
+      .runs()
+      .find(|run| y >= run.line_top && y < run.line_top + run.line_height)?;
+    let glyph = run
+      .glyphs
+      .iter()
+      .find(|glyph| x >= glyph.x && x < glyph.x + glyph.w)?;
+    let index = glyph.metadata.checked_sub(1)?;
+    self.spans.get(index)?.link.as_ref()?;
+    Some(index)
   }
 
   /// The lines shown, at most `max_lines`.

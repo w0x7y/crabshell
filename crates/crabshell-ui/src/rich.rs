@@ -22,7 +22,8 @@ pub struct Span {
   pub strikethrough: bool,
   /// The span's color, or the text's for `None`.
   pub color: Option<Color>,
-  /// Where the span links to. It draws as its other settings say.
+  /// A URL handed to the text's [`on_link`](crate::Text::on_link) when
+  /// the span is clicked. It draws as its other settings say.
   pub link: Option<String>,
 }
 

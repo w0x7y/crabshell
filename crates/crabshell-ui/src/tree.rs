@@ -767,7 +767,11 @@ impl Tree {
       }),
       ElementKind::Stack => NodeKind::Stack,
       ElementKind::Spacer => NodeKind::Spacer,
-      ElementKind::Text(_) => NodeKind::Text(TextNode::new()),
+      ElementKind::Text(props) => {
+        let mut text = TextNode::new();
+        text.on_link = props.on_link.take();
+        NodeKind::Text(text)
+      }
       ElementKind::Input(props) => NodeKind::Input(Box::new(InputNode::new(
         props.text,
         cx.signal(props.on_accept.take()),

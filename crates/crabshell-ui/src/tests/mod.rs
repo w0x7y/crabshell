@@ -23,6 +23,7 @@ mod keyboard;
 mod keyed;
 mod kinetic;
 mod layout;
+mod links;
 mod lists;
 mod lock;
 mod markup;

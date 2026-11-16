@@ -675,6 +675,66 @@ fn a_bundled_font_lays_out_the_bar_and_measures_with_it() {
 
 #[test]
 #[ignore = "needs headless Sway"]
+fn a_click_on_a_link_in_a_button_runs_on_link_at_each_scale() {
+  for (scale, factor) in [("1", 1.0), ("1.5", 1.5)] {
+    let sway = Sway::start();
+    sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", scale]);
+    let opened = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let clicks = Rc::new(Cell::new(0));
+    let (log, count) = (Rc::clone(&opened), Rc::clone(&clicks));
+    let mut shell = Shell::new(sway.connect(), move |cx| {
+      let (log, count) = (Rc::clone(&log), Rc::clone(&count));
+      cx.per_output(move |_cx, output| {
+        let (log, count) = (Rc::clone(&log), Rc::clone(&count));
+        let body = parse_markup("read <a href=\"https://example.org\">the notes</a>");
+        let text = Text::rich(body).on_link(move |_cx, url| log.borrow_mut().push(url.to_owned()));
+        PanelWindow::new(output)
+          .anchors(Edge::Top | Edge::Left | Edge::Right)
+          .height(30)
+          .child(
+            Row::new()
+              .padding(4, 8)
+              .align(Align::Center)
+              .child(Button::new(text).on_click(move |_| count.set(count.get() + 1))),
+          )
+      });
+    })
+    .expect("the root closure runs");
+    run_until(&mut shell, "the bar's first frame", |platform| {
+      shown_on(platform, "HEADLESS-1").is_some()
+    });
+    settle(&mut shell);
+    let id = shown_on(shell.platform(), "HEADLESS-1").expect("the bar is shown");
+    // The middle of the link's glyphs, where layout put them.
+    let (x, y) = button(shell.platform(), id, |button| {
+      let label = button.children().next().expect("the button holds its text");
+      let Content::Text(text) = label.content() else {
+        panic!("the label is text");
+      };
+      let run = text.runs().next().expect("one line");
+      let link: Vec<_> = run.glyphs.iter().filter(|g| g.metadata == 2).collect();
+      let (first, last) = (link[0], link[link.len() - 1]);
+      let origin = text.origin();
+      (
+        (origin.x + (first.x + last.x + last.w) / 2.0) as u32,
+        (origin.y + run.line_top + run.line_height / 2.0) as u32,
+      )
+    });
+    let mut pointer = VirtualPointer::new(&sway);
+    settle(&mut shell);
+    let layout = ((1920.0 / factor) as u32, (1080.0 / factor) as u32);
+    pointer.move_to(x, y, layout);
+    pointer.click();
+    run_until(&mut shell, "the link to open", |_| {
+      !opened.borrow().is_empty()
+    });
+    assert_eq!(*opened.borrow(), ["https://example.org"], "at {scale}");
+    assert_eq!(clicks.get(), 0, "the button got the click at {scale}");
+  }
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
 fn unplugging_an_output_drops_its_bar_and_frees_its_nodes() {
   let sway = Sway::start();
   let runtime = Runtime::current();

@@ -20,6 +20,7 @@ use crate::geometry::{Point, Rect, Size};
 use crate::keyboard::KeyHandler;
 use crate::prop::{Prop, PropKind};
 use crate::scrolling::{BarDrag, Flick};
+use crate::select::text_selection;
 use crate::tree::{ButtonNode, Change, Node, NodeId, NodeKind, Tree, borrow};
 use crate::window::Window;
 
@@ -64,6 +65,7 @@ pub(crate) type ClickHandler = Rc<Handler<dyn Fn(&Cx)>>;
 type ScrollHandler = Rc<Handler<dyn Fn(&Cx, i32)>>;
 pub(crate) type WheelHandler = Rc<Handler<dyn Fn(&Cx, Wheel)>>;
 pub(crate) type DragHandler = Rc<Handler<dyn Fn(&Cx, Drag)>>;
+pub(crate) type LinkHandler = Rc<Handler<dyn Fn(&Cx, &str)>>;
 
 /// What a drag carries: a [`Button::drag_data`](crate::Button::drag_data)
 /// value of any type, shared so a drop doesn't copy it until a target
@@ -554,6 +556,10 @@ impl Tree {
     if rect.contains(point) && takes {
       return Some(id);
     }
+    // A link is hit by its glyphs, even where they overflow the box.
+    if matches!(&node.kind, NodeKind::Text(text) if text.link_at(point).is_some()) {
+      return Some(id);
+    }
     path.pop();
     None
   }
@@ -648,6 +654,7 @@ impl Tree {
       .and_then(|id| self.node(id))
       .map(|node| &node.kind)
     {
+      Some(NodeKind::Text(_)) if self.link_under_pointer().is_some() => CursorShape::Pointer,
       Some(NodeKind::Input(_) | NodeKind::Text(_)) => CursorShape::Text,
       Some(NodeKind::Button(button)) => button.cursor,
       _ => CursorShape::Default,
@@ -848,6 +855,7 @@ impl Tree {
     let mut calls = Vec::new();
     if button == PointerButton::Left {
       calls.extend(self.call(press.id, Action::Release));
+      calls.extend(self.link_click(press));
     }
     // Set by the drop once its `on_drop` returns, before the `End` reads it.
     let landed = Rc::new(Cell::new(false));
@@ -872,6 +880,37 @@ impl Tree {
     };
     calls.extend(self.call(press.id, action));
     calls
+  }
+
+  /// The hovered text's link span under the pointer, if any.
+  fn link_under_pointer(&self) -> Option<usize> {
+    let id = self.pointer.hovered?;
+    let NodeKind::Text(text) = &self.node(id)?.kind else {
+      return None;
+    };
+    text.link_at(self.local_point(id, self.pointer.position?)?)
+  }
+
+  /// The `on_link` a left release ending `press` runs: the press and the
+  /// release were on the same link of a text, and selected nothing.
+  fn link_click(&self, press: Press) -> Option<Call> {
+    let node = self.node(press.id)?;
+    let NodeKind::Text(text) = &node.kind else {
+      return None;
+    };
+    if text_selection(text).is_some() {
+      return None;
+    }
+    let pressed = text.link_at(self.local_point(press.id, press.at)?)?;
+    let released = text.link_at(self.local_point(press.id, self.pointer.position?)?)?;
+    let url = text.spans[pressed].link.clone()?;
+    let handler = text.on_link.clone()?;
+    (pressed == released).then(|| Call {
+      cx: node.cx.clone(),
+      path: Rc::clone(&node.path),
+      handlers: None,
+      action: Action::Link(handler, url),
+    })
   }
 
   /// A left click on `id`, coming up at `time` after going down at `at`:
@@ -1218,7 +1257,7 @@ impl Tree {
     Some(Call {
       cx: node.cx.clone(),
       path: Rc::clone(&node.path),
-      handlers: button.handlers,
+      handlers: Some(button.handlers),
       action,
     })
   }
@@ -1267,13 +1306,16 @@ enum Action {
   Drag(Drag, Option<Rc<Cell<bool>>>),
   /// A drop, which says whether its `on_drop` ran and returned.
   Drop(DragValue, Rc<Cell<bool>>),
+  /// A text's `on_link`, with the URL of the link clicked.
+  Link(LinkHandler, String),
 }
 
 /// A handler to run once the tree is released.
 pub(crate) struct Call {
   cx: Cx,
   path: Rc<str>,
-  handlers: Signal<Handlers>,
+  /// A button's handlers; a text's link carries its own.
+  handlers: Option<Signal<Handlers>>,
   action: Action,
 }
 
@@ -1288,9 +1330,17 @@ enum Picked {
 
 impl Call {
   pub(crate) fn run(self) {
+    let (path, cx) = (&self.path, &self.cx);
+    if let Action::Link(handler, url) = &self.action {
+      run_isolated(path, "on_link", Rc::clone(handler), |f| f(cx, url));
+      return;
+    }
+    let Some(handlers) = self.handlers else {
+      return;
+    };
     // Reading the handlers doesn't make anything depend on them.
     let picked = untrack(|| {
-      self.handlers.try_with(|h| {
+      handlers.try_with(|h| {
         let plain = |handler: &Option<ClickHandler>, name| {
           handler.clone().map(|handler| Picked::Plain(handler, name))
         };
@@ -1321,13 +1371,13 @@ impl Call {
               Rc::clone(landed),
             ))
           }
+          Action::Link(..) => None,
         }
       })
     });
     let Some(Some(picked)) = picked else {
       return;
     };
-    let (path, cx) = (&self.path, &self.cx);
     match picked {
       Picked::Plain(handler, name) => {
         run_isolated(path, name, handler, |f| f(cx));

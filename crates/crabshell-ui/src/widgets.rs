@@ -14,7 +14,9 @@ use crabshell_reactive::{Memo, Signal};
 use crate::cx::Cx;
 use crate::geometry::{Point, Rect, Size};
 use crate::image::ImageTransition;
-use crate::input::{CursorShape, Drag, DragValue, DropTarget, Handler, Handlers, Wheel};
+use crate::input::{
+  CursorShape, Drag, DragValue, DropTarget, Handler, Handlers, LinkHandler, Wheel,
+};
 use crate::keyboard::KeyEvent;
 use crate::keyed::{self, KeyedList, KeyedMount};
 use crate::prop::{IntoProp, Prop};
@@ -149,6 +151,7 @@ pub(crate) struct TextProps {
   pub(crate) elide: Option<Prop<Elide>>,
   pub(crate) max_lines: Option<Prop<u32>>,
   pub(crate) selectable: Option<Prop<bool>>,
+  pub(crate) on_link: Option<LinkHandler>,
 }
 
 pub(crate) struct IconProps {
@@ -745,6 +748,7 @@ impl Text {
         elide: None,
         max_lines: None,
         selectable: None,
+        on_link: None,
       },
       common: Common::default(),
     }
@@ -761,9 +765,21 @@ impl Text {
         elide: None,
         max_lines: None,
         selectable: None,
+        on_link: None,
       },
       common: Common::default(),
     }
+  }
+
+  /// Runs `handler` with a link span's URL when a left click lands on
+  /// the span's glyphs. Over a link the cursor is the pointing hand and
+  /// the click goes to nothing else, not even a button around the text;
+  /// elsewhere the text lets the pointer through as before. In a
+  /// [`selectable`](Self::selectable) text, a press and release on one
+  /// link that selected nothing opens it, and a drag selects.
+  pub fn on_link(mut self, handler: impl Fn(&Cx, &str) + 'static) -> Text {
+    self.text.on_link = Some(Rc::new(Handler::new(handler)));
+    self
   }
 
   /// When on, the text takes the pointer with an I-beam: a press, a drag,
