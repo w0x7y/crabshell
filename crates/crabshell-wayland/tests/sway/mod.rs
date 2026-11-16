@@ -647,6 +647,22 @@ impl VirtualKeyboard {
       .expect("the helper's roundtrip");
   }
 
+  /// Holds Shift down or lets it go: the key and the modifier state a
+  /// virtual keyboard sends itself. Shift is the keymap's first modifier.
+  pub fn shift(&mut self, held: bool) {
+    if held {
+      self.press(keys::LEFT_SHIFT);
+      self.keyboard.modifiers(1, 0, 0, 0);
+    } else {
+      self.release(keys::LEFT_SHIFT);
+      self.keyboard.modifiers(0, 0, 0, 0);
+    }
+    self
+      .queue
+      .roundtrip(&mut Helper)
+      .expect("the helper's roundtrip");
+  }
+
   /// Presses and releases `key`.
   pub fn tap(&mut self, key: u32) {
     self.press(key);

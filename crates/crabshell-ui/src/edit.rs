@@ -198,3 +198,13 @@ pub(crate) fn grapheme_start(text: &str, count: usize) -> usize {
     .nth(count)
     .map_or(text.len(), |(index, _)| index)
 }
+
+/// The word around byte `at` of `text`, or the spaces or the one mark
+/// there: what a double click selects. At the end, the last one.
+pub(crate) fn word_at(text: &str, at: usize) -> Range<usize> {
+  text
+    .split_word_bound_indices()
+    .map(|(start, part)| start..start + part.len())
+    .find(|range| range.contains(&at) || range.end == text.len())
+    .unwrap_or(at..at)
+}

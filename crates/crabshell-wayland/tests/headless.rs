@@ -1356,6 +1356,87 @@ fn an_input_method_composes_and_commits_into_a_text_field() {
   );
 }
 
+/// The rectangle of the first text field in the bar.
+fn field_rect(node: crabshell_ui::NodeView<'_>) -> Option<crabshell_ui::Rect> {
+  match node.content() {
+    Content::Input(_) => Some(node.rect()),
+    _ => node.children().find_map(field_rect),
+  }
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn dragging_selects_in_a_field_past_the_bar_and_shift_click_extends() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let mut keyboard = VirtualKeyboard::new(&sway);
+  let mut pointer = VirtualPointer::new(&sway);
+  let setup = Setup {
+    keyboard: KeyboardFocus::Exclusive,
+    field: true,
+    ..PLAIN
+  };
+  let mut shell = Shell::build(&sway, setup);
+  let id = shell.wait_for_bar("HEADLESS-1");
+  shell.knobs.typed.set(String::from("hello"));
+  settle(&mut shell.event_loop);
+  let window = |platform: &Platform| {
+    platform
+      .windows()
+      .find(|(held, _)| *held == id)
+      .map(|(_, window)| (field_rect(window.view().root()), window.field()))
+  };
+  let (rect, _) = window(shell.event_loop.platform()).expect("the bar");
+  let rect = rect.expect("a field");
+  let (x, y) = (rect.x as u32 + 1, (rect.y + rect.height / 2.0) as u32);
+  pointer.move_to(x, y, (1920, 1080));
+  settle(&mut shell.event_loop);
+  pointer.press(VirtualPointer::LEFT);
+  // Far below the bar: the press holds the pointer, so the bar still
+  // hears where it goes.
+  pointer.move_to(1900, 900, (1920, 1080));
+  pointer.release(VirtualPointer::LEFT);
+  run_until(
+    &mut shell.event_loop,
+    "the whole text selected",
+    |platform| {
+      window(platform)
+        .and_then(|(_, field)| field)
+        .is_some_and(|field| (field.anchor, field.cursor) == (0, 5))
+    },
+  );
+
+  // A click inside places the caret; Shift and a click at the end
+  // extend from there. Slower than a double click, which picks a word.
+  std::thread::sleep(Duration::from_millis(450));
+  pointer.move_to(x, y, (1920, 1080));
+  pointer.press(VirtualPointer::LEFT);
+  pointer.release(VirtualPointer::LEFT);
+  run_until(
+    &mut shell.event_loop,
+    "the caret at the start",
+    |platform| {
+      window(platform)
+        .and_then(|(_, field)| field)
+        .is_some_and(|field| (field.anchor, field.cursor) == (0, 0))
+    },
+  );
+  keyboard.shift(true);
+  pointer.move_to(rect.right() as u32 - 1, y, (1920, 1080));
+  pointer.press(VirtualPointer::LEFT);
+  pointer.release(VirtualPointer::LEFT);
+  keyboard.shift(false);
+  run_until(
+    &mut shell.event_loop,
+    "the selection extended",
+    |platform| {
+      window(platform)
+        .and_then(|(_, field)| field)
+        .is_some_and(|field| (field.anchor, field.cursor) == (0, 5))
+    },
+  );
+}
+
 #[test]
 #[ignore = "needs headless Sway and wl-clipboard"]
 fn ctrl_c_copies_a_field_to_other_programs_and_ctrl_v_pastes_from_them() {

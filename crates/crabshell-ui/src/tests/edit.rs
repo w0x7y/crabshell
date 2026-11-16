@@ -1,6 +1,6 @@
 //! Editing one line of text: typing, deleting, moving and selecting.
 
-use crate::edit::{Edit, Keyed, grapheme_start, graphemes_before};
+use crate::edit::{Edit, Keyed, grapheme_start, graphemes_before, word_at};
 use crate::{Key, KeyEvent, Modifiers};
 
 fn key(key: Key) -> KeyEvent {
@@ -163,4 +163,13 @@ fn ctrl_c_x_and_v_copy_cut_and_paste_a_selection() {
   secret.key(&with(key(Key::End), false, true), true);
   assert_eq!(secret.key(&ctrl("x"), false), Keyed::Moved);
   assert_eq!(secret.text, "pw");
+}
+
+#[test]
+fn a_word_is_found_around_a_position() {
+  assert_eq!(word_at("one two", 5), 4..7);
+  assert_eq!(word_at("one two", 4), 4..7);
+  assert_eq!(word_at("one two", 3), 3..4, "the space");
+  assert_eq!(word_at("one two", 7), 4..7, "the end is the last word");
+  assert_eq!(word_at("", 0), 0..0);
 }

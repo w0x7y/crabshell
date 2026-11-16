@@ -33,6 +33,7 @@ mod popup;
 mod region;
 mod screencopy;
 mod scroll;
+mod select;
 mod services;
 mod slider;
 mod style;

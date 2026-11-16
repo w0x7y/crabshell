@@ -106,6 +106,8 @@ pub(crate) struct Keyboard {
   pub(crate) focused: Option<NodeId>,
   /// The window's own `on_key`.
   pub(crate) handler: Option<KeyHandler>,
+  /// The modifiers held as the platform last said, which a press reads.
+  pub(crate) modifiers: Modifiers,
 }
 
 impl Keyboard {
@@ -134,6 +136,12 @@ impl Window {
     tree.keyboard.entered = false;
     let focused = tree.keyboard.focused;
     tree.show_focus(focused, false);
+  }
+
+  /// The modifiers held on the seat, which the platform tells before a
+  /// pointer button goes down: Shift and a press extend a selection.
+  pub fn set_modifiers(&self, modifiers: Modifiers) {
+    borrow(&self.tree).keyboard.modifiers = modifiers;
   }
 
   /// A key was pressed or repeated. A focused text field edits with it

@@ -77,6 +77,7 @@ mod region;
 mod screencopy;
 mod scroll;
 mod scrolling;
+mod select;
 mod slider;
 mod style;
 mod text;

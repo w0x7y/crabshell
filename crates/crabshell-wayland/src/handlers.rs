@@ -410,6 +410,10 @@ impl PointerHandler for Platform {
         PointerEventKind::Press { serial, .. } | PointerEventKind::Release { serial, .. } => {
           self.last_button = Some((ours.seat.clone(), serial));
           self.button_held = matches!(event.kind, PointerEventKind::Press { .. });
+          // Shift and a press extend a selection.
+          if let Some(keyboard) = self.keyboards.iter().find(|k| k.seat == ours.seat) {
+            entry.window.set_modifiers(keyboard.modifiers);
+          }
         }
         _ => {}
       }

@@ -39,11 +39,11 @@ const LONG_PRESS: Duration = Duration::from_millis(800);
 
 /// The most time between two clicks of a double click, in milliseconds:
 /// Qt's `mouseDoubleClickInterval`.
-const DOUBLE_CLICK_MS: u32 = 400;
+pub(crate) const DOUBLE_CLICK_MS: u32 = 400;
 
 /// The farthest apart two clicks of a double click are, in logical
 /// pixels: Qt's `mouseDoubleClickDistance`.
-const DOUBLE_CLICK_DISTANCE: f32 = 5.0;
+pub(crate) const DOUBLE_CLICK_DISTANCE: f32 = 5.0;
 
 /// A user's event handler, and whether it was disabled after panicking.
 pub(crate) struct Handler<F: ?Sized> {
@@ -311,8 +311,9 @@ pub(crate) struct Pointer {
   /// The scroll view the touchpad gesture under way moves.
   pub(crate) gesture: Option<NodeId>,
   /// The last left click, with the time it came up and where it went
-  /// down, which a second one may make a double click.
-  last_click: Option<(NodeId, u32, Point)>,
+  /// down, which a second one may make a double click. For text, the
+  /// time it went down.
+  pub(crate) last_click: Option<(NodeId, u32, Point)>,
   /// Scrolling that hasn't added up to a whole step yet.
   wheel: i32,
   pixels: f32,
@@ -498,7 +499,7 @@ fn run_all(calls: Vec<Call>) {
   }
 }
 
-fn distance(a: Point, b: Point) -> f32 {
+pub(crate) fn distance(a: Point, b: Point) -> f32 {
   (a.x - b.x).hypot(a.y - b.y)
 }
 
@@ -623,10 +624,10 @@ impl Tree {
     }
   }
 
-  /// Whether button `id` drags: it has `on_drag`, or its `drag_data`
-  /// holds a value now.
+  /// Whether `id` drags: a button with `on_drag`, or whose `drag_data`
+  /// holds a value now, or text, which selects.
   fn drags(&self, id: NodeId) -> bool {
-    self.drag_type(id).is_some() || self.has(id, |h| h.drag.is_some())
+    self.selects(id) || self.drag_type(id).is_some() || self.has(id, |h| h.drag.is_some())
   }
 
   /// The nodes from the root down to `id`, both included.
@@ -774,13 +775,13 @@ impl Tree {
 
   fn button(&mut self, button: PointerButton, pressed: bool, time: u32) -> Vec<Call> {
     if pressed {
-      self.press(button)
+      self.press(button, time)
     } else {
       self.release(button, time)
     }
   }
 
-  fn press(&mut self, button: PointerButton) -> Vec<Call> {
+  fn press(&mut self, button: PointerButton, time: u32) -> Vec<Call> {
     // A scroll bar is drawn over what is under it, so it takes the press.
     if let (PointerButton::Left, None, Some(at)) =
       (button, self.pointer.pressed, self.pointer.position)
@@ -814,7 +815,9 @@ impl Tree {
     if button != PointerButton::Left {
       return Vec::new();
     }
-    self.press_field(id);
+    if self.selects(id) {
+      self.press_text(id, at, time);
+    }
     let mut calls: Vec<Call> = self.call(id, Action::Press).into_iter().collect();
     if self.has(id, |h| h.long_press.is_some()) {
       self.arm_long_press(id);
@@ -921,6 +924,10 @@ impl Tree {
     press.last = at;
     let press = *press;
     if press.button != PointerButton::Left {
+      return Vec::new();
+    }
+    if press.dragging && self.selects(press.id) {
+      self.drag_text(press.id, at);
       return Vec::new();
     }
     if press.dragging {
@@ -1150,27 +1157,6 @@ impl Tree {
     } else {
       0
     }
-  }
-
-  /// A press on field `id` focuses it and puts the caret under the
-  /// pointer. Anything else is left alone.
-  fn press_field(&mut self, id: NodeId) {
-    let Some(position) = self
-      .pointer
-      .position
-      .and_then(|at| self.local_point(id, at))
-    else {
-      return;
-    };
-    let Some(NodeKind::Input(input)) = self.node(id).map(|node| &node.kind) else {
-      return;
-    };
-    let at = input.hit(position);
-    self.focus(Some(id));
-    self.update_input(id, |input| {
-      input.edit.cursor = at;
-      input.edit.anchor = None;
-    });
   }
 
   /// Lets go of the button the left button is on, without a click or its
