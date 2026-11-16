@@ -353,6 +353,9 @@ pub enum GradientShape {
   Linear(f32),
   /// In circles out from the middle to the farthest corner.
   Radial,
+  /// Around the middle, clockwise from this many degrees, as CSS's
+  /// `conic-gradient(from …)`: 0 starts at 12 o'clock, 90 at 3.
+  Sweep(f32),
 }
 
 impl Gradient {
@@ -365,6 +368,22 @@ impl Gradient {
   /// A gradient from `from` in the middle to `to` at the farthest corner.
   pub const fn radial(from: Color, to: Color) -> Gradient {
     Gradient::new(GradientShape::Radial, from, to)
+  }
+
+  /// A gradient from `from` to `to` once around the middle, clockwise
+  /// from `angle` degrees: 0 starts at 12 o'clock, 90 at 3, as CSS's
+  /// `conic-gradient(from 90deg, …)`. The end meets the start there.
+  ///
+  /// ```
+  /// use crabshell_ui::{Color, Gradient, Style};
+  ///
+  /// const RING: Style = Style::new().radius(20.0).gradient(
+  ///     Gradient::sweep(0.0, Color::hex("#89b4fa"), Color::hex("#89b4fa"))
+  ///         .stop(0.5, Color::hex("#f5c2e7")),
+  /// );
+  /// ```
+  pub const fn sweep(angle: f32, from: Color, to: Color) -> Gradient {
+    Gradient::new(GradientShape::Sweep(angle), from, to)
   }
 
   const fn new(shape: GradientShape, from: Color, to: Color) -> Gradient {
@@ -404,6 +423,10 @@ impl Gradient {
         GradientShape::Linear(from.lerp(&to, t))
       }
       (GradientShape::Radial, GradientShape::Radial) => GradientShape::Radial,
+      (GradientShape::Sweep(from), GradientShape::Sweep(to)) => {
+        GradientShape::Sweep(from.lerp(&to, t))
+      }
+
       _ => return None,
     };
     if self.count != to.count {

@@ -327,6 +327,38 @@ mod gradients {
   }
 
   #[test]
+  fn a_sweep_gradient_turns_clockwise_from_its_angle_around_the_middle() {
+    let window = |gradient| {
+      let mut scene = Scene::new();
+      let window = scene.window(
+        scene.panel().style(Style::new().gradient(gradient)),
+        100.0,
+        100.0,
+      );
+      scene.full(&window, 1.0)
+    };
+    // From 12 o'clock: a quarter turn at 3, half at 6, three quarters at
+    // 9, and the end just before 12 again.
+    let from_up = window(Gradient::sweep(0.0, RED, BLUE));
+    for ((x, y), expected) in [
+      ((50, 4), [255, 0, 0]),
+      ((95, 49), [192, 0, 63]),
+      ((50, 95), [128, 0, 127]),
+      ((4, 50), [64, 0, 191]),
+      ((49, 4), [0, 0, 255]),
+    ] {
+      let pixel = from_up.pixel(x, y);
+      assert!(close(pixel, expected), "at {x}, {y}: {pixel:?}");
+    }
+    // From 3 o'clock, a quarter turn is at 6.
+    let from_right = window(Gradient::sweep(90.0, RED, BLUE));
+    for ((x, y), expected) in [((95, 50), [255, 0, 0]), ((50, 95), [192, 0, 63])] {
+      let pixel = from_right.pixel(x, y);
+      assert!(close(pixel, expected), "at {x}, {y}: {pixel:?}");
+    }
+  }
+
+  #[test]
   fn a_radial_gradient_reaches_the_farthest_corner() {
     let round = filled(Gradient::radial(RED, BLUE));
     assert!(

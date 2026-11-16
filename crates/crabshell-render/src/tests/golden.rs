@@ -277,6 +277,59 @@ fn corners() {
   });
 }
 
+#[test]
+fn sweep() {
+  check("sweep", 220.0, 60.0, |scene| {
+    scene.panel().style(BAR).child(
+      Row::new()
+        .padding(8, 14)
+        .gap(16)
+        .align(Align::Center)
+        // A ring: a sweep around a circle, with a circle of the bar's
+        // color inside it.
+        .child(
+          Stack::new()
+            .style(
+              Style::new()
+                .gradient(
+                  Gradient::sweep(0.0, Color::hex("#89b4fa"), Color::hex("#89b4fa"))
+                    .stop(0.5, Color::hex("#f5c2e7")),
+                )
+                .radius(22.0)
+                .width(44.0)
+                .height(44.0),
+            )
+            .child(Row::new().style(BAR.radius(16.0).left(6.0).top(6.0).width(32.0).height(32.0))),
+        )
+        // Four colors from 135 degrees in a rounded box.
+        .child(
+          Row::new().style(
+            Style::new()
+              .gradient(
+                Gradient::sweep(135.0, Color::hex("#a6e3a1"), Color::hex("#cba6f7"))
+                  .stop(0.3, Color::hex("#f9e2af"))
+                  .stop(0.6, Color::hex("#fab387")),
+              )
+              .radius(8.0)
+              .padding(18, 30),
+          ),
+        )
+        // A beam fading out to a clear stop, over a background.
+        .child(
+          Row::new().style(
+            Style::new()
+              .background(Color::hex("#313244"))
+              .gradient(
+                Gradient::sweep(270.0, Color::hex("#f38ba8"), Color::rgba(0, 0, 0, 0))
+                  .stop(0.25, Color::rgba(0, 0, 0, 0)),
+              )
+              .padding(18, 26),
+          ),
+        ),
+    )
+  });
+}
+
 /// Fails unless the fonts the text goldens were drawn with are the ones
 /// fontconfig picks here: other fonts draw other pixels.
 fn check_fonts() {

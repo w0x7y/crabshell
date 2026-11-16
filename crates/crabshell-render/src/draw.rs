@@ -13,7 +13,7 @@ use crabshell_ui::{
 };
 use tiny_skia::{
   FillRule, FilterQuality, GradientStop, LinearGradient, Mask, Paint, PathBuilder, Pixmap,
-  PixmapMut, PixmapPaint, RadialGradient, Shader, SpreadMode, Transform,
+  PixmapMut, PixmapPaint, RadialGradient, Shader, SpreadMode, SweepGradient, Transform,
 };
 
 use crate::damage::{BufferAge, DamageHistory, PixelRect};
@@ -857,6 +857,14 @@ impl Painter<'_> {
       GradientShape::Radial => {
         let reach = (width * width + height * height).sqrt() / 2.0;
         RadialGradient::new(middle, 0.0, middle, reach, stops, SpreadMode::Pad, moved)
+      }
+      GradientShape::Sweep(angle) => {
+        // As CSS: 0 degrees points up and the colors go clockwise.
+        // tiny-skia's start at 3 o'clock, and it skips a start angle
+        // other than 0 when the sweep is a whole turn, so it is turned.
+        let turn = Transform::from_rotate_at(angle - 90.0, middle.x, middle.y);
+        let at = moved.pre_concat(turn);
+        SweepGradient::new(middle, 0.0, 360.0, stops, SpreadMode::Pad, at)
       }
     }
   }

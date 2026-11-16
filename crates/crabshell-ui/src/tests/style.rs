@@ -437,3 +437,20 @@ fn a_fade_moves_each_corner_from_where_it_was() {
     .expect("on its way out");
   assert_eq!(going.bottom_right, 4.0);
 }
+
+#[test]
+fn a_sweep_gradient_blends_with_another_sweep_only() {
+  const RED: Color = Color::rgb(255, 0, 0);
+  const BLUE: Color = Color::rgb(0, 0, 255);
+  const RING: Gradient = Gradient::sweep(45.0, RED, BLUE).stop(0.5, RED);
+  assert_eq!(RING.shape, GradientShape::Sweep(45.0));
+  assert_eq!(RING.stops(), [(0.0, RED), (0.5, RED), (1.0, BLUE)]);
+  let from = Style::new().gradient(Gradient::sweep(0.0, RED, BLUE));
+  let to = Style::new().gradient(Gradient::sweep(90.0, BLUE, BLUE));
+  let half = from.lerp(&to, 0.5).gradient.expect("both set one");
+  assert_eq!(half.shape, GradientShape::Sweep(45.0));
+  assert_eq!(half.stops()[0], (0.0, Color::rgb(128, 0, 128)));
+  let linear = Style::new().gradient(Gradient::linear(0.0, RED, BLUE));
+  assert_eq!(from.lerp(&linear, 0.5).gradient, linear.gradient);
+  assert_eq!(linear.lerp(&from, 0.5).gradient, from.gradient);
+}
