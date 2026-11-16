@@ -52,6 +52,9 @@ pub(crate) struct Icons {
   frame: u64,
   /// Sources that failed, so each is logged once.
   failed: HashSet<Key>,
+  /// Mask images that failed, so each path is logged once, whatever the
+  /// size its box takes.
+  failed_masks: HashSet<PathBuf>,
   /// How many icons were rasterized, for tests.
   rasterized: usize,
   /// Each screencopy view's frame, scaled to its box: one a view, replaced
@@ -232,6 +235,7 @@ impl Icons {
       cache: HashMap::new(),
       frame: 0,
       failed: HashSet::new(),
+      failed_masks: HashSet::new(),
       rasterized: 0,
       captures: HashMap::new(),
       playbacks: HashMap::new(),
@@ -330,8 +334,43 @@ impl Icons {
   pub(crate) fn image(
     &mut self,
     image: &ImageView<'_>,
+    size: (u32, u32),
+    scale: f32,
+  ) -> Option<&Pixmap> {
+    self.picture(image, size, scale, true)
+  }
+
+  /// The file at `path` scaled to `size` to mask with, unfiltered and
+  /// paused on its first frame, so a GIF never wakes the loop. A failure
+  /// is logged once per path, so a box that changes size logs once.
+  pub(crate) fn mask(&mut self, path: &Path, size: (u32, u32), scale: f32) -> Option<&Pixmap> {
+    let image = ImageView {
+      // Never playing, every mask can share one id.
+      id: u64::MAX,
+      path,
+      rect: crabshell_ui::Rect::default(),
+      fit: Fit::Fill,
+      filters: ImageFilters::default(),
+      playing: false,
+    };
+    let log = !self.failed_masks.contains(path);
+    if self.picture(&image, size, scale, log).is_none() {
+      if self.failed_masks.len() > CAPACITY {
+        self.failed_masks.clear();
+      }
+      self.failed_masks.insert(path.to_owned());
+      return None;
+    }
+    self.picture(&image, size, scale, false)
+  }
+
+  /// [`image`](Self::image), logging a failure only with `log`.
+  fn picture(
+    &mut self,
+    image: &ImageView<'_>,
     (width, height): (u32, u32),
     scale: f32,
+    log: bool,
   ) -> Option<&Pixmap> {
     let path = image.path;
     let modified = std::fs::metadata(path)
@@ -346,6 +385,10 @@ impl Icons {
       filters: FilterKey::new(&image.filters, scale),
     };
     if !self.cache.contains_key(&key) {
+      if !log {
+        // Counted as logged already.
+        self.failed.insert(key.clone());
+      }
       let room = MAX_CACHED_BYTES.saturating_sub(self.bytes_in_use());
       let rasterized = crate::animation::frames(
         path,

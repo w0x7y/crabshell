@@ -4,20 +4,16 @@
 use std::collections::VecDeque;
 use std::path::Path;
 
-use crabshell_ui::{Fit, ImageFilters, ImageView, Mask, Rect, Shadow, Style};
+use crabshell_ui::{Mask, Rect, Shadow, Style};
 use tiny_skia::{FillRule, MaskType, Paint, PathBuilder, Pixmap, PixmapMut, Transform};
 
 use super::{LAYER_MARGIN, Painter, mul};
-
-/// The id every mask image is drawn under. They never play, so they share
-/// it; image ids count up from 0.
-const MASK_IMAGE: u64 = u64::MAX;
 
 impl Painter<'_> {
   /// Keeps `layer` only where `mask`, laid over `rect`, is opaque, its
   /// alpha multiplying the layer's; nothing shows outside `rect`. A mask
   /// image that can't be drawn leaves the layer as it is, and the image
-  /// cache logs that once.
+  /// cache logs that once for its path.
   pub(super) fn mask(&mut self, layer: &mut PixmapMut<'_>, rect: Rect, mask: &Mask) {
     let (width, height) = (layer.width(), layer.height());
     let Some(area) = self.grid.rect(rect) else {
@@ -51,18 +47,8 @@ impl Painter<'_> {
         // The box's edges are whole pixels of the layer.
         let (left, top) = (area.left() as i64, area.top() as i64);
         let (side_x, side_y) = (area.width() as u32, area.height() as u32);
-        // Unfiltered and paused, so a GIF stays on its first frame and
-        // never wakes the loop.
-        let image = ImageView {
-          id: MASK_IMAGE,
-          path: Path::new(path),
-          rect,
-          fit: Fit::Fill,
-          filters: ImageFilters::default(),
-          playing: false,
-        };
         let scale = self.grid.scale;
-        let Some(picture) = self.icons.image(&image, (side_x, side_y), scale) else {
+        let Some(picture) = self.icons.mask(Path::new(path), (side_x, side_y), scale) else {
           return;
         };
         let stride = width as i64;

@@ -101,6 +101,30 @@ fn a_missing_mask_image_draws_unmasked_and_logs_once() {
 }
 
 #[test]
+fn a_missing_mask_image_logs_once_whatever_size_its_box_takes() {
+  let logs = capture_logs(|| {
+    let mut scene = Scene::new();
+    let width = scene.cx.signal(40.0_f32);
+    let missing = Mask::image("/nonexistent/crabshell/growing.png");
+    let drawn = Stack::new().style(move || {
+      Style::new()
+        .mask(missing)
+        .background(WHITE)
+        .width(width.get())
+        .height(20.0)
+    });
+    let row = Row::new().padding(10, 20).align(Align::Start).child(drawn);
+    let window = scene.window(scene.panel().child(row), 120.0, 70.0);
+    for step in 0..5 {
+      width.set(40.0 + step as f32);
+      scene.frame(&window);
+      scene.full(&window, 1.0);
+    }
+  });
+  assert_eq!(logs.matches("growing.png").count(), 1, "{logs}");
+}
+
+#[test]
 fn a_mask_shares_one_layer_with_opacity_and_a_transform() {
   let layers = |style: Style| {
     let mut scene = Scene::new();
