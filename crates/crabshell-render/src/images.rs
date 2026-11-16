@@ -4,7 +4,6 @@
 //! allocates.
 
 use std::io::Cursor;
-use std::num::NonZeroU64;
 use std::path::Path;
 
 use crabshell_ui::{Fit, ImageFilters};
@@ -18,7 +17,7 @@ use zune_jpeg::zune_core::options::DecoderOptions;
 use crate::icons::{decode_png, halve, premultiplied, read_capped, svg_tree};
 
 /// The largest image file read, in bytes.
-const MAX_BYTES: u64 = 32 * 1024 * 1024;
+pub(crate) const MAX_BYTES: u64 = 32 * 1024 * 1024;
 
 /// The largest SVG image read, in bytes.
 const MAX_SVG_BYTES: u64 = 4 * 1024 * 1024;
@@ -27,7 +26,7 @@ const MAX_SVG_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_SIDE: u32 = 8192;
 
 /// The most pixels an image may have: a 6K picture, 96 MiB decoded.
-const MAX_PIXELS: u64 = 24_000_000;
+pub(crate) const MAX_PIXELS: u64 = 24_000_000;
 
 /// The file at `path` as a `width` by `height` pixmap, scaled as `fit`
 /// says, through `filters` at `scale` buffer pixels a logical pixel.
@@ -46,7 +45,7 @@ pub(crate) fn filtered(
 
 /// `picture` scaled to `width` by `height` as `fit` says, through
 /// `filters` at `scale`.
-fn finish(
+pub(crate) fn finish(
   picture: &Picture,
   (width, height): (u32, u32),
   fit: Fit,
@@ -160,37 +159,10 @@ fn jpeg(data: &[u8]) -> Result<Pixmap, String> {
 
 /// The first frame of a GIF, on its whole canvas.
 pub(crate) fn gif(data: &[u8]) -> Result<Pixmap, String> {
-  let mut options = gif::DecodeOptions::new();
-  options.set_color_output(gif::ColorOutput::RGBA);
-  if let Some(limit) = NonZeroU64::new(MAX_PIXELS * 4) {
-    options.set_memory_limit(gif::MemoryLimit::Bytes(limit));
-  }
-  let mut decoder = options
-    .read_info(Cursor::new(data))
-    .map_err(|error| error.to_string())?;
-  let (width, height) = (u32::from(decoder.width()), u32::from(decoder.height()));
-  check(width, height)?;
-  let frame = decoder
-    .read_next_frame()
-    .map_err(|error| error.to_string())?
-    .ok_or("a GIF with no frames")?;
-  if frame.width == 0 || frame.height == 0 {
-    return Err(String::from("a GIF frame with no pixels"));
-  }
-  let mut rgba = vec![0; width as usize * height as usize * 4];
-  // A frame may cover only part of the canvas; the rest stays clear.
-  let (left, top) = (u32::from(frame.left), u32::from(frame.top));
-  let frame_width = usize::from(frame.width);
-  for (row, line) in frame.buffer.chunks_exact(frame_width * 4).enumerate() {
-    let y = top + row as u32;
-    if y >= height || left >= width {
-      continue;
-    }
-    let columns = frame_width.min((width - left) as usize);
-    let start = (y as usize * width as usize + left as usize) * 4;
-    rgba[start..start + columns * 4].copy_from_slice(&line[..columns * 4]);
-  }
-  premultiplied(rgba, width, height)
+  crate::animation::Gif::open(data)?
+    .next_frame()?
+    .map(|(pixmap, _)| pixmap)
+    .ok_or_else(|| String::from("a GIF with no frames"))
 }
 
 /// A WebP, or the first frame of an animated one.

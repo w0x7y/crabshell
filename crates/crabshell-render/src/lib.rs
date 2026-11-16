@@ -76,6 +76,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod animation;
 mod capture;
 mod colors;
 mod damage;

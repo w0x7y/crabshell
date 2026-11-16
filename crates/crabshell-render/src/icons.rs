@@ -6,11 +6,13 @@ use std::hash::{Hash, Hasher};
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::Instant;
 
 use crabshell_ui::{CaptureFrame, Color, Fit, IconPixels, IconSource, ImageFilters, ImageView};
 use resvg::usvg;
 use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, PixmapRef, Transform};
 
+use crate::animation::Frames;
 use crate::theme::Themes;
 
 /// How many rasterized icons stay cached. Past that, icons no draw used
@@ -55,6 +57,44 @@ pub(crate) struct Icons {
   /// Each screencopy view's frame, scaled to its box: one a view, replaced
   /// when its frame or box changes.
   captures: HashMap<u64, Capture>,
+  /// Each animated image's place in its GIF, by image id.
+  playbacks: HashMap<u64, Playback>,
+}
+
+/// Where an animated image is in its GIF.
+struct Playback {
+  /// The entry it plays.
+  key: Key,
+  frame: usize,
+  /// How many times it has played through.
+  played: u32,
+  /// When the frame shown was due, so a late draw doesn't slow the GIF.
+  since: Option<Instant>,
+  /// When the next frame is due: set once a frame is drawn, cleared when
+  /// it is due, so a GIF not drawn again waits for nothing.
+  due: Option<Instant>,
+  /// Whether a draw showed it since the last schedule.
+  drawn: bool,
+  playing: bool,
+  /// Whether it stopped on its last frame.
+  finished: bool,
+  used: u64,
+}
+
+impl Playback {
+  fn new(key: Key) -> Playback {
+    Playback {
+      key,
+      frame: 0,
+      played: 0,
+      since: None,
+      due: None,
+      drawn: false,
+      playing: true,
+      finished: false,
+      used: 0,
+    }
+  }
 }
 
 struct Capture {
@@ -157,8 +197,25 @@ impl std::fmt::Debug for Shared {
 
 struct Entry {
   /// `None` if the icon couldn't be loaded; drawn as nothing.
-  pixmap: Option<Pixmap>,
+  frames: Option<Frames>,
   used: u64,
+}
+
+impl Key {
+  /// Whether both are the same image file, as last modified.
+  fn same_file(&self, other: &Key) -> bool {
+    match (self, other) {
+      (
+        Key::Image { path, modified, .. },
+        Key::Image {
+          path: other_path,
+          modified: other_modified,
+          ..
+        },
+      ) => (path, modified) == (other_path, other_modified),
+      _ => false,
+    }
+  }
 }
 
 impl Icons {
@@ -177,6 +234,7 @@ impl Icons {
       failed: HashSet::new(),
       rasterized: 0,
       captures: HashMap::new(),
+      playbacks: HashMap::new(),
     }
   }
 
@@ -249,14 +307,15 @@ impl Icons {
         }
         pixmap
       });
-      self.store(key.clone(), tinted, || describe(source));
+      self.store(key.clone(), tinted.map(Frames::still), || describe(source));
     }
     self.used(&key)
   }
 
   /// `image`'s file scaled to `width` by `height` pixels as its fit says
-  /// and run through its filters at `scale`, decoded on first use. `None`
-  /// if it can't be loaded; that is logged once.
+  /// and run through its filters at `scale`, decoded on first use: for an
+  /// animated GIF, the frame its playback is on, every frame decoded at
+  /// once. `None` if it can't be loaded; that is logged once.
   pub(crate) fn image(
     &mut self,
     image: &ImageView<'_>,
@@ -277,12 +336,108 @@ impl Icons {
     };
     if !self.cache.contains_key(&key) {
       let rasterized =
-        crate::images::filtered(path, (width, height), image.fit, &image.filters, scale);
+        crate::animation::frames(path, (width, height), image.fit, &image.filters, scale);
       self.store(key.clone(), rasterized, || {
         format!("image {}", path.display())
       });
     }
-    self.used(&key)
+    // A failure is marked used too, so it isn't read and logged again.
+    let entry = self.cache.get_mut(&key)?;
+    entry.used = self.frame;
+    let count = entry.frames.as_ref()?.frames.len();
+    let index = if count > 1 {
+      self.play(image, &key, count)
+    } else {
+      self.playbacks.remove(&image.id);
+      0
+    };
+    let frames = self.cache.get(&key)?.frames.as_ref()?;
+    Some(&frames.frames.get(index)?.pixmap)
+  }
+
+  /// Marks `image`, an animation of `count` frames in entry `key`, drawn,
+  /// and returns the frame it is on. Another file starts it over.
+  fn play(&mut self, image: &ImageView<'_>, key: &Key, count: usize) -> usize {
+    let playback = self
+      .playbacks
+      .entry(image.id)
+      .or_insert_with(|| Playback::new(key.clone()));
+    if !playback.key.same_file(key) {
+      *playback = Playback::new(key.clone());
+    }
+    playback.key = key.clone();
+    playback.frame = playback.frame.min(count - 1);
+    playback.drawn = true;
+    playback.playing = image.playing;
+    playback.used = self.frame;
+    if !image.playing {
+      playback.due = None;
+    }
+    playback.frame
+  }
+
+  /// When the next frame of an animation is due. One drawn since the last
+  /// call is due its frame's delay after the frame was, or after `now` if
+  /// that has passed. `None` while none plays.
+  pub(crate) fn next_frame(&mut self, now: Instant) -> Option<Instant> {
+    let Icons {
+      playbacks, cache, ..
+    } = self;
+    for playback in playbacks.values_mut() {
+      if !std::mem::take(&mut playback.drawn)
+        || !playback.playing
+        || playback.finished
+        || playback.due.is_some()
+      {
+        continue;
+      }
+      let delay = cache
+        .get(&playback.key)
+        .and_then(|entry| entry.frames.as_ref())
+        .and_then(|frames| frames.frames.get(playback.frame))
+        .map(|frame| frame.delay);
+      if let Some(delay) = delay {
+        playback.due = Some(match playback.since {
+          Some(since) if since + delay > now => since + delay,
+          _ => now + delay,
+        });
+      }
+    }
+    playbacks.values().filter_map(|playback| playback.due).min()
+  }
+
+  /// Moves each animation whose frame is due by `now` on a frame, looping
+  /// as its GIF says, and returns their image ids to repaint.
+  pub(crate) fn advance(&mut self, now: Instant) -> Vec<u64> {
+    let mut moved = Vec::new();
+    for (&id, playback) in &mut self.playbacks {
+      let Some(due) = playback.due.filter(|due| *due <= now) else {
+        continue;
+      };
+      playback.due = None;
+      playback.since = Some(due);
+      let Some(frames) = self
+        .cache
+        .get(&playback.key)
+        .and_then(|entry| entry.frames.as_ref())
+      else {
+        continue;
+      };
+      if playback.frame + 1 < frames.frames.len() {
+        playback.frame += 1;
+      } else if frames
+        .repeats
+        .is_none_or(|repeats| playback.played < repeats)
+      {
+        playback.played += 1;
+        playback.frame = 0;
+      } else {
+        playback.finished = true;
+        continue;
+      }
+      moved.push(id);
+    }
+    moved
   }
 
   /// View `view`'s `frame` scaled to `width` by `height` pixels as `fit`
@@ -333,10 +488,10 @@ impl Icons {
 
   /// Caches what rasterizing `key` gave. A failure is cached as nothing
   /// and logged once, with `what` it was.
-  fn store(&mut self, key: Key, rasterized: Result<Pixmap, String>, what: impl FnOnce() -> String) {
+  fn store(&mut self, key: Key, rasterized: Result<Frames, String>, what: impl FnOnce() -> String) {
     self.rasterized += 1;
-    let pixmap = match rasterized {
-      Ok(pixmap) => Some(pixmap),
+    let frames = match rasterized {
+      Ok(frames) => Some(frames),
       Err(error) => {
         if self.failed.len() > CAPACITY {
           self.failed.clear();
@@ -348,14 +503,14 @@ impl Icons {
       }
     };
     let used = self.frame;
-    self.cache.insert(key, Entry { pixmap, used });
+    self.cache.insert(key, Entry { frames, used });
   }
 
   /// The cached pixmap for `key`, marked used by this draw.
   fn used(&mut self, key: &Key) -> Option<&Pixmap> {
     let entry = self.cache.get_mut(key)?;
     entry.used = self.frame;
-    entry.pixmap.as_ref()
+    Some(&entry.frames.as_ref()?.frames.first()?.pixmap)
   }
 
   /// Drops what views `gone` kept.
@@ -364,16 +519,30 @@ impl Icons {
   }
 
   /// Ends a draw: past [`CAPACITY`], icons no draw used within the last
-  /// [`RECENT`] are dropped. Captured frames go after as many draws
-  /// whatever their number, since each is as large as its view.
+  /// [`RECENT`] are dropped, but never the frames of an animation waiting
+  /// for its next. Captured frames go after as many draws whatever their
+  /// number, since each is as large as its view.
   pub(crate) fn end_frame(&mut self) {
     let recent = self.frame.saturating_sub(RECENT - 1);
     self.captures.retain(|_, kept| kept.used >= recent);
+    for playback in self.playbacks.values() {
+      if playback.due.is_some()
+        && let Some(entry) = self.cache.get_mut(&playback.key)
+      {
+        entry.used = self.frame;
+      }
+    }
+    if self.playbacks.len() > CAPACITY {
+      self
+        .playbacks
+        .retain(|_, playback| playback.due.is_some() || playback.used >= recent);
+    }
     let bytes: usize = self
       .cache
       .values()
-      .filter_map(|entry| entry.pixmap.as_ref())
-      .map(|pixmap| pixmap.data().len())
+      .filter_map(|entry| entry.frames.as_ref())
+      .flat_map(|frames| &frames.frames)
+      .map(|frame| frame.pixmap.data().len())
       .sum();
     if self.cache.len() > CAPACITY || bytes > MAX_CACHED_BYTES {
       let oldest = self.frame.saturating_sub(RECENT - 1);

@@ -150,6 +150,23 @@ impl Renderer {
     self.icons.forget_captures(gone);
   }
 
+  /// When the next frame of an animated GIF is due, counting from `now`
+  /// for one drawn since the last call. `None` while no GIF drawn plays.
+  /// The platform wakes then and calls
+  /// [`advance_images`](Self::advance_images).
+  pub fn next_image_frame(&mut self, now: std::time::Instant) -> Option<std::time::Instant> {
+    self.icons.next_frame(now)
+  }
+
+  /// Moves each GIF whose next frame is due by `now` on to it, and returns
+  /// their image ids for the platform to repaint with
+  /// [`Window::repaint_image`](crabshell_ui::Window::repaint_image). A
+  /// GIF waits for its next frame only once that one is drawn, so one no
+  /// longer shown wakes nothing more.
+  pub fn advance_images(&mut self, now: std::time::Instant) -> Vec<u64> {
+    self.icons.advance(now)
+  }
+
   /// The number of screencopy frames kept scaled, for tests.
   #[cfg(test)]
   pub(crate) fn cached_captures(&self) -> usize {
