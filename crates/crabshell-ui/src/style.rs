@@ -291,6 +291,22 @@ impl FontFeature {
   }
 }
 
+/// Where each line of text sits in the text's content box. Text one line
+/// long and sized to itself looks the same whichever is set.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextAlign {
+  /// At the start: the left for left-to-right text. The default.
+  #[default]
+  Start,
+  /// In the middle.
+  Center,
+  /// At the end: the right for left-to-right text.
+  End,
+  /// Stretched to both edges by widening the spaces, except a
+  /// paragraph's last line, which sits at the start.
+  Justify,
+}
+
 /// A border drawn inside a widget's edge. It takes no layout space.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Border {
@@ -737,10 +753,12 @@ pub struct Padding {
 /// to the widget's default: no background, black text in
 /// [`Font::DEFAULT`], no padding, square corners, no border, fully opaque.
 ///
-/// [`Text`](crate::Text) takes `color` and `font` from the nearest widget
-/// that sets them, starting with itself and going up. Nothing else inherits.
+/// [`Text`](crate::Text) takes `color`, `font`, `text_align`,
+/// `line_height`, `underline` and `strikethrough` from the nearest widget
+/// that sets each, starting with itself and going up. Nothing else
+/// inherits.
 ///
-/// `font`, `padding`, `clip`, the sizes, the flex fields, the alignment,
+/// `font`, `text_align`, `line_height`, `padding`, `clip`, the sizes, the flex fields, the alignment,
 /// the absolute position and `span` change the layout, at once; the other
 /// fields only change how the widget is painted. A number that isn't
 /// finite counts as unset.
@@ -772,6 +790,16 @@ pub struct Style {
   pub color: Option<Color>,
   /// The text font, inherited by [`Text`](crate::Text).
   pub font: Option<Font>,
+  /// Where text lines sit in their box, inherited by
+  /// [`Text`](crate::Text).
+  pub text_align: Option<TextAlign>,
+  /// The height of a line of text, as a multiple of the font size,
+  /// inherited by [`Text`](crate::Text). 1.2 by default.
+  pub line_height: Option<f32>,
+  /// Whether text is underlined, inherited by [`Text`](crate::Text).
+  pub underline: Option<bool>,
+  /// Whether text is struck through, inherited by [`Text`](crate::Text).
+  pub strikethrough: Option<bool>,
   /// Space between the edge and the content.
   pub padding: Option<Padding>,
   /// How round each corner is, in logical pixels.
@@ -863,6 +891,10 @@ impl Style {
       shadow: None,
       color: None,
       font: None,
+      text_align: None,
+      line_height: None,
+      underline: None,
+      strikethrough: None,
       padding: None,
       radius: None,
       border: None,
@@ -931,6 +963,41 @@ impl Style {
   pub const fn font(self, font: Font) -> Style {
     Style {
       font: Some(font),
+      ..self
+    }
+  }
+
+  /// Sets where text lines sit in their box. It shows on text given a
+  /// width, a `grow` or more than one line.
+  pub const fn text_align(self, align: TextAlign) -> Style {
+    Style {
+      text_align: Some(align),
+      ..self
+    }
+  }
+
+  /// Sets the height of a line of text as a multiple of the font size,
+  /// rounded to whole logical pixels. A number that isn't finite or
+  /// isn't above 0 counts as unset.
+  pub const fn line_height(self, multiple: f32) -> Style {
+    Style {
+      line_height: Some(multiple),
+      ..self
+    }
+  }
+
+  /// Sets whether text is underlined, in its color.
+  pub const fn underline(self, on: bool) -> Style {
+    Style {
+      underline: Some(on),
+      ..self
+    }
+  }
+
+  /// Sets whether text is struck through, in its color.
+  pub const fn strikethrough(self, on: bool) -> Style {
+    Style {
+      strikethrough: Some(on),
       ..self
     }
   }
@@ -1343,6 +1410,10 @@ impl Style {
       shadow: or(over.shadow, self.shadow),
       color: or(over.color, self.color),
       font: or(over.font, self.font),
+      text_align: or(over.text_align, self.text_align),
+      line_height: or(over.line_height, self.line_height),
+      underline: or(over.underline, self.underline),
+      strikethrough: or(over.strikethrough, self.strikethrough),
       padding: or(over.padding, self.padding),
       radius: or(over.radius, self.radius),
       border: or(over.border, self.border),
@@ -1380,11 +1451,14 @@ impl Style {
     self.clip == Some(true)
   }
 
-  /// Whether the two styles lay out the same: same font, padding, sizes,
-  /// flex fields, alignment, position and span, and clipping, which
-  /// changes how far the children's painting reaches.
+  /// Whether the two styles lay out the same: same font, text alignment
+  /// and line height, padding, sizes, flex fields, alignment, position
+  /// and span, and clipping, which changes how far the children's
+  /// painting reaches.
   pub(crate) fn same_layout(&self, other: &Style) -> bool {
     self.font == other.font
+      && self.text_align == other.text_align
+      && self.line_height == other.line_height
       && self.padding == other.padding
       && self.width == other.width
       && self.height == other.height

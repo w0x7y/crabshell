@@ -24,7 +24,7 @@ use taffy::{
 use crate::geometry::{Affine, Point, Rect};
 use crate::scroll::{BAR_MIN_LENGTH, BAR_WIDTH};
 use crate::style::{Font, Shadow, Style};
-use crate::text::TextSystem;
+use crate::text::{TextStyle, TextSystem};
 use crate::text_input::DEFAULT_WIDTH;
 use crate::tree::{Node, NodeId, NodeKind, ScrollNode, Tree, add_damage, centered, icon_rect};
 use crate::widgets::{Align, Justify};
@@ -64,7 +64,7 @@ impl Tree {
     for shown in std::mem::take(&mut self.shown_since_layout) {
       self.focus_shown_field(shown);
     }
-    self.sync(root, Parent::Flex, Font::DEFAULT, text);
+    self.sync(root, Parent::Flex, Font::DEFAULT.into(), text);
 
     let fonts = text.font_system();
     if self.popup.is_some() {
@@ -150,17 +150,19 @@ impl Tree {
   }
 
   /// The first pass: gives taffy each node's style, and reshapes text.
-  /// `font` is the font inherited from the ancestors.
-  fn sync(&mut self, id: NodeId, parent: Parent, font: Font, text: &mut TextSystem) {
+  /// `inherited` is the text style inherited from the ancestors.
+  fn sync(&mut self, id: NodeId, parent: Parent, inherited: TextStyle, text: &mut TextSystem) {
     let size = self.size;
     let Some(node) = self.taffy.get_node_context_mut(id) else {
       return;
     };
-    let font = node.effective_style().font.unwrap_or(font);
+    let inherited = inherited.inherit(&node.effective_style());
     let mut reshaped = false;
     match &mut node.kind {
-      NodeKind::Text(text_node) => reshaped = text_node.prepare(font, text),
-      NodeKind::Input(input) => reshaped = input.text.prepare(font, text),
+      NodeKind::Text(text_node) => reshaped = text_node.prepare(inherited, text),
+      // A field takes the font alone: its caret and scrolling expect one
+      // line at the start, of the default height.
+      NodeKind::Input(input) => reshaped = input.text.prepare(inherited.font, text),
       _ => {}
     }
     let changed = node.changed;
@@ -181,7 +183,7 @@ impl Tree {
       let _ = self.taffy.mark_dirty(id);
     }
     for child in self.taffy.children(id).unwrap_or_default() {
-      self.sync(child, child_parent, font, text);
+      self.sync(child, child_parent, inherited, text);
     }
   }
 

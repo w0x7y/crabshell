@@ -134,6 +134,8 @@ impl<'a> NodeView<'a> {
       NodeKind::Text(text) => Content::Text(TextView {
         text,
         color: self.inherited_color(),
+        underline: self.inherited(|style| style.underline) == Some(true),
+        strikethrough: self.inherited(|style| style.strikethrough) == Some(true),
       }),
       NodeKind::Icon(icon) => match &icon.source {
         Some(source) => Content::Icon(IconView {
@@ -154,6 +156,8 @@ impl<'a> NodeView<'a> {
           text: TextView {
             text: &input.text,
             color,
+            underline: false,
+            strikethrough: false,
           },
           // An input method may ask for no caret while it composes.
           caret: (input.focused
@@ -200,18 +204,26 @@ impl<'a> NodeView<'a> {
   /// The color of the nearest node, starting with this one, whose style
   /// sets one.
   fn inherited_color(&self) -> Color {
+    self
+      .inherited(|style| style.color)
+      .unwrap_or(DEFAULT_TEXT_COLOR)
+  }
+
+  /// `field` of the nearest node, starting with this one, whose style
+  /// sets it.
+  fn inherited<T>(&self, field: impl Fn(&Style) -> Option<T>) -> Option<T> {
     let mut id = Some(self.id);
     while let Some(current) = id {
-      if let Some(color) = self
+      if let Some(value) = self
         .tree
         .node(current)
-        .and_then(|node| node.shown_style().color)
+        .and_then(|node| field(&node.shown_style()))
       {
-        return color;
+        return Some(value);
       }
       id = self.tree.taffy.parent(current);
     }
-    DEFAULT_TEXT_COLOR
+    None
   }
 }
 
@@ -264,6 +276,8 @@ pub struct InputView<'a> {
 pub struct TextView<'a> {
   text: &'a TextNode,
   color: Color,
+  underline: bool,
+  strikethrough: bool,
 }
 
 impl<'a> TextView<'a> {
@@ -292,6 +306,16 @@ impl<'a> TextView<'a> {
   /// one.
   pub fn color(&self) -> Color {
     self.color
+  }
+
+  /// Whether to draw a line under the glyphs, in the text's color.
+  pub fn underline(&self) -> bool {
+    self.underline
+  }
+
+  /// Whether to draw a line through the glyphs, in the text's color.
+  pub fn strikethrough(&self) -> bool {
+    self.strikethrough
   }
 }
 

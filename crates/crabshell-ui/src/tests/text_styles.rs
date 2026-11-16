@@ -1,8 +1,11 @@
-//! Text styles: italic, letter spacing, features and eliding.
+//! Text styles: italic, letter spacing, features, alignment, line height,
+//! decorations and eliding, and how each is inherited and invalidated.
 
 use super::{Harness, node_at, rect_at};
 use crate::text::TextNode;
-use crate::{Align, Column, Content, Elide, Font, FontFeature, Text, TextSystem, Window};
+use crate::{
+  Align, Column, Content, Elide, Font, FontFeature, Row, Style, Text, TextAlign, TextSystem, Window,
+};
 
 const LONG: &str = "a sentence much too long for the narrow window it sits in";
 
@@ -25,6 +28,119 @@ fn shaped(text: &mut TextSystem, content: &str, font: Font) -> TextNode {
 
 fn width(node: &TextNode) -> f32 {
   node.runs().map(|run| run.line_w).fold(0.0, f32::max)
+}
+
+#[test]
+fn the_new_fields_merge_and_build_in_consts() {
+  const FONT: Font = Font::new("sans-serif", 13.0)
+    .italic()
+    .letter_spacing(1.5)
+    .features(&[FontFeature::TABULAR_NUMBERS, FontFeature::NO_LIGATURES]);
+  const BASE: Style = Style::new()
+    .font(FONT)
+    .text_align(TextAlign::Center)
+    .line_height(1.5)
+    .underline(true);
+  const OVER: Style = Style::new().strikethrough(true).underline(false);
+  let merged = BASE.merge(OVER);
+  assert_eq!(merged.font, Some(FONT));
+  assert_eq!(merged.text_align, Some(TextAlign::Center));
+  assert_eq!(merged.line_height, Some(1.5));
+  assert_eq!(merged.underline, Some(false));
+  assert_eq!(merged.strikethrough, Some(true));
+  const { assert!(FONT.italic) };
+  assert_eq!(FONT.features[0], FontFeature::new(*b"tnum", 1));
+  assert_ne!(FONT, FONT.features(&[]));
+}
+
+#[test]
+fn alignment_and_line_height_lay_out_but_decorations_only_paint() {
+  let plain = Style::new();
+  assert!(!plain.same_layout(&plain.text_align(TextAlign::End)));
+  assert!(!plain.same_layout(&plain.line_height(2.0)));
+  assert!(!plain.same_layout(&plain.font(Font::DEFAULT.italic())));
+  assert!(plain.same_layout(&plain.underline(true)));
+  assert!(plain.same_layout(&plain.strikethrough(true)));
+}
+
+#[test]
+fn a_fade_takes_the_end_styles_text_fields_at_once() {
+  let from = Style::new().line_height(1.0).underline(false);
+  let to = Style::new()
+    .line_height(3.0)
+    .underline(true)
+    .text_align(TextAlign::Justify);
+  let halfway = from.lerp(&to, 0.5);
+  assert_eq!(halfway.line_height, Some(3.0));
+  assert_eq!(halfway.underline, Some(true));
+  assert_eq!(halfway.text_align, Some(TextAlign::Justify));
+}
+
+#[test]
+fn text_inherits_each_field_from_the_nearest_widget_that_sets_it() {
+  let mut h = Harness::new();
+  let panel = h
+    .panel()
+    .style(Style::new().line_height(2.0).underline(true))
+    .child(
+      Column::new()
+        .align(Align::Start)
+        .style(Style::new().strikethrough(true))
+        .child(Text::new("inherits"))
+        .child(Text::new("own").style(Style::new().line_height(1.0).underline(false))),
+    );
+  let window = h.window(panel, 200.0, 100.0);
+  // The default 13 px font: round(13 × 2) and round(13 × 1).
+  assert_eq!(rect_at(&window, &[0, 0]).height, 26.0);
+  assert_eq!(rect_at(&window, &[0, 1]).height, 13.0);
+  let decorations = |path| with_text(&window, path, |t| (t.underline(), t.strikethrough()));
+  assert_eq!(decorations(&[0, 0]), (true, true));
+  assert_eq!(decorations(&[0, 1]), (false, true));
+}
+
+#[test]
+fn an_unusable_line_height_counts_as_unset() {
+  let mut h = Harness::new();
+  let column = Column::new()
+    .align(Align::Start)
+    .child(Text::new("a").style(Style::new().line_height(0.0)))
+    .child(Text::new("b").style(Style::new().line_height(-1.0)))
+    .child(Text::new("c").style(Style::new().line_height(f32::NAN)))
+    .child(Text::new("d").style(Style::new().line_height(0.01)));
+  let window = h.window(h.panel().child(column), 200.0, 100.0);
+  for index in 0..3 {
+    assert_eq!(rect_at(&window, &[0, index]).height, 16.0, "child {index}");
+  }
+  // A tiny one still gives each line a pixel.
+  assert_eq!(rect_at(&window, &[0, 3]).height, 1.0);
+}
+
+#[test]
+fn a_decoration_change_repaints_and_a_line_height_change_lays_out() {
+  let mut h = Harness::new();
+  let underline = h.cx.signal(false);
+  let tall = h.cx.signal(false);
+  let row = Row::new()
+    .align(Align::Start)
+    .style(move || Style::new().underline(underline.get()))
+    .child(
+      Text::new("x").style(move || Style::new().line_height(if tall.get() { 2.0 } else { 1.2 })),
+    );
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+  window.take_damage();
+
+  underline.set(true);
+  h.runtime.flush();
+  assert!(!window.needs_layout());
+  assert!(window.has_damage());
+  assert!(with_text(&window, &[0, 0], |t| t.underline()));
+  window.take_damage();
+
+  tall.set(true);
+  h.runtime.flush();
+  assert!(window.needs_layout());
+  h.frame(&window);
+  assert_eq!(rect_at(&window, &[0, 0]).height, 26.0);
 }
 
 #[test]
@@ -82,6 +198,52 @@ fn tabular_digits_hold_a_clocks_width_still() {
   assert!(ones + 1.0 < zeros, "{ones} {zeros}");
   let (ones, zeros) = clock(&mut text, &TABULAR);
   assert_eq!(ones, zeros);
+}
+
+#[test]
+fn aligned_text_sits_in_the_width_it_is_given() {
+  let mut h = Harness::new();
+  let sized = |align| Text::new("hi").style(Style::new().width(100.0).text_align(align));
+  let column = Column::new()
+    .align(Align::Start)
+    .child(Text::new("hi").style(Style::new().width(100.0)))
+    .child(sized(TextAlign::Start))
+    .child(sized(TextAlign::Center))
+    .child(sized(TextAlign::End));
+  let window = h.window(h.panel().child(column), 200.0, 100.0);
+  let first_x = |index| {
+    with_text(&window, &[0, index], |t| {
+      t.runs().next().expect("a line").glyphs[0].x
+    })
+  };
+  let line = with_text(&window, &[0, 0], |t| {
+    t.runs().next().expect("a line").line_w
+  });
+  assert_eq!(first_x(0), 0.0);
+  assert_eq!(first_x(1), 0.0);
+  assert!((first_x(2) - (100.0 - line) / 2.0).abs() < 0.01);
+  assert!((first_x(3) - (100.0 - line)).abs() < 0.01);
+  // Its painted area covers the line where it sits.
+  let view = window.view();
+  let end = node_at(view.root(), &[0, 3]);
+  assert!(end.bounds().right() >= end.rect().right());
+}
+
+#[test]
+fn justified_lines_reach_both_edges_but_the_last() {
+  let mut h = Harness::new();
+  let text = Text::new(LONG)
+    .max_lines(4)
+    .style(Style::new().text_align(TextAlign::Justify));
+  let window = h.window(h.panel().child(Column::new().child(text)), 120.0, 200.0);
+  let widths: Vec<f32> = with_text(&window, &[0, 0], |t| {
+    t.runs().map(|run| run.line_w).collect()
+  });
+  assert!(widths.len() > 2, "{widths:?}");
+  for width in &widths[..widths.len() - 1] {
+    assert!((width - 120.0).abs() < 0.5, "{widths:?}");
+  }
+  assert!(widths[widths.len() - 1] < 110.0, "{widths:?}");
 }
 
 /// Where line `line` of the text at `[0, index]` has the font's "…", and

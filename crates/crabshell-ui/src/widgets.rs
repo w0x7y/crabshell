@@ -723,9 +723,9 @@ pub enum Elide {
 
 /// A line of text.
 ///
-/// The text, `elide` and `max_lines` change the layout. Color and font
-/// come from the nearest widget whose [`Style`] sets them, starting with the
-/// text's own.
+/// The text, `elide` and `max_lines` change the layout. Color, font,
+/// alignment, line height and decorations come from the nearest widget
+/// whose [`Style`] sets each, starting with the text's own.
 pub struct Text {
   text: TextProps,
   common: Common,

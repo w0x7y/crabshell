@@ -14,14 +14,14 @@ use std::rc::Rc;
 
 use cosmic_text::fontdb::{Database, Source};
 use cosmic_text::{
-  Attrs, Buffer, Ellipsize, EllipsizeHeightLimit, Family, FeatureTag, FontFeatures, FontSystem,
-  LayoutGlyph, LayoutRun, Metrics, Shaping, Weight, Wrap,
+  Align, Attrs, Buffer, Ellipsize, EllipsizeHeightLimit, Family, FeatureTag, FontFeatures,
+  FontSystem, LayoutGlyph, LayoutRun, Metrics, Shaping, Weight, Wrap,
 };
 use fontconfig::{CharSet, FC_FAMILY, FC_SLANT, FC_SLANT_ITALIC, FC_WEIGHT, Fontconfig, Pattern};
 use taffy::AvailableSpace;
 
 use crate::geometry::{Point, Rect};
-use crate::style::Font;
+use crate::style::{Font, Style, TextAlign};
 use crate::widgets::Elide;
 
 /// The fonts every window measures and draws text with.
@@ -240,11 +240,46 @@ pub(crate) fn fc_weight(weight: u16) -> i32 {
   fc.round() as i32
 }
 
+/// What a text takes from its own style and its ancestors': the font,
+/// which lays it out, and how its lines sit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TextStyle {
+  pub(crate) font: Font,
+  pub(crate) align: Option<TextAlign>,
+  pub(crate) line_height: Option<f32>,
+}
+
+impl TextStyle {
+  /// This inherited style with what `style` sets laid over it.
+  pub(crate) fn inherit(self, style: &Style) -> TextStyle {
+    TextStyle {
+      font: style.font.unwrap_or(self.font),
+      align: style.text_align.or(self.align),
+      line_height: style.line_height.or(self.line_height),
+    }
+  }
+}
+
+impl From<Font> for TextStyle {
+  fn from(font: Font) -> TextStyle {
+    TextStyle {
+      font,
+      align: None,
+      line_height: None,
+    }
+  }
+}
+
 /// The font size, falling back to the default for a size cosmic-text can't
-/// use, and a line height of 1.2 times it in whole pixels.
-fn metrics(font: &Font) -> Metrics {
-  let size = font_size(font);
-  Metrics::new(size, (size * 1.2).round())
+/// use, and the line height in whole pixels, at least 1: 1.2 times the
+/// size unless the style sets a usable multiple.
+fn metrics(style: &TextStyle) -> Metrics {
+  let size = font_size(&style.font);
+  let multiple = style
+    .line_height
+    .filter(|multiple| multiple.is_finite() && *multiple > 0.0)
+    .unwrap_or(1.2);
+  Metrics::new(size, (size * multiple).round().max(1.0))
 }
 
 fn font_size(font: &Font) -> f32 {
@@ -264,8 +299,8 @@ pub(crate) struct TextNode {
   /// At least 1.
   pub(crate) max_lines: u32,
   pub(crate) buffer: Buffer,
-  /// The font the buffer was shaped with; `None` until the first layout.
-  font: Option<Font>,
+  /// The style the buffer was shaped with; `None` until the first layout.
+  style: Option<TextStyle>,
   /// The content, `elide` or `max_lines` changed since the buffer was
   /// shaped.
   stale: bool,
@@ -279,8 +314,8 @@ impl TextNode {
       content: String::new(),
       elide: Elide::None,
       max_lines: 1,
-      buffer: Buffer::new_empty(metrics(&Font::DEFAULT)),
-      font: None,
+      buffer: Buffer::new_empty(metrics(&Font::DEFAULT.into())),
+      style: None,
       stale: true,
       origin: Point::default(),
     }
@@ -316,15 +351,17 @@ impl TextNode {
     self.elide != Elide::None || self.max_lines > 1
   }
 
-  /// Shapes the text again if its content, settings or `font` changed,
+  /// Shapes the text again if its content, settings or style changed,
   /// loading fallback fonts for characters the font lacks. Returns whether
   /// it did, so layout must measure it again.
-  pub(crate) fn prepare(&mut self, font: Font, text: &mut TextSystem) -> bool {
-    if !self.stale && self.font == Some(font) {
+  pub(crate) fn prepare(&mut self, style: impl Into<TextStyle>, text: &mut TextSystem) -> bool {
+    let style = style.into();
+    if !self.stale && self.style == Some(style) {
       return false;
     }
+    let font = style.font;
     let family = text.family(&font);
-    self.buffer.set_metrics(metrics(&font));
+    self.buffer.set_metrics(metrics(&style));
     // Words wrap; one too long for a line breaks inside it.
     self.buffer.set_wrap(if self.max_lines > 1 {
       Wrap::WordOrGlyph
@@ -339,17 +376,18 @@ impl TextNode {
       Elide::End => Ellipsize::End(lines),
     });
     self.buffer.set_size(None, None);
-    self.shape(family.as_deref(), &font, text);
+    self.shape(family.as_deref(), &style, text);
     let missing = self.fallback_chars(family.as_deref(), text.font_system().db());
     if !missing.is_empty() && text.load_fallbacks(&font, &missing) {
-      self.shape(family.as_deref(), &font, text);
+      self.shape(family.as_deref(), &style, text);
     }
-    self.font = Some(font);
+    self.style = Some(style);
     self.stale = false;
     true
   }
 
-  fn shape(&mut self, family: Option<&str>, font: &Font, text: &mut TextSystem) {
+  fn shape(&mut self, family: Option<&str>, style: &TextStyle, text: &mut TextSystem) {
+    let font = &style.font;
     let mut attrs = Attrs::new().weight(Weight(font.weight));
     if let Some(family) = family {
       attrs = attrs.family(Family::Name(family));
@@ -371,6 +409,15 @@ impl TextNode {
     self
       .buffer
       .set_text(&self.content, &attrs, Shaping::Advanced, None);
+    let align = style.align.and_then(|align| match align {
+      TextAlign::Start => None,
+      TextAlign::Center => Some(Align::Center),
+      TextAlign::End => Some(Align::End),
+      TextAlign::Justify => Some(Align::Justified),
+    });
+    for line in &mut self.buffer.lines {
+      line.set_align(align);
+    }
     self.buffer.shape_until_scroll(text.font_system(), false);
   }
 
@@ -429,9 +476,11 @@ impl TextNode {
   }
 
   /// Lays the text out in its final `content` box and centers it
-  /// vertically there.
+  /// vertically there. Text with an alignment takes the box's width, so
+  /// its lines sit in it.
   pub(crate) fn finish(&mut self, content: Rect, fonts: &mut FontSystem) {
-    let width = self.fits_width().then_some(content.width);
+    let aligned = self.style.is_some_and(|style| style.align.is_some());
+    let width = (self.fits_width() || aligned).then_some(content.width);
     self.buffer.set_size(width, None);
     self.buffer.shape_until_scroll(fonts, false);
     let top = ((content.height - self.height()) / 2.0).round();
@@ -440,16 +489,21 @@ impl TextNode {
 
   /// The area the glyphs may cover: the lines' box, which can stick out
   /// of a widget too small for it, grown by an em left and right and half
-  /// an em above and below. Ink reaches past the line box: stacked accents
-  /// rise above it, and a combining mark at the start hangs left of the
-  /// text by nearly the width of the base it lacks.
+  /// an em above and below, plus half of what a line height under the
+  /// default took. Ink reaches past the line box: stacked accents rise above it,
+  /// and a combining mark at the start hangs left of the text by nearly
+  /// the width of the base it lacks. Aligned lines sit across the width
+  /// the text was laid out in.
   pub(crate) fn ink_box(&self) -> Rect {
-    let em = self.buffer.metrics().font_size;
+    let metrics = self.buffer.metrics();
+    let em = metrics.font_size;
+    let squeezed = ((1.2 * em).round() - metrics.line_height).max(0.0) / 2.0;
+    let width = self.buffer.size().0.unwrap_or(0.0).max(self.width());
     Rect::new(
       self.origin.x - em,
-      self.origin.y - em / 2.0,
-      self.width().ceil() + 2.0 * em,
-      self.height() + em,
+      self.origin.y - em / 2.0 - squeezed,
+      width.ceil() + 2.0 * em,
+      self.height() + em + 2.0 * squeezed,
     )
   }
 
