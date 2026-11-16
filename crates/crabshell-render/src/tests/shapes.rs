@@ -211,7 +211,7 @@ fn an_opacity_layer_covers_only_its_widget() {
   scene.full(&window, 2.0);
   // Each layer is the box, 32 by 16 pixels, plus a pixel around it; the
   // first box starts at the window's edge, so it has no pixel on its left.
-  let (layer_pixels, _) = scene.renderer.work();
+  let (layer_pixels, ..) = scene.renderer.work();
   assert_eq!(layer_pixels, 9 * 34 * 18 + 33 * 18);
 }
 
@@ -229,11 +229,11 @@ fn a_repaint_skips_widgets_outside_the_damage() {
   let mut history = crate::DamageHistory::new();
   let mut buffer = super::Buffer::new(&window, 1.0);
   scene.draw(&window, &mut history, &mut buffer);
-  let (_, before) = scene.renderer.work();
+  let (_, before, _) = scene.renderer.work();
   label.set(String::from("b"));
   scene.frame(&window);
   scene.draw(&window, &mut history, &mut buffer);
-  let (_, after) = scene.renderer.work();
+  let (_, after, _) = scene.renderer.work();
   // The window, the row, the changed text and the neighbors that share its
   // 64-pixel tile; not all 43 nodes.
   assert!(after - before <= 12, "{} nodes drawn", after - before);

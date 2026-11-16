@@ -6,6 +6,8 @@
 //! the pixels to the buffer's byte order, so tiny-skia, glyph masks, resvg
 //! and PNG decoding all work in the RGBA order they share.
 
+use std::collections::HashMap;
+
 use cosmic_text::{FontSystem, SwashCache, SwashContent, SwashImage};
 use crabshell_ui::{
   Affine, CaptureView, Color, Content, Gradient, GradientShape, IconView, ImageView, InputView,
@@ -90,6 +92,8 @@ struct Work {
   layer_pixels: u64,
   /// Nodes drawn.
   nodes: u64,
+  /// Pixels of alpha content shadows were blurred over.
+  blurred: u64,
 }
 
 impl Renderer {
@@ -113,8 +117,8 @@ impl Renderer {
   /// The pixels of opacity layers allocated and the nodes drawn so far,
   /// for tests.
   #[cfg(test)]
-  pub(crate) fn work(&self) -> (u64, u64) {
-    (self.work.layer_pixels, self.work.nodes)
+  pub(crate) fn work(&self) -> (u64, u64, u64) {
+    (self.work.layer_pixels, self.work.nodes, self.work.blurred)
   }
 
   /// A renderer that looks icon names up in `bases` instead of the
@@ -227,6 +231,7 @@ impl Renderer {
     }
     tiles.sort_unstable();
     tiles.dedup();
+    let mut casts = HashMap::new();
     for (row, column) in tiles {
       let (x, y) = (column * TILE, row * TILE);
       let size = (width.saturating_sub(x), height.saturating_sub(y));
@@ -250,6 +255,7 @@ impl Renderer {
         icons: &mut self.icons,
         fonts: text.font_system(),
         work: &mut self.work,
+        casts: &mut casts,
       };
       painter.node(&mut pixmap, view.root());
       copy(&self.scratch, area, pixels, width, format);
@@ -400,9 +406,27 @@ struct Painter<'a> {
   icons: &'a mut Icons,
   fonts: &'a mut FontSystem,
   work: &'a mut Work,
+  /// The cells of content shadows cast in this draw.
+  casts: &'a mut HashMap<CastKey, effects::Cast>,
 }
 
+/// A cell of a content shadow cast in a draw: its widget's path, and the
+/// cell's column and row.
+type CastKey = (String, i64, i64);
+
 impl Painter<'_> {
+  /// A painter for a pixmap on `grid`, in the same space.
+  fn on(&mut self, grid: Grid) -> Painter<'_> {
+    Painter {
+      grid,
+      glyphs: &mut *self.glyphs,
+      icons: &mut *self.icons,
+      fonts: &mut *self.fonts,
+      work: &mut *self.work,
+      casts: &mut *self.casts,
+    }
+  }
+
   /// Draws `node` and everything inside it. With an opacity below 1, a
   /// mask or a content shadow, they are drawn into one layer first, which
   /// is masked, given its shadow and blended in at that opacity, so
@@ -430,54 +454,18 @@ impl Painter<'_> {
     if let Some(transform) = node.transform() {
       self.transformed(pixmap, node, &style, transform, opacity);
     } else if opacity < 1.0 || style.mask.is_some() || shadow.is_some() {
-      // The layer covers what the subtree paints in this area, and for a
-      // content shadow what casts the part of it here too.
-      let mut area = (x as f32, y as f32, (x + width) as f32, (y + height) as f32);
-      if let Some(cast) = shadow {
-        let (dx, dy, reach) = self.shadow_reach(&cast);
-        let Grid {
-          scale, left, top, ..
-        } = self.grid;
-        // The subtree's bounds in this pixmap's pixels, uncut, and as far
-        // past them as the shadow's blur and spread carry what they cast.
-        let bounds = node.bounds();
-        let past = reach + 1.0;
-        let (x0, y0) = (
-          (bounds.x * scale).floor() - left,
-          (bounds.y * scale).floor() - top,
-        );
-        let x1 = (bounds.right() * scale).ceil() - left;
-        let y1 = (bounds.bottom() * scale).ceil() - top;
-        let grown = (
-          area.0.min(area.0 - dx - reach).max(x0 - past),
-          area.1.min(area.1 - dy - reach).max(y0 - past),
-          area.2.max(area.2 - dx + reach).min(x1 + past),
-          area.3.max(area.3 - dy + reach).min(y1 + past),
-        );
-        area = grown;
-      }
-      let (left, top, right, bottom) = area;
-      let Some(mut layer) = Pixmap::new((right - left) as u32, (bottom - top) as u32) else {
+      // The layer covers only what the subtree paints in this area.
+      let Some(mut layer) = Pixmap::new(width, height) else {
         return;
       };
       self.work.layer_pixels += u64::from(layer.width()) * u64::from(layer.height());
-      let mut inner = Painter {
-        grid: Grid {
-          left: self.grid.left + left,
-          top: self.grid.top + top,
-          ..self.grid
-        },
-        glyphs: &mut *self.glyphs,
-        icons: &mut *self.icons,
-        fonts: &mut *self.fonts,
-        work: &mut *self.work,
-      };
+      let mut inner = self.on(self.grid.moved(x, y));
       inner.layer_contents(&mut layer.as_mut(), node, &style, shadow);
       let paint = PixmapPaint {
         opacity,
         ..PixmapPaint::default()
       };
-      let (x, y) = (left as i32, top as i32);
+      let (x, y) = (x as i32, y as i32);
       pixmap.draw_pixmap(x, y, layer.as_ref(), &paint, Transform::identity(), None);
     } else {
       self.node_contents(pixmap, node, &style);
@@ -499,7 +487,7 @@ impl Painter<'_> {
       self.mask(layer, node.rect(), mask);
     }
     if let Some(shadow) = shadow {
-      self.content_shadow(layer, &shadow);
+      self.content_shadow(layer, node, &shadow);
     }
   }
 
@@ -544,30 +532,12 @@ impl Painter<'_> {
       inner.width * scale,
       inner.height * scale,
     );
-    // For a content shadow, the layer holds what casts the part of it
-    // shown here too.
-    let shadow = effects::cast_by_content(style);
-    let layer_area = |shadow: Option<Shadow>| {
-      let (shown, drawn) = match (shown, drawn, shadow) {
-        (Some(shown), Some(drawn), Some(cast)) => {
-          let (dx, dy, reach) = self.shadow_reach(&cast);
-          let shown = tiny_skia::Rect::from_ltrb(
-            shown.left().min(shown.left() - dx - reach),
-            shown.top().min(shown.top() - dy - reach),
-            shown.right().max(shown.right() - dx + reach),
-            shown.bottom().max(shown.bottom() - dy + reach),
-          );
-          (shown, drawn.outset(reach, reach))
-        }
-        _ => (shown, drawn),
-      };
-      shown
-        .zip(drawn)
-        .and_then(|(shown, drawn)| shown.intersect(&drawn))
-        .and_then(|area| area.outset(LAYER_MARGIN, LAYER_MARGIN))
-        .and_then(|area| area.round_out())
-    };
-    let Some(area) = layer_area(shadow) else {
+    let Some(area) = shown
+      .zip(drawn)
+      .and_then(|(shown, drawn)| shown.intersect(&drawn))
+      .and_then(|area| area.outset(LAYER_MARGIN, LAYER_MARGIN))
+      .and_then(|area| area.round_out())
+    else {
       return;
     };
     let pixels = u64::from(area.width()) * u64::from(area.height());
@@ -583,17 +553,12 @@ impl Painter<'_> {
     };
     self.work.layer_pixels += pixels;
     let (x, y) = (area.x() as f32, area.y() as f32);
-    let mut inner = Painter {
-      grid: Grid {
-        left: x,
-        top: y,
-        ..self.grid
-      },
-      glyphs: &mut *self.glyphs,
-      icons: &mut *self.icons,
-      fonts: &mut *self.fonts,
-      work: &mut *self.work,
-    };
+    let mut inner = self.on(Grid {
+      left: x,
+      top: y,
+      ..self.grid
+    });
+    let shadow = effects::cast_by_content(style);
     inner.layer_contents(&mut layer.as_mut(), node, style, shadow);
     let paint = PixmapPaint {
       opacity,
@@ -686,13 +651,7 @@ impl Painter<'_> {
       return;
     };
     self.work.layer_pixels += u64::from(layer_width) * u64::from(layer_height);
-    let mut inner = Painter {
-      grid: self.grid.moved(x, y),
-      glyphs: &mut *self.glyphs,
-      icons: &mut *self.icons,
-      fonts: &mut *self.fonts,
-      work: &mut *self.work,
-    };
+    let mut inner = self.on(self.grid.moved(x, y));
     draw(&mut inner, &mut layer.as_mut());
     let mut path = PathBuilder::new();
     rounded_rect(&mut path, shape, corners);

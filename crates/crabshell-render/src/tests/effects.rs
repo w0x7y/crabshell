@@ -314,7 +314,11 @@ fn effects(scene: &mut Scene, on: crabshell_reactive::Signal<bool>) -> Window {
                 card
               }
             })
-            .child(row("ab")),
+            // A content shadow inside another.
+            .child(
+              row("ab")
+                .style(Style::new().shadow(Shadow::new(2.0, 2.0, 2.0, WHITE).follow_content())),
+            ),
         )
         .child(
           crabshell_ui::Column::new()
@@ -471,6 +475,80 @@ fn time_content_shadows() {
       );
     }
   }
+  let mut scene = Scene::new();
+  let window = card(&mut scene);
+  let draws = 10;
+  let start = std::time::Instant::now();
+  for _ in 0..draws {
+    scene.full(&window, 2.0);
+  }
+  println!(
+    "400 by 300 card with a blur of 40: {:.3} ms a full draw at scale 2",
+    start.elapsed().as_secs_f64() * 1000.0 / f64::from(draws)
+  );
+}
+
+/// A 400 by 300 card at 60, 60 casting a content shadow blurred by 40,
+/// in a 520 by 420 window.
+fn card(scene: &mut Scene) -> Window {
+  let shadow = Shadow::new(0.0, 8.0, 40.0, Color::rgba(0, 0, 0, 160)).follow_content();
+  let card = Stack::new().style(
+    Style::new()
+      .background(Color::hex("#45475a"))
+      .radius(12.0)
+      .shadow(shadow)
+      .width(400.0)
+      .height(300.0),
+  );
+  let row = Row::new().padding(60, 60).align(Align::Start).child(card);
+  scene.window(scene.panel().child(row), 520.0, 420.0)
+}
+
+#[test]
+fn a_content_shadow_is_cast_once_a_draw_over_the_damage_it_reaches() {
+  let mut scene = Scene::new();
+  let window = card(&mut scene);
+  scene.full(&window, 2.0);
+  // What casting it once blurs: the card at scale 2 with the shadow's
+  // reach, 1.5 blurs and the offset, each side, and as far again for
+  // what casts that, plus a few pixels of margin.
+  let reach = 2.0 * (1.5 * 40.0 + 8.0) + 4.0;
+  let once = ((800.0 + 4.0 * reach) * (600.0 + 4.0 * reach)) as u64;
+  // Cells overlap by the reach, so a full draw blurs a little more.
+  let whole = scene.renderer.work().2;
+  assert!(
+    whole > 0 && whole <= once * 3 / 2,
+    "{whole} pixels for {once}"
+  );
+  // A repaint of a corner blurs only the cell it is in.
+  let mut history = DamageHistory::new();
+  let mut buffer = Buffer::new(&window, 2.0);
+  scene.draw(&window, &mut history, &mut buffer);
+  let before = scene.renderer.work().2;
+  let corner = crabshell_ui::Rect::new(60.0, 60.0, 10.0, 10.0);
+  scene
+    .renderer
+    .draw(
+      &window.view(),
+      &[corner],
+      &mut scene.text,
+      &mut history,
+      crate::Canvas {
+        pixels: &mut buffer.pixels,
+        width: buffer.width,
+        height: buffer.height,
+        scale: 2.0,
+        format: crate::PixelFormat::Abgr8888,
+        age: &mut buffer.age,
+      },
+    )
+    .expect("the test's canvas fits");
+  let blurred = scene.renderer.work().2 - before;
+  assert!(
+    blurred > 0 && blurred < whole / 4,
+    "{blurred} pixels for a corner, {whole} for all"
+  );
+  assert!(buffer.pixels == scene.full(&window, 2.0).pixels);
 }
 
 #[test]
@@ -489,5 +567,54 @@ fn a_content_shadow_is_drawn_whole_up_to_64_pixels_of_reach_and_not_past() {
     };
     assert!(drawn(42.0).pixels != plain.pixels, "63 pixels at {scale}");
     assert!(drawn(43.0).pixels == plain.pixels, "64.5 pixels at {scale}");
+  }
+}
+
+#[test]
+fn a_large_shadow_is_cast_in_cells_that_agree_with_a_full_draw() {
+  use crate::{Canvas, PixelFormat};
+
+  let mut scene = Scene::new();
+  let shadow = Shadow::new(3.0, 0.0, 6.0, BLACK).follow_content();
+  let card = Stack::new().style(
+    Style::new()
+      .background(Color::hex("#45475a"))
+      .radius(30.0)
+      .shadow(shadow)
+      .width(600.0)
+      .height(600.0),
+  );
+  let row = Row::new().padding(20, 20).align(Align::Start).child(card);
+  let window = scene.window(scene.panel().child(row), 640.0, 640.0);
+  let full = scene.full(&window, 2.0);
+  // Repaints down the round left edge, each casting the cells it needs,
+  // agree with the full draw, which cast them all.
+  for y in (0..640).step_by(70) {
+    let mut history = DamageHistory::new();
+    let mut buffer = full.clone();
+    buffer.age = crate::BufferAge::default();
+    for damage in [
+      Vec::new(),
+      vec![crabshell_ui::Rect::new(0.0, y as f32, 40.0, 8.0)],
+    ] {
+      scene
+        .renderer
+        .draw(
+          &window.view(),
+          &damage,
+          &mut scene.text,
+          &mut history,
+          Canvas {
+            pixels: &mut buffer.pixels,
+            width: buffer.width,
+            height: buffer.height,
+            scale: 2.0,
+            format: PixelFormat::Abgr8888,
+            age: &mut buffer.age,
+          },
+        )
+        .expect("the test's canvas fits");
+    }
+    assert!(buffer.pixels == full.pixels, "a repaint at y {y}");
   }
 }

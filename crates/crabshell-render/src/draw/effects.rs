@@ -2,12 +2,13 @@
 //! layer the subtree is drawn into.
 
 use std::collections::VecDeque;
+use std::ops::Range;
 use std::path::Path;
 
-use crabshell_ui::{Mask, Rect, Shadow, Style};
+use crabshell_ui::{Mask, NodeView, Rect, Shadow, Style};
 use tiny_skia::{FillRule, MaskType, Paint, PathBuilder, Pixmap, PixmapMut, Transform};
 
-use super::{LAYER_MARGIN, Painter, mul};
+use super::{Grid, LAYER_MARGIN, Painter, mul};
 
 impl Painter<'_> {
   /// Keeps `layer` only where `mask`, laid over `rect`, is opaque, its
@@ -85,21 +86,86 @@ impl Painter<'_> {
     )
   }
 
-  /// Puts `shadow` under what `layer` holds: the layer's alpha, spread by
-  /// whole pixels, blurred, moved by whole pixels and tinted. Every step
-  /// works out a pixel from its neighbors alone, in integers where it
-  /// sums, so every tile that holds a pixel agrees on it.
-  pub(super) fn content_shadow(&self, layer: &mut PixmapMut<'_>, shadow: &Shadow) {
+  /// Puts `node`'s content `shadow` under what `layer` holds. The shadow
+  /// is cast in cells of a grid laid from its corner, each at most once a
+  /// draw and only when a layer needs it, so a draw casts it over the
+  /// part it repaints. A cell's layer starts at the same pixel in every
+  /// draw, so its content is drawn the same, and every step after works
+  /// a pixel out from its neighbors alone, in integers where it sums.
+  pub(super) fn content_shadow(
+    &mut self,
+    layer: &mut PixmapMut<'_>,
+    node: NodeView<'_>,
+    shadow: &Shadow,
+  ) {
+    let (dx, dy, reach) = self.shadow_reach(shadow);
+    let (dx, dy, reach) = (dx as i64, dy as i64, reach as i64);
     let scale = self.grid.scale;
+    let bounds = node.inner_bounds();
+    // Where it can show, in this painter's pixels.
+    let x0 = (bounds.x * scale).floor() as i64 - 1;
+    let y0 = (bounds.y * scale).floor() as i64 - 1;
+    let x1 = (bounds.right() * scale).ceil() as i64 + 1;
+    let y1 = (bounds.bottom() * scale).ceil() as i64 + 1;
+    let (left, top) = (self.grid.left as i64, self.grid.top as i64);
     let (width, height) = (layer.width() as usize, layer.height() as usize);
-    let (dx, dy, _) = self.shadow_reach(shadow);
+    let columns = left.max(x0)..(left + width as i64).min(x1);
+    let rows = top.max(y0)..(top + height as i64).min(y1);
+    if columns.is_empty() || rows.is_empty() {
+      return;
+    }
+    // At least four reaches, so a cell's layer is mostly the cell.
+    let side = (4 * reach).max(CELL);
+    let path = node.path();
+    for row in (rows.start - y0) / side..=(rows.end - 1 - y0) / side {
+      for column in (columns.start - x0) / side..=(columns.end - 1 - x0) / side {
+        let (cell_x, cell_y) = (x0 + column * side, y0 + row * side);
+        let key = (path.to_owned(), column, row);
+        if !self.casts.contains_key(&key) {
+          let cell_width = side.min(x1 - cell_x) + 2 * reach;
+          let cell_height = side.min(y1 - cell_y) + 2 * reach;
+          let at = (cell_x - dx - reach, cell_y - dy - reach);
+          let Some(cast) = self.cast_cell(node, shadow, at, (cell_width, cell_height)) else {
+            continue;
+          };
+          self.casts.insert(key.clone(), cast);
+        }
+        let Some(cast) = self.casts.get(&key) else {
+          continue;
+        };
+        let xs = columns.start.max(cell_x)..columns.end.min(cell_x + side);
+        let ys = rows.start.max(cell_y)..rows.end.min(cell_y + side);
+        blend_cast(layer, (left, top), cast, (xs, ys), (dx, dy), shadow);
+      }
+    }
+  }
+
+  /// `node`'s subtree drawn over `width` by `height` pixels at `left`,
+  /// `top`, masked, and its alpha spread and blurred as `shadow` says.
+  fn cast_cell(
+    &mut self,
+    node: NodeView<'_>,
+    shadow: &Shadow,
+    (left, top): (i64, i64),
+    (width, height): (i64, i64),
+  ) -> Option<Cast> {
+    let mut layer = Pixmap::new(u32::try_from(width).ok()?, u32::try_from(height).ok()?)?;
+    self.work.layer_pixels += layer.width() as u64 * layer.height() as u64;
+    let mut inner = self.on(Grid {
+      left: left as f32,
+      top: top as f32,
+      ..self.grid
+    });
+    inner.layer_contents(&mut layer.as_mut(), node, &node.style(), None);
+    let (width, height) = (width as usize, height as usize);
     let mut alpha: Vec<u8> = layer
-      .data_mut()
+      .data()
       .as_chunks::<4>()
       .0
       .iter()
       .map(|pixel| pixel[3])
       .collect();
+    let scale = self.grid.scale;
     let spread = (shadow.spread * scale).round();
     if spread != 0.0 {
       let reach = spread.abs() as usize;
@@ -108,41 +174,81 @@ impl Painter<'_> {
       });
     }
     let blur = Blur::new(shadow.blur.max(0.0) * scale / 2.0);
+    self.work.blurred += alpha.len() as u64;
     if !matches!(blur, Blur::None) {
       each_line(&mut alpha, width, height, |line, out| blur.line(line, out));
     }
-    let color = shadow.color;
-    let (dx, dy) = (dx as i64, dy as i64);
-    let data = layer.data_mut();
-    for y in 0..height {
-      let from_y = y as i64 - dy;
-      if !(0..height as i64).contains(&from_y) {
+    Some(Cast {
+      left,
+      top,
+      width,
+      alpha,
+    })
+  }
+}
+
+/// The side of a content shadow's cells, in pixels, at least.
+const CELL: i64 = 256;
+
+/// A cell of a content shadow: the alpha of what casts it, spread and
+/// blurred, in its painter's pixels.
+pub(super) struct Cast {
+  /// Where `alpha` starts.
+  left: i64,
+  top: i64,
+  /// How many pixels a row of `alpha` holds.
+  width: usize,
+  alpha: Vec<u8>,
+}
+
+/// Puts the shadow `cast` holds under `layer`, whose corner is at
+/// `corner`, over the painter's pixels `columns` by `rows`: each pixel's
+/// alpha moved by `dx`, `dy` and tinted.
+fn blend_cast(
+  layer: &mut PixmapMut<'_>,
+  (left, top): (i64, i64),
+  cast: &Cast,
+  (columns, rows): (Range<i64>, Range<i64>),
+  (dx, dy): (i64, i64),
+  shadow: &Shadow,
+) {
+  let width = layer.width() as usize;
+  let color = shadow.color;
+  let data = layer.data_mut();
+  for y in rows {
+    let from_y = y - dy - cast.top;
+    let Some(line) = usize::try_from(from_y).ok().and_then(|from_y| {
+      cast
+        .alpha
+        .get(from_y * cast.width..(from_y + 1) * cast.width)
+    }) else {
+      continue;
+    };
+    for x in columns.clone() {
+      let Some(&alpha) = usize::try_from(x - dx - cast.left)
+        .ok()
+        .and_then(|from_x| line.get(from_x))
+      else {
+        continue;
+      };
+      let index = ((y - top) as usize * width + (x - left) as usize) * 4;
+      let mut cast = mul(alpha, color.a);
+      if shadow.cut_out {
+        cast = mul(cast, 255 - data[index + 3]);
+      }
+      if cast == 0 {
         continue;
       }
-      for x in 0..width {
-        let from_x = x as i64 - dx;
-        if !(0..width as i64).contains(&from_x) {
-          continue;
-        }
-        let index = (y * width + x) * 4;
-        let mut cast = mul(alpha[from_y as usize * width + from_x as usize], color.a);
-        if shadow.cut_out {
-          cast = mul(cast, 255 - data[index + 3]);
-        }
-        if cast == 0 {
-          continue;
-        }
-        // Under what is there: it shows only where the content lets it.
-        let rest = 255 - data[index + 3];
-        let source = [
-          mul(color.r, cast),
-          mul(color.g, cast),
-          mul(color.b, cast),
-          cast,
-        ];
-        for (channel, value) in data[index..index + 4].iter_mut().zip(source) {
-          *channel = channel.saturating_add(mul(value, rest));
-        }
+      // Under what is there: it shows only where the content lets it.
+      let rest = 255 - data[index + 3];
+      let source = [
+        mul(color.r, cast),
+        mul(color.g, cast),
+        mul(color.b, cast),
+        cast,
+      ];
+      for (channel, value) in data[index..index + 4].iter_mut().zip(source) {
+        *channel = channel.saturating_add(mul(value, rest));
       }
     }
   }
