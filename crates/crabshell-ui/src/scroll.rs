@@ -629,14 +629,14 @@ where
         let measure = move |size: Size| {
           let mut lengths = lengths.borrow_mut();
           if let Some(&at) = lengths.index.get(&own) {
-            let length = if horizontal.get_untracked() {
+            let length = if horizontal.try_get().unwrap_or_default() {
               size.width
             } else {
               size.height
             };
             lengths.pending.push((at, length));
             drop(lengths);
-            measured.set(());
+            measured.try_set(());
           }
         };
         let row = Stack::new()
@@ -657,13 +657,13 @@ where
     );
   let mut rows = Box::new(rows).into_element();
   rows.common.measure = Some(Rc::new(move |size: Size| {
-    let across = if horizontal.get_untracked() {
+    let across = if horizontal.try_get().unwrap_or_default() {
       size.height
     } else {
       size.width
     };
-    if cross.get_untracked() != across {
-      cross.set(across);
+    if cross.try_get() != Some(across) {
+      cross.try_set(across);
     }
   }));
   if let ElementKind::Flex(flex) = &mut rows.kind {

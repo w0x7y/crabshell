@@ -346,8 +346,9 @@ where
     );
   let mut content = Box::new(content).into_element();
   content.common.measure = Some(Rc::new(move |size: Size| {
-    if width.get_untracked() != size.width {
-      width.set(size.width);
+    // Run with no effect running; a grid gone by then is left alone.
+    if width.try_get() != Some(size.width) {
+      width.try_set(size.width);
     }
   }));
   let mut scroll = ScrollView::new(Built(Some(content))).offset(offset);
