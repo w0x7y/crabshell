@@ -197,3 +197,73 @@ fn a_font_added_later_repaints_text_that_kept_its_size() {
     "{damage:?} misses {text:?}"
   );
 }
+
+/// Each glyph's face in `node`: whether it is bundled, and its weight.
+fn glyph_faces(node: &TextNode, fonts: &mut Fonts) -> Vec<(bool, u16)> {
+  let db = fonts.font_system().db();
+  node
+    .runs()
+    .flat_map(|run| run.glyphs.iter())
+    .filter_map(|glyph| db.face(glyph.font_id))
+    .map(|face| (matches!(face.source, Source::Binary(_)), face.weight.0))
+    .collect()
+}
+
+/// `content` shaped in DejaVu Sans at `weight`.
+fn dejavu_text(fonts: &mut Fonts, weight: u16) -> TextNode {
+  let mut node = TextNode::new();
+  node.set_content(String::from("hello"));
+  node.prepare(Font::new("DejaVu Sans", 13.0).weight(weight), fonts);
+  node
+}
+
+#[test]
+fn a_bundled_bold_leaves_regular_text_to_fontconfig() {
+  let Some(bold) = font_file("DejaVuSans-Bold.ttf") else {
+    return;
+  };
+  let mut fonts = Fonts::new();
+  fonts.add(bold);
+  let node = dejavu_text(&mut fonts, 700);
+  assert!(!fonts.fontconfig_started());
+  assert!(
+    glyph_faces(&node, &mut fonts)
+      .iter()
+      .all(|&face| face == (true, 700))
+  );
+  // No bundled face has weight 400, so fontconfig's file is used.
+  let node = dejavu_text(&mut fonts, 400);
+  assert!(fonts.fontconfig_started());
+  let faces = glyph_faces(&node, &mut fonts);
+  assert!(faces.iter().all(|&face| face == (false, 400)), "{faces:?}");
+}
+
+#[test]
+fn a_bundled_regular_keeps_the_installed_bold() {
+  let Some(regular) = dejavu() else { return };
+  let mut fonts = Fonts::new();
+  dejavu_text(&mut fonts, 400);
+  dejavu_text(&mut fonts, 700);
+  fonts.add(regular);
+  let faces = glyph_faces(&dejavu_text(&mut fonts, 700), &mut fonts);
+  assert!(faces.iter().all(|&face| face == (false, 700)), "{faces:?}");
+  let faces = glyph_faces(&dejavu_text(&mut fonts, 400), &mut fonts);
+  assert!(faces.iter().all(|&face| face == (true, 400)), "{faces:?}");
+}
+
+#[test]
+fn a_bundled_variable_font_serves_the_weights_it_spans() {
+  let Some(emoji) = font_file("NotoEmoji-VariableFont_wght.ttf") else {
+    return;
+  };
+  let mut fonts = Fonts::new();
+  fonts.add(emoji);
+  // Its weight axis runs from 300 to 700.
+  for weight in [300, 600, 700] {
+    let font = Font::new("Noto Emoji", 13.0).weight(weight);
+    assert_eq!(fonts.family(&font).as_deref(), Some("Noto Emoji"));
+  }
+  assert!(!fonts.fontconfig_started());
+  fonts.family(&Font::new("Noto Emoji", 13.0).weight(900));
+  assert!(fonts.fontconfig_started());
+}

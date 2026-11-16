@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use cosmic_text::fontdb::{Database, Query, Source};
+use cosmic_text::fontdb::{self, Database, FaceInfo, ID, Query, Source};
 use cosmic_text::{
   Align, Attrs, Buffer, Ellipsize, EllipsizeHeightLimit, Family, FeatureTag, FontFeatures,
   FontSystem, LayoutGlyph, LayoutRun, Metrics, Shaping, Weight, Wrap,
@@ -105,6 +105,9 @@ pub(crate) struct Fonts {
   /// Characters a fallback font was already looked up for, by the family,
   /// weight and slant asked for: fontconfig's answer depends on all three.
   fallback_tried: HashSet<(char, &'static str, u16, bool)>,
+  /// The weights each bundled face draws, lowest and highest: one, or a
+  /// variable font's whole weight axis.
+  bundled: HashMap<ID, (u16, u16)>,
 }
 
 /// fontconfig, started on first use because that costs about 15 ms.
@@ -127,6 +130,7 @@ impl Fonts {
       loaded: HashMap::new(),
       files: HashSet::new(),
       fallback_tried: HashSet::new(),
+      bundled: HashMap::new(),
     }
   }
 
@@ -166,7 +170,7 @@ impl Fonts {
     if let Some(name) = self.families.get(&key) {
       return name.clone();
     }
-    if let Some(name) = self.bundled(font.family) {
+    if let Some(name) = self.bundled(font.family, font.weight) {
       self.families.insert(key, Some(Rc::clone(&name)));
       return Some(name);
     }
@@ -185,13 +189,16 @@ impl Fonts {
     name
   }
 
-  /// The database's name for `family` if a bundled font provides it.
-  fn bundled(&self, family: &str) -> Option<Rc<str>> {
+  /// The database's name for `family` if a bundled upright face of it
+  /// draws `weight`.
+  fn bundled(&self, family: &str, weight: u16) -> Option<Rc<str>> {
+    let db = self.fonts.db();
     self
-      .fonts
-      .db()
-      .faces()
-      .filter(|face| matches!(face.source, Source::Binary(_)))
+      .bundled
+      .iter()
+      .filter(|(_, (low, high))| (*low..=*high).contains(&weight))
+      .filter_map(|(&id, _)| db.face(id))
+      .filter(|face| face.style == fontdb::Style::Normal)
       .flat_map(|face| &face.families)
       .find(|(name, _language)| name.eq_ignore_ascii_case(family))
       .map(|(name, _language)| Rc::from(name.as_str()))
@@ -203,40 +210,61 @@ impl Fonts {
   pub(crate) fn add(&mut self, bytes: &'static [u8]) {
     // fontdb keeps a font's bytes behind an `Arc`, whatever the thread.
     let source = Source::Binary(Arc::new(bytes));
-    // Read on its own first, for the families it provides.
+    // Read on its own first, for the families, styles and weights it has.
     let mut probe = Database::new();
     probe.load_font_source(source.clone());
-    let names: Vec<String> = probe
+    let faces: Vec<_> = probe
       .faces()
-      .flat_map(|face| face.families.iter().map(|(name, _)| name.clone()))
+      .map(|face| (face, weights(&probe, face)))
       .collect();
-    if names.is_empty() {
+    if faces.is_empty() {
       tracing::warn!(
         bytes = bytes.len(),
         "a bundled font has no face that could be read, so it is ignored"
       );
       return;
     }
+    let names: Vec<&str> = faces
+      .iter()
+      .flat_map(|(face, _)| face.families.iter().map(|(name, _)| name.as_str()))
+      .collect();
     tracing::debug!(?names, "font added");
-    let provides = |family: &str| names.iter().any(|name| name.eq_ignore_ascii_case(family));
-    // Faces of those families loaded from files give way: cosmic-text takes
-    // the first face of a name, and the bundled ones fill their places.
-    let replaced: Vec<_> = self
+    let same_family = |a: &FaceInfo, b: &FaceInfo| {
+      a.families.iter().any(|(name, _)| {
+        b.families
+          .iter()
+          .any(|(other, _)| name.eq_ignore_ascii_case(other))
+      })
+    };
+    // A face loaded from a file that a bundled one replaces, of the same
+    // family, style and weight, gives way: cosmic-text takes the first face
+    // of a name, and the bundled ones fill their places.
+    let replaced: Vec<(ID, PathBuf)> = self
       .fonts
       .db()
       .faces()
-      .filter(|face| face.families.iter().any(|(name, _)| provides(name)))
-      .filter_map(|face| Some((face.id, source_path(&face.source)?.clone())))
+      .filter(|old| {
+        faces.iter().any(|(new, (low, high))| {
+          new.style == old.style && (*low..=*high).contains(&old.weight.0) && same_family(new, old)
+        })
+      })
+      .filter_map(|old| Some((old.id, source_path(&old.source)?.clone())))
       .collect();
     let db = self.fonts.db_mut();
-    for (id, _) in &replaced {
-      db.remove_face(*id);
+    for &(id, _) in &replaced {
+      db.remove_face(id);
     }
-    db.load_font_source(source);
+    // fontdb reads the faces in the same order the probe did.
+    let ids = db.load_font_source(source);
+    for (id, (_, weights)) in ids.into_iter().zip(&faces) {
+      self.bundled.insert(id, *weights);
+    }
     let gone = |path: &PathBuf| replaced.iter().any(|(_, replaced)| replaced == path);
     self.files.retain(|path| !gone(path));
     self.loaded.retain(|(path, _), _| !gone(path));
-    self.families.retain(|(family, _, _), _| !provides(family));
+    self
+      .families
+      .retain(|(family, _, _), _| !names.iter().any(|name| name.eq_ignore_ascii_case(family)));
     // A character a removed face drew is looked up again if it is missing.
     self.fallback_tried.clear();
     FONTS_ADDED.set(FONTS_ADDED.get() + 1);
@@ -330,6 +358,21 @@ impl Default for Fonts {
   fn default() -> Self {
     Self::new()
   }
+}
+
+/// The weights a face draws, lowest and highest: its weight axis if it is a
+/// variable font, else its one weight.
+fn weights(db: &Database, face: &FaceInfo) -> (u16, u16) {
+  let wght = u32::from_be_bytes(*b"wght");
+  let axis = cosmic_text::Font::new(db, face.id, face.weight).and_then(|font| {
+    let axis = font
+      .as_swash()
+      .variations()
+      .find(|axis| axis.tag() == wght)?;
+    // Weights are 1 to 1000, so the conversions can't overflow.
+    Some((axis.min_value() as u16, axis.max_value() as u16))
+  });
+  axis.unwrap_or((face.weight.0, face.weight.0))
 }
 
 fn source_path(source: &Source) -> Option<&PathBuf> {
