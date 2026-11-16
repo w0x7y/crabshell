@@ -62,6 +62,7 @@ mod cx;
 mod edit;
 mod floating;
 mod geometry;
+mod grid_view;
 mod input;
 mod keyboard;
 mod keyed;
@@ -93,6 +94,7 @@ pub use animation::{
 pub use cx::Cx;
 pub use floating::{FloatingConfig, FloatingWindow, WindowRequest};
 pub use geometry::{Affine, Point, Rect, Size};
+pub use grid_view::GridView;
 pub use input::{CursorShape, Drag, DragPhase, PointerButton, ScrollSource, Wheel, WheelAxis};
 pub use keyboard::{Clipboard, Key, KeyEvent, Modifiers};
 pub use lock::{Lock, SessionLock};
@@ -121,8 +123,8 @@ pub use window::{
 /// What a bar's code needs, in one `use`.
 pub mod prelude {
   pub use crate::{
-    Align, Button, Color, Column, CursorShape, Cx, Drag, DragPhase, Edge, Font, Grid, Icon,
-    IconSource, Justify, Layer, Menu, Output, PanelWindow, Point, PopupWindow, Rect, Row,
+    Align, Button, Color, Column, CursorShape, Cx, Drag, DragPhase, Edge, Font, Grid, GridView,
+    Icon, IconSource, Justify, Layer, Menu, Output, PanelWindow, Point, PopupWindow, Rect, Row,
     ScrollSource, Size, Slider, Spacer, Stack, Style, Text, TextSystem, Timer, Wheel, WheelAxis,
     Widget, Window,
   };

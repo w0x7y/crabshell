@@ -13,6 +13,7 @@ mod floating;
 mod flow;
 mod geometry;
 mod grid;
+mod grid_view;
 mod input;
 mod invalidation;
 mod keyboard;

@@ -365,7 +365,7 @@ fn starts(measured: &[Option<f32>], estimate: f32) -> Vec<f32> {
 
 /// The offset that shows `start..end` in a view `viewport` long at `now`,
 /// scrolling as little as it can.
-fn keep_in_view(start: f32, end: f32, viewport: f32, now: f32) -> f32 {
+pub(crate) fn keep_in_view(start: f32, end: f32, viewport: f32, now: f32) -> f32 {
   if start < now {
     start
   } else if end > now + viewport {
@@ -743,7 +743,10 @@ pub(crate) fn highlight(cx: &Cx, style: Memo<Option<Style>>, spot: Memo<Option<S
 }
 
 /// `prop` as a closure, or `default` when unset.
-fn prop_fn<T: Clone + 'static>(prop: Option<Prop<T>>, default: T) -> impl FnMut() -> T + 'static {
+pub(crate) fn prop_fn<T: Clone + 'static>(
+  prop: Option<Prop<T>>,
+  default: T,
+) -> impl FnMut() -> T + 'static {
   let prop = prop.map(Prop::shared);
   move || match prop.as_ref() {
     Some(prop) => prop(),

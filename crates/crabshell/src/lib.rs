@@ -106,7 +106,7 @@ pub mod prelude {
   pub use crabshell_ui::{
     Adjust, Align, Anchors, Animate, Animation, Border, Button, CaptureSource, Color, Column,
     CursorShape, Cx, Drag, DragPhase, Easing, Edge, Fit, FloatingWindow, Font, Gradient,
-    GradientShape, Grid, Icon, IconPixels, IconSource, Image, Justify, Key, KeyEvent,
+    GradientShape, Grid, GridView, Icon, IconPixels, IconSource, Image, Justify, Key, KeyEvent,
     KeyboardFocus, Layer, ListView, Margins, Menu, MenuEntry, MenuToggle, Modifiers, Output,
     Padding, PanelWindow, Point, PopupWindow, Rect, Region, Row, ScreencopyView, ScrollSource,
     ScrollView, SessionLock, Shadow, Size, Slider, Spacer, Spring, Stack, Style, Text, TextInput,
