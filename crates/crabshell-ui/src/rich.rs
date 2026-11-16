@@ -71,19 +71,6 @@ impl Span {
     self.link = Some(url.into());
     self
   }
-
-  /// Whether `other` looks the same and links to the same place.
-  fn same_style(&self, other: &Span) -> bool {
-    (self.bold, self.italic, self.underline, self.strikethrough)
-      == (
-        other.bold,
-        other.italic,
-        other.underline,
-        other.strikethrough,
-      )
-      && self.color == other.color
-      && self.link == other.link
-  }
 }
 
 /// The longest body [`parse_markup`] reads, in bytes.
@@ -145,13 +132,29 @@ pub fn parse_markup(body: &str) -> Vec<Span> {
   out.spans
 }
 
-/// The spans so far and the tags open.
+/// The spans so far and the tags open. Each open tag is kept as its kind,
+/// and each kind keeps where its open tags are, so styling a piece of text
+/// and closing a tag take the same time however deep the nesting goes.
 #[derive(Default)]
 struct Markup {
   spans: Vec<Span>,
-  /// Each open `b`, `i`, `u` or `a`, by name, with an `a`'s link.
-  open: Vec<(&'static str, Option<String>)>,
+  /// The kind of each open tag: `B`, `I`, `U` or `A`, outermost first.
+  open: Vec<usize>,
+  /// For each kind, where its open tags are in `open`.
+  at: [Vec<usize>; 4],
+  /// Each open `a`'s link, outermost first, with a number of its own.
+  links: Vec<(usize, Option<String>)>,
+  /// How many `a`s opened, which numbers them.
+  opened: usize,
+  /// The last span's bold, italic and underline, and the number of the
+  /// `a` its link came from.
+  last: Option<(bool, bool, bool, Option<usize>)>,
 }
+
+const B: usize = 0;
+const I: usize = 1;
+const U: usize = 2;
+const A: usize = 3;
 
 impl Markup {
   /// Adds text, unless it is empty.
@@ -164,36 +167,57 @@ impl Markup {
   /// Adds text in the open tags' style, joined to the last span if it
   /// looks the same.
   fn push(&mut self, text: &str) {
-    let has = |name| self.open.iter().any(|(open, _)| *open == name);
-    let link = self.open.iter().rev().find_map(|(name, link)| match *name {
-      "a" => Some(link.clone()),
-      _ => None,
-    });
-    let span = Span {
-      text: String::new(),
-      bold: has("b"),
-      italic: has("i"),
-      underline: has("u") || matches!(link, Some(Some(_))),
-      strikethrough: false,
-      color: None,
-      link: link.flatten(),
+    let open = |kind: usize| !self.at[kind].is_empty();
+    let (number, link) = match self.links.last() {
+      Some((number, Some(link))) => (Some(*number), Some(link)),
+      _ => (None, None),
     };
-    match self.spans.last_mut() {
-      Some(last) if last.same_style(&span) => last.text.push_str(text),
-      _ => self.spans.push(Span {
+    let style = (open(B), open(I), open(U) || link.is_some(), number);
+    let same = match (self.last, self.spans.last()) {
+      (Some(last), _) if last == style => true,
+      // Two links to the same place look the same; the text decides.
+      (Some((bold, italic, underline, _)), Some(span)) => {
+        (bold, italic, underline) == (style.0, style.1, style.2) && span.link.as_ref() == link
+      }
+      _ => false,
+    };
+    if let (true, Some(last)) = (same, self.spans.last_mut()) {
+      last.text.push_str(text);
+    } else {
+      self.spans.push(Span {
         text: text.to_owned(),
-        ..span
-      }),
+        bold: style.0,
+        italic: style.1,
+        underline: style.2,
+        strikethrough: false,
+        color: None,
+        link: link.cloned(),
+      });
     }
+    self.last = Some(style);
   }
 
   fn tag(&mut self, tag: Tag) {
     match tag {
-      Tag::Open(name, link) => self.open.push((name, link)),
+      Tag::Open(kind, link) => {
+        self.at[kind].push(self.open.len());
+        self.open.push(kind);
+        if kind == A {
+          self.links.push((self.opened, link));
+          self.opened += 1;
+        }
+      }
       // Closing a tag closes any opened inside it and left open.
-      Tag::Close(name) => {
-        if let Some(at) = self.open.iter().rposition(|(open, _)| *open == name) {
-          self.open.truncate(at);
+      Tag::Close(kind) => {
+        let Some(&from) = self.at[kind].last() else {
+          return;
+        };
+        while self.open.len() > from {
+          let closed = self.open.pop().expect("open holds the tag closed");
+          self.at[closed].pop();
+          if closed == A {
+            self.links.pop();
+          }
         }
       }
       Tag::Image(alt) => self.text(&alt),
@@ -203,8 +227,9 @@ impl Markup {
 }
 
 enum Tag {
-  Open(&'static str, Option<String>),
-  Close(&'static str),
+  /// A kind, `B`, `I`, `U` or `A`, and an `a`'s link.
+  Open(usize, Option<String>),
+  Close(usize),
   Image(String),
   Unknown,
 }
@@ -261,14 +286,14 @@ fn tag(text: &str) -> Option<(Tag, usize)> {
     (false, "img") => Tag::Image(value("alt").unwrap_or_default()),
     // `<b/>` opens and closes at once, so it does nothing.
     _ if empty => Tag::Unknown,
-    (false, "a") => Tag::Open("a", value("href").filter(|href| safe_link(href))),
-    (false, "b") => Tag::Open("b", None),
-    (false, "i") => Tag::Open("i", None),
-    (false, "u") => Tag::Open("u", None),
-    (true, "a") => Tag::Close("a"),
-    (true, "b") => Tag::Close("b"),
-    (true, "i") => Tag::Close("i"),
-    (true, "u") => Tag::Close("u"),
+    (false, "a") => Tag::Open(A, value("href").filter(|href| safe_link(href))),
+    (false, "b") => Tag::Open(B, None),
+    (false, "i") => Tag::Open(I, None),
+    (false, "u") => Tag::Open(U, None),
+    (true, "a") => Tag::Close(A),
+    (true, "b") => Tag::Close(B),
+    (true, "i") => Tag::Close(I),
+    (true, "u") => Tag::Close(U),
     _ => Tag::Unknown,
   };
   Some((tag, at))

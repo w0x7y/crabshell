@@ -203,3 +203,52 @@ fn many_stray_brackets_parse_quickly() {
   // Reading each stray bracket to the end would take seconds.
   assert!(start.elapsed().as_millis() < 1000, "{:?}", start.elapsed());
 }
+
+#[test]
+fn deep_nesting_parses_quickly() {
+  let long_link = format!(
+    "<a href=\"https://{}\">{}",
+    "x".repeat(MARKUP_CAP / 2),
+    "&amp;".repeat(MARKUP_CAP / 12)
+  );
+  for body in [
+    "<b>".repeat(10922) + &"<".repeat(32768),
+    "<b>x".repeat(16384),
+    "<a>".repeat(10922) + &"&".repeat(32768),
+    "<i>".repeat(10922) + &"</b>".repeat(8192),
+    long_link,
+  ] {
+    let start = std::time::Instant::now();
+    parse_markup(&body);
+    // Scanning the open tags for each piece of text took seconds.
+    assert!(
+      start.elapsed().as_millis() < 300,
+      "{:?} for {:?}…",
+      start.elapsed(),
+      &body[..20]
+    );
+  }
+}
+
+#[test]
+fn a_close_tag_closes_what_opened_inside_it_at_any_depth() {
+  let body = "<a href='https://1.org'><b><a href='https://2.org'><i>\
+    <a href='https://3.org'><u>x</a>y</a>z</b>w";
+  assert_eq!(
+    parse_markup(body),
+    vec![
+      Span::new("x")
+        .bold()
+        .italic()
+        .underline()
+        .link("https://3.org"),
+      Span::new("y")
+        .bold()
+        .italic()
+        .underline()
+        .link("https://2.org"),
+      Span::new("z").bold().underline().link("https://1.org"),
+      Span::new("w").underline().link("https://1.org"),
+    ]
+  );
+}
