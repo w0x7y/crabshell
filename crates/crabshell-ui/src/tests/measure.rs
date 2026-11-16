@@ -296,3 +296,61 @@ fn a_replaced_face_is_never_read_back() {
     .count();
   assert_eq!(files, 0, "the replaced face was read again");
 }
+
+#[test]
+fn measuring_takes_letter_spacing_as_a_text_does() {
+  let plain = Font::new("sans-serif", 13.0);
+  let spaced = plain.letter_spacing(2.0);
+  let mut h = Harness::new();
+  let window = text_window(&mut h, "clicked 12 times", spaced);
+  let laid_out = rect_at(&window, &[0, 0]);
+  let wide = h.cx.measure_text("clicked 12 times", spaced);
+  let narrow = h.cx.measure_text("clicked 12 times", plain);
+  assert!(wide.width > narrow.width + 20.0, "{wide:?} {narrow:?}");
+  assert_eq!(wide.width.ceil(), laid_out.width);
+}
+
+#[test]
+fn a_bundled_upright_face_leaves_italic_to_fontconfig() {
+  let Some(regular) = dejavu() else { return };
+  let Some(oblique) = font_file("DejaVuSans-Oblique.ttf") else {
+    return;
+  };
+  let slanted = |fonts: &mut Fonts, italic: bool| {
+    let font = Font::new("DejaVu Sans", 13.0);
+    let mut node = TextNode::new();
+    node.set_content(String::from("hello"));
+    node.prepare(if italic { font.italic() } else { font }, fonts);
+    let db = fonts.font_system().db();
+    let faces: Vec<_> = node
+      .runs()
+      .flat_map(|run| run.glyphs.iter())
+      .filter_map(|glyph| db.face(glyph.font_id))
+      .map(|face| (matches!(face.source, Source::Binary(_)), face.style))
+      .collect();
+    faces
+  };
+  let mut fonts = Fonts::new();
+  fonts.add(regular);
+  assert!(
+    slanted(&mut fonts, false)
+      .iter()
+      .all(|&(bundled, _)| bundled)
+  );
+  assert!(!fonts.fontconfig_started());
+  let faces = slanted(&mut fonts, true);
+  assert!(fonts.fontconfig_started());
+  assert!(
+    faces
+      .iter()
+      .all(|&(bundled, style)| !bundled && style != cosmic_text::fontdb::Style::Normal),
+    "{faces:?}"
+  );
+
+  // A bundled oblique face serves italic text without fontconfig.
+  let mut fonts = Fonts::new();
+  fonts.add(oblique);
+  let faces = slanted(&mut fonts, true);
+  assert!(faces.iter().all(|&(bundled, _)| bundled), "{faces:?}");
+  assert!(!fonts.fontconfig_started());
+}

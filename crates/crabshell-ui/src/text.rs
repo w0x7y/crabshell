@@ -170,7 +170,7 @@ impl Fonts {
     if let Some(name) = self.families.get(&key) {
       return name.clone();
     }
-    if let Some(name) = self.bundled(font.family, font.weight) {
+    if let Some(name) = self.bundled(font) {
       self.families.insert(key, Some(Rc::clone(&name)));
       return Some(name);
     }
@@ -189,18 +189,19 @@ impl Fonts {
     name
   }
 
-  /// The database's name for `family` if a bundled upright face of it
-  /// draws `weight`.
-  fn bundled(&self, family: &str, weight: u16) -> Option<Rc<str>> {
+  /// The database's name for `font`'s family if a bundled face of it
+  /// draws its weight and slant: italic or oblique for italic text,
+  /// upright for the rest.
+  fn bundled(&self, font: &Font) -> Option<Rc<str>> {
     let db = self.fonts.db();
     self
       .bundled
       .iter()
-      .filter(|(_, (low, high))| (*low..=*high).contains(&weight))
+      .filter(|(_, (low, high))| (*low..=*high).contains(&font.weight))
       .filter_map(|(&id, _)| db.face(id))
-      .filter(|face| face.style == fontdb::Style::Normal)
+      .filter(|face| (face.style != fontdb::Style::Normal) == font.italic)
       .flat_map(|face| &face.families)
-      .find(|(name, _language)| name.eq_ignore_ascii_case(family))
+      .find(|(name, _language)| name.eq_ignore_ascii_case(font.family))
       .map(|(name, _language)| Rc::from(name.as_str()))
   }
 
@@ -295,6 +296,11 @@ impl Fonts {
       self.fonts.db().query(&Query {
         families: &[Family::Name(&name)],
         weight,
+        style: if font.italic {
+          fontdb::Style::Italic
+        } else {
+          fontdb::Style::Normal
+        },
         ..Query::default()
       })
     });
