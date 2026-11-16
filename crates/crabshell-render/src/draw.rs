@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use cosmic_text::{FontSystem, SwashCache, SwashContent, SwashImage};
+use cosmic_text::{FontSystem, LayoutRun, SwashCache, SwashContent, SwashImage};
 use crabshell_ui::{
   Affine, CaptureView, Color, Content, Gradient, GradientShape, IconView, ImageView, InputView,
   NodeView, Rect, Shadow, Size, Style, TextSystem, TextView, WindowView,
@@ -1014,9 +1014,9 @@ impl Painter<'_> {
     }
   }
 
-  /// Glyphs, drawn as masks in the text's color. The baseline sits on a
-  /// whole pixel so horizontal strokes stay sharp; glyphs keep their
-  /// sub-pixel horizontal position.
+  /// Glyphs, drawn as masks in the text's color, then any underline and
+  /// strikethrough. The baseline sits on a whole pixel so horizontal
+  /// strokes stay sharp; glyphs keep their sub-pixel horizontal position.
   fn text(&mut self, pixmap: &mut PixmapMut<'_>, text: &TextView<'_>) {
     let color = text.color();
     if color.a == 0 {
@@ -1055,6 +1055,66 @@ impl Painter<'_> {
           // Not requested: there is no subpixel antialiasing.
           SwashContent::SubpixelMask => {}
         }
+      }
+      if text.underline() || text.strikethrough() {
+        self.decorations(pixmap, text, &run, baseline);
+      }
+    }
+  }
+
+  /// The underline and strikethrough of one line, across its glyphs, at
+  /// the place and thickness its first glyph's font gives, as cosmic-text
+  /// draws them. Edges snap to whole pixels in the buffer, so every tile
+  /// agrees, and each line is at least a pixel thick. A line is kept
+  /// within half an em of the baseline, which the text's painted area
+  /// covers.
+  fn decorations(
+    &mut self,
+    pixmap: &mut PixmapMut<'_>,
+    text: &TextView<'_>,
+    run: &LayoutRun<'_>,
+    baseline: f32,
+  ) {
+    let Some(first) = run.glyphs.first() else {
+      return;
+    };
+    let Some(font) = self.fonts.get_font(first.font_id, first.font_weight) else {
+      return;
+    };
+    let metrics = font.metrics();
+    let em = f32::from(metrics.units_per_em);
+    if em == 0.0 {
+      return;
+    }
+    let Grid { scale, left, .. } = self.grid;
+    let (start, end) = run
+      .glyphs
+      .iter()
+      .fold((f32::MAX, f32::MIN), |(start, end), glyph| {
+        (start.min(glyph.x), end.max(glyph.x + glyph.w))
+      });
+    let origin = text.origin().x;
+    let x0 = ((origin + start) * scale).round() - left;
+    let x1 = ((origin + end) * scale).round() - left;
+    let size = first.font_size * scale;
+    // cosmic-text's defaults for a font that gives none.
+    let lines = [
+      (text.underline(), metrics.underline, -0.125),
+      (text.strikethrough(), metrics.strikeout, 0.3),
+    ];
+    for (on, decoration, offset) in lines {
+      if !on {
+        continue;
+      }
+      let (offset, thickness) =
+        decoration.map_or((offset, 1.0 / 14.0), |d| (d.offset / em, d.thickness / em));
+      // The offset is to the line's top, upward from the baseline.
+      let thickness = (thickness.clamp(0.0, 0.25) * size).round().max(1.0);
+      let y = baseline - (offset.clamp(-0.25, 0.5) * size).round();
+      if let Some(area) = tiny_skia::Rect::from_ltrb(x0, y, x1, y + thickness) {
+        let mut path = PathBuilder::new();
+        path.push_rect(area);
+        fill(pixmap, path, text.color(), FillRule::Winding);
       }
     }
   }

@@ -2,7 +2,7 @@
 //! window, in a buffer that kept up and in buffers that skipped frames.
 
 use crabshell_reactive::Signal;
-use crabshell_ui::{Align, Color, Icon, Row, Stack, Style, Text, Window};
+use crabshell_ui::{Align, Color, Font, Icon, Row, Stack, Style, Text, TextAlign, Window};
 
 use super::{Buffer, Scene, fixture};
 use crate::{BufferAge, Canvas, DamageHistory, PixelFormat, PixelRect};
@@ -342,6 +342,57 @@ fn glyph_ink_outside_the_line_leaves_nothing_behind() {
         count, 0,
         "{from:?} to {to:?} at {scale}: stale pixels in {area:?}"
       );
+    }
+  }
+}
+
+#[test]
+fn squeezed_aligned_and_decorated_text_paints_inside_its_bounds() {
+  let styles = [
+    Style::new().line_height(0.05),
+    Style::new().line_height(0.05).text_align(TextAlign::End),
+    Style::new()
+      .underline(true)
+      .strikethrough(true)
+      .line_height(0.3),
+    Style::new().text_align(TextAlign::Center).underline(true),
+  ];
+  for style in styles {
+    for scale in [1.0, 1.5, 2.0] {
+      let mut scene = Scene::new();
+      let panel = scene
+        .panel()
+        .style(Style::new().color(Color::rgb(255, 255, 255)))
+        .child(
+          Row::new().padding(30, 30).align(Align::Center).child(
+            Text::new("Agjy\nqÅ").max_lines(2).style(
+              style
+                .width(120.0)
+                .font(Font::new("sans-serif", 20.0).weight(700)),
+            ),
+          ),
+        );
+      let window = scene.window(panel, 200.0, 120.0);
+      let buffer = scene.full(&window, scale);
+      let view = window.view();
+      let bounds = super::node_at(view.root(), &[0, 0]).bounds();
+      let (left, top) = ((bounds.x * scale).floor(), (bounds.y * scale).floor());
+      let (right, bottom) = (
+        (bounds.right() * scale).ceil(),
+        (bounds.bottom() * scale).ceil(),
+      );
+      for y in 0..buffer.height {
+        for x in 0..buffer.width {
+          if buffer.pixel(x, y)[3] == 0 {
+            continue;
+          }
+          let (x, y) = (x as f32, y as f32);
+          assert!(
+            x >= left && x < right && y >= top && y < bottom,
+            "{style:?} at {scale}: ({x}, {y}) is outside {bounds:?}"
+          );
+        }
+      }
     }
   }
 }

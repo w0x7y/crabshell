@@ -4,8 +4,9 @@
 use std::rc::Rc;
 
 use crabshell_ui::{
-  Align, Color, Column, Content, Fit, Font, Gradient, Icon, IconPixels, IconSource, Image, Mask,
-  Menu, MenuEntry, MenuToggle, Row, Shadow, Stack, Style, Text, Window,
+  Align, Color, Column, Content, Elide, Fit, Font, FontFeature, Gradient, Icon, IconPixels,
+  IconSource, Image, Mask, Menu, MenuEntry, MenuToggle, Row, Shadow, Stack, Style, Text, TextAlign,
+  Window,
 };
 
 use super::{Scene, assert_golden, fixture};
@@ -438,6 +439,92 @@ fn text() {
               .color(Color::hex("#f9e2af"))
               .font(Font::new("sans-serif", 13.0).weight(700)),
           ),
+        ),
+    )
+  });
+}
+
+#[test]
+fn text_styles() {
+  check_fonts();
+  const PROPORTIONAL: [FontFeature; 1] = [FontFeature::new(*b"pnum", 1)];
+  const TABULAR: [FontFeature; 2] = [PROPORTIONAL[0], FontFeature::TABULAR_NUMBERS];
+  const WRAPPED: &str = "words that wrap onto a second and third line";
+  const LONG: &str = "start middle end";
+  let font = |font: Font| Style::new().font(font);
+  let boxed = |style: Style| style.width(110.0).background(Color::hex("#313244"));
+  check("text_styles", 240.0, 226.0, |scene| {
+    let clocks = |features| {
+      Column::new()
+        .align(Align::Start)
+        .child(Text::new("11:11").style(font(Font::DEFAULT.features(features))))
+        .child(Text::new("00:00").style(font(Font::DEFAULT.features(features))))
+    };
+    scene.panel().style(BAR).child(
+      Column::new()
+        .padding(4, 6)
+        .gap(4)
+        .align(Align::Start)
+        .child(
+          Row::new()
+            .gap(10)
+            .child(Text::new("Italic text").style(font(Font::DEFAULT.italic())))
+            .child(Text::new("spaced").style(font(Font::DEFAULT.letter_spacing(3.0))))
+            .child(clocks(&PROPORTIONAL))
+            .child(clocks(&TABULAR)),
+        )
+        .child(
+          Row::new()
+            .gap(8)
+            .child(
+              Text::new(WRAPPED)
+                .max_lines(3)
+                .style(boxed(Style::new().text_align(TextAlign::Center))),
+            )
+            .child(
+              Text::new(WRAPPED)
+                .max_lines(3)
+                .style(boxed(Style::new().text_align(TextAlign::Justify))),
+            ),
+        )
+        .child(
+          Row::new()
+            .gap(8)
+            .child(
+              Text::new("tall lines\nof text")
+                .max_lines(2)
+                .style(Style::new().line_height(1.8)),
+            )
+            .child(
+              Column::new()
+                .align(Align::Start)
+                .style(Style::new().underline(true))
+                .child(Text::new("underlined gjy"))
+                .child(Text::new("and struck").style(Style::new().strikethrough(true)))
+                .child(
+                  Text::new("Bold, larger").style(font(Font::new("sans-serif", 20.0).weight(700))),
+                ),
+            ),
+        )
+        .child(Text::new("end").style(boxed(Style::new().text_align(TextAlign::End))))
+        .child(
+          Column::new()
+            .align(Align::Start)
+            .child(
+              Text::new(LONG)
+                .elide(Elide::Start)
+                .style(Style::new().width(70.0)),
+            )
+            .child(
+              Text::new(LONG)
+                .elide(Elide::Middle)
+                .style(Style::new().width(70.0)),
+            )
+            .child(
+              Text::new(LONG)
+                .elide(Elide::End)
+                .style(Style::new().width(70.0)),
+            ),
         ),
     )
   });
