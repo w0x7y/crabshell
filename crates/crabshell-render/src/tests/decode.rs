@@ -180,3 +180,81 @@ fn the_worker_ends_once_nothing_is_left() {
   scene.full(&window, 1.0);
   assert_eq!(wait(&mut scene).len(), 1);
 }
+
+/// A solid red `width` by `height` PNG in the temp dir, removed when the
+/// test ends.
+fn red_picture(name: &str) -> super::Removed {
+  let path = std::env::temp_dir().join(format!(
+    "crabshell-decode-{}-{name}.png",
+    std::process::id()
+  ));
+  super::write_png(&path, &[255, 0, 0, 255].repeat(16), 4, 4);
+  super::Removed(path)
+}
+
+/// A window showing `path` 300 high and `width` wide, filled.
+fn resizing(
+  scene: &mut Scene,
+  path: &std::path::Path,
+  width: crabshell_reactive::Signal<u32>,
+) -> Window {
+  let path = path.to_owned();
+  let image = Image::new(path)
+    .width(move || width.get())
+    .height(300)
+    .fit(Fit::Fill);
+  let panel = scene
+    .panel()
+    .child(Row::new().align(Align::Start).child(image));
+  scene.window(panel, 500.0, 300.0)
+}
+
+#[test]
+fn while_a_new_size_decodes_the_last_picture_shown_is_stretched_to_the_box() {
+  let red = red_picture("stretched");
+  let mut scene = scene();
+  let width = scene.cx.signal(300_u32);
+  let window = resizing(&mut scene, &red, width);
+  scene.full(&window, 1.0);
+  wait(&mut scene);
+  assert_eq!(scene.full(&window, 1.0).pixel(150, 150), [255, 0, 0, 255]);
+  width.set(400);
+  scene.frame(&window);
+  let buffer = scene.full(&window, 1.0);
+  assert!(scene.renderer.decoding(), "the new size is decoded");
+  for x in [10, 350, 395] {
+    assert_eq!(buffer.pixel(x, 150), [255, 0, 0, 255], "stretched, at {x}");
+  }
+  assert_eq!(buffer.pixel(450, 150)[3], 0, "and only to the box");
+}
+
+#[test]
+fn a_box_changing_size_while_it_waits_leaves_one_job() {
+  let red = red_picture("sizes");
+  let mut scene = scene();
+  // A large blur first keeps the worker busy, so the sizes wait.
+  let busy = Image::new(fixture("stripes.jpg"))
+    .width(400)
+    .height(400)
+    .blur(30.0);
+  let busy = scene.window(scene.panel().child(busy), 400.0, 400.0);
+  scene.full(&busy, 1.0);
+  let width = scene.cx.signal(300_u32);
+  let window = resizing(&mut scene, &red, width);
+  for step in 0..5 {
+    width.set(300 + 10 * step);
+    scene.frame(&window);
+    scene.full(&window, 1.0);
+  }
+  while scene.renderer.decoding() {
+    wait(&mut scene);
+  }
+  idle(&scene);
+  scene.renderer.take_decoded();
+  assert_eq!(
+    scene.renderer.decoded_off_thread(),
+    2,
+    "the blur and the last size"
+  );
+  assert_eq!(scene.full(&window, 1.0).pixel(335, 150), [255, 0, 0, 255]);
+}

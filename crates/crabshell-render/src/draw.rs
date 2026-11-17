@@ -194,6 +194,12 @@ impl Renderer {
     self.icons.wake_when_decoded(Box::new(wake));
   }
 
+  /// Whether the last draw drew an image whose picture is still being
+  /// decoded, so the platform can hold a window's first frame for it.
+  pub fn waits_for_pictures(&self) -> bool {
+    self.icons.waited()
+  }
+
   /// Caches the pictures decoded since the last call, logging each
   /// failure once, and returns the ids of the images that wait for them,
   /// for the platform to repaint with
@@ -1411,7 +1417,22 @@ impl Painter<'_> {
       return;
     };
     match self.icons.image(image, (width, height), self.grid.scale) {
-      Some(Drawn::One(pixels)) => transition::blit(pixmap, (x, y), pixels),
+      Some(Drawn::One(pixels)) if (pixels.width(), pixels.height()) == (width, height) => {
+        transition::blit(pixmap, (x, y), pixels);
+      }
+      // A picture of another size, while this one is decoded.
+      Some(Drawn::One(pixels)) => {
+        let paint = PixmapPaint {
+          quality: FilterQuality::Bilinear,
+          ..PixmapPaint::default()
+        };
+        let stretch = Transform::from_scale(
+          width as f32 / pixels.width() as f32,
+          height as f32 / pixels.height() as f32,
+        )
+        .post_translate(x as f32, y as f32);
+        pixmap.draw_pixmap(0, 0, pixels.as_ref(), &paint, stretch, None);
+      }
       Some(Drawn::Two { from, to, t }) => {
         transition::draw(pixmap, (x, y), from, to, t, image.transition);
       }

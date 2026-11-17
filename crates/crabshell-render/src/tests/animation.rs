@@ -656,3 +656,44 @@ fn a_gif_hidden_while_it_waits_wakes_nothing_but_one_still_shown_goes_on() {
     Vec::<u64>::new()
   );
 }
+
+#[test]
+fn gifs_decoded_off_the_thread_together_keep_their_frames_within_the_budget() {
+  let first = red_then_green("together-a");
+  let second = file(
+    "together-b",
+    &encode(
+      &[patch((0, 0, 4, 4), 2, 5), patch((0, 0, 4, 4), 0, 5)],
+      Some(Repeat::Infinite),
+    ),
+  );
+  let mut icons = icons();
+  icons.decode_off_thread();
+  // Each frame at 1250 by 2000 is 10,000,000 bytes, so both GIFs' four
+  // frames are past the 33,554,432 the cache holds.
+  for (id, gif) in [(1, &first), (2, &second)] {
+    assert!(
+      icons
+        .picture(&view(id, gif, true), (1250, 2000), 1.0)
+        .is_none()
+    );
+  }
+  let logs = capture_logs(|| {
+    while icons.decoding() {
+      let (sender, woken) = std::sync::mpsc::channel();
+      icons.wake_when_decoded(Box::new(move || {
+        let _ = sender.send(());
+      }));
+      woken
+        .recv_timeout(Duration::from_secs(60))
+        .expect("the worker wakes the loop");
+      icons.take_decoded();
+    }
+  });
+  assert_eq!(
+    icons.frames_cached(),
+    3,
+    "both frames of one, the first of the other"
+  );
+  assert!(logs.contains("shows its first"), "{logs}");
+}

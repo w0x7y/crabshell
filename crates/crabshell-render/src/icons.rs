@@ -97,6 +97,8 @@ pub(crate) struct Icons {
   ready: Vec<u64>,
   /// How many jobs the worker did, for tests.
   decoded_off_thread: usize,
+  /// Whether the draw drew an image whose picture is being decoded.
+  waited: bool,
 }
 
 /// What an image with a transition shows.
@@ -317,7 +319,13 @@ impl Icons {
       pending: HashMap::new(),
       ready: Vec::new(),
       decoded_off_thread: 0,
+      waited: false,
     }
+  }
+
+  /// Whether the last draw drew an image whose picture is being decoded.
+  pub(crate) fn waited(&self) -> bool {
+    self.waited
   }
 
   /// How many jobs the worker did, and whether it runs, for tests.
@@ -371,6 +379,26 @@ impl Icons {
         Key::Image { path, .. } => path.display().to_string(),
         _ => String::new(),
       };
+      let mut frames = frames;
+      // Each job had the room left when it was sent, so GIFs decoded
+      // together could keep more than the cache holds.
+      if let Ok(gif) = &mut frames
+        && gif.frames.len() > 1
+      {
+        let bytes: usize = gif
+          .frames
+          .iter()
+          .map(|frame| frame.pixmap.data().len())
+          .sum();
+        if bytes > MAX_CACHED_BYTES.saturating_sub(self.bytes_in_use()) {
+          tracing::warn!(
+            image = %path,
+            "keeping a GIF's frames is past what the picture cache has left, so it shows its first"
+          );
+          gif.frames.truncate(1);
+          gif.repeats = Some(0);
+        }
+      }
       self.store(key, frames, || format!("image {path}"));
     }
     ready.sort_unstable();
@@ -381,6 +409,7 @@ impl Icons {
   /// Starts a draw of the window whose damage history is `window`.
   pub(crate) fn start_frame(&mut self, window: u64) {
     self.window = window;
+    self.waited = false;
   }
 
   /// Starts drawing the tile at `row` and `column`.
@@ -683,8 +712,8 @@ impl Icons {
   }
 
   /// What `image` draws while `key`, its picture, is decoded: the
-  /// picture its transition leaves, or else the one it drew before at
-  /// this size, as during a change of source; nothing if neither is
+  /// picture its transition leaves, or else the one it drew before,
+  /// stretched to the box when its size changed; nothing if neither is
   /// cached.
   fn waiting(
     &mut self,
@@ -693,6 +722,7 @@ impl Icons {
     size: (u32, u32),
     scale: f32,
   ) -> Option<Drawn<'_>> {
+    self.waited = true;
     let left = if image.transition == ImageTransition::None {
       None
     } else {
@@ -701,11 +731,7 @@ impl Icons {
       shown.window = self.window;
       self.leaving(image, key, size, scale).flatten()
     };
-    let before = left.or_else(|| {
-      let (shown, _) = self.shows.get(&image.id)?;
-      matches!(shown, Key::Image { width, height, .. } if (*width, *height) == size)
-        .then(|| shown.clone())
-    })?;
+    let before = left.or_else(|| self.shows.get(&image.id).map(|(shown, _)| shown.clone()))?;
     self.cache.get_mut(&before)?.used = self.frame;
     frame(&self.cache, &before, 0).map(Drawn::One)
   }
@@ -815,6 +841,7 @@ impl Icons {
         });
         if !images.contains(&id) {
           images.push(id);
+          self.leave_other_jobs(id, &key);
         }
         return key;
       }
@@ -833,6 +860,31 @@ impl Icons {
       entry.used = self.frame;
     }
     key
+  }
+
+  /// Takes image `id` off the jobs for its file other than `key`'s, such
+  /// as the sizes a box went through while it waited, and cancels each
+  /// left with no image waiting, so the last one comes in sooner.
+  fn leave_other_jobs(&mut self, id: u64, key: &Key) {
+    let Key::Image { path, .. } = key else {
+      return;
+    };
+    let mut abandoned = Vec::new();
+    for (other, (job, images)) in &mut self.pending {
+      if other != key && matches!(other, Key::Image { path: file, .. } if file == path) {
+        images.retain(|&waiting| waiting != id);
+        if images.is_empty() {
+          abandoned.push((other.clone(), *job));
+        }
+      }
+    }
+    for (other, job) in abandoned {
+      self.pending.remove(&other);
+      // One already started still finishes, and its picture is dropped.
+      if let Some(worker) = &mut self.worker {
+        worker.cancel(job);
+      }
+    }
   }
 
   /// Marks `image`, an animation of `count` frames in entry `key`, drawn,
