@@ -37,7 +37,35 @@ const MAX_STDERR: usize = 4096;
 
 /// What `cx.http_get` and `cx.cover_art` need from the shell: the loop,
 /// where curl is, and where art is cached.
-pub(crate) struct Service(pub(crate) Rc<Shared>);
+pub(crate) struct Service {
+  shared: Rc<Shared>,
+  /// Every curl running, so the shell can stop them all before it exits.
+  live: RefCell<Vec<Weak<RefCell<Run>>>>,
+}
+
+impl Service {
+  pub(crate) fn new(shared: Rc<Shared>) -> Service {
+    let live = RefCell::default();
+    Service { shared, live }
+  }
+}
+
+/// Stops every curl running, as the shell does before it exits: `exit`
+/// skips the drops that would, and curl has a process group of its own.
+pub(crate) fn stop_all(cx: &Cx) {
+  let Some(service) = cx.service::<Service>() else {
+    return;
+  };
+  let live: Vec<_> = service
+    .live
+    .take()
+    .iter()
+    .filter_map(Weak::upgrade)
+    .collect();
+  for run in live {
+    run.borrow_mut().stop();
+  }
+}
 
 /// Why a request failed, from [`Http::error`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -114,7 +142,7 @@ struct Run {
 /// back once the body arrived whole, or why it didn't. The URL is an
 /// argument, never seen by a shell, and curl reads no `~/.curlrc`.
 pub(crate) fn fetch(
-  shared: &Rc<Shared>,
+  service: &Rc<Service>,
   url: &str,
   cap: u64,
   timeout: Duration,
@@ -127,6 +155,7 @@ pub(crate) fn fetch(
       "only http: and https: URLs are fetched",
     ));
   }
+  let shared = &service.shared;
   let Some(event_loop) = shared.event_loop() else {
     return Err(HttpError::new(
       HttpErrorKind::Network,
@@ -183,6 +212,10 @@ pub(crate) fn fetch(
     done: Some(Box::new(done)),
   }));
   let fetch = Fetch(Rc::clone(&run));
+  let mut live = service.live.borrow_mut();
+  live.retain(|run| run.strong_count() > 0);
+  live.push(Rc::downgrade(&run));
+  drop(live);
   let fd = out.as_fd().try_clone_to_owned();
   let reader = Rc::clone(&run);
   let token = fd
@@ -399,7 +432,7 @@ impl Drop for Keep {
 
 struct Inner {
   /// `None` when the shell provided no services.
-  shared: Option<Rc<Shared>>,
+  service: Option<Rc<Service>>,
   body: Signal<Option<String>>,
   error: Signal<Option<HttpError>>,
   loading: Signal<bool>,
@@ -417,15 +450,15 @@ struct State {
 #[track_caller]
 pub(crate) fn http_get(cx: &Cx, url: impl IntoProp<String>) -> Http {
   let at = Location::caller();
-  let shared = cx.service::<Service>().map(|service| Rc::clone(&service.0));
-  if shared.is_none() {
+  let service = cx.service::<Service>();
+  if service.is_none() {
     static LOGGED: Once = Once::new();
     LOGGED.call_once(|| {
       tracing::warn!("cx.http_get() needs the services the shell provides; nothing is fetched");
     });
   }
   let inner = Rc::new(Inner {
-    shared,
+    service,
     body: cx.signal(None),
     error: cx.signal(None),
     loading: cx.signal(false),
@@ -543,7 +576,8 @@ impl Inner {
   fn start(self: &Rc<Self>, url: Option<String>) {
     let running = self.state.borrow_mut().fetch.take();
     drop(running);
-    let (Some(url), Some(shared)) = (url.filter(|url| !url.is_empty()), self.shared.clone()) else {
+    let (Some(url), Some(service)) = (url.filter(|url| !url.is_empty()), self.service.clone())
+    else {
       set(self.loading, false);
       return;
     };
@@ -557,7 +591,7 @@ impl Inner {
         inner.done(result);
       }
     };
-    match fetch(&shared, &url, cap, timeout, Sink::Memory(Vec::new()), done) {
+    match fetch(&service, &url, cap, timeout, Sink::Memory(Vec::new()), done) {
       Ok(fetch) => {
         self.state.borrow_mut().fetch = Some(fetch);
         set(self.loading, true);

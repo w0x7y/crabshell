@@ -16,7 +16,6 @@ use crabshell_reactive::{ReadSignal, Signal, untrack};
 use crabshell_ui::{Cx, IntoProp};
 
 use super::{Fetch, HttpError, Service, Sink, TIMEOUT, allowed, chosen, fetch, set};
-use crate::Shared;
 
 /// The largest picture downloaded.
 pub(crate) const MAX_ART: u64 = 16 * 1024 * 1024;
@@ -60,7 +59,7 @@ pub(crate) fn cache_dir() -> Option<PathBuf> {
 }
 
 struct Art {
-  shared: Option<Rc<Shared>>,
+  service: Option<Rc<Service>>,
   path: Signal<Option<PathBuf>>,
   download: RefCell<Option<Download>>,
 }
@@ -85,7 +84,7 @@ impl Drop for Download {
 pub(crate) fn cover_art(cx: &Cx, url: impl IntoProp<String>) -> ReadSignal<Option<PathBuf>> {
   let at = Location::caller();
   let art = Rc::new(Art {
-    shared: cx.service::<Service>().map(|service| Rc::clone(&service.0)),
+    service: cx.service::<Service>(),
     path: cx.signal(None),
     download: RefCell::new(None),
   });
@@ -124,10 +123,10 @@ impl Art {
     if !allowed(url) {
       return failed(url, "only file:, http: and https: art is shown");
     }
-    let Some(shared) = self.shared.clone() else {
+    let Some(service) = self.service.clone() else {
       return failed(url, "cx.cover_art() needs the services the shell provides");
     };
-    let Some(dir) = shared.config.art_cache.clone() else {
+    let Some(dir) = service.shared.config.art_cache.clone() else {
       return failed(
         url,
         "no cache directory, as neither XDG_CACHE_HOME nor HOME is set",
@@ -139,7 +138,7 @@ impl Art {
       let _ = File::open(&cached).and_then(|file| file.set_modified(SystemTime::now()));
       return Some(cached);
     }
-    if let Err(error) = self.download(&shared, &dir, key, url) {
+    if let Err(error) = self.download(&service, &dir, key, url) {
       failed(url, &error.message);
     }
     None
@@ -147,7 +146,7 @@ impl Art {
 
   fn download(
     self: &Rc<Self>,
-    shared: &Rc<Shared>,
+    service: &Rc<Service>,
     dir: &Path,
     key: String,
     url: &str,
@@ -178,7 +177,7 @@ impl Art {
         art.downloaded(&owned, &dir, &key, result);
       }
     };
-    match fetch(shared, url, MAX_ART, TIMEOUT, Sink::File(file), done) {
+    match fetch(service, url, MAX_ART, TIMEOUT, Sink::File(file), done) {
       Ok(fetch) => {
         self.download.replace(Some(Download { fetch, part }));
         Ok(())

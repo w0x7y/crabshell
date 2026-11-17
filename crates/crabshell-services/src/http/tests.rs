@@ -528,3 +528,20 @@ fn no_cap_and_no_timeout_still_fetch() {
   assert_eq!(http.error().get_untracked(), None);
   assert_eq!(http.body().get_untracked().as_deref(), Some("hello"));
 }
+
+#[test]
+fn stop_programs_stops_curl_before_the_shell_exits() {
+  let dir = TempDir::new();
+  let pid = dir.path().join("pid");
+  let config = fake_curl(
+    &dir,
+    &format!("echo $$ > '{}'; exec sleep 30", pid.display()),
+  );
+  let mut shell = Harness::new(config);
+  let _http = shell.cx.http_get("https://example.com/");
+  run_until(&mut shell, "curl", || pid.exists());
+  let pid = std::fs::read_to_string(&pid).expect("its pid");
+  let proc = PathBuf::from(format!("/proc/{}", pid.trim()));
+  crate::stop_programs(&shell.cx);
+  run_until(&mut shell, "curl reaped", move || !proc.exists());
+}

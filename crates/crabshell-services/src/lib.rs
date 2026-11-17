@@ -125,7 +125,7 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(process::Processes::new(Rc::clone(&shared)));
   cx.provide(desktop_entries::Service::new(Rc::clone(&shared)));
   cx.provide(file::Files(Rc::clone(&shared)));
-  cx.provide(http::Service(Rc::clone(&shared)));
+  cx.provide(http::Service::new(Rc::clone(&shared)));
   cx.provide(greetd::Service::new(Rc::clone(&shared)));
   cx.provide(pam::Service(Rc::clone(&shared)));
   cx.provide(polkit::Service::new(Rc::clone(&shared)));
@@ -146,8 +146,9 @@ pub fn provide_activation_tokens(
   }
 }
 
-/// Stops every program a config started with `cx.process`, and starts
-/// every one still waiting for its activation token, without it. The
+/// Stops every program a config started with `cx.process` and every curl
+/// `cx.http_get` and `cx.cover_art` run, and starts every program still
+/// waiting for its activation token, without it. The
 /// shell calls this before it exits, since `std::process::exit` skips the
 /// drops that would stop them, each program has a process group of its
 /// own, and no token or timer comes after the exit.
@@ -157,6 +158,7 @@ pub fn stop_programs(cx: &Cx) {
     activation::start_waiting(&processes.shared);
   }
   process::stop_all(cx);
+  http::stop_all(cx);
 }
 
 /// What the services keep across a reload, for the shell to save: the
