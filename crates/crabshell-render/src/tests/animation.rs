@@ -581,3 +581,78 @@ fn icons_with_pictures(path: &Path) -> crate::icons::Icons {
   }
   icons
 }
+
+/// A 200 by 40 window with the GIF at `path` at its left, shown while
+/// `shown` says, and `label` far to its right, in tiles of its own.
+fn gif_and_label(
+  scene: &mut super::Scene,
+  path: &Path,
+  shown: crabshell_reactive::Signal<bool>,
+  label: crabshell_reactive::Signal<&'static str>,
+) -> crabshell_ui::Window {
+  use crabshell_ui::{Image, Row, Spacer, Style, Text};
+  let gif = Image::new(path.to_owned())
+    .width(10)
+    .height(10)
+    .visible(move || shown.get());
+  let panel = scene.panel().child(
+    Row::new()
+      .child(gif)
+      .child(Spacer::new().style(Style::new().width(150.0)))
+      .child(Text::new(move || label.get().to_owned())),
+  );
+  scene.window(panel, 200.0, 40.0)
+}
+
+#[test]
+fn a_gif_hidden_while_it_waits_wakes_nothing_but_one_still_shown_goes_on() {
+  let gif = red_then_green("hidden-waiting");
+  let now = Instant::now();
+  let mut scene = super::Scene::new();
+  let shown = scene.cx.signal(true);
+  let label = scene.cx.signal("a");
+  let window = gif_and_label(&mut scene, &gif, shown, label);
+  let mut history = crate::DamageHistory::new();
+  let mut buffer = super::Buffer::new(&window, 1.0);
+  scene.draw(&window, &mut history, &mut buffer);
+  assert!(scene.renderer.next_image_frame(now).is_some(), "it waits");
+
+  // Another window drawing, or this one repainting only the label, leaves
+  // the GIF waiting: it is still on screen.
+  let other_shown = scene.cx.signal(true);
+  let other_label = scene.cx.signal("b");
+  let other = gif_and_label(&mut scene, &gif, other_shown, other_label);
+  let mut other_history = crate::DamageHistory::new();
+  let mut other_buffer = super::Buffer::new(&other, 1.0);
+  scene.draw(&other, &mut other_history, &mut other_buffer);
+  label.set("ab");
+  scene.frame(&window);
+  scene.draw(&window, &mut history, &mut buffer);
+  assert!(
+    scene.renderer.next_image_frame(now).is_some(),
+    "still shown, it still waits"
+  );
+
+  // Hidden, it is no longer drawn where it was, so it waits for nothing,
+  // while the other window's goes on.
+  shown.set(false);
+  scene.frame(&window);
+  scene.draw(&window, &mut history, &mut buffer);
+  let due = scene
+    .renderer
+    .next_image_frame(now)
+    .expect("the other waits");
+  assert_eq!(
+    scene.renderer.advance_images(due).len(),
+    1,
+    "only one moves"
+  );
+  other_shown.set(false);
+  scene.frame(&other);
+  scene.draw(&other, &mut other_history, &mut other_buffer);
+  assert_eq!(scene.renderer.next_image_frame(due), None, "both hidden");
+  assert_eq!(
+    scene.renderer.advance_images(due + Duration::from_secs(1)),
+    Vec::<u64>::new()
+  );
+}

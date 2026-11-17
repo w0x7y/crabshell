@@ -835,3 +835,33 @@ fn a_picture_left_that_another_window_shows_stays_cached() {
   still.draw(&mut scene);
   assert_eq!(scene.renderer.rasterized_icons(), decoded);
 }
+
+#[test]
+fn a_picture_a_transition_leaves_that_a_mask_uses_is_decoded_once() {
+  let (_dir, a, b) = pair("mask");
+  let mask: &'static str = Box::leak(a.to_str().expect("a UTF-8 path").into());
+  let mut scene = Scene::new();
+  let next = scene.cx.signal(false);
+  let image = switching(next, &a, &b, ImageTransition::crossfade(LINEAR))
+    .width(20)
+    .height(20)
+    .fit(Fit::Fill);
+  let masked = Stack::new()
+    .style(
+      Style::new()
+        .mask(Mask::image(mask))
+        .width(20.0)
+        .height(20.0),
+    )
+    .child(image);
+  let mut window = Drawing::new(&mut scene, masked);
+  assert_eq!(scene.renderer.rasterized_icons(), 1, "one decode of a");
+  let start = halfway(&mut scene, next, &mut window);
+  let decoded = scene.renderer.rasterized_icons();
+  assert_eq!(decoded, 2, "and one of b");
+  // The transition ends and lets go of a, which the mask still uses.
+  tick(start, 100);
+  window.draw(&mut scene);
+  scene.full(&window.window, 1.0);
+  assert_eq!(scene.renderer.rasterized_icons(), decoded, "a stays cached");
+}

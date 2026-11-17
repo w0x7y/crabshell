@@ -244,7 +244,8 @@ impl Renderer {
     tiles.dedup();
     let mut casts = HashMap::new();
     let mut fonts = text.font_system();
-    for (row, column) in tiles {
+    for &(row, column) in &tiles {
+      self.icons.start_tile((row, column));
       let (x, y) = (column * TILE, row * TILE);
       let size = (width.saturating_sub(x), height.saturating_sub(y));
       let area = PixelRect::new(x, y, TILE.min(size.0), TILE.min(size.1));
@@ -272,6 +273,7 @@ impl Renderer {
       painter.node(&mut pixmap, view.root());
       copy(&self.scratch, area, pixels, width, format);
     }
+    self.icons.repainted(&tiles);
     self.icons.end_frame();
     if self.glyphs.image_cache.len() > GLYPH_CACHE_LIMIT {
       self.glyphs.image_cache.clear();

@@ -73,6 +73,11 @@ pub(crate) struct Icons {
   shows: HashMap<u64, (Key, u64)>,
   /// The damage history of the window being drawn.
   window: u64,
+  /// The tile being drawn, by row and column.
+  tile: (u32, u32),
+  /// The pictures masks used, and in which draw, so a transition that
+  /// stops leaving one doesn't drop it.
+  masked: HashMap<Key, u64>,
 }
 
 /// What an image with a transition shows.
@@ -120,6 +125,10 @@ struct Playback {
   /// Whether it stopped on its last frame.
   finished: bool,
   used: u64,
+  /// The damage history of the window that last drew it, and the tiles
+  /// it was drawn in then.
+  window: u64,
+  tiles: Vec<(u32, u32)>,
 }
 
 impl Playback {
@@ -134,6 +143,8 @@ impl Playback {
       playing: true,
       finished: false,
       used: 0,
+      window: 0,
+      tiles: Vec::new(),
     }
   }
 }
@@ -281,12 +292,40 @@ impl Icons {
       modified: HashMap::new(),
       shows: HashMap::new(),
       window: 0,
+      tile: (0, 0),
+      masked: HashMap::new(),
     }
   }
 
   /// Starts a draw of the window whose damage history is `window`.
   pub(crate) fn start_frame(&mut self, window: u64) {
     self.window = window;
+  }
+
+  /// Starts drawing the tile at `row` and `column`.
+  pub(crate) fn start_tile(&mut self, tile: (u32, u32)) {
+    self.tile = tile;
+  }
+
+  /// Stops each GIF this window drew whose tiles, `repainted` by this
+  /// draw, all went without it: hidden, under opacity 0, scrolled or
+  /// clipped away. It waits for nothing until drawn again. One drawn in
+  /// another window, or whose tiles weren't all repainted, keeps
+  /// waiting. `repainted` is sorted.
+  pub(crate) fn repainted(&mut self, repainted: &[(u32, u32)]) {
+    let (window, frame) = (self.window, self.frame);
+    for playback in self.playbacks.values_mut() {
+      if playback.window == window
+        && playback.used < frame
+        && playback
+          .tiles
+          .iter()
+          .all(|tile| repainted.binary_search(tile).is_ok())
+      {
+        playback.due = None;
+        playback.drawn = false;
+      }
+    }
   }
 
   pub(crate) fn set_theme(&mut self, theme: String) {
@@ -454,6 +493,7 @@ impl Icons {
     };
     let log = !self.failed_masks.contains(path);
     let key = self.load(path, &image, size, scale, log);
+    self.masked.insert(key.clone(), self.frame);
     if self
       .cache
       .get(&key)
@@ -552,12 +592,13 @@ impl Icons {
 
   /// Drops the picture cached under `key`, which image `id`'s transition
   /// no longer leaves, unless `id` now shows it as `current`, another
-  /// image showed it within the last [`RECENT`] draws, or another
+  /// image or a mask used it within the last [`RECENT`] draws, or another
   /// transition still leaves it. The image's own earlier showing doesn't
   /// count: that is the picture it left.
   fn forget(&mut self, key: Key, id: u64, current: Option<&Key>) {
     let recent = self.frame.saturating_sub(RECENT - 1);
     let kept = current == Some(&key)
+      || self.masked.get(&key).is_some_and(|&when| when >= recent)
       || self
         .shows
         .iter()
@@ -652,6 +693,13 @@ impl Icons {
     playback.frame = playback.frame.min(count - 1);
     playback.drawn = true;
     playback.playing = image.playing;
+    if playback.used != self.frame || playback.window != self.window {
+      playback.tiles.clear();
+    }
+    if !playback.tiles.contains(&self.tile) {
+      playback.tiles.push(self.tile);
+    }
+    playback.window = self.window;
     playback.used = self.frame;
     if !image.playing {
       playback.due = None;
@@ -876,6 +924,7 @@ impl Icons {
     if self.shows.len() > CAPACITY {
       self.shows.retain(|_, (_, when)| *when >= recent);
     }
+    self.masked.retain(|_, when| *when >= recent);
     let bytes: usize = self
       .cache
       .values()
