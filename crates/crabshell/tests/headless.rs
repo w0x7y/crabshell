@@ -1452,6 +1452,18 @@ fn this_as_shell(test: &str) -> Command {
 fn run_as_child() {
   match std::env::var(CHILD).as_deref() {
     Ok("panics") => crabshell::run(|_| panic!("a broken config")),
+    // Every output's bar panics, or only HEADLESS-1's.
+    Ok("bars panic") => crabshell::run(|cx| {
+      cx.per_output(|_: &Cx, output: &Output| -> PanelWindow {
+        panic!("no bar for {}", output.name())
+      });
+    }),
+    Ok("one bar panics") => crabshell::run(|cx| {
+      cx.per_output(|cx: &Cx, output: &Output| {
+        assert!(output.name() != "HEADLESS-1", "no bar for HEADLESS-1");
+        counter::bar(cx, output)
+      });
+    }),
     Ok("counter") => crabshell::run(|cx| cx.per_output(counter::bar)),
     Ok("v0.1") => run_v0_1_bar_logging_its_volume(),
     Ok("exits") => crabshell::run(|cx| {
@@ -1649,6 +1661,59 @@ fn a_root_that_panics_exits_1() {
     status.code(),
     Some(crabshell::EXIT_ROOT_PANICKED),
     "{status}"
+  );
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_shell_whose_bars_all_panic_at_startup_exits_1() {
+  run_as_child();
+  let sway = Sway::start();
+  sway.msg(&["create_output"]);
+  let mut shell = ExampleBar::spawn(
+    &sway,
+    this_as_shell("a_shell_whose_bars_all_panic_at_startup_exits_1"),
+    &[(CHILD, "bars panic")],
+  );
+  for output in ["HEADLESS-1", "HEADLESS-2"] {
+    let line = shell.wait_for(&format!("per_output[{output}] (called at "));
+    assert!(
+      line.contains("crates/crabshell/tests/headless.rs:"),
+      "the panic is logged with its path: {line}"
+    );
+  }
+  shell.wait_for("has nothing to show");
+  let status = shell.exit_status().expect("the shell exits");
+  assert_eq!(
+    status.code(),
+    Some(crabshell::EXIT_ROOT_PANICKED),
+    "{status}"
+  );
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_bar_that_panics_on_one_of_two_outputs_leaves_the_shell_running() {
+  run_as_child();
+  let sway = Sway::start();
+  sway.msg(&["create_output"]);
+  let mut shell = ExampleBar::spawn(
+    &sway,
+    this_as_shell("a_bar_that_panics_on_one_of_two_outputs_leaves_the_shell_running"),
+    &[(CHILD, "one bar panics")],
+  );
+  shell.wait_for("per_output[HEADLESS-1] (called at ");
+  // The verdict comes before any frame, so the shell outlived it.
+  shell.wait_for(FIRST_FRAME);
+  // Later, only the panicked build is left, which is no verdict: the shell
+  // still hears of the next output.
+  sway.msg(&["output", "HEADLESS-2", "unplug"]);
+  shell.wait_for("output removed name=\"HEADLESS-2\"");
+  sway.msg(&["create_output"]);
+  shell.wait_for("output added name=\"HEADLESS-3\"");
+  assert!(
+    shell.child.try_wait().expect("its status").is_none(),
+    "the shell ended"
   );
 }
 

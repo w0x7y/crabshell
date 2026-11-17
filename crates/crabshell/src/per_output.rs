@@ -78,6 +78,8 @@ struct Built<Id> {
   /// Everything the closure created belongs to it.
   owner: Owner,
   windows: Vec<Id>,
+  /// The closure panicked, so nothing was shown.
+  panicked: bool,
 }
 
 /// Every `per_output` call and what each built, by output.
@@ -127,6 +129,12 @@ impl<Id> PerOutput<Id> {
       at,
     }));
     self.builders.len() - 1
+  }
+
+  /// Whether something was built and every build panicked: the shell has
+  /// nothing to show. A closure that returns no windows didn't panic.
+  pub(crate) fn only_panicked(&self) -> bool {
+    !self.built.is_empty() && self.built.iter().all(|built| built.panicked)
   }
 
   /// Takes out the builders whose context is gone and everything they
@@ -291,6 +299,7 @@ fn build<H: Host>(state: &RefCell<PerOutput<H::Id>>, host: &mut H, builder: usiz
         .collect::<Vec<Window>>()
     })
   }));
+  let panicked = made.is_err();
   let windows = match made {
     Ok(windows) => windows
       .into_iter()
@@ -318,6 +327,7 @@ fn build<H: Host>(state: &RefCell<PerOutput<H::Id>>, host: &mut H, builder: usiz
     output: output.to_owned(),
     owner,
     windows,
+    panicked,
   });
 }
 

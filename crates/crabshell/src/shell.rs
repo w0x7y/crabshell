@@ -29,7 +29,8 @@ use crate::per_output::{self, Host, IntoPanels, PerOutput};
 use crate::persist::{self, Persisted};
 use crate::switch_log::SwitchLog;
 
-/// The exit status when the root closure panicked: the config is broken.
+/// The exit status when the config is broken: the root closure panicked,
+/// or every `per_output` closure panicked at startup, so nothing shows.
 pub const EXIT_ROOT_PANICKED: i32 = 1;
 
 /// The exit status when the compositor can't be reached, or the connection
@@ -42,7 +43,9 @@ pub const EXIT_NO_COMPOSITOR: i32 = 2;
 /// `root` sets the shell up, usually with [`ShellExt::per_output`]. Errors
 /// are logged, and the process exits with:
 ///
-/// - [`EXIT_ROOT_PANICKED`] (1) if `root` panics: the config is broken;
+/// - [`EXIT_ROOT_PANICKED`] (1) if `root` panics, or if every
+///   [`per_output`](ShellExt::per_output) closure panics for the first
+///   outputs announced: the config is broken;
 /// - [`EXIT_NO_COMPOSITOR`] (2) if there is no compositor to connect to,
 ///   it lacks a protocol the shell needs, or the connection is lost later,
 ///   as at logout.
@@ -398,18 +401,45 @@ impl Shell {
   }
 
   /// Runs the event loop until the connection is lost, then logs it and
-  /// exits with [`EXIT_NO_COMPOSITOR`].
+  /// exits with [`EXIT_NO_COMPOSITOR`]. If every `per_output` closure
+  /// panicked in the first turn that announced an output, it logs that
+  /// the shell has nothing to show and exits with [`EXIT_ROOT_PANICKED`],
+  /// so a supervisor can fall back to a config that works. A closure that
+  /// panics for an output announced later is only logged.
   pub fn run(mut self) -> ! {
+    // shortcut: assumes the compositor announces its outputs in one turn,
+    // as Sway does; the verdict would come early for one that doesn't.
+    let mut judged = false;
     loop {
       if let Err(error) = self.dispatch(None) {
-        if let Some(service) = self.cx.service::<Service>() {
-          service.ipc.remove_socket();
-        }
-        crabshell_services::stop_programs(&self.cx);
+        self.stop_services();
         tracing::error!(%error, "the shell stops");
         std::process::exit(EXIT_NO_COMPOSITOR);
       }
+      if !judged && self.event_loop.platform().outputs().next().is_some() {
+        judged = true;
+        let only_panicked = self
+          .cx
+          .service::<Service>()
+          .is_some_and(|service| service.per_output.borrow().only_panicked());
+        if only_panicked {
+          self.stop_services();
+          tracing::error!(
+            "every per_output closure panicked at startup, so the shell has nothing to show; exiting"
+          );
+          std::process::exit(EXIT_ROOT_PANICKED);
+        }
+      }
     }
+  }
+
+  /// Removes the IPC socket and stops the programs the config started,
+  /// before the shell exits.
+  fn stop_services(&self) {
+    if let Some(service) = self.cx.service::<Service>() {
+      service.ipc.remove_socket();
+    }
+    crabshell_services::stop_programs(&self.cx);
   }
 
   /// The platform: its outputs, windows and counters. Its
@@ -731,7 +761,8 @@ pub trait ShellExt {
   /// is announced again. When this context's own owner is disposed, the
   /// call ends and every window it built goes. A panic in `f` is logged
   /// with its path, such as `per_output[DP-1] (called at src/main.rs:4)`,
-  /// and the other outputs carry on.
+  /// and the other outputs carry on. If every closure panics for the
+  /// outputs there at startup, [`run`] exits with [`EXIT_ROOT_PANICKED`].
   ///
   /// Call it from the root closure, or from inside another `per_output`'s
   /// `f`. Called from an effect, it would start another set of windows

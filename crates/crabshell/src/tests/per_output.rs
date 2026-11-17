@@ -439,3 +439,32 @@ fn a_builder_whose_context_goes_mid_announcement_is_skipped_quietly() {
   // The second builder's DP-1 bar went with its context too.
   assert_eq!((host.on("DP-1"), host.on("DP-2")), (1, 1));
 }
+
+#[test]
+fn only_panicked_says_whether_every_build_so_far_panicked() {
+  let runtime = Runtime::current();
+  let root = Cx::new(runtime.new_owner());
+  let state = RefCell::new(PerOutput::new());
+  let mut host = Fake::default();
+  assert!(!state.borrow().only_panicked(), "nothing was built yet");
+  state.borrow_mut().add(
+    root.clone(),
+    build(|_, output: &Output| -> Vec<PanelWindow> {
+      // DP-3 gets no windows on purpose, which isn't a panic.
+      assert!(output.name() == "DP-3", "no bar for {}", output.name());
+      Vec::new()
+    }),
+  );
+  capture_logs(|| {
+    per_output::added(&state, &mut host, "DP-1");
+    per_output::added(&state, &mut host, "DP-2");
+  });
+  assert!(state.borrow().only_panicked());
+  per_output::added(&state, &mut host, "DP-3");
+  assert!(!state.borrow().only_panicked());
+  // A panic beside a bar that built isn't nothing to show either.
+  per_output::removed(&state, &mut host, "DP-3", &[]);
+  state.borrow_mut().add(root.clone(), build(bar));
+  per_output::added(&state, &mut host, "DP-4");
+  assert!(!state.borrow().only_panicked());
+}
