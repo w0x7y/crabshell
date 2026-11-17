@@ -3816,6 +3816,116 @@ fn a_view_joining_a_session_stalled_on_a_hidden_window_still_follows_its_source(
   );
 }
 
+/// A window whose view moves from one source to another, while it can't
+/// draw, is no longer waited for: the first source's session goes on
+/// with the views left. The shown viewer turns on painting the cursor,
+/// which starts a session of its own with no frame, and its view keeps
+/// the frame it had, the same pixels as the new session's first; so
+/// only the hidden viewer, new to it, is waited for.
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_session_stops_waiting_for_a_window_whose_view_moved_to_another_source() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1280x720", "scale", "1"]);
+  for name in ["HEADLESS-2", "HEADLESS-3"] {
+    sway.msg(&["create_output"]);
+    sway.msg(&["output", name, "mode", "640x360", "scale", "1"]);
+  }
+  let cx = Cx::new(Runtime::current().new_owner());
+  let mut event_loop = sway.connect();
+  let color = cx.signal(RED);
+  for (name, color) in [("HEADLESS-2", color), ("HEADLESS-3", cx.signal(GREEN))] {
+    let fill = PanelWindow::new(&Output::new(name))
+      .anchors(Edge::Top | Edge::Bottom | Edge::Left | Edge::Right)
+      .style(move || Style::new().background(color.get()));
+    event_loop.platform().add_window(Window::new(&cx, fill));
+    let now = color.get_untracked();
+    wait_for_color(&sway, &mut event_loop, name, (0, 0, 640, 360), now);
+  }
+  let source = |name: &str| CaptureSource::Output(String::from(name));
+  // 0: only the shown viewer shows the first source; 1: the hidden one
+  // shows it too, and both paint the cursor; 2: the hidden one shows the
+  // second source.
+  let phase = cx.signal(0_u8);
+  let tint = cx.signal(BAR);
+  let hidden = PanelWindow::new(&Output::new("HEADLESS-1"))
+    .anchors(Edge::Top | Edge::Left)
+    .layer(Layer::Bottom)
+    .width(160)
+    .height(90)
+    .style(move || Style::new().background(tint.get()))
+    .child(Row::new().children_keyed(
+      move || if phase.get() > 0 { vec![0] } else { vec![] },
+      |key| *key,
+      move |_, _| {
+        let name = move || {
+          if phase.get() == 1 {
+            "HEADLESS-2"
+          } else {
+            "HEADLESS-3"
+          }
+        };
+        ScreencopyView::new(move || source(name()))
+          .live(true)
+          .paint_cursors(true)
+          .style(Style::new().width(80.0).height(45.0))
+      },
+    ));
+  let hidden = event_loop.platform().add_window(Window::new(&cx, hidden));
+  let shown = PanelWindow::new(&Output::new("HEADLESS-1"))
+    .anchors(Edge::Top | Edge::Right)
+    .layer(Layer::Overlay)
+    .width(160)
+    .height(90)
+    .child(
+      Row::new().child(
+        ScreencopyView::new(source("HEADLESS-2"))
+          .live(true)
+          .paint_cursors(move || phase.get() > 0)
+          .style(Style::new().width(160.0).height(90.0)),
+      ),
+    );
+  let shown = event_loop.platform().add_window(Window::new(&cx, shown));
+  let shows = |platform: &Platform, window: WindowId, color: Color| {
+    let frames = frames_in(platform, window);
+    frames.len() == 1 && all_of(&frames[0].rgba, color)
+  };
+  run_until(&mut event_loop, "the first source's frame", |platform| {
+    shows(platform, shown, RED)
+  });
+
+  // A fullscreen window hides the bottom viewer, which draws once more,
+  // and then gets no frame callbacks.
+  sway.msg(&["focus", "output", "HEADLESS-1"]);
+  let _cover = AppWindow::new(&sway, "org.example.Cover", "cover");
+  sway.msg(&["[app_id=org.example.Cover]", "fullscreen", "enable"]);
+  settle(&mut event_loop);
+  let commits = |platform: &Platform| platform.window_info(hidden).map_or(0, |info| info.commits);
+  let before = commits(event_loop.platform());
+  tint.set(MAGENTA);
+  run_until(
+    &mut event_loop,
+    "the hidden viewer's last draw",
+    |platform| commits(platform) > before,
+  );
+  settle(&mut event_loop);
+
+  // The new session's first frame is new only to the hidden viewer, so
+  // the session waits for that one alone.
+  phase.set(1);
+  run_until(&mut event_loop, "the hidden viewer's frame", |platform| {
+    shows(platform, hidden, RED)
+  });
+  settle(&mut event_loop);
+  phase.set(2);
+  color.set(BLUE);
+  run_until(
+    &mut event_loop,
+    "the first source's next frame",
+    |platform| shows(platform, shown, BLUE),
+  );
+}
+
 /// The lock screen's background.
 const MAGENTA: Color = Color::rgb(0xff, 0x00, 0xff);
 
