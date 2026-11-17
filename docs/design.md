@@ -777,7 +777,7 @@ Rules settled while building `crabshell-render` (Phase 17):
 - Underlines and strikethroughs are filled rectangles at the underline and strikeout offset and thickness of each line's first glyph's font, as cosmic-text and Pango place them, with cosmic-text's defaults when the font gives none. The edges snap to whole buffer pixels, each line is at least a pixel thick, the offset is clamped to a quarter em below the baseline or half an em above it and the thickness to a quarter em, so a line stays inside the text's painted area. They don't skip descenders.
 - A span's color and lines are drawn per run of its glyphs on a line, in the span's color or the text's. cosmic-text 0.19's decoration spans join two decorated spans across the plain text between them, so they aren't used.
 - A selectable text's selection is drawn behind it in a third of its color, as a field's is.
-- `text_styles@*.png`, `rich_text@*.png`, `selectable_text@*.png` and `text_area@*.png` pin the new drawing. The goldens also need Noto Sans Italic as fontconfig's `sans-serif:italic`.
+- `text_styles@*.png`, `rich_text@*.png`, `selectable_text@*.png` and `text_area@*.png` pin the new drawing. The goldens also need Noto Sans Italic and Bold Italic for fontconfig's italic `sans-serif`.
 
 ## Wayland platform
 
