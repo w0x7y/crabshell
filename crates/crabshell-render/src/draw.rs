@@ -784,25 +784,62 @@ impl Painter<'_> {
       return false;
     };
     let corners = inset(corners, half);
-    // Each corner trades two radii of straight line for a quarter circle.
-    let rounding: f32 = corners
-      .iter()
-      .map(|radius| (2.0 - std::f32::consts::FRAC_PI_2) * radius)
-      .sum();
-    let perimeter = 2.0 * (middle.width() + middle.height()) - rounding;
-    let Some((on, off)) = fit_dash(perimeter, on * scale, off * scale) else {
-      return false;
-    };
-    let mut path = PathBuilder::new();
-    rounded_rect(&mut path, middle, corners);
-    // The line starts at the end of the top-left corner. A dash centered
-    // there runs across the start, so tiny-skia joins its two halves
-    // with a miter, and a square corner there is filled, as CSS draws it.
-    let phase = on / 2.0;
-    let (Some(path), Some(dash)) = (path.finish(), StrokeDash::new(vec![on, off], phase)) else {
-      return false;
-    };
-    let Some(dashes) = path.dash(&dash, 1.0) else {
+    let (on, off) = (on * scale, off * scale);
+    let mut all = PathBuilder::new();
+    let square: Vec<usize> = (0..4).filter(|&index| corners[index] <= 0.0).collect();
+    if square.is_empty() {
+      // Each corner trades two radii of straight line for a quarter
+      // circle.
+      let rounding: f32 = corners
+        .iter()
+        .map(|radius| (2.0 - std::f32::consts::FRAC_PI_2) * radius)
+        .sum();
+      let perimeter = 2.0 * (middle.width() + middle.height()) - rounding;
+      let mut path = PathBuilder::new();
+      rounded_rect(&mut path, middle, corners);
+      if !dash_into(&mut all, path, perimeter, on, off) {
+        return false;
+      }
+    } else {
+      // As browsers do, each run from one square corner to the next gets
+      // its own whole number of dashes, centered on both corners.
+      for (at, &from) in square.iter().enumerate() {
+        let to = square[(at + 1) % square.len()];
+        let steps = (to + 4 - from - 1) % 4 + 1;
+        let [.., mut was] = corner(middle, corners, from);
+        let mut path = PathBuilder::new();
+        path.move_to(was.x, was.y);
+        let mut length = 0.0;
+        for index in (from + 1..=from + steps).map(|index| index % 4) {
+          let [start, one, two, end] = corner(middle, corners, index);
+          path.line_to(start.x, start.y);
+          length += was.distance(start);
+          if corners[index] > 0.0 {
+            path.cubic_to(one.x, one.y, two.x, two.y, end.x, end.y);
+            length += std::f32::consts::FRAC_PI_2 * corners[index];
+          }
+          was = end;
+        }
+        if !dash_into(&mut all, path, length, on, off) {
+          return false;
+        }
+      }
+      // The two half dashes meeting at a square corner end on its middle
+      // line, so the outer quarter of the corner is filled by a piece
+      // joined there with a miter. A dot is round there as anywhere.
+      if on > 0.0 {
+        // Each corner's incoming direction, clockwise from the top left.
+        const IN: [(f32, f32); 4] = [(0.0, -1.0), (1.0, 0.0), (0.0, 1.0), (-1.0, 0.0)];
+        for &index in &square {
+          let [point, ..] = corner(middle, corners, index);
+          let ((ax, ay), (bx, by)) = (IN[index], IN[(index + 1) % 4]);
+          all.move_to(point.x - half * ax, point.y - half * ay);
+          all.line_to(point.x, point.y);
+          all.line_to(point.x + half * bx, point.y + half * by);
+        }
+      }
+    }
+    let Some(dashes) = all.finish() else {
       return true;
     };
     // Every tile the border crosses would stroke every dash, so only the
@@ -1298,6 +1335,42 @@ fn fill(pixmap: &mut PixmapMut<'_>, path: PathBuilder, color: Color, rule: FillR
 /// Each corner's radius in pixels, from the top left clockwise.
 type Corners = [f32; 4];
 
+/// Dashes `path`, `length` pixels long, by `on` and `off` stretched so a
+/// whole number of them fits, each centered on a multiple of the period
+/// from its start, and adds them to `all`. `false` when the pattern can't
+/// be drawn.
+fn dash_into(all: &mut PathBuilder, path: PathBuilder, length: f32, on: f32, off: f32) -> bool {
+  let Some((on, off)) = fit_dash(length, on, off) else {
+    return false;
+  };
+  let (Some(path), Some(dash)) = (path.finish(), StrokeDash::new(vec![on, off], on / 2.0)) else {
+    return false;
+  };
+  if let Some(dashes) = path.dash(&dash, 1.0) {
+    all.push_path(&dashes);
+  }
+  true
+}
+
+/// Where corner `index` of `rect`, from the top left clockwise, starts
+/// and ends going clockwise, with its quarter circle's control points
+/// between: `[start, one, two, end]`, all one point for a square corner.
+fn corner(rect: tiny_skia::Rect, corners: Corners, index: usize) -> [tiny_skia::Point; 4] {
+  // How far a cubic curve's control points sit along the tangents to
+  // follow a quarter circle closely.
+  const KAPPA: f32 = 0.552_284_8;
+  let (l, t, r, b) = (rect.left(), rect.top(), rect.right(), rect.bottom());
+  let radius = corners[index];
+  let k = radius * (1.0 - KAPPA);
+  let points = match index {
+    0 => [(l, t + radius), (l, t + k), (l + k, t), (l + radius, t)],
+    1 => [(r - radius, t), (r - k, t), (r, t + k), (r, t + radius)],
+    2 => [(r, b - radius), (r, b - k), (r - k, b), (r - radius, b)],
+    _ => [(l + radius, b), (l + k, b), (l, b - k), (l, b - radius)],
+  };
+  points.map(|(x, y)| tiny_skia::Point::from_xy(x, y))
+}
+
 /// `corners` fitted to `area` as CSS fits them ([`Radii::fit`]).
 fn fit(
   [top_left, top_right, bottom_right, bottom_left]: Corners,
@@ -1324,32 +1397,14 @@ fn rounded_rect(path: &mut PathBuilder, rect: tiny_skia::Rect, corners: Corners)
     path.push_rect(rect);
     return;
   }
-  // How far a cubic curve's control points sit along the tangents to
-  // follow a quarter circle closely.
-  const KAPPA: f32 = 0.552_284_8;
-  let (l, t, r, b) = (rect.left(), rect.top(), rect.right(), rect.bottom());
-  let [top_left, top_right, bottom_right, bottom_left] = corners;
-  let k = |radius: f32| radius * (1.0 - KAPPA);
-  path.move_to(l + top_left, t);
-  path.line_to(r - top_right, t);
-  if top_right > 0.0 {
-    let k = k(top_right);
-    path.cubic_to(r - k, t, r, t + k, r, t + top_right);
-  }
-  path.line_to(r, b - bottom_right);
-  if bottom_right > 0.0 {
-    let k = k(bottom_right);
-    path.cubic_to(r, b - k, r - k, b, r - bottom_right, b);
-  }
-  path.line_to(l + bottom_left, b);
-  if bottom_left > 0.0 {
-    let k = k(bottom_left);
-    path.cubic_to(l + k, b, l, b - k, l, b - bottom_left);
-  }
-  path.line_to(l, t + top_left);
-  if top_left > 0.0 {
-    let k = k(top_left);
-    path.cubic_to(l, t + k, l + k, t, l + top_left, t);
+  let [.., start] = corner(rect, corners, 0);
+  path.move_to(start.x, start.y);
+  for index in [1, 2, 3, 0] {
+    let [start, one, two, end] = corner(rect, corners, index);
+    path.line_to(start.x, start.y);
+    if corners[index] > 0.0 {
+      path.cubic_to(one.x, one.y, two.x, two.y, end.x, end.y);
+    }
   }
   path.close();
 }

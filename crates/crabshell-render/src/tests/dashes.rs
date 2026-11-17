@@ -91,10 +91,9 @@ fn a_dash_merged_over_a_border_dashes_it() {
 }
 
 #[test]
-fn a_dash_is_centered_on_the_top_left_corner_so_square_corners_are_filled() {
-  // 224 pixels around the middle line, 22 dashes: one is centered on the
-  // top-left corner, where the line starts, and one on the bottom-right,
-  // half way round.
+fn a_dash_is_centered_on_each_square_corner_so_they_are_filled() {
+  // Each side gets its own dashes: 10 along the top's 96 pixel middle
+  // line and 2 down the side's 16, one centered on each corner.
   let buffer = bordered(Style::new().border(4.0, WHITE).border_dash(6.0, 4.0), 1.0);
   for (x, y) in [
     (10, 10),
@@ -107,9 +106,41 @@ fn a_dash_is_centered_on_the_top_left_corner_so_square_corners_are_filled() {
   ] {
     assert_eq!(buffer.pixel(x, y), [255, 255, 255, 255], "at {x}, {y}");
   }
-  // The dash at the corner reaches half a dash, 3 pixels, past the
+  // The dash at the corner reaches half a dash, 2.4 pixels, past the
   // middle line's corner at 12.
   assert_eq!(runs(&buffer, 10, 10, 30)[0], 5);
+}
+
+#[test]
+fn every_square_corner_of_a_dashed_border_is_filled_whole_and_once() {
+  // Square corners at the top left and bottom right only, then all four,
+  // in a translucent color, so a corner drawn twice would be darker.
+  let half = Color::rgba(255, 255, 255, 128);
+  let card = Style::new().border(4.0, half).border_dash(6.0, 4.0);
+  for (style, square) in [
+    (card.radii(0.0, 8.0, 0.0, 8.0), [true, false, true, false]),
+    (card, [true; 4]),
+  ] {
+    for scale in [1.0_f32, 1.5, 2.0] {
+      let buffer = bordered(style, scale);
+      let width = (4.0 * scale).floor() as u32;
+      let (left, top) = ((10.0 * scale).round() as u32, (10.0 * scale).round() as u32);
+      let (right, bottom) = (
+        (110.0 * scale).round() as u32 - width,
+        (30.0 * scale).round() as u32 - width,
+      );
+      let corners = [(left, top), (right, top), (right, bottom), (left, bottom)];
+      for (&(x0, y0), _) in corners.iter().zip(square).filter(|(_, square)| *square) {
+        for (x, y) in (x0..x0 + width).flat_map(|x| (y0..y0 + width).map(move |y| (x, y))) {
+          assert_eq!(
+            buffer.pixel(x, y),
+            [128, 128, 128, 128],
+            "at {x}, {y}, scale {scale}, corner at {x0}, {y0}"
+          );
+        }
+      }
+    }
+  }
 }
 
 #[test]
@@ -163,10 +194,10 @@ fn a_dashed_border_of_no_width_draws_nothing() {
 
 #[test]
 fn a_dash_longer_than_a_tile_is_drawn_in_every_tile_it_crosses() {
-  // Two dashes around a 300 by 20 box, 304 and 12 pixels on its 632
-  // pixel middle line. The first is centered on the top-left corner, and
-  // the second runs from x 175 along the rest of the top edge and on,
-  // past both ends of the tiles from 192 to 256.
+  // One period along the top of a 300 by 20 box: a dash of 287 pixels
+  // and a gap of 11 on its 298 pixel middle line, the dash centered on
+  // both corners. Its second half runs from x 166 to the top-right
+  // corner, past both ends of the tiles from 192 to 256.
   let mut scene = Scene::new();
   let row = Row::new().padding(10, 10).align(Align::Start).child(
     Row::new().style(
