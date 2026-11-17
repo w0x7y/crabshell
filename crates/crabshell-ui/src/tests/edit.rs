@@ -205,3 +205,37 @@ fn many_lines_keep_line_breaks_and_enter_breaks_a_line() {
   assert_eq!(edit.text, "a  b");
   assert_eq!(edit.key(&key(Key::Enter), true), Keyed::Accept);
 }
+
+#[test]
+fn many_lines_type_a_tab_only_without_a_modifier_but_shift() {
+  let mut edit = Edit {
+    multiline: true,
+    ..at("ab", 0)
+  };
+  for modifiers in [
+    Modifiers {
+      shift: true,
+      ..Modifiers::default()
+    },
+    Modifiers {
+      ctrl: true,
+      ..Modifiers::default()
+    },
+    Modifiers {
+      alt: true,
+      ..Modifiers::default()
+    },
+    Modifiers {
+      logo: true,
+      ..Modifiers::default()
+    },
+  ] {
+    let event = KeyEvent {
+      modifiers,
+      ..key(Key::Tab)
+    };
+    assert_eq!(edit.key(&event, true), Keyed::Unused, "{modifiers:?}");
+  }
+  assert_eq!(edit.key(&key(Key::Tab), true), Keyed::Edited);
+  assert_eq!(edit.text, "\tab");
+}

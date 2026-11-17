@@ -7,7 +7,7 @@ use super::{Counter, rect_at};
 use super::{Harness, node_at};
 use crate::{
   Button, Clipboard, Column, Content, CursorShape, Icon, Key, KeyEvent, Modifiers, Point,
-  PointerButton, Rect, Row, ScrollView, Style, Text, TextInput, Window,
+  PointerButton, Rect, Row, ScrollView, Span, Style, Text, TextInput, Window,
 };
 
 /// Ctrl+C, and what it copied.
@@ -342,4 +342,29 @@ fn a_double_click_in_a_password_selects_all_of_it() {
     repeat: false,
   });
   assert_eq!(text.get(), "x", "where its spaces are stays hidden");
+}
+
+#[test]
+fn a_span_change_that_keeps_the_text_keeps_the_selection() {
+  let mut h = Harness::new();
+  let bold = h.cx.signal(false);
+  let words = h.cx.signal(String::from("world"));
+  let spans = move || {
+    let word = Span::new(words.get());
+    vec![
+      Span::new("hello "),
+      if bold.get() { word.bold() } else { word },
+    ]
+  };
+  let window = label(&mut h, Text::rich(spans).selectable(true));
+  drag(&window, Point::new(1.0, 10.0), Point::new(190.0, 10.0), 0);
+  assert_eq!(copied(&window).as_deref(), Some("hello world"));
+  bold.set(true);
+  h.frame(&window);
+  assert_eq!(copied(&window).as_deref(), Some("hello world"));
+  assert_eq!(selection(&window, &[0, 0]).len(), 1);
+  // New text, longer, so the old bytes would still be there.
+  words.set(String::from("there, everyone"));
+  h.frame(&window);
+  assert_eq!(copied(&window), None);
 }

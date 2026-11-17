@@ -887,10 +887,7 @@ impl Tree {
           })
         });
         self.bind_opt(id, props.spans, "spans", |tree, id, value| {
-          tree.update_text(id, |text| {
-            let changed = text.set_spans(value);
-            text.forget_selection_if(changed)
-          })
+          tree.update_text(id, |text| text.set_spans(value))
         });
         self.bind_opt(id, props.selectable, "selectable", Tree::set_selectable);
         self.bind_opt(id, props.elide, "elide", |tree, id, value| {

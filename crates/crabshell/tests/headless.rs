@@ -5125,25 +5125,26 @@ fn the_notes_clock_holds_its_width_and_its_note_takes_keys_and_input_method_text
     method.poll();
     method.active()
   });
-  for key in [keys::H, keys::ENTER, keys::I] {
+  // Tab types a tab in the note rather than moving the focus.
+  for key in [keys::H, keys::ENTER, keys::I, keys::TAB] {
     keyboard.tap(key);
   }
-  run_until(&mut shell, "two typed lines", |_| {
-    note.get_untracked() == "h\ni"
+  run_until(&mut shell, "two typed lines and a tab", |_| {
+    note.get_untracked() == "h\ni\t"
   });
   // Sway ignores a commit whose serial isn't the latest `done`, so wait
   // until the input method has heard the typed text.
   run_until(&mut shell, "the input method to hear it", |_| {
     method.poll();
-    method.surrounding() == "h\ni"
+    method.surrounding() == "h\ni\t"
   });
   method.commit("你");
   run_until(&mut shell, "the committed text", |_| {
-    note.get_untracked() == "h\ni你"
+    note.get_untracked() == "h\ni\t你"
   });
   run_until(&mut shell, "the surrounding text", |_| {
     method.poll();
-    method.surrounding() == "h\ni你"
+    method.surrounding() == "h\ni\t你"
   });
   // One event comes after the input method's last change, and then the
   // loop sleeps.

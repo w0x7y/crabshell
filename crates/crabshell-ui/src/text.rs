@@ -601,7 +601,12 @@ impl TextNode {
       elide: Elide::None,
       max_lines: 1,
       wrap: true,
-      buffer: Buffer::new_empty(metrics(&Font::DEFAULT.into())),
+      buffer: {
+        let mut buffer = Buffer::new_empty(metrics(&Font::DEFAULT.into()));
+        // Four spaces, as most editors; cosmic-text's default is eight.
+        buffer.set_tab_width(4);
+        buffer
+      },
       style: None,
       fonts_added: 0,
       stale: true,
@@ -619,6 +624,8 @@ impl TextNode {
     self.set(|text| &mut text.content, content)
   }
 
+  /// Sets a rich text's spans. Only a change of the text they join drops
+  /// the selection; a change of style alone keeps it.
   pub(crate) fn set_spans(&mut self, spans: Vec<Span>) -> bool {
     let content = spans.iter().map(|span| span.text.as_str()).collect();
     self.span_starts = spans
@@ -630,7 +637,8 @@ impl TextNode {
       })
       .collect();
     let changed = self.set(|text| &mut text.spans, spans);
-    self.set_content(content) | changed
+    let new_text = self.set_content(content);
+    self.forget_selection_if(new_text) | changed
   }
 
   /// Drops the selection and puts the caret at the start if `changed`,

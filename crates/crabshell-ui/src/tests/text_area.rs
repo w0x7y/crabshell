@@ -380,3 +380,61 @@ fn an_area_removed_after_an_edit_is_skipped_by_the_next_layout() {
   h.frame(&window);
   assert_eq!(window.focused(), None);
 }
+
+#[test]
+fn tab_types_a_tab_and_shift_or_ctrl_tab_moves_the_focus() {
+  let mut h = Harness::new();
+  let text = h.cx.signal(String::from("ab"));
+  let before = h.cx.signal(String::new());
+  let after = h.cx.signal(String::new());
+  let column = Column::new()
+    .child(crate::TextInput::new(before))
+    .child(TextArea::new(text).focus(true))
+    .child(crate::TextInput::new(after));
+  let window = h.window(h.panel().child(column), 300.0, 200.0);
+  window.keyboard_enter();
+  h.frame(&window);
+  window.key(&key(Key::Home));
+  window.key(&key(Key::Tab));
+  h.frame(&window);
+  assert_eq!(text.get(), "\tab");
+  // Drawn at four spaces' width.
+  let caret = shown_at(&window, &[0, 1]).1;
+  let field = window.field().expect("the area");
+  assert_eq!(field.cursor, 1);
+  let space = h.cx.measure_text("    ", crate::Font::DEFAULT).width;
+  let area = rect_at(&window, &[0, 1]);
+  assert!(
+    (caret.x - area.x - space).abs() < 1.0,
+    "{caret:?} in {area:?}, {space}"
+  );
+  let shift = Modifiers {
+    shift: true,
+    ..Modifiers::default()
+  };
+  window.key(&with(Key::Tab, shift));
+  assert_eq!(
+    window.focused().as_deref(),
+    Some("PanelWindow[DP-1]/Column/TextInput[0]")
+  );
+  window.key(&key(Key::Tab));
+  window.key(&with(Key::Tab, CTRL));
+  assert_eq!(
+    window.focused().as_deref(),
+    Some("PanelWindow[DP-1]/Column/TextInput[2]")
+  );
+  assert_eq!(text.get(), "\tab");
+  // A one-line field keeps Tab for the focus.
+  window.key(&key(Key::Tab));
+  assert_eq!(after.get(), "");
+}
+
+/// The rectangle and caret of the area at `path`.
+fn shown_at(window: &Window, path: &[usize]) -> (Rect, Rect) {
+  let view = window.view();
+  let node = node_at(view.root(), path);
+  match node.content() {
+    Content::Input(input) => (node.rect(), input.caret.expect("a caret")),
+    _ => panic!("not an area"),
+  }
+}

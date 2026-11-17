@@ -20,7 +20,8 @@ use crate::widgets::{Common, Element, ElementKind, Widget, visibility_methods};
 /// caret's place across, Home and End go to the ends of the line as it
 /// is wrapped, Ctrl+Home and Ctrl+End to the ends of the text, and
 /// PageUp and PageDown by the height of the [`ScrollView`](crate::ScrollView)
-/// around it, or 10 lines.
+/// around it, or 10 lines. Tab types a tab, drawn four spaces wide, and
+/// Shift+Tab and Ctrl+Tab move the focus back and on.
 ///
 /// The area is as tall as its lines, at least one. Put it in a
 /// `ScrollView` to cap its height; when the caret leaves the view, the

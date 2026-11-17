@@ -96,6 +96,16 @@ impl Edit {
     match &event.key {
       Key::Enter if self.multiline && !modifiers.ctrl => self.insert("\n"),
       Key::Enter => return Keyed::Accept,
+      // Shift+Tab and Ctrl+Tab still move the focus out.
+      Key::Tab
+        if self.multiline
+          && !modifiers.shift
+          && !modifiers.ctrl
+          && !modifiers.alt
+          && !modifiers.logo =>
+      {
+        self.insert("\t");
+      }
       Key::Character('c' | 'C' | 'x' | 'X') if command && !copyable => return Keyed::Moved,
       Key::Character('c' | 'C') if command => {
         return match self.selection() {
