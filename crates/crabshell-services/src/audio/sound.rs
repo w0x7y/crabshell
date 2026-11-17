@@ -9,6 +9,8 @@ use std::sync::Arc;
 
 use libpulse_binding::channelmap::{Map, MapDef};
 use libpulse_binding::context;
+use libpulse_binding::operation::{self, Operation};
+use libpulse_binding::proplist::{Proplist, properties};
 use libpulse_binding::sample::{Format, Spec};
 use libpulse_binding::stream::{FlagSet, SeekMode, State, Stream};
 
@@ -100,13 +102,6 @@ pub(super) fn parse(bytes: &[u8]) -> Result<Wav, &'static str> {
 /// The bytes of the file at `path`, read at once, if it is a regular file
 /// of at most 16 MiB.
 fn read(path: &Path) -> Result<Vec<u8>, String> {
-  // Checked before the open, so a device or a pipe is never opened.
-  if !std::fs::metadata(path)
-    .map_err(|e| e.to_string())?
-    .is_file()
-  {
-    return Err("it isn't a file".into());
-  }
   let file = open_file(path).map_err(|e| e.message)?;
   let mut bytes = Vec::new();
   file
@@ -138,9 +133,23 @@ impl Audio {
       Ok(sound) => sound,
       Err(why) => return service.refused(path, &why),
     };
-    let played = match service.pulse.borrow_mut().as_mut() {
-      Some(pulse) => pulse.play(bytes, wav),
-      None => Err("there is no audio server".to_owned()),
+    let mut pulse = service.pulse.borrow_mut();
+    let played = match pulse.as_mut() {
+      Some(pulse) if pulse.intro.is_some() => pulse.play(bytes, wav),
+      Some(pulse) if pulse.down => Err("there is no audio server".to_owned()),
+      // libpulse hasn't started or connected yet, as for a sound played
+      // from the root closure.
+      _ if service.shared.config.audio.is_some() => {
+        let mut waiting = service.waiting_sounds.borrow_mut();
+        if waiting.len() < MAX_WAITING {
+          waiting.push((bytes, wav));
+          return;
+        }
+        Err(format!(
+          "{MAX_WAITING} sounds already wait for the audio server"
+        ))
+      }
+      _ => Err("there is no audio server".to_owned()),
     };
     if let Err(why) = played {
       tracing::info!(path = %path.display(), why, "a sound didn't play");
@@ -149,6 +158,23 @@ impl Audio {
 }
 
 impl AudioService {
+  /// Plays the sounds that waited for the connection, now ready.
+  pub(super) fn play_waiting(&self, pulse: &mut Pulse) {
+    for (bytes, wav) in self.waiting_sounds.take() {
+      if let Err(why) = pulse.play(bytes, wav) {
+        tracing::info!(why, "a sound didn't play");
+      }
+    }
+  }
+
+  /// Drops the sounds that waited for a connection that failed.
+  pub(super) fn drop_waiting(&self) {
+    let dropped = self.waiting_sounds.take().len();
+    if dropped > 0 {
+      tracing::info!(dropped, "sounds waiting for the audio server didn't play");
+    }
+  }
+
   /// Logs that the sound at `path` can't be played, once per path.
   fn refused(&self, path: &Path, why: &str) {
     if self.bad_sounds.borrow_mut().insert(path.to_owned()) {
@@ -159,6 +185,12 @@ impl AudioService {
 
 /// The sounds already logged as unplayable.
 pub(super) type BadSounds = HashSet<PathBuf>;
+
+/// The most sounds that wait for the audio server to connect.
+const MAX_WAITING: usize = 4;
+
+/// A sound waiting for the audio server to connect.
+pub(super) type Waiting = Vec<(Vec<u8>, Wav)>;
 
 /// A sound playing.
 pub(super) struct Sound {
@@ -173,14 +205,24 @@ pub(super) struct Sound {
 }
 
 /// A playback stream whose callbacks are cleared before it drops, as a
-/// peak meter's are. Dropped under the mainloop's lock, or with
+/// peak meter's are, and its drain, cancelled if it hasn't ended, which
+/// frees its callback. Dropped under the mainloop's lock, or with
 /// libpulse's thread stopped.
-struct Playing(Stream);
+struct Playing {
+  stream: Stream,
+  drain: Option<Operation<dyn FnMut(bool)>>,
+}
 
 impl Drop for Playing {
   fn drop(&mut self) {
-    self.0.set_write_callback(None);
-    self.0.set_state_callback(None);
+    // An ended drain's callback was freed when it ran.
+    if let Some(drain) = self.drain.as_mut()
+      && drain.get_state() == operation::State::Running
+    {
+      drain.cancel();
+    }
+    self.stream.set_write_callback(None);
+    self.stream.set_state_callback(None);
   }
 }
 
@@ -197,8 +239,11 @@ impl Pulse {
     map
       .init_auto(wav.spec.channels, MapDef::WAVEEx)
       .ok_or("libpulse has no channel map for it")?;
+    let mut properties = Proplist::new().ok_or("libpulse made no property list")?;
+    let _ = properties.set_str(properties::MEDIA_ROLE, "event");
     let mut stream =
-      Stream::new(context, "Sound", &wav.spec, Some(&map)).ok_or("libpulse made no stream")?;
+      Stream::new_with_proplist(context, "Sound", &wav.spec, Some(&map), &mut properties)
+        .ok_or("libpulse made no stream")?;
     stream
       .connect_playback(None, None, FlagSet::NOFLAGS, None, None)
       .map_err(|error| format!("the audio server refused it: {error}"))?;
@@ -217,7 +262,10 @@ impl Pulse {
     drop(lock);
     self.sounds.push(Sound {
       id,
-      stream: Playing(stream),
+      stream: Playing {
+        stream,
+        drain: None,
+      },
       frame: wav.spec.frame_size(),
       left: wav.data,
       bytes,
@@ -234,7 +282,7 @@ impl Pulse {
       return;
     };
     let sound = &mut self.sounds[at];
-    let stream = &mut sound.stream.0;
+    let stream = &mut sound.stream.stream;
     match stream.get_state() {
       State::Ready => {}
       State::Failed | State::Terminated => {
@@ -261,7 +309,7 @@ impl Pulse {
       let on_drained = on_pa_thread(move |_| {
         let _ = sender.send((generation, Event::SoundDone(id)));
       });
-      drop(stream.drain(Some(Box::new(on_drained))));
+      sound.stream.drain = Some(stream.drain(Some(Box::new(on_drained))));
     }
   }
 

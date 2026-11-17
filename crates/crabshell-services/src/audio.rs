@@ -365,6 +365,8 @@ pub(crate) struct AudioService {
   /// What a meter that can't record shows, made with `sink`.
   no_peaks: OnceCell<Signal<Vec<f32>>>,
   bad_sounds: RefCell<sound::BadSounds>,
+  /// Sounds played before libpulse connected.
+  waiting_sounds: RefCell<sound::Waiting>,
 }
 
 /// What libpulse's thread sends: the generation of the context it came
@@ -417,6 +419,7 @@ impl AudioService {
       next_meter: Cell::new(0),
       no_peaks: OnceCell::new(),
       bad_sounds: RefCell::default(),
+      waiting_sounds: RefCell::default(),
     }
   }
 
@@ -479,6 +482,7 @@ impl AudioService {
       closing: Vec::new(),
       sounds: Vec::new(),
       next_sound: 0,
+      own_client: None,
       intro: None,
       context: None,
       mainloop,
@@ -525,11 +529,11 @@ impl AudioService {
       return;
     };
     match event {
-      Event::State => {
-        if let Err(why) = pulse.on_state() {
-          self.lost(pulse, &why);
-        }
-      }
+      Event::State => match pulse.on_state() {
+        Err(why) => self.lost(pulse, &why),
+        Ok(()) if pulse.intro.is_some() => self.play_waiting(pulse),
+        Ok(()) => {}
+      },
       Event::Server => {
         pulse.read_default();
         pulse.read_lists();
@@ -585,6 +589,7 @@ impl AudioService {
     else {
       return;
     };
+    self.drop_waiting();
     let now = Instant::now();
     // It was ready, so the server was there: give it a new while.
     if pulse.intro.is_some() {
@@ -630,6 +635,9 @@ struct Pulse {
   closing: Vec<peaks::Recording>,
   sounds: Vec<sound::Sound>,
   next_sound: u64,
+  /// This connection's client index, whose own streams, its sounds,
+  /// aren't listed.
+  own_client: Option<u32>,
   intro: Option<Introspector>,
   context: Option<Context>,
   mainloop: Mainloop,
@@ -785,6 +793,7 @@ impl Pulse {
           | InterestMaskSet::SERVER;
         context.subscribe(interest, on_pa_thread(|_| {}));
         self.intro = Some(context.introspect());
+        self.own_client = context.get_index();
         drop(lock);
         if std::mem::take(&mut self.down) {
           tracing::info!("the audio server is back");
@@ -922,10 +931,15 @@ impl Pulse {
 
   fn read_streams(&mut self) {
     let (sender, generation) = (Arc::clone(&self.sender), self.generation);
+    let own = self.own_client;
     self.when_ready(|intro| {
       let mut found = Vec::new();
       let on_result = move |result: ListResult<&SinkInputInfo>| match result {
-        ListResult::Item(info) if info.volume.is_valid() => found.push(StreamInfo::read(info)),
+        ListResult::Item(info)
+          if info.volume.is_valid() && (own.is_none() || info.client != own) =>
+        {
+          found.push(StreamInfo::read(info));
+        }
         ListResult::Item(_) => {}
         ListResult::End => {
           let _ = sender.send((generation, Event::Streams(std::mem::take(&mut found))));

@@ -4,7 +4,9 @@
 use libpulse_binding::sample::Format;
 
 use super::fake::{CREATE_PLAYBACK_STREAM, FakePulse};
-use super::{Harness, connected, logs_of, one_at_a_time};
+use std::time::Duration;
+
+use super::{Harness, briefly, connected, logs_of, one_at_a_time};
 use crate::ServicesExt;
 use crate::audio::sound::parse;
 use crate::testing::TempDir;
@@ -212,11 +214,9 @@ fn a_sound_opens_a_playback_stream_in_its_format() {
   // The sample spec: S16LE (3), 2 channels, 48000 Hz big-endian.
   let spec = [b'a', 3, 2, 0, 0, 0xbb, 0x80];
   assert!(made[0].1.windows(7).any(|w| w == spec), "{:?}", made[0].1);
-  let sounds = |shell: &Harness| {
-    let service = shell.service();
-    let pulse = service.pulse.borrow();
-    pulse.as_ref().map_or(0, |pulse| pulse.sounds.len())
-  };
+  // Its role, as event sounds have.
+  let has = |bytes: &[u8]| made[0].1.windows(bytes.len()).any(|w| w == bytes);
+  assert!(has(b"media.role\0") && has(b"event\0"), "{:?}", made[0].1);
   assert_eq!(sounds(&shell), 1);
   // A dropped connection ends it.
   let (mut fake, mut shell) = (fake, shell);
@@ -225,12 +225,66 @@ fn a_sound_opens_a_playback_stream_in_its_format() {
   shell.run_until(|shell| sounds(shell) == 0);
 }
 
-#[test]
-fn without_a_server_a_sound_is_skipped() {
-  let shell = Harness::new("unix:/nonexistent/crabshell-test");
-  let dir = TempDir::new();
+/// A short beep in `dir`.
+fn beep(dir: &TempDir) -> std::path::PathBuf {
   let path = dir.path().join("beep.wav");
   std::fs::write(&path, wav(1, 1, 8_000, 8, &[128; 8])).expect("a test file");
+  path
+}
+
+fn sounds(shell: &Harness) -> usize {
+  let service = shell.service();
+  let pulse = service.pulse.borrow();
+  pulse.as_ref().map_or(0, |pulse| pulse.sounds.len())
+}
+
+#[test]
+fn sounds_played_before_the_connection_wait_for_it_four_at_most() {
+  let _one = one_at_a_time();
+  let fake = FakePulse::new("early-sound");
+  let mut shell = Harness::new(&fake.address());
+  let dir = TempDir::new();
+  let path = beep(&dir);
+  // As from the root closure: libpulse hasn't even started.
+  let audio = shell.cx.audio();
+  let logs = logs_of(|| {
+    for _ in 0..5 {
+      audio.play_sound(&path);
+    }
+  });
+  assert!(logs.contains("4 sounds already wait"), "{logs}");
+  shell.run_for(Duration::from_millis(60));
+  let mut client = fake.accept();
+  shell.run_until(|shell| sounds(shell) == 4);
+  let made = client.command_numbers();
+  let made = made
+    .iter()
+    .filter(|&&c| c == CREATE_PLAYBACK_STREAM)
+    .count();
+  assert_eq!(made, 4);
+  assert!(shell.service().waiting_sounds.borrow().is_empty());
+}
+
+#[test]
+fn sounds_waiting_for_a_server_that_isnt_there_are_dropped_and_logged() {
+  let _one = one_at_a_time();
+  let fake = FakePulse::new("no-sound-server");
+  let address = fake.address();
+  drop(fake);
+  let mut shell = Harness::with(briefly(&address));
+  let dir = TempDir::new();
+  let path = beep(&dir);
+  shell.cx.audio().play_sound(&path);
+  assert_eq!(shell.service().waiting_sounds.borrow().len(), 1);
+  let logs = logs_of(|| {
+    shell.run_for(Duration::from_millis(100));
+  });
+  assert!(
+    logs.contains("sounds waiting for the audio server didn't play"),
+    "{logs}"
+  );
+  assert!(shell.service().waiting_sounds.borrow().is_empty());
+  // Once the service knows the server is gone, a sound is skipped.
   let logs = logs_of(|| shell.cx.audio().play_sound(&path));
-  assert!(logs.contains("a sound didn't play"), "{logs}");
+  assert!(logs.contains("there is no audio server"), "{logs}");
 }

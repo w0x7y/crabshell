@@ -496,9 +496,13 @@ fn a_sound_plays_once_then_nothing_wakes() {
     server.link();
     near(&peaks.get_untracked(), &[0.5, 0.25])
   });
-  assert_eq!(streams.get_untracked().len(), 1, "the sound's stream");
+  // The shell's own stream isn't listed, and has the role events have.
+  let playing = server.pactl(&["list", "sink-inputs"]);
+  assert!(playing.contains("media.role = \"event\""), "{playing}");
+  shell.run_for(Duration::from_millis(200));
+  assert!(streams.get_untracked().is_empty());
   // It ends once played, and leaves nothing behind.
-  shell.run_until(|_| streams.get_untracked().is_empty());
+  shell.run_until(|_| server.pactl(&["list", "sink-inputs", "short"]).is_empty());
   let sounds = || {
     let service = shell.service();
     let pulse = service.pulse.borrow();
