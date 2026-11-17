@@ -438,3 +438,34 @@ fn shown_at(window: &Window, path: &[usize]) -> (Rect, Rect) {
     _ => panic!("not an area"),
   }
 }
+
+#[test]
+fn a_triple_click_selects_a_line_and_a_drag_after_it_whole_lines() {
+  let mut h = Harness::new();
+  let text = h.cx.signal(String::from("one two\nthree four\nfive"));
+  let window = area(&mut h, text, |area| area);
+  let (rect, _) = shown(&window);
+  let line = |n: f32| Point::new(rect.x + 3.0, rect.y + LINE * n + 4.0);
+  let copy = |window: &Window| match window.key(&KeyEvent {
+    modifiers: CTRL,
+    ..typed("c")
+  }) {
+    Some(Clipboard::Copy(text)) => text,
+    _ => String::new(),
+  };
+  for (i, time) in [0, 100, 200].into_iter().enumerate() {
+    window.pointer_motion_at(line(1.0), time);
+    window.pointer_button_at(PointerButton::Left, true, time);
+    if i < 2 {
+      window.pointer_button_at(PointerButton::Left, false, time + 10);
+    }
+  }
+  assert_eq!(copy(&window), "three four");
+  window.pointer_motion_at(line(2.0), 250);
+  assert_eq!(copy(&window), "three four\nfive");
+  window.pointer_motion_at(line(0.0), 300);
+  assert_eq!(copy(&window), "one two\nthree four");
+  window.pointer_button_at(PointerButton::Left, false, 350);
+  h.frame(&window);
+  assert_eq!(copy(&window), "one two\nthree four");
+}

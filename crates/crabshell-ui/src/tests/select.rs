@@ -368,3 +368,155 @@ fn a_span_change_that_keeps_the_text_keeps_the_selection() {
   h.frame(&window);
   assert_eq!(copied(&window), None);
 }
+
+/// Left presses at `at`, `times.len()` of them, each up 10 ms after it
+/// went down; the button stays down after the last when `hold`.
+fn presses(window: &Window, at: Point, times: &[u32], hold: bool) {
+  for (i, &time) in times.iter().enumerate() {
+    window.pointer_motion_at(at, time);
+    window.pointer_button_at(PointerButton::Left, true, time);
+    if !(hold && i == times.len() - 1) {
+      window.pointer_button_at(PointerButton::Left, false, time + 10);
+    }
+  }
+}
+
+/// An x in the 100-pixel field of `field` where a click puts the caret
+/// at byte `at`.
+fn x_of(window: &Window, at: usize) -> f32 {
+  (1..100)
+    .map(|x| x as f32)
+    .find(|&x| {
+      click(window, x, 10_000 * x as u32);
+      window.field().is_some_and(|field| field.cursor == at)
+    })
+    .expect("a place for the byte")
+}
+
+#[test]
+fn a_triple_click_selects_the_whole_field_or_text_line() {
+  let mut h = Harness::new();
+  let text = h.cx.signal(String::from("one two three"));
+  let window = field(&mut h, text);
+  let x = x_of(&window, 5);
+  presses(&window, Point::new(x, 10.0), &[1_000_000, 1_000_100], false);
+  assert_eq!(copied(&window).as_deref(), Some("two"));
+  presses(&window, Point::new(x, 10.0), &[1_000_200], false);
+  assert_eq!(copied(&window).as_deref(), Some("one two three"));
+  // A fourth press starts again: it places the caret.
+  presses(&window, Point::new(x, 10.0), &[1_000_300], false);
+  assert_eq!(copied(&window), None);
+  // Too slow between the second and third: a single click.
+  presses(
+    &window,
+    Point::new(x, 10.0),
+    &[2_000_000, 2_000_100, 2_000_600],
+    false,
+  );
+  assert_eq!(copied(&window), None);
+
+  // A text on two lines selects the line, without its break.
+  let window = label(
+    &mut h,
+    Text::new("one two\nthree four")
+      .max_lines(2)
+      .selectable(true),
+  );
+  let rect = rect_at(&window, &[0, 0]);
+  let second = Point::new(rect.x + 3.0, rect.bottom() - 4.0);
+  presses(&window, second, &[0, 100, 200], false);
+  assert_eq!(copied(&window).as_deref(), Some("three four"));
+}
+
+#[test]
+fn a_drag_after_a_double_click_extends_by_whole_words() {
+  let mut h = Harness::new();
+  let text = h.cx.signal(String::from("one two three"));
+  let window = field(&mut h, text);
+  let (two, three, one) = (x_of(&window, 5), x_of(&window, 10), x_of(&window, 1));
+  presses(
+    &window,
+    Point::new(two, 10.0),
+    &[1_000_000, 1_000_100],
+    true,
+  );
+  window.pointer_motion_at(Point::new(three, 10.0), 1_000_150);
+  assert_eq!(copied(&window).as_deref(), Some("two three"));
+  // Back before the first word: it stays selected, from its end.
+  window.pointer_motion_at(Point::new(one, 10.0), 1_000_200);
+  assert_eq!(copied(&window).as_deref(), Some("one two"));
+  window.pointer_button_at(PointerButton::Left, false, 1_000_250);
+  // A plain drag after that goes by characters again.
+  window.pointer_motion_at(Point::new(two, 10.0), 2_000_000);
+  window.pointer_button_at(PointerButton::Left, true, 2_000_000);
+  window.pointer_motion_at(Point::new(three, 10.0), 2_000_050);
+  window.pointer_button_at(PointerButton::Left, false, 2_000_100);
+  assert_eq!(copied(&window).as_deref(), Some("wo th"));
+}
+
+#[test]
+fn an_empty_line_inside_a_selection_shows_half_an_em() {
+  let mut h = Harness::new();
+  let window = label(
+    &mut h,
+    Text::new("one\n\ntwo").max_lines(3).selectable(true),
+  );
+  let text = rect_at(&window, &[0, 0]);
+  let line = text.height / 3.0;
+  drag(
+    &window,
+    Point::new(text.x, text.y + 2.0),
+    Point::new(text.x, text.y + line + 2.0),
+    0,
+  );
+  h.frame(&window);
+  assert_eq!(copied(&window).as_deref(), Some("one\n"));
+  assert_eq!(
+    selection(&window, &[0, 0]).len(),
+    1,
+    "its break isn't selected"
+  );
+  drag(
+    &window,
+    Point::new(text.x, text.y + 2.0),
+    Point::new(190.0, text.bottom() - 2.0),
+    1000,
+  );
+  h.frame(&window);
+  assert_eq!(copied(&window).as_deref(), Some("one\n\ntwo"));
+  let shown = selection(&window, &[0, 0]);
+  assert_eq!(shown.len(), 3, "{shown:?}");
+  let first = shown[0];
+  assert_eq!(
+    shown[1],
+    Rect::new(first.x, first.bottom(), 6.5, first.height)
+  );
+}
+
+#[test]
+fn a_triple_click_ends_a_line_at_every_break_cosmic_text_makes() {
+  let mut h = Harness::new();
+  for (text, lines) in [
+    ("one\r\ntwo", ["one", "two"]),
+    ("one\rtwo", ["one", "two"]),
+    ("one\n\rtwo", ["one", "two"]),
+  ] {
+    let window = h.window(
+      h.panel().child(
+        Row::new()
+          .align(crate::Align::Start)
+          .child(Text::new(text).max_lines(2).selectable(true)),
+      ),
+      200.0,
+      60.0,
+    );
+    window.keyboard_enter();
+    let rect = rect_at(&window, &[0, 0]);
+    let first = Point::new(rect.x + 3.0, rect.y + 4.0);
+    let second = Point::new(rect.x + 3.0, rect.bottom() - 4.0);
+    presses(&window, first, &[0, 100, 200], false);
+    assert_eq!(copied(&window).as_deref(), Some(lines[0]), "{text:?}");
+    presses(&window, second, &[1000, 1100, 1200], false);
+    assert_eq!(copied(&window).as_deref(), Some(lines[1]), "{text:?}");
+  }
+}

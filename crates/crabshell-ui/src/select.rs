@@ -1,9 +1,10 @@
 //! Selecting text with the pointer, in a field or a selectable text. A
 //! left press places the caret, a drag selects from there to the pointer
 //! wherever it goes, a second press close in time and place selects a
-//! word, and Shift+press extends the selection. The drag is the pointer's
-//! own, so it follows the pointer out of the text and keeps it from
-//! scrolling a view.
+//! word and a third the line, a drag after them goes by whole words or
+//! lines, and Shift+press extends the selection. The drag is the
+//! pointer's own, so it follows the pointer out of the text and keeps it
+//! from scrolling a view.
 
 use std::ops::Range;
 
@@ -16,6 +17,30 @@ use crate::keyboard::{Clipboard, Key, KeyEvent};
 use crate::text::TextNode;
 use crate::tree::{Change, NodeId, NodeKind, Tree};
 
+/// The last left press on text, which the next may make a double or
+/// triple click.
+#[derive(Clone, Copy)]
+pub(crate) struct TextClick {
+  pub(crate) id: NodeId,
+  /// When it went down.
+  time: u32,
+  /// Where it went down, in the window.
+  at: Point,
+  /// 1, 2 or 3: a single, double or triple click.
+  count: u8,
+  /// The byte it went down at, which a drag after a double or triple
+  /// click keeps the word or line of.
+  index: usize,
+}
+
+/// What a double or triple click selects.
+#[derive(Clone, Copy, PartialEq)]
+enum Unit {
+  Word,
+  /// A line between line breaks.
+  Line,
+}
+
 /// What a press or a drag does to the selection.
 #[derive(Clone, Copy)]
 enum Select {
@@ -23,8 +48,9 @@ enum Select {
   Place(usize),
   /// Moves the caret here, keeping the other end.
   Extend(usize),
-  /// Selects the word here.
-  Word(usize),
+  /// Selects the word or line at the first byte, and on to the whole one
+  /// at the second, either side of it.
+  Units(Unit, usize, usize),
   /// Selects the whole text.
   All,
 }
@@ -78,35 +104,59 @@ impl Tree {
 
   /// A left press at `at` on `id`, which selects text, at `time`: it
   /// takes the focus, then places the caret, or extends the selection
-  /// with Shift held, or selects the word on a double click.
+  /// with Shift held, or selects the word on a double click and the line
+  /// on a triple one.
   pub(crate) fn press_text(&mut self, id: NodeId, at: Point, time: u32) {
     let Some((index, upstream)) = self.text_index(id, at) else {
       return;
     };
-    // Timed from press to press: the release comes after a drag.
-    let double = self.pointer.last_click.is_some_and(|(last, then, place)| {
-      last == id
-        && time.wrapping_sub(then) <= DOUBLE_CLICK_MS
-        && distance(place, at) <= DOUBLE_CLICK_DISTANCE
+    // Timed from press to press, each to the one before: the release
+    // comes after a drag. A fourth starts again.
+    let count = match self.pointer.text_click {
+      Some(last)
+        if last.id == id
+          && time.wrapping_sub(last.time) <= DOUBLE_CLICK_MS
+          && distance(last.at, at) <= DOUBLE_CLICK_DISTANCE =>
+      {
+        last.count % 3 + 1
+      }
+      _ => 1,
+    };
+    self.pointer.text_click = Some(TextClick {
+      id,
+      time,
+      at,
+      count,
+      index,
     });
-    self.pointer.last_click = (!double).then_some((id, time, at));
-    let how = if double {
-      Select::Word(index)
-    } else if self.keyboard.modifiers.shift && self.keyboard.focused == Some(id) {
-      Select::Extend(index)
-    } else {
-      Select::Place(index)
+    let how = match count {
+      2 => Select::Units(Unit::Word, index, index),
+      3 => Select::Units(Unit::Line, index, index),
+      _ if self.keyboard.modifiers.shift && self.keyboard.focused == Some(id) => {
+        Select::Extend(index)
+      }
+      _ => Select::Place(index),
     };
     self.focus(Some(id));
     self.select(id, how, upstream);
   }
 
   /// The left button held on `id` moved to `at`: the selection runs to
-  /// the pointer.
+  /// the pointer, by whole words or lines after a double or triple click.
   pub(crate) fn drag_text(&mut self, id: NodeId, at: Point) {
-    if let Some((index, upstream)) = self.text_index(id, at) {
-      self.select(id, Select::Extend(index), upstream);
-    }
+    let Some((index, upstream)) = self.text_index(id, at) else {
+      return;
+    };
+    let how = match self.pointer.text_click {
+      Some(click) if click.id == id && click.count == 2 => {
+        Select::Units(Unit::Word, click.index, index)
+      }
+      Some(click) if click.id == id && click.count == 3 => {
+        Select::Units(Unit::Line, click.index, index)
+      }
+      _ => Select::Extend(index),
+    };
+    self.select(id, how, upstream);
   }
 
   /// The text position nearest `at`, in window coordinates, in node `id`,
@@ -140,7 +190,7 @@ impl Tree {
     self.update_input(id, |input| {
       // A password's words would show where its spaces are.
       let how = match how {
-        Select::Word(_) if input.password => Select::All,
+        Select::Units(..) if input.password => Select::All,
         how => how,
       };
       let Edit {
@@ -209,25 +259,35 @@ pub(crate) fn text_hit(text: &TextNode, point: Point) -> usize {
 
 /// Where bytes `range` of `text` show, in window coordinates: a rectangle
 /// for each line they cover, or more where right-to-left and
-/// left-to-right text mix.
+/// left-to-right text mix. An empty line whose break is selected shows
+/// half an em, so the selection reads as one across it.
 pub(crate) fn highlights(text: &TextNode, range: Range<usize>) -> Vec<Rect> {
   let (start, end) = (
     cursor_at(&text.buffer, range.start),
     cursor_at(&text.buffer, range.end),
   );
   let origin = text.origin;
+  let half_em = text.buffer.metrics().font_size / 2.0;
+  let width = text.layout_width();
   text
     .runs()
     .filter(|run| (start.line..=end.line).contains(&run.line_i))
     .flat_map(|run| {
-      run.highlight(start, end).map(move |(x, width)| {
-        Rect::new(
-          origin.x + x,
-          origin.y + run.line_top,
-          width,
-          run.line_height,
-        )
-      })
+      let empty = (run.glyphs.is_empty() && run.line_i < end.line).then(|| {
+        let x = text.empty_line_place(&run) * (width - half_em).max(0.0);
+        (x, half_em)
+      });
+      run
+        .highlight(start, end)
+        .chain(empty)
+        .map(move |(x, width)| {
+          Rect::new(
+            origin.x + x,
+            origin.y + run.line_top,
+            width,
+            run.line_height,
+          )
+        })
     })
     .collect()
 }
@@ -244,14 +304,42 @@ fn apply(text: &str, cursor: &mut usize, anchor: &mut Option<usize>, how: Select
       anchor.get_or_insert(*cursor);
       *cursor = at;
     }
-    Select::Word(at) => {
-      let word = word_at(text, at);
-      *anchor = Some(word.start);
-      *cursor = word.end;
+    Select::Units(unit, from, to) => {
+      let unit_at = |at: usize| match unit {
+        Unit::Word => word_at(text, at),
+        Unit::Line => line_at(text, at),
+      };
+      // The text may have changed under a held press.
+      let first = unit_at(if text.is_char_boundary(from) {
+        from
+      } else {
+        to
+      });
+      let last = unit_at(to);
+      if last.start < first.start {
+        *anchor = Some(first.end);
+        *cursor = last.start;
+      } else {
+        *anchor = Some(first.start);
+        *cursor = last.end.max(first.end);
+      }
     }
     Select::All => {
       *anchor = Some(0);
       *cursor = text.len();
     }
   }
+}
+
+/// The line around byte `at` of `text`, between line breaks and without
+/// them: what a triple click selects. cosmic-text breaks lines at `\n`,
+/// `\r`, `\r\n` and `\n\r`, so each `\r` and `\n` ends one.
+fn line_at(text: &str, at: usize) -> Range<usize> {
+  const BREAKS: [char; 2] = ['\n', '\r'];
+  let at = at.min(text.len());
+  let start = text[..at].rfind(BREAKS).map_or(0, |found| found + 1);
+  let end = text[at..]
+    .find(BREAKS)
+    .map_or(text.len(), |found| at + found);
+  start..end
 }

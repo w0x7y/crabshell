@@ -787,7 +787,8 @@ impl Text {
   }
 
   /// When on, the text takes the pointer with an I-beam: a press, a drag,
-  /// a double click and Shift+click select it, as in a text field, and a
+  /// a double click on a word, a triple click on a line and Shift+click
+  /// select it, as in a text field, and a
   /// press takes the keyboard focus, so Ctrl+C copies the selection.
   /// Inside a [`Button`], it takes the press, so the button doesn't
   /// click. Tab doesn't stop on it. Off by default.

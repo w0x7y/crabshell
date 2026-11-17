@@ -20,7 +20,7 @@ use crate::geometry::{Point, Rect, Size};
 use crate::keyboard::KeyHandler;
 use crate::prop::{Prop, PropKind};
 use crate::scrolling::{BarDrag, Flick};
-use crate::select::text_selection;
+use crate::select::{TextClick, text_selection};
 use crate::tree::{ButtonNode, Change, Node, NodeId, NodeKind, Tree, borrow};
 use crate::window::Window;
 
@@ -322,10 +322,12 @@ pub(crate) struct Pointer {
   pub(crate) flick: Option<Flick>,
   /// The scroll view the touchpad gesture under way moves.
   pub(crate) gesture: Option<NodeId>,
-  /// The last left click, with the time it came up and where it went
-  /// down, which a second one may make a double click. For text, the
-  /// time it went down.
+  /// The last left click on a button, with the time it came up and
+  /// where it went down, which a second one may make a double click.
   pub(crate) last_click: Option<(NodeId, u32, Point)>,
+  /// The last left press on text, for double and triple clicks and the
+  /// drag after them.
+  pub(crate) text_click: Option<TextClick>,
   /// Scrolling that hasn't added up to a whole step yet.
   wheel: i32,
   pixels: f32,
@@ -375,6 +377,12 @@ impl Pointer {
       .is_some_and(|(id, _, _)| removed.contains(&id))
     {
       self.last_click = None;
+    }
+    if self
+      .text_click
+      .is_some_and(|click| removed.contains(&click.id))
+    {
+      self.text_click = None;
     }
   }
 }

@@ -914,6 +914,25 @@ impl TextNode {
     Some(index)
   }
 
+  /// Where an empty line sits across the width the text was laid out
+  /// in, from 0 at the left to 1 at the right, as its alignment and
+  /// direction put a line that has glyphs. cosmic-text places every
+  /// empty line at 0.
+  pub(crate) fn empty_line_place(&self, run: &LayoutRun<'_>) -> f32 {
+    let start = if run.rtl { 1.0 } else { 0.0 };
+    match self.style.and_then(|style| style.align) {
+      Some(TextAlign::Center) => 0.5,
+      Some(TextAlign::End) => 1.0 - start,
+      _ => start,
+    }
+  }
+
+  /// The width the text was laid out in: its box's, or its widest
+  /// line's.
+  pub(crate) fn layout_width(&self) -> f32 {
+    self.buffer.size().0.unwrap_or_else(|| self.width())
+  }
+
   /// The lines shown, at most `max_lines`.
   pub(crate) fn runs(&self) -> impl Iterator<Item = LayoutRun<'_>> {
     self.buffer.layout_runs().take(self.max_lines as usize)

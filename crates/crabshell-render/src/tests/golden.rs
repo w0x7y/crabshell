@@ -973,6 +973,45 @@ fn selectable_text() {
   }
 }
 
+/// A selectable text on three lines, the middle one empty, selected from
+/// the middle of the first to the middle of the last: the empty line
+/// shows half an em.
+#[test]
+fn empty_line_selection() {
+  for (scale, suffix) in SCALES {
+    let mut scene = Scene::new();
+    let panel = scene.panel().style(BAR).child(
+      Row::new().padding(4, 6).child(
+        Text::new("hello world\n\nselect me")
+          .max_lines(3)
+          .selectable(true),
+      ),
+    );
+    let window = scene.window(panel, 120.0, 60.0);
+    let text = window
+      .view()
+      .root()
+      .children()
+      .next()
+      .expect("a row")
+      .children()
+      .next()
+      .expect("a text")
+      .rect();
+    let line = text.height / 3.0;
+    window.pointer_motion(crabshell_ui::Point::new(text.x + 20.0, text.y + line / 2.0));
+    window.pointer_button(crabshell_ui::PointerButton::Left, true);
+    window.pointer_motion(crabshell_ui::Point::new(
+      text.x + 30.0,
+      text.bottom() - line / 2.0,
+    ));
+    window.pointer_button(crabshell_ui::PointerButton::Left, false);
+    scene.frame(&window);
+    let buffer = scene.full(&window, scale);
+    assert_golden(&format!("empty_line_selection@{suffix}"), &buffer);
+  }
+}
+
 /// A focused text area whose first line wraps, with a selection from the
 /// first line into the second and the caret at its end.
 #[test]
