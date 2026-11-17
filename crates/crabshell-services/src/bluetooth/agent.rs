@@ -146,16 +146,19 @@ impl BluetoothAgent {
     self.answer(answerable, "a yes", Ok(&()));
   }
 
-  /// Says no to the request, whatever it is, so the pairing fails.
+  /// Says no to a question, so the pairing fails. A code shown is only
+  /// hidden: BlueZ took its answer already, and ends the pairing itself.
   pub fn reject(&self) {
     let shown = self.kind().is_some();
     self.answer::<()>(shown, "a no", Err((REJECTED, "the user said no")));
   }
 
-  /// Asks BlueZ to send the shell every pairing, also those other
-  /// programs start, such as `bluetoothctl`, now and whenever BlueZ
-  /// starts again. Without it, BlueZ sends the shell only the pairings
-  /// it starts itself, as with [`Bluetooth::pair`].
+  /// Asks BlueZ to make the shell its default agent, now and whenever
+  /// BlueZ starts again, so the shell also answers pairings that other
+  /// programs, such as `bluetoothctl`, or the devices themselves start.
+  /// Without it, the shell answers only the pairings
+  /// [`Bluetooth::pair`] starts, since BlueZ asks the agent of whoever
+  /// called `Pair`.
   ///
   /// [`Bluetooth::pair`]: crate::Bluetooth::pair
   pub fn make_default(&self) {
@@ -302,11 +305,18 @@ impl Service {
     }
   }
 
+  /// The connection the agent registered on, while BlueZ holds it.
+  pub(crate) fn connection(&self) -> Option<Connection> {
+    let state = self.state.borrow();
+    let state = state.as_ref()?;
+    state.bluez.as_ref().and(state.connection.clone())
+  }
+
   fn make_default(self: &Rc<Self>) {
-    let connection = self.state.borrow_mut().as_mut().and_then(|state| {
+    if let Some(state) = self.state.borrow_mut().as_mut() {
       state.default = true;
-      state.bluez.as_ref().and(state.connection.clone())
-    });
+    }
+    let connection = self.connection();
     if let Some(connection) = connection {
       let service = Rc::clone(self);
       self

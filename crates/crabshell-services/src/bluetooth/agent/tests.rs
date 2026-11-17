@@ -416,3 +416,44 @@ fn without_a_bus_nothing_arrives() {
   let logs = capture_logs(|| agent.accept());
   assert!(logs.contains("no Bluetooth request takes it"), "{logs}");
 }
+
+/// BlueZ asks the agent of whoever called `Pair`, so a pairing the shell
+/// starts goes out on the agent's connection once there is one.
+#[test]
+fn a_pairing_the_shell_starts_reaches_its_agent() {
+  let mut bluez = Bluez::start();
+  let pairs = Rc::<RefCell<Vec<String>>>::default();
+  let sink = Rc::clone(&pairs);
+  bluez.fake.on("Pair", move |call| {
+    sink.borrow_mut().push(call.header().sender()?.to_string());
+    reply(call, &())
+  });
+  let bluetooth = bluez.shell.cx.bluetooth();
+  let service = Rc::clone(bluetooth.service.as_ref().expect("the shell's Bluetooth"));
+  bluez.wait("BlueZ read", move || {
+    let state = service.state.borrow();
+    state
+      .as_ref()
+      .is_some_and(|state| state.connection.is_some())
+  });
+  bluetooth.pair(HEADSET);
+  let sent = Rc::clone(&pairs);
+  bluez.wait("the first pairing", move || sent.borrow().len() == 1);
+
+  let (agent, name) = bluez.agent();
+  assert_ne!(
+    pairs.borrow()[0],
+    name,
+    "no agent yet: from the service's own"
+  );
+  bluetooth.pair(HEADSET);
+  let sent = Rc::clone(&pairs);
+  bluez.wait("the second pairing", move || sent.borrow().len() == 2);
+  let sender = pairs.borrow()[1].clone();
+  assert_eq!(sender, name, "from the connection the agent registered on");
+  // BlueZ, routing by sender, asks that agent.
+  let answer = bluez.ask(&sender, "RequestConfirmation", (device(), 7_u32));
+  bluez.wait_kind(&agent, PairingKind::Confirmation { passkey: 7 });
+  agent.accept();
+  assert!(bluez.answered(&answer).is_ok());
+}

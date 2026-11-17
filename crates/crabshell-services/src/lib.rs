@@ -108,8 +108,8 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(tray::Service::new(Rc::clone(&shared)));
   cx.provide(power::UPowerService::new(Rc::clone(&shared)));
   cx.provide(power::ProfilesService::new(Rc::clone(&shared)));
-  cx.provide(bluetooth::BluetoothService::new(Rc::clone(&shared)));
-  cx.provide(bluetooth::agent::Service::new(Rc::clone(&shared)));
+  let agent = cx.provide(bluetooth::agent::Service::new(Rc::clone(&shared)));
+  cx.provide(bluetooth::BluetoothService::new(Rc::clone(&shared), agent));
   cx.provide(notifications::Service::new(Rc::clone(&shared)));
   cx.provide(mpris::Service::new(Rc::clone(&shared)));
   cx.provide(network::NetworkService::new(Rc::clone(&shared)));

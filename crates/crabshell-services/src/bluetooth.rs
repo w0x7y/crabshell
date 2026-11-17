@@ -250,10 +250,12 @@ impl Bluetooth {
     self.call(device, DEVICE, "Disconnect", ());
   }
 
-  /// Pairs with the device at `device`. A device that asks for a PIN, a
-  /// passkey or a confirmation asks through `cx.bluetooth_agent()`; with
-  /// no agent of the shell's, it fails, and that is logged, unless another
-  /// program on the desktop answers for BlueZ.
+  /// Pairs with the device at `device`. BlueZ asks the agent of whoever
+  /// called, so while `cx.bluetooth_agent()` is registered the call goes
+  /// out on the agent's connection, and a device that asks for a PIN, a
+  /// passkey or a confirmation asks the shell. Without it, BlueZ asks its
+  /// default agent, and with none a device that asks fails, which is
+  /// logged.
   pub fn pair(&self, device: &str) {
     self.call(device, DEVICE, "Pair", ());
   }
@@ -285,12 +287,12 @@ impl Bluetooth {
     let Some(service) = &self.service else {
       return;
     };
-    let Some(connection) = service
-      .state
-      .borrow()
-      .as_ref()
-      .and_then(|state| state.connection.clone())
-    else {
+    // BlueZ asks the agent of whoever called `Pair`.
+    let agent = (method == "Pair").then(|| service.agent.connection());
+    let Some(connection) = agent.flatten().or_else(|| {
+      let state = service.state.borrow();
+      state.as_ref().and_then(|state| state.connection.clone())
+    }) else {
       return tracing::info!(method, "BlueZ isn't running; nothing sent");
     };
     let marked = match method {
@@ -336,6 +338,8 @@ pub(crate) fn bluetooth(cx: &Cx) -> Bluetooth {
 /// BlueZ for one shell, followed from the first ask.
 pub(crate) struct BluetoothService {
   shared: Rc<Shared>,
+  /// The shell's pairing agent, whose connection `Pair` goes out on.
+  agent: Rc<agent::Service>,
   state: RefCell<Option<BluetoothState>>,
 }
 
@@ -395,9 +399,10 @@ fn add(objects: &mut BTreeMap<String, Object>, path: String, interfaces: HashMap
 }
 
 impl BluetoothService {
-  pub(crate) fn new(shared: Rc<Shared>) -> BluetoothService {
+  pub(crate) fn new(shared: Rc<Shared>, agent: Rc<agent::Service>) -> BluetoothService {
     BluetoothService {
       shared,
+      agent,
       state: RefCell::new(None),
     }
   }
