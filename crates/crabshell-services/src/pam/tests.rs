@@ -146,6 +146,90 @@ fn the_context_going_mid_question_ends_the_thread_and_frees_everything() {
   assert_eq!(runtime.node_count(), before);
 }
 
+/// A module that blocks without asking, as a fingerprint reader does.
+fn blocking() -> Vec<Step> {
+  vec![Step::Sleep(Duration::from_millis(300)), password()]
+}
+
+#[test]
+fn a_start_while_an_aborted_attempt_blocks_waits_for_it_to_return() {
+  let (mut shell, log) = shell(blocking());
+  let pam = shell.cx.pam("lock");
+  pam.start(Some("alice"));
+  wait(&mut shell, "alice's attempt", || {
+    logged(&log, "lock for alice")
+  });
+  pam.abort();
+  assert_eq!(state(&pam), PamState::Idle, "at once");
+  pam.start(Some("bob"));
+  assert_eq!(state(&pam), PamState::Busy);
+  run(&mut shell, 100);
+  let started = || {
+    log
+      .lock()
+      .unwrap()
+      .iter()
+      .filter(|line| line.starts_with("lock for"))
+      .count()
+  };
+  assert_eq!(started(), 1, "no second transaction beside the first");
+  wait(&mut shell, "bob's question", || {
+    state(&pam) != PamState::Busy
+  });
+  assert_eq!(
+    state(&pam),
+    asking("Password: ", false),
+    "alice's end isn't shown"
+  );
+  assert_eq!(
+    *log.lock().unwrap(),
+    ["lock for alice", REFUSED, "lock for bob"]
+  );
+  pam.respond("hunter2");
+  wait(&mut shell, "result", || done(&pam));
+  assert_eq!(state(&pam), PamState::Done(PamResult::Success));
+}
+
+#[test]
+fn an_abort_drops_a_start_that_waits() {
+  let (mut shell, log) = shell(blocking());
+  let pam = shell.cx.pam("lock");
+  pam.start(Some("alice"));
+  wait(&mut shell, "alice's attempt", || {
+    logged(&log, "lock for alice")
+  });
+  pam.start(Some("bob"));
+  pam.abort();
+  assert_eq!(state(&pam), PamState::Idle);
+  wait(&mut shell, "alice's end", || logged(&log, REFUSED));
+  run(&mut shell, 100);
+  assert!(!logged(&log, "lock for bob"), "{:?}", log.lock().unwrap());
+  assert_eq!(state(&pam), PamState::Idle);
+}
+
+#[test]
+fn the_context_going_while_an_aborted_attempt_blocks_frees_everything() {
+  let runtime = Runtime::current();
+  let (mut shell, log) = shell(blocking());
+  let before = runtime.node_count();
+  let child = shell.cx.child();
+  let pam = child.pam("lock");
+  pam.start(Some("alice"));
+  wait(&mut shell, "alice's attempt", || {
+    logged(&log, "lock for alice")
+  });
+  pam.abort();
+  pam.start(Some("bob"));
+  let weak = Rc::downgrade(&pam.inner);
+  drop(pam);
+  child.owner().dispose();
+  assert!(weak.upgrade().is_none(), "freed at once");
+  assert_eq!(runtime.node_count(), before);
+  wait(&mut shell, "alice's end", || logged(&log, REFUSED));
+  run(&mut shell, 100);
+  assert!(!logged(&log, "lock for bob"));
+}
+
 #[test]
 fn a_second_start_aborts_the_first() {
   let (mut shell, log) = shell(vec![password()]);
@@ -373,13 +457,12 @@ fn an_abort_leaves_the_loop_asleep() {
   pam.start(Some("alice"));
   wait(&mut shell, "question", || state(&pam) != PamState::Busy);
   pam.abort();
-  // The thread ends once refused, sending nothing anyone hears.
-  let give_up = Instant::now() + Duration::from_secs(5);
-  while !logged(&log, REFUSED) {
-    assert!(Instant::now() < give_up, "the thread never ended");
-    std::thread::sleep(Duration::from_millis(10));
-  }
+  // The loop hears the thread end once refused, and then nothing.
+  let returned = || pam.inner.abandoned.borrow().is_none();
+  wait(&mut shell, "the thread's end", returned);
+  assert!(logged(&log, REFUSED));
   assert_eq!(run(&mut shell, 300), 1, "only the run's own deadline");
+  assert_eq!(state(&pam), PamState::Idle);
 }
 
 /// libpam never sees these, so no real account is reached.

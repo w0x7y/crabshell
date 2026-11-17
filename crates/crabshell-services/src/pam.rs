@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 use std::rc::Rc;
@@ -116,10 +116,21 @@ struct Inner {
   state: Signal<PamState>,
   messages: Signal<Vec<PamMessage>>,
   attempt: RefCell<Option<Attempt>>,
+  /// The loop source of an aborted attempt whose thread is still inside
+  /// PAM, as one a fingerprint module holds, until that thread returns.
+  abandoned: RefCell<Option<RegistrationToken>>,
+  /// The user a start named while that thread ran, which begins once it
+  /// returns.
+  waiting: RefCell<Option<Option<String>>>,
+  /// The number the next attempt gets.
+  next: Cell<u64>,
 }
 
 /// The attempt running now.
 struct Attempt {
+  /// Which attempt this is, so the events of an aborted one are told
+  /// apart.
+  number: u64,
   /// The loop source its thread's events arrive on.
   source: RegistrationToken,
   /// Where answers go. Dropping it refuses the question its thread waits
@@ -213,6 +224,9 @@ pub(crate) fn pam(cx: &Cx, service: &str) -> Pam {
     state: cx.signal(PamState::Idle),
     messages: cx.signal(Vec::new()),
     attempt: RefCell::default(),
+    abandoned: RefCell::default(),
+    waiting: RefCell::default(),
+    next: Cell::new(0),
   });
   // Dropped with the asking context's owner, which ends the attempt.
   cx.owner().signal(EndOnDrop(Rc::clone(&inner)));
@@ -225,12 +239,22 @@ struct EndOnDrop(Rc<Inner>);
 impl Drop for EndOnDrop {
   fn drop(&mut self) {
     self.0.end();
+    self.0.waiting.take();
+    if let Some(token) = self.0.abandoned.take() {
+      self.0.remove(token);
+    }
   }
 }
 
 impl Pam {
   /// Starts authenticating `user`, or with `None` the user the shell runs
   /// as, found by its uid. An attempt already running is aborted first.
+  ///
+  /// PAM can't be stopped while a module blocks without asking, as a
+  /// fingerprint reader waits for a finger, so an aborted attempt's
+  /// thread stays inside PAM until the module returns. A start meanwhile
+  /// shows [`Busy`](PamState::Busy) and begins once it has, so two
+  /// transactions never run side by side.
   ///
   /// Ending an attempt while PAM waits for an answer, by aborting it,
   /// starting another or dropping its context, counts as a failed login
@@ -251,10 +275,12 @@ impl Pam {
     self.inner.respond(Secret(text.into().into_bytes()));
   }
 
-  /// Stops the attempt running: its question is refused, its thread ends
-  /// and the state turns [`Idle`](PamState::Idle). With none running,
-  /// nothing changes. A refused question counts as a failed login, as
-  /// [`start`](Self::start) says.
+  /// Stops the attempt running: the state turns [`Idle`](PamState::Idle)
+  /// at once, its question is refused and its result is never shown.
+  /// Its thread ends at PAM's next question, or once a module that
+  /// blocks without asking returns. A start waiting for that is dropped.
+  /// With nothing running, nothing changes. A refused question counts as
+  /// a failed login, as [`start`](Self::start) says.
   pub fn abort(&self) {
     self.inner.abort();
   }
@@ -288,10 +314,16 @@ impl Inner {
     if !self.alive() {
       return;
     }
+    if self.abandoned.borrow().is_some() {
+      *self.waiting.borrow_mut() = Some(user);
+      set(self.messages, Vec::new());
+      return set(self.state, PamState::Busy);
+    }
     let (events, channel) = calloop::channel::channel();
     let (answers, inbox) = mpsc::channel();
     let inner = Rc::clone(self);
-    let arrived = Box::new(move |event| inner.arrived(event));
+    let number = self.next.replace(self.next.get() + 1);
+    let arrived = Box::new(move |event| inner.arrived(number, event));
     let Some(source) = event_loop.insert_pam_channel(channel, arrived) else {
       return;
     };
@@ -316,6 +348,7 @@ impl Inner {
       tracing::error!(%error, "PAM couldn't start a thread");
     }
     *self.attempt.borrow_mut() = Some(Attempt {
+      number,
       source,
       answers,
       asking: false,
@@ -324,7 +357,15 @@ impl Inner {
     set(self.state, PamState::Busy);
   }
 
-  fn arrived(&self, event: Arrived<Event>) {
+  fn arrived(self: &Rc<Self>, number: u64, event: Arrived<Event>) {
+    let live = self.attempt.borrow().as_ref().map(|attempt| attempt.number);
+    if live != Some(number) {
+      // An aborted attempt's: only its end matters.
+      if let Arrived::Closed = event {
+        self.returned();
+      }
+      return;
+    }
     match event {
       Arrived::Msg(Event::Ask { message, visible }) => {
         if let Some(attempt) = self.attempt.borrow_mut().as_mut() {
@@ -369,9 +410,29 @@ impl Inner {
     }
   }
 
+  /// Abandons the attempt running: dropping its sender refuses the
+  /// question its thread waits on, and its source stays only to hear that
+  /// thread return. A start waiting is dropped.
   fn abort(&self) {
-    if self.end() {
+    let waited = self.waiting.take().is_some();
+    let attempt = self.attempt.borrow_mut().take();
+    if let Some(attempt) = &attempt {
+      *self.abandoned.borrow_mut() = Some(attempt.source);
+    }
+    if waited || attempt.is_some() {
       set(self.state, PamState::Idle);
+    }
+  }
+
+  /// An aborted attempt's thread returned: its source leaves the loop, and
+  /// a start that waited for it begins.
+  fn returned(self: &Rc<Self>) {
+    if let Some(token) = self.abandoned.take() {
+      self.remove(token);
+    }
+    let waiting = self.waiting.take();
+    if let Some(user) = waiting {
+      self.start(user);
     }
   }
 
@@ -382,10 +443,14 @@ impl Inner {
     let Some(attempt) = self.attempt.borrow_mut().take() else {
       return false;
     };
-    if let Some(event_loop) = self.shared.as_ref().and_then(|shared| shared.event_loop()) {
-      event_loop.remove(attempt.source);
-    }
+    self.remove(attempt.source);
     true
+  }
+
+  fn remove(&self, token: RegistrationToken) {
+    if let Some(event_loop) = self.shared.as_ref().and_then(|shared| shared.event_loop()) {
+      event_loop.remove(token);
+    }
   }
 }
 

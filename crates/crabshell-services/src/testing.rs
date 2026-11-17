@@ -140,6 +140,8 @@ pub(crate) enum Step {
   Error(String),
   /// Panics, as a backend with a bug might.
   Panic,
+  /// Blocks without asking, as a fingerprint reader waits for a finger.
+  Sleep(Duration),
 }
 
 impl FakePam {
@@ -162,6 +164,7 @@ impl crate::pam::Backend for FakePam {
           Step::Info(text) => talk.tell(PamMessage::Info, text.as_ref()),
           Step::Error(text) => talk.tell(PamMessage::Error, text.as_ref()),
           Step::Panic => panic!("the fake PAM panicked"),
+          Step::Sleep(time) => std::thread::sleep(*time),
         }
       }
       PamResult::Success
