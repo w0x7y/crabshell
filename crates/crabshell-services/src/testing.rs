@@ -124,6 +124,7 @@ pub(crate) fn offline() -> Config {
     pam: Arc::new(FakePam::default()),
     curl: PathBuf::from("curl"),
     art_cache: None,
+    backlight: PathBuf::from("/nonexistent/crabshell-backlight"),
   }
 }
 

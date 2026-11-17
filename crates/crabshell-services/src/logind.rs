@@ -17,9 +17,12 @@ use zbus::{Connection, Message};
 use crate::Shared;
 use crate::dbus::{self, CALL_TIMEOUT, Daemon, PROPERTIES, set_changed};
 
-const LOGIND: &str = "org.freedesktop.login1";
+pub(crate) const LOGIND: &str = "org.freedesktop.login1";
 const PATH: &str = "/org/freedesktop/login1";
 const MANAGER: &str = "org.freedesktop.login1.Manager";
+/// The shell's own session, whichever it is.
+const SESSION_PATH: &str = "/org/freedesktop/login1/session/auto";
+const SESSION: &str = "org.freedesktop.login1.Session";
 
 /// logind, from `cx.logind()`. Cloning it is cheap.
 #[derive(Clone)]
@@ -265,6 +268,12 @@ impl Service {
         tracing::warn!(%error, method, "logind refused");
       }
     });
+  }
+
+  /// Sets the backlight `name` to `value`, through the shell's session.
+  pub(crate) fn set_brightness(&self, name: &str, value: u32) {
+    let body = ("backlight".to_owned(), name.to_owned(), value);
+    self.call(SESSION_PATH, SESSION, "SetBrightness", body);
   }
 
   fn publish(&self, sleeping: bool, connected: bool) {

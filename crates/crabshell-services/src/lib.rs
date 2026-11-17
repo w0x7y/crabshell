@@ -18,6 +18,7 @@
 mod activation;
 mod audio;
 mod bluetooth;
+mod brightness;
 mod clock;
 mod dbus;
 mod desktop_entries;
@@ -67,6 +68,7 @@ pub use bluetooth::{
   Bluetooth, BluetoothAdapter, BluetoothAdapterState, BluetoothAgent, BluetoothDevice,
   BluetoothDeviceState, PairingKind, PairingRequest,
 };
+pub use brightness::{Backlight, Brightness};
 pub use clock::Precision;
 pub use desktop_entries::{DesktopAction, DesktopEntries, DesktopEntry};
 pub use file::{FileError, FileErrorKind, FileView};
@@ -131,7 +133,8 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(greetd::Service::new(Rc::clone(&shared)));
   cx.provide(pam::Service(Rc::clone(&shared)));
   cx.provide(polkit::Service::new(Rc::clone(&shared)));
-  cx.provide(logind::Service::new(Rc::clone(&shared)));
+  let logind = cx.provide(logind::Service::new(Rc::clone(&shared)));
+  cx.provide(brightness::Service::new(Rc::clone(&shared), logind));
 }
 
 /// Lets the services ask the compositor for activation tokens for the
@@ -433,6 +436,13 @@ pub trait ServicesExt {
   /// does while logind isn't there, and wakes the shell only for
   /// `PrepareForSleep`.
   fn logind(&self) -> Logind;
+
+  /// The screen backlights in `/sys/class/backlight`, read on the first
+  /// call and followed with inotify, and set through logind, which
+  /// starts with it. Every caller shares one list. It wakes the shell
+  /// only when the kernel says a brightness changed; a backlight added
+  /// later shows after a restart.
+  fn brightness(&self) -> Brightness;
 }
 
 impl ServicesExt for Cx {
@@ -544,6 +554,10 @@ impl ServicesExt for Cx {
 
   fn logind(&self) -> Logind {
     logind::logind(self)
+  }
+
+  fn brightness(&self) -> Brightness {
+    brightness::brightness(self)
   }
 }
 
@@ -845,6 +859,8 @@ struct Config {
   curl: PathBuf,
   /// Where `cx.cover_art` keeps what it downloads. `None` for no cache.
   art_cache: Option<PathBuf>,
+  /// Where the backlights are, `/sys/class/backlight`.
+  backlight: PathBuf,
 }
 
 impl Config {
@@ -889,6 +905,7 @@ impl Config {
       polkit_users_limit: polkit::USERS_LIMIT,
       curl: PathBuf::from("curl"),
       art_cache: http::art::cache_dir(),
+      backlight: PathBuf::from("/sys/class/backlight"),
     }
   }
 }
