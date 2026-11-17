@@ -304,3 +304,29 @@ impl io::Write for Logs {
     Ok(())
   }
 }
+
+/// An output described a read after the first is listed by the time a
+/// sync sent after the first is done: Wayland sends the answer after
+/// every event before it.
+#[test]
+fn a_sync_is_done_after_every_event_sent_before_it() {
+  let (_fake, mut event_loop) = connect(Globals {
+    late_output: true,
+    ..Globals::default()
+  });
+  let names = |event_loop: &mut EventLoop| -> Vec<String> {
+    let outputs = event_loop.platform().outputs();
+    outputs.map(|output| output.name.clone()).collect()
+  };
+  wait(&mut event_loop, "the first output", |event_loop| {
+    !names(event_loop).is_empty()
+  });
+  assert_eq!(names(&mut event_loop), ["FAKE-1"], "FAKE-2 comes later");
+  let ticket = event_loop.platform().sync();
+  assert!(!event_loop.platform().synced(ticket));
+  wait(&mut event_loop, "the sync", |event_loop| {
+    event_loop.platform().synced(ticket)
+  });
+  assert_eq!(names(&mut event_loop), ["FAKE-1", "FAKE-2"]);
+  assert!(event_loop.platform().synced(ticket - 1), "an older ticket");
+}

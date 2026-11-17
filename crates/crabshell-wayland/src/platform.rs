@@ -368,6 +368,10 @@ pub struct Platform {
   icon_theme: Option<String>,
   pub(crate) text: TextSystem,
   pub(crate) stats: Stats,
+  /// The last ticket [`sync`](Self::sync) handed out, and the last one
+  /// the compositor answered.
+  pub(crate) syncs_sent: u64,
+  pub(crate) syncs_done: u64,
 }
 
 impl Platform {
@@ -477,6 +481,8 @@ impl Platform {
       icon_theme: None,
       text: TextSystem::new(),
       stats: Stats::default(),
+      syncs_sent: 0,
+      syncs_done: 0,
     };
     // sctk tells `new_seat` only about seats that come later.
     for seat in platform.seats.seats() {

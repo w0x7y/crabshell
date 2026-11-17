@@ -95,6 +95,7 @@ mod scale;
 mod screencopy;
 mod shortcuts_inhibit;
 mod surface;
+mod sync;
 mod text_input;
 mod toplevels;
 mod windows;

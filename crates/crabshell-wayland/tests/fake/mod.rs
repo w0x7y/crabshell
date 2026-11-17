@@ -4,8 +4,8 @@
 //!
 //! It offers `wl_compositor` 4, `wl_shm`, `xdg_wm_base`, layer-shell and
 //! one output, `FAKE-1`, at the scale it is started with, and each extra
-//! global a test asks for: a seat with touch, the background effect
-//! manager, or workspaces. Each layer surface is configured at its first
+//! global a test asks for: a second output described a read later, a seat
+//! with touch, the background effect manager, or workspaces. Each layer surface is configured at its first
 //! commit, at the size it asked for or the output's, and each frame
 //! callback is answered at the next commit, so windows draw freely. The
 //! requests a test checks are written to a log as short lines, such as
@@ -56,6 +56,9 @@ pub const OUTPUT: (i32, i32) = (640, 480);
 pub struct Globals {
   /// The output's whole scale; 0 counts as 1.
   pub scale: i32,
+  /// A second output, `FAKE-2`, whose description is sent 100 ms after
+  /// the first's, in a read of its own, as a slow compositor's may be.
+  pub late_output: bool,
   /// A seat with a touchscreen.
   pub touch: bool,
   /// `ext_background_effect_manager_v1`, and whether it says it can blur
@@ -87,6 +90,7 @@ impl Fake {
       log: Arc::clone(&log),
       globals,
       outputs: Vec::new(),
+      late: Vec::new(),
       surfaces: Vec::new(),
       touches: Vec::new(),
       effects: Vec::new(),
@@ -138,7 +142,10 @@ fn serve(stream: UnixStream, mut state: State, commands: Receiver<Command>) {
   handle.create_global::<State, WlShm, ()>(1, ());
   handle.create_global::<State, XdgWmBase, ()>(1, ());
   handle.create_global::<State, ZwlrLayerShellV1, ()>(4, ());
-  handle.create_global::<State, WlOutput, i32>(4, scale);
+  handle.create_global::<State, WlOutput, (i32, bool)>(4, (scale, false));
+  if state.globals.late_output {
+    handle.create_global::<State, WlOutput, (i32, bool)>(4, (scale, true));
+  }
   if state.globals.touch {
     handle.create_global::<State, WlSeat, ()>(7, ());
   }
@@ -159,11 +166,18 @@ fn serve(stream: UnixStream, mut state: State, commands: Receiver<Command>) {
         Err(mpsc::TryRecvError::Disconnected) => return,
       }
     }
+    // Before the client's requests, so a sync it sent meanwhile is done
+    // after this description.
+    for output in std::mem::take(&mut state.late) {
+      describe(&output, scale, "FAKE-2");
+      state.outputs.push(output);
+    }
     if display.dispatch_clients(&mut state).is_err() {
       return;
     }
     let _ = display.flush_clients();
-    std::thread::sleep(Duration::from_millis(1));
+    let pause = if state.late.is_empty() { 1 } else { 100 };
+    std::thread::sleep(Duration::from_millis(pause));
   }
 }
 
@@ -179,6 +193,8 @@ pub struct State {
   log: Arc<Mutex<Vec<String>>>,
   globals: Globals,
   outputs: Vec<WlOutput>,
+  /// `FAKE-2`, bound and not described yet.
+  late: Vec<WlOutput>,
   /// Every surface, in the order made.
   surfaces: Vec<WlSurface>,
   touches: Vec<WlTouch>,
@@ -337,38 +353,48 @@ impl Dispatch<WlShmPool, ()> for State {
   }
 }
 
-impl GlobalDispatch<WlOutput, i32> for State {
+/// An output's scale, and whether it is `FAKE-2`, described a turn later.
+impl GlobalDispatch<WlOutput, (i32, bool)> for State {
   fn bind(
     state: &mut State,
     _: &DisplayHandle,
     _: &Client,
     resource: New<WlOutput>,
-    scale: &i32,
+    &(scale, late): &(i32, bool),
     init: &mut DataInit<'_, State>,
   ) {
     let output = init.init(resource, ());
-    let (width, height) = OUTPUT;
-    output.geometry(
-      0,
-      0,
-      0,
-      0,
-      wl_output::Subpixel::Unknown,
-      String::from("Fake"),
-      String::from("Fake"),
-      wl_output::Transform::Normal,
-    );
-    output.mode(
-      wl_output::Mode::Current,
-      width * scale,
-      height * scale,
-      60_000,
-    );
-    output.scale(*scale);
-    output.name(String::from("FAKE-1"));
-    output.done();
-    state.outputs.push(output);
+    if late {
+      state.late.push(output);
+    } else {
+      describe(&output, scale, "FAKE-1");
+      state.outputs.push(output);
+    }
   }
+}
+
+/// Sends `output`'s description, named `name`.
+fn describe(output: &WlOutput, scale: i32, name: &str) {
+  let (width, height) = OUTPUT;
+  output.geometry(
+    0,
+    0,
+    0,
+    0,
+    wl_output::Subpixel::Unknown,
+    String::from("Fake"),
+    String::from("Fake"),
+    wl_output::Transform::Normal,
+  );
+  output.mode(
+    wl_output::Mode::Current,
+    width * scale,
+    height * scale,
+    60_000,
+  );
+  output.scale(scale);
+  output.name(String::from(name));
+  output.done();
 }
 
 impl Dispatch<WlCompositor, ()> for State {
