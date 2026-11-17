@@ -1,11 +1,18 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use super::{MAX_LINE, MAX_LIST, Niri, NiriKeyboardLayouts, NiriWindow, NiriWorkspace};
+use crabshell_reactive::Runtime;
+use serde_json::json;
+
+use super::{
+  MAX_ACTIONS, MAX_LINE, MAX_LIST, MAX_REQUEST, Niri, NiriKeyboardLayouts, NiriWindow,
+  NiriWorkspace,
+};
 use crate::hyprland::MAX_TEXT;
 use crate::testing::{Harness, capture_logs, offline};
 use crate::{Config, ServicesExt};
@@ -66,6 +73,18 @@ impl FakeNiri {
       .write_all(format!("{{\"Ok\":\"Handled\"}}\n{state}").as_bytes())
       .expect("the state");
     stream
+  }
+
+  /// Every action the shell sent, each answered with `reply`.
+  fn actions(&self, reply: &str) -> Vec<String> {
+    std::iter::from_fn(|| self.accept())
+      .map(|(request, mut stream)| {
+        stream
+          .write_all(format!("{reply}\n").as_bytes())
+          .expect("a reply");
+        request
+      })
+      .collect()
   }
 }
 
@@ -346,6 +365,54 @@ fn unknown_events_are_skipped_and_bad_lines_logged() {
 }
 
 #[test]
+fn actions_go_as_json_lines_and_a_refusal_is_logged() {
+  let fake = FakeNiri::new();
+  let (mut shell, niri, _stream) = connect(&fake);
+  let logs = capture_logs(|| {
+    niri.focus_workspace(3);
+    niri.focus_window(11);
+    niri.action(json!({ "Spawn": { "command": ["foot"] } }));
+    let requests = fake.actions(r#"{"Ok":"Handled"}"#);
+    assert_eq!(
+      requests,
+      [
+        "{\"Action\":{\"FocusWorkspace\":{\"reference\":{\"Id\":3}}}}\n",
+        "{\"Action\":{\"FocusWindow\":{\"id\":11}}}\n",
+        "{\"Action\":{\"Spawn\":{\"command\":[\"foot\"]}}}\n",
+      ]
+    );
+    run(&mut shell);
+  });
+  assert!(logs.is_empty(), "{logs}");
+  let logs = capture_logs(|| {
+    niri.action(json!({ "Bogus": {} }));
+    fake.actions(r#"{"Err":"error parsing request"}"#);
+    run(&mut shell);
+    niri.action(json!("x".repeat(MAX_REQUEST)));
+  });
+  assert!(logs.contains("error parsing request"), "{logs}");
+  assert!(logs.contains("too long"), "{logs}");
+  assert!(fake.accept().is_none(), "a long action isn't sent");
+
+  let shell = Harness::new(offline());
+  let logs = capture_logs(|| shell.cx.niri().focus_window(1));
+  assert!(logs.contains("no niri to send an action to"), "{logs}");
+}
+
+#[test]
+fn past_64_waiting_actions_one_is_refused() {
+  let fake = FakeNiri::new();
+  let (_shell, niri, _stream) = connect(&fake);
+  let logs = capture_logs(|| {
+    for id in 0..=MAX_ACTIONS as u64 {
+      niri.focus_window(id);
+    }
+  });
+  assert!(logs.contains("64 actions wait for niri"), "{logs}");
+  assert_eq!(fake.actions(r#"{"Ok":"Handled"}"#).len(), MAX_ACTIONS);
+}
+
+#[test]
 fn a_line_over_the_cap_drops_the_stream() {
   let fake = FakeNiri::new();
   let (mut shell, niri, mut stream) = connect(&fake);
@@ -518,4 +585,101 @@ fn a_quiet_stream_wakes_nothing() {
   let (mut shell, _niri, _stream) = connect(&fake);
   let wakeups = shell.run_until(Instant::now() + Duration::from_millis(500));
   assert_eq!(wakeups, 1, "only the run's own deadline");
+}
+
+#[test]
+fn every_event_reaches_on_event_after_the_lists() {
+  let fake = FakeNiri::new();
+  let (mut shell, niri, mut stream) = connect(&fake);
+  let heard = Rc::new(RefCell::new(Vec::new()));
+  let kept = Rc::clone(&heard);
+  let overview = niri.overview_open();
+  niri.on_event(move |event| {
+    kept
+      .borrow_mut()
+      .push((event.clone(), overview.get_untracked()))
+  });
+  send(
+    &mut shell,
+    &mut stream,
+    r#"{"OverviewOpenedOrClosed":{"is_open":true}}"#,
+  );
+  send(&mut shell, &mut stream, r#"{"SomethingNew":{}}"#);
+  assert_eq!(
+    *heard.borrow(),
+    [
+      (
+        json!({ "OverviewOpenedOrClosed": { "is_open": true } }),
+        true
+      ),
+      (json!({ "SomethingNew": {} }), true),
+    ]
+  );
+}
+
+#[test]
+fn a_panicking_on_event_is_logged_with_where_it_was_called_and_the_rest_runs() {
+  let fake = FakeNiri::new();
+  let (mut shell, niri, mut stream) = connect(&fake);
+  let panics = Rc::new(Cell::new(0));
+  let counted = Rc::clone(&panics);
+  niri.on_event(move |_| {
+    counted.set(counted.get() + 1);
+    panic!("bad event");
+  });
+  let heard = Rc::new(Cell::new(0));
+  let kept = Rc::clone(&heard);
+  let inner = niri.clone();
+  niri.on_event(move |_| {
+    // Nothing of the service is borrowed while a handler runs.
+    inner.focus_window(11);
+    inner.on_event(|_| {});
+    kept.set(kept.get() + 1);
+  });
+  let logs = capture_logs(|| {
+    send(&mut shell, &mut stream, r#"{"WindowClosed":{"id":12}}"#);
+  });
+  let at = "niri on_event (called at crates/crabshell-services/src/niri/tests.rs:";
+  assert!(logs.contains(at), "{logs}");
+  assert!(
+    logs.contains("panicked on WindowClosed: bad event"),
+    "{logs}"
+  );
+  assert_eq!(heard.get(), 1);
+  assert_eq!(fake.actions(r#"{"Ok":"Handled"}"#).len(), 1);
+  send(&mut shell, &mut stream, r#"{"WindowClosed":{"id":11}}"#);
+  assert_eq!(
+    panics.get(),
+    1,
+    "a handler that panicked isn't called again"
+  );
+  assert_eq!(heard.get(), 2);
+  assert!(
+    niri.windows().get_untracked().is_empty(),
+    "the stream runs on"
+  );
+}
+
+#[test]
+fn an_on_event_goes_with_its_context() {
+  let fake = FakeNiri::new();
+  let (mut shell, _niri, mut stream) = connect(&fake);
+  let nodes = Runtime::current().node_count();
+  let child = shell.cx.child();
+  let heard = Rc::new(Cell::new(0));
+  let kept = Rc::clone(&heard);
+  child.niri().on_event(move |_| kept.set(kept.get() + 1));
+  send(&mut shell, &mut stream, r#"{"SomethingNew":{}}"#);
+  assert_eq!(heard.get(), 1);
+  child.owner().dispose();
+  assert_eq!(Runtime::current().node_count(), nodes);
+  assert_eq!(Rc::strong_count(&heard), 1, "the handler was dropped");
+
+  let child = shell.cx.child();
+  let stale = child.niri();
+  child.owner().dispose();
+  let kept = Rc::clone(&heard);
+  let logs = capture_logs(|| stale.on_event(move |_| kept.set(kept.get() + 1)));
+  assert!(logs.contains("context that is gone"), "{logs}");
+  assert_eq!(Rc::strong_count(&heard), 1, "the handler wasn't kept");
 }

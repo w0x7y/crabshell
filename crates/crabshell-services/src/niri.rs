@@ -8,14 +8,16 @@ mod tests;
 
 use std::cell::{RefCell, RefMut};
 use std::io::{ErrorKind, Read, Write};
+use std::net::Shutdown;
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
+use std::panic::{self, AssertUnwindSafe, Location};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Once;
 
 use calloop::{Interest, RegistrationToken};
-use crabshell_reactive::{ReadSignal, Signal};
+use crabshell_reactive::{Owner, ReadSignal, Signal};
 use crabshell_ui::Cx;
 use serde::de::{DeserializeOwned, Error as _, IgnoredAny};
 use serde::{Deserialize, Deserializer};
@@ -24,11 +26,18 @@ use serde_json::Value;
 use crate::Shared;
 use crate::dbus::set_changed;
 use crate::hyprland::{cut, open};
-use crate::lines::MAX_LINE;
+use crate::lines::{MAX_LINE, panic_message};
 
 /// The most workspaces, windows or layout names kept; the rest are left
 /// out.
 pub(crate) const MAX_LIST: usize = 4096;
+
+/// The longest action sent, as a JSON line.
+pub(crate) const MAX_REQUEST: usize = 8 * 1024;
+
+/// The most actions waiting for niri's reply; one past it isn't sent, so
+/// a config acting in a loop can't pile up connections.
+pub(crate) const MAX_ACTIONS: usize = 64;
 
 /// One of niri's workspaces, as its IPC describes it.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -93,6 +102,11 @@ pub struct NiriKeyboardLayouts {
 /// one connection.
 #[derive(Clone)]
 pub struct Niri {
+  /// `None` when the shell provided no services.
+  service: Option<Rc<Service>>,
+  /// The asking context's owner, which [`on_event`](Self::on_event)'s
+  /// handlers go with.
+  owner: Owner,
   workspaces: ReadSignal<Vec<NiriWorkspace>>,
   windows: ReadSignal<Vec<NiriWindow>>,
   keyboard_layouts: ReadSignal<Option<NiriKeyboardLayouts>>,
@@ -120,6 +134,52 @@ impl Niri {
   pub fn overview_open(&self) -> ReadSignal<bool> {
     self.overview_open
   }
+
+  /// Switches to the workspace with the id `id`.
+  pub fn focus_workspace(&self, id: u64) {
+    self.action(serde_json::json!({ "FocusWorkspace": { "reference": { "Id": id } } }));
+  }
+
+  /// Focuses the window with the id `id`.
+  pub fn focus_window(&self, id: u64) {
+    self.action(serde_json::json!({ "FocusWindow": { "id": id } }));
+  }
+
+  /// Sends niri `{"Action": action}`, as `niri msg action` does, on a
+  /// connection of its own, and never waits for it. `action` is one of
+  /// niri-ipc's `Action`s in JSON, such as
+  /// `json!({ "Spawn": { "command": ["foot"] } })`. niri's refusal is
+  /// logged, and so is an action over 8 KiB, or past 64 waiting for a
+  /// reply, which isn't sent.
+  pub fn action(&self, action: Value) {
+    match &self.service {
+      Some(service) => service.action(action),
+      None => tracing::warn!("no niri to send an action to"),
+    }
+  }
+
+  /// Calls `handler` with every event niri sends, as its JSON, such as
+  /// `{"OverviewOpenedOrClosed":{"is_open":true}}`, until the context
+  /// `cx.niri()` was called on goes. The lists have taken the event in
+  /// by then.
+  ///
+  /// It runs on the main thread. If it panics, that is logged with the
+  /// event's name and where `on_event` was called, and it isn't called
+  /// again. Called on a handle whose context went, it logs that and does
+  /// nothing.
+  #[track_caller]
+  pub fn on_event(&self, handler: impl Fn(&Value) + 'static) {
+    let at = Location::caller();
+    if self.owner.is_disposed() {
+      return tracing::warn!(
+        "niri on_event (called at {at}) on a context that is gone does nothing"
+      );
+    }
+    if let Some(service) = &self.service {
+      let id = service.add_handler(Rc::new(handler), at);
+      self.owner.signal(Unregister(Rc::clone(service), id));
+    }
+  }
 }
 
 /// `cx.niri()`.
@@ -130,6 +190,8 @@ pub(crate) fn niri(cx: &Cx) -> Niri {
       tracing::warn!("cx.niri() needs the services the shell provides; it shows nothing");
     });
     return Niri {
+      service: None,
+      owner: cx.owner(),
       workspaces: cx.signal(Vec::new()).read_only(),
       windows: cx.signal(Vec::new()).read_only(),
       keyboard_layouts: cx.signal(None).read_only(),
@@ -138,6 +200,8 @@ pub(crate) fn niri(cx: &Cx) -> Niri {
   };
   let (workspaces, windows, keyboard_layouts, overview_open) = service.start();
   Niri {
+    service: Some(service),
+    owner: cx.owner(),
     workspaces: workspaces.read_only(),
     windows: windows.read_only(),
     keyboard_layouts: keyboard_layouts.read_only(),
@@ -170,6 +234,12 @@ struct State {
   /// Whether the stream was opened again since niri last sent anything
   /// past a stream's first read.
   reconnected: bool,
+  /// Actions waiting for niri's reply.
+  actions: Vec<Action>,
+  next_action: u64,
+  /// What `on_event` was given, in the order it was.
+  handlers: Vec<Handler>,
+  next_handler: u64,
 }
 
 #[derive(Default)]
@@ -191,6 +261,33 @@ struct Stream {
   answered: bool,
   /// Whether a read with a whole line in it came.
   read_once: bool,
+}
+
+struct Action {
+  id: u64,
+  stream: UnixStream,
+  reader: RegistrationToken,
+  reply: Vec<u8>,
+}
+
+/// A config's raw-event handler.
+#[derive(Clone)]
+struct Handler {
+  id: u64,
+  /// Where `on_event` was called, for the log if it panics.
+  at: &'static Location<'static>,
+  handler: Rc<dyn Fn(&Value)>,
+}
+
+/// Drops a handler when the context it was given in goes.
+struct Unregister(Rc<Service>, u64);
+
+impl Drop for Unregister {
+  fn drop(&mut self) {
+    let handler = self.0.remove_handler(self.1);
+    // Dropped outside the borrow: the handler may hold a `Niri`.
+    drop(handler);
+  }
 }
 
 /// niri's reply to a request.
@@ -220,6 +317,10 @@ impl Service {
         raw: Raw::default(),
         stream: None,
         reconnected: false,
+        actions: Vec::new(),
+        next_action: 0,
+        handlers: Vec::new(),
+        next_handler: 0,
       });
       match &self.shared.config.niri {
         None => tracing::info!("NIRI_SOCKET is unset, so there is no niri to show"),
@@ -288,7 +389,7 @@ impl Service {
   }
 
   /// Reads what came on the event stream, takes in each whole event and
-  /// shows the lists.
+  /// shows the lists, then hands the events to the handlers.
   fn on_stream(self: &Rc<Self>) {
     if !self.alive() {
       return self.close();
@@ -319,6 +420,7 @@ impl Service {
     if std::mem::replace(&mut stream.read_once, true) {
       state.reconnected = false;
     }
+    let mut events = Vec::new();
     for line in whole
       .split(|&byte| byte == b'\n')
       .filter(|line| !line.is_empty())
@@ -345,8 +447,130 @@ impl Service {
         let name = event_name(&event);
         tracing::warn!(name, %error, "a bad event from niri");
       }
+      if !state.handlers.is_empty() {
+        events.push(event);
+      }
     }
     state.show();
+    drop(guard);
+    for event in events {
+      self.deliver(&event);
+    }
+  }
+
+  /// Calls each raw-event handler with `event`, with nothing borrowed.
+  fn deliver(&self, event: &Value) {
+    let handlers = match self.state.borrow().as_ref() {
+      Some(state) => state.handlers.clone(),
+      None => return,
+    };
+    for Handler { id, at, handler } in handlers {
+      let registered = self
+        .state
+        .borrow()
+        .as_ref()
+        .is_some_and(|state| state.handlers.iter().any(|handler| handler.id == id));
+      if !registered {
+        // An earlier handler's context went.
+        continue;
+      }
+      if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| handler(event))) {
+        let message = panic_message(payload.as_ref());
+        let name = event_name(event);
+        tracing::error!("niri on_event (called at {at}) panicked on {name}: {message}");
+        drop(self.remove_handler(id));
+      }
+    }
+  }
+
+  fn add_handler(&self, handler: Rc<dyn Fn(&Value)>, at: &'static Location<'static>) -> u64 {
+    let mut state = self.state.borrow_mut();
+    let state = state.as_mut().expect("invariant: started by cx.niri()");
+    let id = state.next_handler;
+    state.next_handler += 1;
+    state.handlers.push(Handler { id, at, handler });
+    id
+  }
+
+  /// Takes out the handler `id`, for the caller to drop once nothing is
+  /// borrowed.
+  fn remove_handler(&self, id: u64) -> Option<Handler> {
+    let mut state = self.state.borrow_mut();
+    let handlers = &mut state.as_mut()?.handlers;
+    let at = handlers.iter().position(|handler| handler.id == id)?;
+    Some(handlers.remove(at))
+  }
+
+  /// Sends `{"Action": action}` on a connection of its own.
+  fn action(self: &Rc<Self>, action: Value) {
+    let (Some(path), Some(event_loop)) = (&self.shared.config.niri, self.shared.event_loop())
+    else {
+      return tracing::warn!("no niri to send an action to");
+    };
+    let mut request = serde_json::json!({ "Action": action }).to_string();
+    request.push('\n');
+    if request.len() > MAX_REQUEST {
+      return tracing::warn!("a niri action over 8 KiB is too long to send");
+    }
+    let mut state = self.state.borrow_mut();
+    let state = state.as_mut().expect("invariant: started by cx.niri()");
+    if state.actions.len() >= MAX_ACTIONS {
+      return tracing::warn!("64 actions wait for niri, so this one isn't sent");
+    }
+    let opened = open(path).and_then(|mut stream| {
+      send(&mut stream, request.as_bytes())?;
+      // niri answers, then reads the end and closes.
+      stream.shutdown(Shutdown::Write)?;
+      let fd = stream.as_fd().try_clone_to_owned()?;
+      Ok((stream, fd))
+    });
+    let (stream, fd) = match opened {
+      Ok(opened) => opened,
+      Err(error) => return tracing::warn!(%error, "can't send niri an action"),
+    };
+    let id = state.next_action;
+    state.next_action += 1;
+    let service = Rc::clone(self);
+    let read = Box::new(move || service.on_reply(id));
+    if let Some(reader) = event_loop.insert_fd(fd, Interest::READ, read) {
+      state.actions.push(Action {
+        id,
+        stream,
+        reader,
+        reply: Vec::new(),
+      });
+    }
+  }
+
+  /// Reads what came of an action's reply, and logs a refusal once niri
+  /// closed the connection.
+  fn on_reply(self: &Rc<Self>, id: u64) {
+    if !self.alive() {
+      return self.close();
+    }
+    let mut chunk = [0; 4096];
+    let mut state = self.state.borrow_mut();
+    let state = state.as_mut().expect("invariant: started before acting");
+    let Some(at) = state.actions.iter().position(|action| action.id == id) else {
+      return;
+    };
+    let action = &mut state.actions[at];
+    let failed = match action.stream.read(&mut chunk) {
+      Ok(0) => None,
+      Ok(read) if action.reply.len() + read > MAX_LINE => Some(String::from("over 1 MiB")),
+      Ok(read) => return action.reply.extend_from_slice(&chunk[..read]),
+      Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
+        return;
+      }
+      Err(error) => Some(error.to_string()),
+    };
+    let action = state.actions.remove(at);
+    if let Some(event_loop) = self.shared.event_loop() {
+      event_loop.remove(action.reader);
+    }
+    if let Some(why) = failed.or_else(|| refusal(&action.reply)) {
+      tracing::warn!(why, "niri refused an action");
+    }
   }
 
   /// The event stream ended for `why`. niri closes a client that falls
@@ -386,6 +610,12 @@ impl Service {
   fn close(&self) {
     if let Some(state) = self.state.borrow_mut().as_mut() {
       self.drop_stream(state);
+      let actions = std::mem::take(&mut state.actions);
+      if let Some(event_loop) = self.shared.event_loop() {
+        for action in actions {
+          event_loop.remove(action.reader);
+        }
+      }
     }
   }
 
