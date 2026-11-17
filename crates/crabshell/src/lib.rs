@@ -92,6 +92,7 @@ pub mod prelude {
     Clipboard, ClipboardContent, ClipboardEntry, IntoPanels, ShellExt, Toplevels, WindowManager,
   };
   pub use crabshell_reactive::{Effect, Memo, ReadSignal, Signal, untrack};
+  pub use crabshell_services::Locale;
   pub use crabshell_services::{
     AudioChannel, AudioNode, AudioStream, AuthRequest, AuthState, BatteryState, Bluetooth,
     BluetoothAdapter, BluetoothAdapterState, BluetoothAgent, BluetoothDevice, BluetoothDeviceState,

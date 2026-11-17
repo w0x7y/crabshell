@@ -28,6 +28,7 @@ mod greetd;
 mod http;
 mod hyprland;
 mod lines;
+mod locale;
 mod logind;
 mod mpris;
 mod network;
@@ -78,6 +79,7 @@ pub use folder::{FolderEntry, FolderView};
 pub use greetd::{GreetMessage, GreetState, Greetd};
 pub use http::{Http, HttpError, HttpErrorKind};
 pub use hyprland::{Hyprland, HyprlandEvent, HyprlandMonitor, HyprlandToplevel, HyprlandWorkspace};
+pub use locale::Locale;
 pub use logind::Logind;
 pub use mpris::{LoopStatus, Mpris, PlaybackStatus, Player};
 pub use network::{
@@ -218,6 +220,13 @@ pub trait ServicesExt {
   /// right again at once. A zone changed any other way shows from the
   /// next tick.
   fn clock(&self, precision: Precision) -> ReadSignal<jiff::Zoned>;
+
+  /// The month and day names of the user's locale for dates: `LC_ALL`,
+  /// else `LC_TIME`, else `LANG`. English until glibc's names for it are
+  /// read, once per shell, by running `locale -k LC_TIME` on a thread;
+  /// that wakes the shell once. C, POSIX, unset, or a locale that isn't
+  /// installed stays English.
+  fn locale(&self) -> ReadSignal<Locale>;
 
   /// Sway's workspaces, outputs, commands and events, over the IPC socket
   /// at `$SWAYSOCK`, as Quickshell's `I3`. Every caller shares one
@@ -472,6 +481,10 @@ pub trait ServicesExt {
 impl ServicesExt for Cx {
   fn clock(&self, precision: Precision) -> ReadSignal<jiff::Zoned> {
     clock::clock(self, precision)
+  }
+
+  fn locale(&self) -> ReadSignal<Locale> {
+    locale::locale(self)
   }
 
   fn sway(&self) -> Sway {
