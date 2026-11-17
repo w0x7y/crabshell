@@ -82,6 +82,61 @@ fn blurred_bar(
   Window::new(cx, bar)
 }
 
+/// Shared memory this process has in RAM, in KiB: window buffers.
+fn shared_kib() -> u64 {
+  let status = std::fs::read_to_string("/proc/self/status").expect("/proc/self/status");
+  status
+    .lines()
+    .find_map(|line| line.strip_prefix("RssShmem:"))
+    .and_then(|rest| rest.trim().strip_suffix("kB")?.trim().parse().ok())
+    .expect("an RssShmem line")
+}
+
+/// The fake reads a buffer until the next commit, as compositors that
+/// keep shm buffers do, so each new frame lands in a second buffer. Once
+/// the window rests, the memory of the spare the compositor released is
+/// given back, keeping the buffer shown, and nothing wakes the loop for
+/// it.
+#[test]
+fn a_resting_window_gives_back_its_spare_buffers() {
+  let (_fake, mut event_loop) = connect(Globals {
+    scale: 2,
+    ..Globals::default()
+  });
+  let cx = Cx::new(Runtime::current().new_owner());
+  let tint = cx.signal(0_u8);
+  // The whole 640x480 output at scale 2: 4.7 MiB a buffer.
+  let window = PanelWindow::new(&Output::new("FAKE-1"))
+    .anchors(Edge::Top | Edge::Bottom | Edge::Left | Edge::Right)
+    .style(move || Style::new().background(Color::rgb(tint.get(), 0, 0)));
+  let window = event_loop.platform().add_window(Window::new(&cx, window));
+  frames(&mut event_loop, window, 1);
+  let buffers = |event_loop: &mut EventLoop| {
+    let info = event_loop.platform().window_info(window);
+    info.expect("the window").buffers
+  };
+  for value in 1..=3 {
+    tint.set(value);
+    frames(&mut event_loop, window, 1);
+    assert_eq!(
+      buffers(&mut event_loop),
+      2,
+      "a new frame while the last is read"
+    );
+    let both = shared_kib();
+    wait(&mut event_loop, "the spare given back", |event_loop| {
+      buffers(event_loop) == 1
+    });
+    let one = shared_kib();
+    assert!(one + 4096 <= both, "{both} KiB with both, {one} KiB after");
+  }
+  let wakeups = event_loop.platform().stats().wayland_wakeups;
+  run_for(&mut event_loop, Duration::from_millis(200));
+  assert_eq!(event_loop.platform().stats().wayland_wakeups, wakeups);
+  assert_eq!(buffers(&mut event_loop), 1);
+  cx.owner().dispose();
+}
+
 #[test]
 fn blur_goes_out_in_surface_pixels_once_and_clears_at_scales_1_and_2() {
   for scale in [1, 2] {

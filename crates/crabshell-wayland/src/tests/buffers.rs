@@ -10,6 +10,8 @@ struct Fake {
   size: (u32, u32),
   busy: Rc<Cell<bool>>,
   number: usize,
+  /// Times its memory was given back.
+  emptied: u32,
 }
 
 impl ShmBuffer for Fake {
@@ -19,6 +21,10 @@ impl ShmBuffer for Fake {
 
   fn busy(&self) -> bool {
     self.busy.get()
+  }
+
+  fn empty(&mut self) {
+    self.emptied += 1;
   }
 }
 
@@ -47,6 +53,7 @@ impl Harness {
         size,
         busy,
         number: made.len() - 1,
+        emptied: 0,
       })
     })?;
     slot.buffer.busy.set(true);
@@ -55,6 +62,14 @@ impl Harness {
 
   fn release(&self, number: usize) {
     self.made[number].set(false);
+  }
+
+  fn emptied(&self, number: usize) -> u32 {
+    self.buffers.slot(number).buffer.emptied
+  }
+
+  fn age_is_new(&self, number: usize) -> bool {
+    self.buffers.slot(number).age == crabshell_render::BufferAge::default()
   }
 }
 
@@ -114,4 +129,29 @@ fn a_buffer_that_cant_be_made_draws_nothing() {
   let mut buffers: Buffers<Fake> = Buffers::new();
   assert!(buffers.next((10, 10), || None).is_none());
   assert_eq!(buffers.len(), 0);
+}
+
+#[test]
+fn trimming_empties_the_free_buffers_but_the_one_drawn_last() {
+  let mut h = Harness::new();
+  for _ in 0..3 {
+    h.draw((10, 10));
+  }
+  // 1 is still read; 2 holds the newest frame.
+  h.release(0);
+  h.release(2);
+  h.buffers.trim();
+  assert_eq!((h.buffers.len(), h.buffers.held()), (3, 2), "0 emptied");
+  h.release(1);
+  h.buffers.trim();
+  h.buffers.trim();
+  assert_eq!(h.buffers.held(), 1);
+  let emptied: Vec<u32> = (0..3).map(|number| h.emptied(number)).collect();
+  assert_eq!(emptied, [1, 1, 0], "each emptied once");
+  assert_eq!(h.draw((10, 10)), Some(2), "the frame shown is drawn on");
+  // An emptied buffer drawn again holds memory, and nothing to catch up
+  // from: its age starts over.
+  assert_eq!(h.draw((10, 10)), Some(1));
+  assert_eq!(h.buffers.held(), 2);
+  assert!(h.age_is_new(1));
 }

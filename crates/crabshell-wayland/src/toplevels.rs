@@ -8,10 +8,9 @@ use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::xdg::window::{
   Window as Toplevel, WindowConfigure, WindowDecorations, WindowHandler,
 };
-use smithay_client_toolkit::shm::slot::SlotPool;
 use wayland_protocols::xdg::shell::client::xdg_toplevel::ResizeEdge;
 
-use crate::platform::{INITIAL_POOL_BYTES, Platform};
+use crate::platform::Platform;
 use crate::scale::Scale;
 use crate::surface::{Role, Surface};
 use crate::windows::WindowId;
@@ -23,12 +22,6 @@ impl Platform {
     if !config.shown {
       return;
     }
-    let pool = match SlotPool::new(INITIAL_POOL_BYTES, &self.shm) {
-      Ok(pool) => pool,
-      Err(error) => {
-        return tracing::warn!(%error, "couldn't create a shared-memory pool");
-      }
-    };
     let entry = &mut self.windows.entries[index];
     // Read now; later changes are sent as they come.
     entry.window.take_surface_changed();
@@ -49,7 +42,7 @@ impl Platform {
     };
     tracing::debug!(title = config.title, "created a floating window");
     let entry = &mut self.windows.entries[index];
-    let mut surface = Surface::new(Role::Toplevel(toplevel), fractional, pool, scale);
+    let mut surface = Surface::new(Role::Toplevel(toplevel), fractional, scale);
     surface.floating = Some(sent);
     entry.surface = Some(surface);
   }

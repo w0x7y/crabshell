@@ -38,11 +38,13 @@
 //!   Settings layer-shell would refuse, such as a width of 0 without both
 //!   side anchors, are logged and never sent. The compositor's `closed`, or
 //!   the output going away, drops the window and its owner.
-//! - Each window has two or three ARGB8888 buffers from sctk's `SlotPool`,
-//!   reused once released, sized `logical × scale` rounded halfway away
-//!   from zero as `wp_fractional_scale_v1` says, with a damage
+//! - Each window has up to three ARGB8888 buffers, each in a pool of its
+//!   own, reused once released, sized `logical × scale` rounded halfway
+//!   away from zero as `wp_fractional_scale_v1` says, with a damage
 //!   history per window and an age per buffer. Every successful draw is
-//!   committed, reporting its rectangles with `damage_buffer`.
+//!   committed, reporting its rectangles with `damage_buffer`. While a
+//!   window has nothing to draw and nothing animates, the memory of each
+//!   released buffer but the one drawn last is given back.
 //! - Each commit asks for a frame callback. A window draws only once it
 //!   arrives and something changed; with nothing changed nothing is
 //!   committed, so an idle window gets no events.

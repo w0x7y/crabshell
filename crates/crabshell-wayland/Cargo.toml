@@ -17,6 +17,8 @@ calloop.workspace = true
 crabshell-reactive.workspace = true
 crabshell-render.workspace = true
 crabshell-ui.workspace = true
+# Punching out a spare buffer's memory.
+rustix.workspace = true
 smithay-client-toolkit.workspace = true
 tracing.workspace = true
 wayland-protocols.workspace = true

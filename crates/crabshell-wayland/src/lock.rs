@@ -7,7 +7,6 @@ use smithay_client_toolkit::reexports::client::protocol::wl_callback::{self, WlC
 use smithay_client_toolkit::reexports::client::protocol::wl_output::WlOutput;
 use smithay_client_toolkit::reexports::client::protocol::wl_surface::WlSurface;
 use smithay_client_toolkit::reexports::client::{Connection, Dispatch, QueueHandle, delegate_noop};
-use smithay_client_toolkit::shm::slot::SlotPool;
 use wayland_protocols::ext::session_lock::v1::client::ext_session_lock_manager_v1::ExtSessionLockManagerV1;
 use wayland_protocols::ext::session_lock::v1::client::ext_session_lock_surface_v1::{
   self, ExtSessionLockSurfaceV1,
@@ -16,7 +15,7 @@ use wayland_protocols::ext::session_lock::v1::client::ext_session_lock_v1::{
   self, ExtSessionLockV1,
 };
 
-use crate::platform::{INITIAL_POOL_BYTES, Platform};
+use crate::platform::Platform;
 use crate::scale::Scale;
 use crate::surface::{Role, Surface};
 use crate::windows::WindowId;
@@ -208,10 +207,6 @@ impl Platform {
     ) else {
       return;
     };
-    let pool = match SlotPool::new(INITIAL_POOL_BYTES, &self.shm) {
-      Ok(pool) => pool,
-      Err(error) => return tracing::warn!(%error, "couldn't create a shared-memory pool"),
-    };
     let Some(window) = lock.surface(&Output::new(info.name.clone())) else {
       return;
     };
@@ -232,7 +227,7 @@ impl Platform {
       .last_mut()
       .expect("invariant: the window just added is the last");
     let role = Role::Lock(LockRole { role, wl_surface });
-    entry.surface = Some(Surface::new(role, fractional, pool, scale));
+    entry.surface = Some(Surface::new(role, fractional, scale));
     entry.output = Some(output.clone());
     self.locks.held[index].surfaces.push(id);
   }

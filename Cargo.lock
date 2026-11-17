@@ -296,6 +296,7 @@ dependencies = [
  "crabshell-render",
  "crabshell-ui",
  "png",
+ "rustix",
  "smithay-client-toolkit",
  "tracing",
  "tracing-subscriber",

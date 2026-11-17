@@ -22,7 +22,6 @@ use smithay_client_toolkit::seat::pointer::cursor_shape::CursorShapeManager;
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::LayerShell;
 use smithay_client_toolkit::shm::Shm;
-use smithay_client_toolkit::shm::slot::SlotPool;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::WpCursorShapeDeviceV1;
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1;
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1::WpFractionalScaleV1;
@@ -52,10 +51,6 @@ use smithay_client_toolkit::data_device_manager::DataDeviceManagerState;
 use smithay_client_toolkit::data_device_manager::data_device::DataDevice;
 use smithay_client_toolkit::shell::xdg::XdgShell;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
-
-/// A new window's first shared-memory pool, in bytes: a 1920 by 30 bar.
-/// sctk grows it as buffers need.
-pub(crate) const INITIAL_POOL_BYTES: usize = 1920 * 30 * 4;
 
 /// The `wl_compositor` version needed: `wl_surface.damage_buffer` came in 4.
 const COMPOSITOR_VERSION: u32 = 4;
@@ -246,6 +241,9 @@ pub struct WindowInfo {
   pub fractional: bool,
   /// The size of the last buffer committed.
   pub buffer_size: Option<(u32, u32)>,
+  /// The buffers it holds: one at rest, up to three while the compositor
+  /// reads the ones it drew before.
+  pub buffers: usize,
   /// Frames committed.
   pub commits: u64,
   /// Whether it has a surface: false while it waits for its output, or
@@ -568,6 +566,24 @@ impl Platform {
   /// GIF it drew is due, moves it when that changes, and takes it out of
   /// the loop while none is. When it fires, the GIFs due move on a frame
   /// and their boxes repaint; a GIF not drawn then waits for nothing.
+  /// Gives back the spare buffers of each window with nothing to draw,
+  /// while nothing animates, once the compositor released them: the
+  /// release woke the loop anyway, and the window's next frame takes a
+  /// buffer again. An animation or a GIF would draw again within a frame,
+  /// so while one runs every window keeps its buffers.
+  fn trim_buffers(&mut self) {
+    if crabshell_ui::animating() || self.images.is_some() {
+      return;
+    }
+    for entry in &mut self.windows.entries {
+      if let Some(surface) = &mut entry.surface
+        && !entry.window.has_damage()
+      {
+        surface.trim_buffers();
+      }
+    }
+  }
+
   fn arm_images(&mut self) {
     let next = self.renderer.next_image_frame(Instant::now());
     if self.images.map(|(_, due)| due) == next {
@@ -758,6 +774,7 @@ impl Platform {
       scale: surface.map_or(1.0, |surface| surface.frames.scale.factor()),
       fractional: surface.is_some_and(|surface| surface.fractional.is_some()),
       buffer_size: surface.and_then(|surface| surface.buffer_size),
+      buffers: surface.map_or(0, Surface::buffers),
       commits: surface.map_or(0, |surface| surface.commits),
       shown: surface.is_some(),
       last_damage: surface
@@ -875,6 +892,7 @@ impl Platform {
     self.tick_animations();
     self.arm_timers();
     self.arm_images();
+    self.trim_buffers();
     self.arm_decodes();
     self.arm_holds();
     self.commit_windowsets();
@@ -893,6 +911,7 @@ impl Platform {
       text,
       qh,
       stats,
+      shm,
       compositor,
       registry,
       effects,
@@ -965,7 +984,7 @@ impl Platform {
       }
       if surface.frames.pacing.should_draw(entry.window.has_damage()) {
         let started = Instant::now();
-        if surface.draw(&entry.window, renderer, text, qh) {
+        if surface.draw(&entry.window, renderer, text, shm, qh) {
           stats.commits += 1;
           stats.drawing += started.elapsed();
           drawn.push(entry.id);
@@ -1034,13 +1053,6 @@ impl Platform {
         continue;
       }
       let (output, output_scale) = (output.clone(), info.scale);
-      let pool = match SlotPool::new(INITIAL_POOL_BYTES, &self.shm) {
-        Ok(pool) => pool,
-        Err(error) => {
-          tracing::warn!(%error, "couldn't create a shared-memory pool");
-          continue;
-        }
-      };
       // The settings were read above; later changes are sent as they
       // come.
       self.windows.entries[index].window.take_surface_changed();
@@ -1066,7 +1078,7 @@ impl Platform {
       };
       tracing::debug!(output = name, ?config, "created a layer surface");
       let entry = &mut self.windows.entries[index];
-      let mut surface = Surface::new(Role::Layer(layer), fractional, pool, scale);
+      let mut surface = Surface::new(Role::Layer(layer), fractional, scale);
       surface.namespace = namespace;
       surface.layer_sent = Some(config);
       entry.surface = Some(surface);

@@ -1,5 +1,5 @@
-//! A window's two or three shared-memory buffers, reused once the
-//! compositor releases them.
+//! A window's shared-memory buffers, up to three, reused once the
+//! compositor releases them, and emptied while the window rests.
 
 use crabshell_render::BufferAge;
 
@@ -12,6 +12,8 @@ pub(crate) trait ShmBuffer {
   fn size(&self) -> (u32, u32);
   /// Whether the compositor holds it: attached and not yet released.
   fn busy(&self) -> bool;
+  /// Gives its memory back, keeping the buffer; it reads as zeros after.
+  fn empty(&mut self);
 }
 
 /// One buffer, the frame it holds, and when it was last drawn.
@@ -21,6 +23,8 @@ pub(crate) struct Slot<B> {
   /// Counts draws, so the free buffer drawn last is picked first: it is
   /// the one with the least to catch up on.
   drawn: u64,
+  /// Its memory was given back, until it is drawn again.
+  emptied: bool,
 }
 
 /// A window's buffers.
@@ -63,6 +67,7 @@ impl<B: ShmBuffer> Buffers<B> {
           buffer: create()?,
           age: BufferAge::default(),
           drawn: 0,
+          emptied: false,
         });
         self.slots.len() - 1
       }
@@ -70,12 +75,39 @@ impl<B: ShmBuffer> Buffers<B> {
     };
     let slot = &mut self.slots[index];
     slot.drawn = draws;
+    slot.emptied = false;
     Some(slot)
+  }
+
+  /// Gives back the memory of each buffer the compositor isn't reading,
+  /// but the one drawn last, which holds the frame shown. The buffers are
+  /// kept, so the compositor hears nothing, and one drawn again is
+  /// repainted whole.
+  pub(crate) fn trim(&mut self) {
+    let last = self.slots.iter().map(|slot| slot.drawn).max();
+    for slot in &mut self.slots {
+      if !slot.emptied && !slot.buffer.busy() && Some(slot.drawn) != last {
+        slot.buffer.empty();
+        slot.age = BufferAge::default();
+        slot.emptied = true;
+      }
+    }
+  }
+
+  /// How many buffers hold memory.
+  pub(crate) fn held(&self) -> usize {
+    self.slots.iter().filter(|slot| !slot.emptied).count()
   }
 
   /// How many buffers there are.
   #[cfg(test)]
   pub(crate) fn len(&self) -> usize {
     self.slots.len()
+  }
+
+  /// The buffer made `index`th, for tests.
+  #[cfg(test)]
+  pub(crate) fn slot(&self, index: usize) -> &Slot<B> {
+    &self.slots[index]
   }
 }

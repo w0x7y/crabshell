@@ -8,12 +8,11 @@ use smithay_client_toolkit::shell::xdg::popup::{
   ConfigureKind, Popup, PopupConfigure, PopupHandler,
 };
 use smithay_client_toolkit::shell::xdg::{XdgPositioner, XdgShell, XdgSurface};
-use smithay_client_toolkit::shm::slot::SlotPool;
 use wayland_protocols::xdg::shell::client::xdg_positioner::{
   Anchor, ConstraintAdjustment, Gravity,
 };
 
-use crate::platform::{INITIAL_POOL_BYTES, Platform};
+use crate::platform::Platform;
 use crate::surface::{PopupRole, Role, Surface};
 use crate::windows::Entry;
 
@@ -110,12 +109,6 @@ impl Platform {
     entry.window.layout(&mut self.text);
     let size = entry.window.size();
     let size = (size.width as u32, size.height as u32);
-    let pool = match SlotPool::new(INITIAL_POOL_BYTES, &self.shm) {
-      Ok(pool) => pool,
-      Err(error) => {
-        return tracing::warn!(%error, "couldn't create a shared-memory pool");
-      }
-    };
     let positioner = positioner(
       &self.xdg,
       size,
@@ -150,7 +143,7 @@ impl Platform {
       grabbed: grab.is_some(),
       position: None,
     });
-    let mut surface = Surface::new(role, fractional, pool, scale);
+    let mut surface = Surface::new(role, fractional, scale);
     surface.size = Some(size);
     self.windows.entries[index].surface = Some(surface);
   }

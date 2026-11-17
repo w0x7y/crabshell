@@ -2,13 +2,19 @@
 //! `xdg_popup`: its settings, buffers, scale and frame pacing, and drawing
 //! a frame into it.
 
+use std::os::fd::OwnedFd;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crabshell_render::{BufferAge, Canvas, DamageHistory, PixelFormat, PixelRect, Renderer};
 use crabshell_ui::{
   Anchors, Edge, KeyboardFocus, Layer, Region, Size, SurfaceConfig, TextSystem, Window,
 };
+use rustix::fs::FallocateFlags;
 use smithay_client_toolkit::compositor::{self, CompositorState, FrameCallbackData};
+use smithay_client_toolkit::reexports::client::backend::protocol::Message;
+use smithay_client_toolkit::reexports::client::backend::{Backend, ObjectData, ObjectId};
+use smithay_client_toolkit::reexports::client::protocol::wl_buffer::WlBuffer;
 use smithay_client_toolkit::reexports::client::protocol::{
   wl_callback::WlCallback, wl_shm, wl_surface::WlSurface,
 };
@@ -20,7 +26,8 @@ use smithay_client_toolkit::shell::wlr_layer::{
 use smithay_client_toolkit::shell::xdg::XdgPositioner;
 use smithay_client_toolkit::shell::xdg::popup::Popup;
 use smithay_client_toolkit::shell::xdg::window::Window as ToplevelWindow;
-use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
+use smithay_client_toolkit::shm::Shm;
+use smithay_client_toolkit::shm::raw::RawPool;
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1::WpFractionalScaleV1;
 use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 
@@ -31,11 +38,43 @@ use crate::scale::Scale;
 /// The largest logical size accepted from a configure.
 const MAX_LOGICAL_SIDE: u32 = 16_384;
 
-/// An sctk buffer and its size, which sctk doesn't keep.
+/// A buffer in a shared-memory pool of its own, so its memory can be
+/// given back while the buffer is kept, and its size. sctk's slot pools
+/// keep their memory until dropped, and dropping a buffer makes the
+/// compositor answer, which wakes the loop.
 pub(crate) struct ShmSlot {
-  shm: Buffer,
+  buffer: WlBuffer,
+  read: Arc<Read>,
+  pool: RawPool,
   width: u32,
   height: u32,
+}
+
+impl ShmSlot {
+  /// A `width` by `height` ARGB8888 buffer in a new pool.
+  fn new(shm: &Shm, width: u32, height: u32) -> Result<ShmSlot, String> {
+    let stride = width.checked_mul(4).ok_or("too wide")?;
+    let bytes = usize::try_from(u64::from(stride) * u64::from(height)).map_err(|_| "too large")?;
+    let [width_i32, height_i32, stride] =
+      [width, height, stride].map(|value| i32::try_from(value).map_err(|_| "too large"));
+    let mut pool = RawPool::new(bytes, shm).map_err(|error| error.to_string())?;
+    let read = Arc::new(Read::default());
+    let buffer = pool.create_buffer_raw(
+      0,
+      width_i32?,
+      height_i32?,
+      stride?,
+      wl_shm::Format::Argb8888,
+      Arc::clone(&read) as Arc<dyn ObjectData>,
+    );
+    Ok(ShmSlot {
+      buffer,
+      read,
+      pool,
+      width,
+      height,
+    })
+  }
 }
 
 impl ShmBuffer for ShmSlot {
@@ -44,8 +83,42 @@ impl ShmBuffer for ShmSlot {
   }
 
   fn busy(&self) -> bool {
-    self.shm.slot().has_active_buffers()
+    self.read.0.load(Ordering::Relaxed)
   }
+
+  fn empty(&mut self) {
+    let flags = FallocateFlags::PUNCH_HOLE | FallocateFlags::KEEP_SIZE;
+    let length = self.pool.len() as u64;
+    if let Err(error) = rustix::fs::fallocate(&self.pool, flags, 0, length) {
+      tracing::warn!(%error, "couldn't give a spare buffer's memory back");
+    }
+  }
+}
+
+impl Drop for ShmSlot {
+  fn drop(&mut self) {
+    // The pool goes with its own drop.
+    self.buffer.destroy();
+  }
+}
+
+/// Whether the compositor reads a buffer: set as it is attached, cleared
+/// by its `release`. Object data must be `Send` and `Sync`, hence atomic.
+#[derive(Default)]
+struct Read(AtomicBool);
+
+impl ObjectData for Read {
+  fn event(
+    self: Arc<Self>,
+    _: &Backend,
+    _: Message<ObjectId, OwnedFd>,
+  ) -> Option<Arc<dyn ObjectData>> {
+    // `release`, a buffer's only event.
+    self.0.store(false, Ordering::Relaxed);
+    None
+  }
+
+  fn destroyed(&self, _: ObjectId) {}
 }
 
 /// A window's frames: what its buffers hold (the damage history), when it
@@ -177,7 +250,6 @@ pub(crate) struct Surface {
   pub(crate) role: Role,
   /// Present when the compositor scales fractionally.
   pub(crate) fractional: Option<(WpFractionalScaleV1, WpViewport)>,
-  pool: SlotPool,
   buffers: Buffers<ShmSlot>,
   pub(crate) frames: Frames,
   /// The logical size from the last configure.
@@ -222,13 +294,11 @@ impl Surface {
   pub(crate) fn new(
     role: Role,
     fractional: Option<(WpFractionalScaleV1, WpViewport)>,
-    pool: SlotPool,
     scale: Scale,
   ) -> Surface {
     Surface {
       role,
       fractional,
-      pool,
       buffers: Buffers::new(),
       frames: Frames::new(scale),
       size: None,
@@ -249,6 +319,17 @@ impl Surface {
       hyprland: None,
       hyprland_told: crate::hyprland_surface::Told::default(),
     }
+  }
+
+  /// How many buffers hold memory.
+  pub(crate) fn buffers(&self) -> usize {
+    self.buffers.held()
+  }
+
+  /// Gives back the buffers the compositor isn't reading, but the one
+  /// drawn last, which holds the frame shown.
+  pub(crate) fn trim_buffers(&mut self) {
+    self.buffers.trim();
   }
 
   pub(crate) fn wl_surface(&self) -> &WlSurface {
@@ -394,6 +475,7 @@ impl Surface {
     window: &Window,
     renderer: &mut Renderer,
     text: &mut TextSystem,
+    shm: &Shm,
     qh: &QueueHandle<D>,
   ) -> bool
   where
@@ -411,10 +493,7 @@ impl Surface {
       );
       return false;
     };
-    // Split the borrows: the pool hands out the canvas while a slot is
-    // borrowed from the buffers.
     let Surface {
-      pool,
       buffers,
       frames,
       held,
@@ -422,30 +501,16 @@ impl Surface {
       ..
     } = self;
     let slot = buffers.next((buffer_width, buffer_height), || {
-      let stride = buffer_width.checked_mul(4)?;
-      match pool.create_buffer(
-        i32::try_from(buffer_width).ok()?,
-        i32::try_from(buffer_height).ok()?,
-        i32::try_from(stride).ok()?,
-        wl_shm::Format::Argb8888,
-      ) {
-        Ok((shm, _)) => Some(ShmSlot {
-          shm,
-          width: buffer_width,
-          height: buffer_height,
-        }),
-        Err(error) => {
+      ShmSlot::new(shm, buffer_width, buffer_height)
+        .inspect_err(|error| {
           tracing::warn!(%error, buffer_width, buffer_height, "couldn't allocate a buffer");
-          None
-        }
-      }
+        })
+        .ok()
     });
     let Some(slot) = slot else {
       return false;
     };
-    let Some(pixels) = slot.buffer.shm.canvas(pool) else {
-      return false;
-    };
+    let pixels = &mut slot.buffer.pool.mmap()[..];
     let canvas = (pixels, buffer_width, buffer_height);
     let Some(report) = frames.draw(window, renderer, text, canvas, &mut slot.age) else {
       return false;
@@ -472,11 +537,8 @@ impl Surface {
       Role::Toplevel(window) => window.wl_surface(),
       Role::Lock(lock) => &lock.wl_surface,
     };
-    if let Err(error) = slot.buffer.shm.attach_to(surface) {
-      tracing::warn!(%error, "couldn't attach a buffer");
-      frames.lost();
-      return false;
-    }
+    surface.attach(Some(&slot.buffer.buffer), 0, 0);
+    slot.buffer.read.0.store(true, Ordering::Relaxed);
     for rect in &report {
       let [x, y, width, height] = [rect.x, rect.y, rect.width, rect.height]
         .map(|value| i32::try_from(value).unwrap_or(i32::MAX));
