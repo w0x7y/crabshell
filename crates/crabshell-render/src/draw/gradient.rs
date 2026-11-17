@@ -111,7 +111,9 @@ impl Painter<'_> {
         let cell = f32::from(cells[x.rem_euclid(4) as usize]);
         let dither = (cell + 0.5) / 16.0;
         // Never negative, so `as` truncates as `floor` would, faster.
-        let alpha = (a * 255.0 + 0.5) as u32;
+        // Alpha takes the same threshold, so a fade to clear doesn't
+        // band, and a channel no more than alpha stays no more.
+        let alpha = (a * 255.0 + dither) as u32;
         let channel = |value: f32| ((value * a * 255.0 + dither) as u32).min(alpha) as u8;
         *pixel = [channel(r), channel(g), channel(b), alpha as u8];
       }

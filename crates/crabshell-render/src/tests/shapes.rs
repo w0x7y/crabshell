@@ -395,6 +395,46 @@ mod gradients {
   }
 
   #[test]
+  fn a_subtle_fade_is_dithered_in_its_alpha_too() {
+    // White from alpha 16 to 20 over 256 pixels, on a clear window.
+    let from = Color::rgba(255, 255, 255, 16);
+    let to = Color::rgba(255, 255, 255, 20);
+    let buffer = sized(Gradient::linear(90.0, from, to), 256.0, 8.0, 1.0);
+    let exact = |x: u32| 16.0 + 4.0 * (x as f32 + 0.5) / 256.0;
+    for x in 0..256 {
+      for y in 0..8 {
+        let [r, g, b, a] = buffer.pixel(x, y);
+        assert!(r <= a && g <= a && b <= a, "premultiplied at {x}, {y}");
+        assert!((f32::from(a) - exact(x)).abs() < 1.0, "at {x}, {y}: {a}");
+      }
+    }
+    for block in 0..64 {
+      let mean: f32 = (0..4)
+        .flat_map(|dx| (0..4).map(move |y| (block * 4 + dx, y)))
+        .map(|(x, y)| f32::from(buffer.pixel(x, y)[3]))
+        .sum::<f32>()
+        / 16.0;
+      let middle = exact(block * 4) + 1.5 * 4.0 / 256.0;
+      assert!(
+        (mean - middle).abs() < 0.15,
+        "block {block}: {mean} {middle}"
+      );
+    }
+    // One translucent color stays that color.
+    let half = Color::rgba(255, 255, 255, 128);
+    let flat = sized(Gradient::linear(90.0, half, half), 64.0, 64.0, 1.0);
+    assert!(
+      flat
+        .pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .all(|pixel| *pixel == [128, 128, 128, 128]),
+      "a translucent gradient of one color stays that color"
+    );
+  }
+
+  #[test]
   fn every_gradient_shape_is_dithered_and_a_flat_one_is_not() {
     let (from, to) = (Color::rgb(40, 40, 40), Color::rgb(44, 44, 44));
     for gradient in [
