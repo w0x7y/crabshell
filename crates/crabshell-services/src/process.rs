@@ -147,6 +147,8 @@ struct State {
   lines: Lines,
   /// A next-turn delivery is on its way, and passes on all that waits.
   later: bool,
+  /// From [`Process::stopped`]: nothing starts until a restart.
+  stopped: bool,
 }
 
 /// What a config does with each line.
@@ -220,10 +222,10 @@ pub(crate) fn process<C: IntoCommand>(cx: &Cx, command: impl Fn() -> C + 'static
   // logged; the next change tries again.
   cx.effect(move || {
     restarts.get();
-    let built = panic::catch_unwind(AssertUnwindSafe(|| command().into_command()));
-    let Some(inner) = weak.upgrade() else {
+    let Some(inner) = weak.upgrade().filter(|inner| !inner.state.borrow().stopped) else {
       return;
     };
+    let built = panic::catch_unwind(AssertUnwindSafe(|| command().into_command()));
     match built {
       Ok(next) => untrack(|| inner.start(next)),
       Err(payload) => {
@@ -365,9 +367,26 @@ impl Process {
   }
 
   /// Stops the program if it runs and starts the command again, as when
-  /// a signal the command read changed.
+  /// a signal the command read changed. A [`stopped`](Self::stopped) one
+  /// starts.
   pub fn restart(&self) {
+    self.inner.state.borrow_mut().stopped = false;
     self.inner.restarts.try_update(|count| *count += 1);
+  }
+
+  /// Doesn't start the program until [`restart`](Self::restart), as
+  /// Quickshell's `Process` with `running: false`, so a program run on
+  /// demand, such as a button's, is one process restarted per click.
+  /// Until then the command isn't built, a signal it reads starts
+  /// nothing, [`running`](Self::running) is `false`, and writes are
+  /// dropped. Call it right after `cx.process`; later, it stops a run
+  /// about to start, but not one already running.
+  pub fn stopped(self) -> Process {
+    self.inner.state.borrow_mut().stopped = true;
+    if self.inner.state.borrow().run.is_none() {
+      self.inner.cancel();
+    }
+    self
   }
 }
 

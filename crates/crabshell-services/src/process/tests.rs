@@ -152,6 +152,58 @@ fn restart_runs_it_again_and_stops_the_run_before() {
 }
 
 #[test]
+fn a_stopped_process_waits_for_restart() {
+  let dir = Dir::new();
+  let ran = dir.0.join("ran");
+  let mut shell = Harness::new(offline());
+  let word = shell.cx.signal("one");
+  let builds = Rc::new(std::cell::Cell::new(0));
+  let (counted, marker) = (Rc::clone(&builds), ran.clone());
+  let process = shell
+    .cx
+    .process(move || {
+      counted.set(counted.get() + 1);
+      let word = word.get();
+      sh(&format!(
+        "echo {word} >> '{}'; echo {word}",
+        marker.display()
+      ))
+    })
+    .stopped();
+  assert!(!process.running().get_untracked());
+  Runtime::current().flush();
+  let wakeups = shell.run_until(Instant::now() + Duration::from_millis(100));
+  assert_eq!(wakeups, 1, "asleep: only the run's own deadline");
+  word.set("two");
+  Runtime::current().flush();
+  shell.run_until(Instant::now() + Duration::from_millis(100));
+  assert_eq!(builds.get(), 0, "the command isn't even built");
+  assert!(!ran.exists());
+  assert!(!process.running().get_untracked());
+  assert_eq!(process.exit_status().get_untracked(), None);
+
+  process.restart();
+  Runtime::current().flush();
+  assert!(process.running().get_untracked());
+  finish(&mut shell, &process);
+  assert_eq!(process.stdout().get_untracked(), "two\n");
+  // From then on, as any process.
+  word.set("three");
+  Runtime::current().flush();
+  finish(&mut shell, &process);
+  assert_eq!(process.stdout().get_untracked(), "three\n");
+  assert_eq!(std::fs::read_to_string(&ran).unwrap(), "two\nthree\n");
+
+  // Stopped once it was to start: it doesn't.
+  let late = shell.cx.process(|| sh("exit 3"));
+  Runtime::current().flush();
+  let late = late.stopped();
+  shell.run_until(Instant::now() + Duration::from_millis(100));
+  assert!(!late.running().get_untracked());
+  assert_eq!(late.exit_status().get_untracked(), None);
+}
+
+#[test]
 fn with_stdin_takes_what_is_written_even_before_it_starts() {
   let mut shell = Harness::new(offline());
   let process = shell.cx.process(|| Command::new("cat")).with_stdin();
