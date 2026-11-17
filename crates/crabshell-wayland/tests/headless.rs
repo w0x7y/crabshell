@@ -3738,6 +3738,84 @@ fn views_of_one_output_share_a_session_and_one_scrolled_away_sleeps() {
   assert_eq!(event_loop.platform().capture_sessions(), 1);
 }
 
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_view_joining_a_session_stalled_on_a_hidden_window_still_follows_its_source() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1280x720", "scale", "1"]);
+  sway.msg(&["create_output"]);
+  sway.msg(&["output", "HEADLESS-2", "mode", "640x360", "scale", "1"]);
+  let cx = Cx::new(Runtime::current().new_owner());
+  let mut event_loop = sway.connect();
+  let color = cx.signal(RED);
+  let fill = PanelWindow::new(&Output::new("HEADLESS-2"))
+    .anchors(Edge::Top | Edge::Bottom | Edge::Left | Edge::Right)
+    .style(move || Style::new().background(color.get()));
+  event_loop.platform().add_window(Window::new(&cx, fill));
+  wait_for_color(&sway, &mut event_loop, "HEADLESS-2", (0, 0, 640, 360), RED);
+  let viewer = |layer: Layer, edge: Edge| {
+    let view = ScreencopyView::new(CaptureSource::Output(String::from("HEADLESS-2")))
+      .live(true)
+      .style(Style::new().width(160.0).height(90.0));
+    let panel = PanelWindow::new(&Output::new("HEADLESS-1"))
+      .anchors(Edge::Top | edge)
+      .layer(layer)
+      .width(160)
+      .height(90)
+      .child(Row::new().child(view));
+    Window::new(&cx, panel)
+  };
+  let shows = |platform: &Platform, window: WindowId, color: Color| {
+    let frames = frames_in(platform, window);
+    frames.len() == 1 && all_of(&frames[0].rgba, color)
+  };
+  let first = event_loop
+    .platform()
+    .add_window(viewer(Layer::Bottom, Edge::Left));
+  run_until(&mut event_loop, "the first view's frame", |platform| {
+    shows(platform, first, RED)
+  });
+
+  // A fullscreen window hides the first viewer, which then gets no frame
+  // callbacks: it draws the next frame, and the one after waits for it.
+  sway.msg(&["focus", "output", "HEADLESS-1"]);
+  let _cover = AppWindow::new(&sway, "org.example.Cover", "cover");
+  sway.msg(&["[app_id=org.example.Cover]", "fullscreen", "enable"]);
+  settle(&mut event_loop);
+  for next in [BLUE, GREEN] {
+    color.set(next);
+    run_until(&mut event_loop, "the hidden view's frame", |platform| {
+      shows(platform, first, next)
+    });
+  }
+  settle(&mut event_loop);
+
+  // A view that joins shows the last frame, and the source's next change.
+  let second = event_loop
+    .platform()
+    .add_window(viewer(Layer::Overlay, Edge::Right));
+  run_until(&mut event_loop, "the joining view's frame", |platform| {
+    shows(platform, second, GREEN)
+  });
+  assert_eq!(event_loop.platform().capture_sessions(), 1);
+  color.set(RED);
+  run_until(
+    &mut event_loop,
+    "the joining view's next frame",
+    |platform| shows(platform, second, RED),
+  );
+
+  // With the first viewer closed, the second still follows.
+  settle(&mut event_loop);
+  event_loop.platform().remove_window(first);
+  color.set(BLUE);
+  run_until(
+    &mut event_loop,
+    "a frame after the first closed",
+    |platform| shows(platform, second, BLUE),
+  );
+}
+
 /// The lock screen's background.
 const MAGENTA: Color = Color::rgb(0xff, 0x00, 0xff);
 

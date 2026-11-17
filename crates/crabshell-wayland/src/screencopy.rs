@@ -383,7 +383,8 @@ impl Platform {
       if view.cover != (0, 0) {
         continue;
       }
-      let Some(session) = captures.sessions.iter().find(|session| view.takes(session)) else {
+      let sessions = captures.sessions.iter_mut();
+      let Some(session) = sessions.into_iter().find(|session| view.takes(session)) else {
         continue;
       };
       let Some((frame, cut, whole)) = &session.last else {
@@ -399,6 +400,12 @@ impl Platform {
       }
       (view.cover, view.whole) = (*cut, *whole);
       view.ended = !view.request.live;
+      // The next frame may wait for windows that can't draw, such as
+      // hidden ones, so a live view asks for it now; the compositor
+      // answers once the source changes.
+      if view.request.live && !session.waiting.is_empty() {
+        session.capture(&self.qh);
+      }
     }
     let views = &captures.views;
     captures.sessions.retain_mut(|session| {
