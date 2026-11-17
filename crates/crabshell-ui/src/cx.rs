@@ -5,8 +5,9 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
-use crabshell_reactive::{Effect, Memo, Owner, ReadSignal, Signal};
+use crabshell_reactive::{Effect, Memo, Owner, ReadSignal, Signal, untrack};
 
+use crate::animation::{Activity, Busy};
 use crate::style::Font;
 use crate::text::{TextMetrics, TextSystem};
 use crate::tree::{NodeId, Tree};
@@ -31,10 +32,13 @@ pub struct Cx {
   /// The widget this context belongs to, if any, for
   /// [`open_popup`](Self::open_popup). A child context shares it.
   pub(crate) anchor: Option<Rc<Anchor>>,
-  /// Whether the keyed item this context is in is leaving. A child context
-  /// shares it; outside such an item it is the root's signal that stays
-  /// `false`.
+  /// Whether the keyed item this context is in, or one around it, is
+  /// leaving. A child context shares it; outside such an item it is the
+  /// root's signal that stays `false`.
   leaving: ReadSignal<bool>,
+  /// The count of animations in the innermost item of a list with an
+  /// exit this context is in, which that item's exit waits for.
+  pub(crate) activity: Option<Rc<Activity>>,
 }
 
 /// Where a widget is: its window's tree and its node. Set once the node
@@ -78,6 +82,7 @@ impl Cx {
       owner,
       services: Rc::default(),
       anchor: None,
+      activity: None,
     }
   }
 
@@ -96,20 +101,49 @@ impl Cx {
       services: Rc::clone(&self.services),
       anchor: self.anchor.clone(),
       leaving: self.leaving,
+      activity: self.activity.clone(),
     }
   }
 
   /// Whether the keyed item this context is in is leaving: `true` from
   /// when its key leaves a list with an [`exit`](crate::Row::exit) until
-  /// it is removed, or until the key comes back. Every context made inside
-  /// the item reads the same signal, and outside one it stays `false`.
+  /// it is removed, or until the key comes back, and while an item of
+  /// such a list around it is leaving. Every context made inside the item
+  /// reads the same signal, and outside one it stays `false`.
   pub fn leaving(&self) -> ReadSignal<bool> {
     self.leaving
   }
 
-  /// The context of an item of a list with an exit.
-  pub(crate) fn in_item(self, leaving: ReadSignal<bool>) -> Cx {
-    Cx { leaving, ..self }
+  /// The context of an item of a list with an exit, which leaves when
+  /// `own` is true or the item around it leaves.
+  pub(crate) fn in_item(self, own: ReadSignal<bool>) -> Cx {
+    let outer = self.leaving;
+    // Only inside another such item can an outer one leave.
+    let leaving = match self.activity {
+      Some(_) => {
+        let either = move || own.try_get() == Some(true) || outer.try_get() == Some(true);
+        let both = self.signal(untrack(either));
+        self.effect(move || {
+          let now = either();
+          if untrack(|| both.try_get()) != Some(now) {
+            both.try_set(now);
+          }
+        });
+        both.read_only()
+      }
+      None => own,
+    };
+    Cx {
+      leaving,
+      activity: Some(Activity::new(self.activity.clone())),
+      ..self
+    }
+  }
+
+  /// Counts an animation starting in this context as running in the
+  /// items it is in, until the result is dropped.
+  pub(crate) fn busy(&self) -> Option<Busy> {
+    self.activity.as_ref().map(Busy::new)
   }
 
   /// Gives the context's owner a debug name, such as a widget path.

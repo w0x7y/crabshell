@@ -411,6 +411,7 @@ impl Tree {
       return;
     };
     let label: Rc<str> = format!("{}.kinetic", node.path).into();
+    let busy = node.cx.busy();
     let NodeKind::Scroll(scroll) = &mut node.kind else {
       return;
     };
@@ -425,6 +426,7 @@ impl Tree {
     let mut previous: Option<Instant> = None;
     animation::start(
       label,
+      busy,
       Box::new(move |now| {
         let Some(tree) = tree.upgrade() else {
           return false;

@@ -1243,8 +1243,10 @@ impl Tree {
       || Rc::from("a fade"),
       |node| format!("{}.transition", node.path).into(),
     );
+    let busy = self.node(id).and_then(|node| node.cx.busy());
     animation::start(
       label,
+      busy,
       Box::new(move |now| {
         let Some(tree) = tree.upgrade() else {
           return false;
@@ -1325,10 +1327,12 @@ impl Tree {
     node.slides += 1;
     let generation = node.slides;
     let label: Rc<str> = format!("{}.displaced", node.path).into();
+    let busy = node.cx.busy();
     let tree = self.this.clone();
     let mut started = animation::start_time();
     animation::start(
       label,
+      busy,
       Box::new(move |now| {
         let Some(tree) = tree.upgrade() else {
           return false;

@@ -247,8 +247,10 @@ impl Tree {
       || Rc::from("an image transition"),
       |node| format!("{}.transition", node.path).into(),
     );
+    let busy = self.node(id).and_then(|node| node.cx.busy());
     animation::start(
       label,
+      busy,
       Box::new(move |now| {
         let Some(tree) = tree.upgrade() else {
           return false;

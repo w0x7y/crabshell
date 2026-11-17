@@ -8,7 +8,10 @@ use std::time::{Duration, Instant};
 use super::{Counter, Harness, capture_logs, node_at, paths};
 use crabshell_reactive::{ReadSignal, Signal};
 
-use crate::{Button, Content, Element, Icon, Row, Text, Widget, Window, fire_timers, next_timer};
+use crate::{
+  Button, Content, Easing, Element, Icon, Row, Style, Text, Transition, Widget, Window,
+  advance_animations, animating, fire_timers, next_timer,
+};
 
 /// The text of each child of the window's row.
 fn texts(window: &Window) -> Vec<String> {
@@ -685,4 +688,213 @@ fn an_exit_binding_that_panics_is_logged_and_the_child_goes_at_once() {
     logs.contains("PanelWindow[DP-1]/Row.children: its exit panicked; the child goes at once"),
     "{logs}"
   );
+}
+
+const SLIDE: Transition = Transition::new(100).easing(Easing::Linear);
+
+/// A row of `items` that leave over at most `exit`, each sliding 50
+/// pixels over `slide` as it leaves.
+fn sliding_row(items: Signal<Vec<u32>>, exit: Duration, slide: Transition) -> Row {
+  Row::new()
+    .children_keyed(
+      move || items.get(),
+      |n| *n,
+      move |cx, n| {
+        let leaving = cx.leaving();
+        let x = cx.animate(move || if leaving.get() { 50.0 } else { 0.0 }, slide);
+        Text::new(move || n.get().to_string()).style(move || Style::new().translate(x.get(), 0.0))
+      },
+    )
+    .exit(exit)
+}
+
+/// Ticks the clock at `ms` past `start`, then runs a loop iteration.
+fn tick(h: &mut Harness, window: &Window, start: Instant, ms: u64) -> bool {
+  let still = advance_animations(start + Duration::from_millis(ms));
+  h.frame(window);
+  still
+}
+
+#[test]
+fn a_leaving_child_goes_once_its_animations_end() {
+  let mut h = Harness::new();
+  let items = h.cx.signal(vec![1]);
+  let window = h.window(
+    h.panel().child(sliding_row(items, 10 * EXIT, SLIDE)),
+    400.0,
+    30.0,
+  );
+  let one = h.runtime.node_count();
+  items.set(vec![1, 2]);
+  h.frame(&window);
+  items.set(vec![1]);
+  h.frame(&window);
+  let start = Instant::now();
+  tick(&mut h, &window, start, 0);
+  tick(&mut h, &window, start, 50);
+  assert_eq!(texts(&window), ["1", "2"], "still sliding");
+  tick(&mut h, &window, start, 100);
+  assert_eq!(texts(&window), ["1", "2"], "judged at the next tick");
+  assert!(!tick(&mut h, &window, start, 116), "the clock stops");
+  assert_eq!(texts(&window), ["1"]);
+  assert_eq!(h.runtime.node_count(), one);
+  assert_eq!(next_timer(), None, "its exit timer went with it");
+  assert!(!animating());
+}
+
+#[test]
+fn an_exit_shorter_than_the_animation_cuts_it_short() {
+  let mut h = Harness::new();
+  let items = h.cx.signal(vec![1, 2]);
+  let window = h.window(
+    h.panel()
+      .child(sliding_row(items, EXIT, Transition::new(10_000))),
+    400.0,
+    30.0,
+  );
+  items.set(vec![1]);
+  h.frame(&window);
+  let start = Instant::now();
+  tick(&mut h, &window, start, 0);
+  fire_timers(next_timer().expect("its exit timer runs"));
+  h.frame(&window);
+  assert_eq!(texts(&window), ["1"]);
+  assert!(
+    !tick(&mut h, &window, start, 16),
+    "its animation went with it"
+  );
+}
+
+#[test]
+fn a_leaving_child_with_nothing_animating_goes_at_the_first_tick() {
+  let mut h = Harness::new();
+  let items = h.cx.signal(vec![1, 2]);
+  let seen = Seen::default();
+  let window = h.window(
+    h.panel()
+      .child(exiting_row(items, &seen, &Counter::default())),
+    400.0,
+    30.0,
+  );
+  items.set(vec![1]);
+  h.frame(&window);
+  assert!(leaving(&seen, 2));
+  assert!(animating(), "the clock ticks once to judge it");
+  assert!(!tick(&mut h, &window, Instant::now(), 0));
+  assert_eq!(texts(&window), ["1 0"]);
+  assert_eq!(next_timer(), None);
+}
+
+#[test]
+fn an_animation_that_starts_a_frame_late_still_holds_the_child() {
+  let mut h = Harness::new();
+  let items = h.cx.signal(vec![1, 2]);
+  let row = Row::new()
+    .children_keyed(
+      move || items.get(),
+      |n| *n,
+      |cx, n| {
+        let leaving = cx.leaving();
+        let slide = cx.animation(move || if leaving.get() { 50.0 } else { 0.0 }, SLIDE);
+        // Moves once the slide has ended, in the flush after that tick.
+        let fade = cx.animate(
+          move || {
+            if leaving.get() && !slide.running().get() {
+              0.0
+            } else {
+              1.0
+            }
+          },
+          SLIDE,
+        );
+        Text::new(move || n.get().to_string()).style(move || {
+          Style::new()
+            .translate(slide.value().get(), 0.0)
+            .opacity(fade.get())
+        })
+      },
+    )
+    .exit(10 * EXIT);
+  let window = h.window(h.panel().child(row), 400.0, 30.0);
+  items.set(vec![1]);
+  h.frame(&window);
+  let start = Instant::now();
+  tick(&mut h, &window, start, 0);
+  tick(&mut h, &window, start, 100);
+  assert!(
+    tick(&mut h, &window, start, 116),
+    "the fade keeps the clock"
+  );
+  assert_eq!(texts(&window), ["1", "2"], "the fade holds it");
+  tick(&mut h, &window, start, 200);
+  assert_eq!(texts(&window), ["1", "2"], "the fade just ended");
+  assert!(!tick(&mut h, &window, start, 216));
+  assert_eq!(texts(&window), ["1"]);
+}
+
+/// A list of one item, in a list of one item, both leaving over at most
+/// `10 * EXIT`. The inner item slides as it leaves; its `leaving` is
+/// kept in `seen`.
+fn nested_rows(outer: Signal<Vec<u32>>, seen: &Rc<RefCell<Option<ReadSignal<bool>>>>) -> Row {
+  let seen = Rc::clone(seen);
+  Row::new()
+    .children_keyed(
+      move || outer.get(),
+      |n| *n,
+      move |_cx, _n| {
+        let seen = Rc::clone(&seen);
+        Row::new()
+          .children_keyed(
+            || vec![10_u32],
+            |n| *n,
+            move |cx, n| {
+              let leaving = cx.leaving();
+              *seen.borrow_mut() = Some(leaving);
+              let x = cx.animate(move || if leaving.get() { 50.0 } else { 0.0 }, SLIDE);
+              Text::new(move || n.get().to_string())
+                .style(move || Style::new().translate(x.get(), 0.0))
+            },
+          )
+          .exit(10 * EXIT)
+      },
+    )
+    .exit(10 * EXIT)
+}
+
+#[test]
+fn an_item_inside_a_leaving_item_is_leaving_too() {
+  let mut h = Harness::new();
+  let outer = h.cx.signal(vec![1]);
+  let seen = Rc::new(RefCell::new(None));
+  let window = h.window(h.panel().child(nested_rows(outer, &seen)), 400.0, 30.0);
+  let inner = seen.borrow().expect("the inner view ran");
+  assert!(!inner.get_untracked());
+
+  outer.set(Vec::new());
+  h.frame(&window);
+  assert!(inner.get_untracked(), "its outer item leaves");
+  outer.set(vec![1]);
+  h.frame(&window);
+  assert!(!inner.get_untracked(), "and comes back");
+}
+
+#[test]
+fn a_leaving_item_waits_for_the_animations_of_the_items_inside_it() {
+  let mut h = Harness::new();
+  let outer = h.cx.signal(Vec::new());
+  let seen = Rc::new(RefCell::new(None));
+  let window = h.window(h.panel().child(nested_rows(outer, &seen)), 400.0, 30.0);
+  let empty = h.runtime.node_count();
+  outer.set(vec![1]);
+  h.frame(&window);
+  outer.set(Vec::new());
+  h.frame(&window);
+  let start = Instant::now();
+  tick(&mut h, &window, start, 0);
+  tick(&mut h, &window, start, 100);
+  assert_eq!(texts(&window).len(), 1, "the inner slide just ended");
+  assert!(!tick(&mut h, &window, start, 116));
+  assert!(texts(&window).is_empty());
+  assert_eq!(h.runtime.node_count(), empty);
+  assert_eq!(next_timer(), None);
 }

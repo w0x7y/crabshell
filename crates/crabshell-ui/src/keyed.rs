@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use crabshell_reactive::{Memo, Owner, Signal, untrack};
 
-use crate::animation::Transition;
+use crate::animation::{self, Transition};
 use crate::cx::Cx;
 use crate::input::panic_message;
 use crate::prop::Prop;
@@ -220,6 +220,13 @@ where
           let timer = scope.after(duration, move || {
             finished.try_set(());
           });
+          // Or sooner, once nothing in it moves.
+          if let Some(activity) = entry.cx.activity.clone() {
+            animation::watch(scope.owner(), activity, move || {
+              timer.stop();
+              finished.try_set(());
+            });
+          }
           entry.exit = Some((scope.owner(), timer));
           going.push((item_key, entry));
         } else if entry

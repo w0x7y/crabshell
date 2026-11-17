@@ -7,7 +7,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use crabshell_reactive::{ReadSignal, Signal, untrack};
+use crabshell_reactive::{Owner, ReadSignal, Signal, untrack};
 
 use crate::cx::Cx;
 use crate::geometry::Point;
@@ -372,18 +372,111 @@ impl Animate for Color {
 /// runs.
 type Step = Box<dyn FnMut(Instant) -> bool>;
 
+/// A step on the clock, named for log lines and counted in its item.
+type Running = (Rc<str>, Option<Busy>, Step);
+
+/// How many animations run inside one item of a list with an exit, and
+/// the item around it, so a leaving item knows when everything in it has
+/// stopped.
+pub(crate) struct Activity {
+  running: Cell<usize>,
+  outer: Option<Rc<Activity>>,
+}
+
+impl Activity {
+  pub(crate) fn new(outer: Option<Rc<Activity>>) -> Rc<Activity> {
+    Rc::new(Activity {
+      running: Cell::new(0),
+      outer,
+    })
+  }
+
+  /// Adds `by` to this item's count and every item's around it.
+  fn add(&self, by: isize) {
+    let mut at = Some(self);
+    while let Some(activity) = at {
+      activity
+        .running
+        .set(activity.running.get().wrapping_add_signed(by));
+      at = activity.outer.as_deref();
+    }
+  }
+}
+
+/// One animation counted as running in its item until it is dropped.
+pub(crate) struct Busy(Rc<Activity>);
+
+impl Busy {
+  pub(crate) fn new(activity: &Rc<Activity>) -> Busy {
+    activity.add(1);
+    Busy(Rc::clone(activity))
+  }
+}
+
+impl Drop for Busy {
+  fn drop(&mut self) {
+    self.0.add(-1);
+  }
+}
+
+/// A leaving item waiting for everything in it to stop: `done` runs at
+/// the first tick that finds nothing running there, unless `owner`, its
+/// exit's, went first.
+struct Watch {
+  owner: Owner,
+  activity: Rc<Activity>,
+  done: Box<dyn FnOnce()>,
+}
+
 thread_local! {
   /// Everything is on one thread, so the clock is too. Each animation is
   /// named for log lines.
-  static RUNNING: RefCell<Vec<(Rc<str>, Step)>> = const { RefCell::new(Vec::new()) };
+  static RUNNING: RefCell<Vec<Running>> = const { RefCell::new(Vec::new()) };
+  static WATCHES: RefCell<Vec<Watch>> = const { RefCell::new(Vec::new()) };
   /// When the clock last ticked.
   static LAST_TICK: Cell<Option<Instant>> = const { Cell::new(None) };
 }
 
-/// Starts `step`, named `label` for log lines, at the next
-/// [`advance_animations`].
-pub(crate) fn start(label: Rc<str>, step: Step) {
-  RUNNING.with(|running| running.borrow_mut().push((label, step)));
+/// Starts `step`, named `label` for log lines and counted in `busy`'s
+/// item, at the next [`advance_animations`].
+pub(crate) fn start(label: Rc<str>, busy: Option<Busy>, step: Step) {
+  RUNNING.with(|running| running.borrow_mut().push((label, busy, step)));
+}
+
+/// Runs `done` at the first tick that finds nothing running in
+/// `activity`'s item, while `owner` lasts. The clock ticks for it, so an
+/// item with nothing moving is judged at once.
+pub(crate) fn watch(owner: Owner, activity: Rc<Activity>, done: impl FnOnce() + 'static) {
+  WATCHES.with(|watches| {
+    watches.borrow_mut().push(Watch {
+      owner,
+      activity,
+      done: Box::new(done),
+    });
+  });
+}
+
+/// Runs the watches whose items have stopped. Judged before the steps
+/// move, so an animation started in the flush after the last tick, as
+/// one that follows another's end, still counts.
+fn judge_watches() {
+  let watches = WATCHES.with(|watches| std::mem::take(&mut *watches.borrow_mut()));
+  let mut kept = Vec::with_capacity(watches.len());
+  for watch in watches {
+    if watch.owner.is_disposed() {
+      continue;
+    }
+    if watch.activity.running.get() == 0 {
+      (watch.done)();
+    } else {
+      kept.push(watch);
+    }
+  }
+  WATCHES.with(|watches| {
+    let mut watches = watches.borrow_mut();
+    kept.append(&mut watches);
+    *watches = kept;
+  });
 }
 
 /// When an animation starting now should count from: the clock's last
@@ -401,6 +494,7 @@ pub(crate) fn start_time() -> Option<Instant> {
 /// clock soon. `false` means nothing moves and nothing needs waking.
 pub fn animating() -> bool {
   RUNNING.with(|running| !running.borrow().is_empty())
+    || WATCHES.with(|watches| !watches.borrow().is_empty())
 }
 
 /// Advances every running animation to `now`, writing their values, and
@@ -409,11 +503,12 @@ pub fn animating() -> bool {
 /// dropped.
 pub fn advance_animations(now: Instant) -> bool {
   LAST_TICK.with(|last| last.set(Some(now)));
+  judge_watches();
   let steps = RUNNING.with(|running| std::mem::take(&mut *running.borrow_mut()));
   let mut kept = Vec::with_capacity(steps.len());
-  for (label, mut step) in steps {
+  for (label, busy, mut step) in steps {
     match panic::catch_unwind(AssertUnwindSafe(|| step(now))) {
-      Ok(true) => kept.push((label, step)),
+      Ok(true) => kept.push((label, busy, step)),
       Ok(false) => drop_isolated(&label, step),
       Err(payload) => {
         tracing::error!(
@@ -429,13 +524,14 @@ pub fn advance_animations(now: Instant) -> bool {
     let mut running = running.borrow_mut();
     kept.append(&mut running);
     *running = kept;
-    if running.is_empty() {
-      // The clock stops, so the next animation counts from its own first
-      // tick, not this one.
-      LAST_TICK.with(|last| last.set(None));
-    }
-    !running.is_empty()
-  })
+  });
+  let still = animating();
+  if !still {
+    // The clock stops, so the next animation counts from its own first
+    // tick, not this one.
+    LAST_TICK.with(|last| last.set(None));
+  }
+  still
 }
 
 /// Drops a finished step, and the user's values it holds, isolated.
@@ -561,6 +657,7 @@ impl Cx {
     transition: Transition,
   ) -> Animation<T> {
     let label: Rc<str> = format!("{what} at {}", std::panic::Location::caller()).into();
+    let activity = self.activity.clone();
     let first = untrack(&mut target);
     let value = self.signal(first.clone());
     let running = self.signal(false);
@@ -599,6 +696,7 @@ impl Cx {
       let step_label = Rc::clone(&label);
       start(
         Rc::clone(&label),
+        activity.as_ref().map(Busy::new),
         Box::new(move |now| {
           if generation.get() != current {
             return false;
@@ -660,6 +758,7 @@ impl Cx {
     transition: Transition,
   ) -> ReadSignal<f32> {
     let label: Rc<str> = format!("cx.cycle at {}", std::panic::Location::caller()).into();
+    let activity = self.activity.clone();
     let value = self.signal(0.0_f32);
     // What `running` last gave, and whether a round is on the clock.
     let wanted = Rc::new(Cell::new(false));
@@ -684,6 +783,7 @@ impl Cx {
       let mut round = 0_u64;
       start(
         Rc::clone(&label),
+        activity.as_ref().map(Busy::new),
         Box::new(move |now| {
           let begun = *started.get_or_insert(now);
           let elapsed = now.saturating_duration_since(begun).as_secs_f64() * 1000.0
@@ -727,6 +827,7 @@ impl Cx {
   #[track_caller]
   pub fn frames(&self, mut running: impl FnMut() -> bool + 'static) -> ReadSignal<Duration> {
     let label: Rc<str> = format!("cx.frames at {}", std::panic::Location::caller()).into();
+    let activity = self.activity.clone();
     let value = self.signal(Duration::ZERO);
     let wanted = Rc::new(Cell::new(false));
     let ticking = Rc::new(Cell::new(false));
@@ -746,6 +847,7 @@ impl Cx {
       let mut started = start_time();
       start(
         Rc::clone(&label),
+        activity.as_ref().map(Busy::new),
         Box::new(move |now| {
           if !wanted.get() {
             ticking.set(false);
@@ -783,6 +885,7 @@ impl Cx {
     spring: Spring,
   ) -> ReadSignal<f32> {
     let label: Rc<str> = format!("cx.spring at {}", std::panic::Location::caller()).into();
+    let activity = self.activity.clone();
     let first = untrack(&mut target);
     let value = self.signal(first);
     let mut last = first;
@@ -821,6 +924,7 @@ impl Cx {
       let mut previous = start_time();
       start(
         Rc::clone(&label),
+        activity.as_ref().map(Busy::new),
         Box::new(move |now| {
           let to = f64::from(goal.get());
           if !to.is_finite() {

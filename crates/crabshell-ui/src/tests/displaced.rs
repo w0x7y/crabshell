@@ -8,7 +8,7 @@ use crabshell_reactive::Signal;
 use super::{Counter, Harness, capture_logs, node_at};
 use crate::{
   Button, Color, Easing, Point, PointerButton, Rect, Row, Style, Transition, Window,
-  advance_animations, animating, fire_timers, next_timer,
+  advance_animations, animating,
 };
 
 /// A 20 by 20 box with a background.
@@ -152,15 +152,14 @@ fn a_leaving_child_keeps_its_space_and_the_rest_slide_once_it_goes() {
   items.set(vec![2, 3]);
   h.frame(&window);
   assert_eq!(count(&window), 3, "1 is leaving");
-  assert!(!animating(), "nothing moved yet");
 
-  fire_timers(next_timer().expect("1's exit runs") + EXIT);
-  h.frame(&window);
-  assert_eq!(count(&window), 2, "1 went");
-  assert_eq!(drawn_x(&window, 0), 20.0, "2 slides from where it was");
+  // Nothing in it moves, so it goes at the first tick.
   let start = Instant::now();
   tick(&mut h, &window, start, 0);
-  tick(&mut h, &window, start, 100);
+  assert_eq!(count(&window), 2, "1 went");
+  assert_eq!(drawn_x(&window, 0), 20.0, "2 slides from where it was");
+  tick(&mut h, &window, start, 16);
+  tick(&mut h, &window, start, 116);
   assert_eq!(drawn_x(&window, 0), 0.0);
 }
 
