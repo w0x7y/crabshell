@@ -334,8 +334,11 @@ macro_rules! container_methods {
     /// list added leave over `exit` instead of at once. A child whose key
     /// leaves stays mounted and painted right after the child that was
     /// before it, and its context's [`leaving`](Cx::leaving) turns `true`,
-    /// so its own `cx.animate` can fade or shrink it out. After `exit` it
-    /// is freed. If its key comes back first, the same child, with its
+    /// so its own `cx.animate` can fade or shrink it out. It is freed at
+    /// the first tick of the animation clock that finds nothing moving in
+    /// it, or after `exit` at the latest; motion the clock doesn't run in
+    /// the item, such as one stepped by `cx.interval`, doesn't hold it.
+    /// If its key comes back first, the same child, with its
     /// state, takes the key's new place. A closure is read as each key
     /// leaves, and an exit of 0 removes at once. Leaving children still
     /// take pointer and keyboard input; a handler can check

@@ -924,13 +924,13 @@ impl Cx {
       goal.set(to);
       if !to.is_finite() || !spring.is_valid() {
         value.try_set(to);
-        // One on the clock stops at its next tick and says so then.
-        if !ticking.get() {
-          set_changed(running, false);
-        }
+        // One on the clock stops at its next tick.
+        set_changed(running, false);
         return;
       }
       if ticking.get() {
+        // Still on the clock after a jump, it moves again.
+        set_changed(running, true);
         return;
       }
       let Some(from) = untrack(|| value.try_get()) else {

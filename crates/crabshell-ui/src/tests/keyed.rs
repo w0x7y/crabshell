@@ -9,7 +9,7 @@ use super::{Counter, Harness, capture_logs, node_at, paths};
 use crabshell_reactive::{ReadSignal, Signal};
 
 use crate::{
-  Button, Content, Easing, Element, Icon, Row, Style, Text, Transition, Widget, Window,
+  Button, Content, Cx, Easing, Element, Icon, Row, Spring, Style, Text, Transition, Widget, Window,
   advance_animations, animating, fire_timers, next_timer,
 };
 
@@ -897,4 +897,70 @@ fn a_leaving_item_waits_for_the_animations_of_the_items_inside_it() {
   assert!(texts(&window).is_empty());
   assert_eq!(h.runtime.node_count(), empty);
   assert_eq!(next_timer(), None);
+}
+
+/// A row of `items` that leave over at most `10 * EXIT`, each moved out
+/// by what `out` makes in its context.
+fn leaving_row(items: Signal<Vec<u32>>, out: fn(&Cx) -> Box<dyn Fn() -> Style>) -> Row {
+  Row::new()
+    .children_keyed(
+      move || items.get(),
+      |n| *n,
+      move |cx, n| {
+        let style = out(cx);
+        Text::new(move || n.get().to_string()).style(style)
+      },
+    )
+    .exit(10 * EXIT)
+}
+
+#[test]
+fn a_style_fade_alone_holds_a_leaving_child() {
+  let mut h = Harness::new();
+  let items = h.cx.signal(vec![1, 2]);
+  let row = leaving_row(items, |cx| {
+    let leaving = cx.leaving();
+    Box::new(move || {
+      let opacity = if leaving.get() { 0.0 } else { 1.0 };
+      Style::new().opacity(opacity).transition(SLIDE)
+    })
+  });
+  let window = h.window(h.panel().child(row), 400.0, 30.0);
+  items.set(vec![1]);
+  h.frame(&window);
+  let start = Instant::now();
+  tick(&mut h, &window, start, 0);
+  tick(&mut h, &window, start, 50);
+  assert_eq!(texts(&window), ["1", "2"], "still fading");
+  tick(&mut h, &window, start, 100);
+  assert!(!tick(&mut h, &window, start, 116));
+  assert_eq!(texts(&window), ["1"]);
+}
+
+#[test]
+fn a_spring_holds_a_leaving_child_until_it_rests() {
+  let mut h = Harness::new();
+  let items = h.cx.signal(vec![1, 2]);
+  let row = leaving_row(items, |cx| {
+    let leaving = cx.leaving();
+    let x = cx.spring(
+      move || if leaving.get() { 50.0 } else { 0.0 },
+      Spring::default(),
+    );
+    Box::new(move || Style::new().translate(x.value().get(), 0.0))
+  });
+  let window = h.window(h.panel().child(row), 400.0, 30.0);
+  items.set(vec![1]);
+  h.frame(&window);
+  let start = Instant::now();
+  let mut ms = 0;
+  while tick(&mut h, &window, start, ms) {
+    if ms == 160 {
+      assert_eq!(texts(&window), ["1", "2"], "still springing");
+    }
+    ms += 16;
+    assert!(ms < 1500, "a default spring rests within 1.5 s");
+  }
+  assert!(ms > 160);
+  assert_eq!(texts(&window), ["1"]);
 }

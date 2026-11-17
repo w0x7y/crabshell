@@ -881,7 +881,9 @@ pub struct Style {
   /// fields change at once.
   pub transition: Option<Transition>,
   /// How a button's style fades back to its own once no hover, pressed
-  /// or focus style is laid over it; `transition` when unset.
+  /// or focus style is laid over it; `transition` when unset. Read from
+  /// the button's own style only, so [`merge`](Self::merge) keeps this
+  /// style's.
   pub transition_out: Option<Transition>,
 }
 
@@ -1407,7 +1409,8 @@ impl Style {
   /// Sets how a button's style fades back to its own, once no hover,
   /// pressed or focus style is laid over it, so the way out can take a
   /// different curve from the way in. Without it the way back takes
-  /// `transition` too. The style being changed to says how.
+  /// `transition` too. Only the button's own style's is read: one in a
+  /// hover, pressed or focus style does nothing.
   pub const fn transition_out(self, transition: Transition) -> Style {
     Style {
       transition_out: Some(transition),
@@ -1415,7 +1418,8 @@ impl Style {
     }
   }
 
-  /// This style with every field that `over` sets replaced by its value.
+  /// This style with every field that `over` sets replaced by its value,
+  /// except `transition_out`, which stays this style's.
   /// Buttons use it to lay their hover and pressed styles over the normal
   /// one.
   pub const fn merge(self, over: Style) -> Style {
@@ -1458,7 +1462,8 @@ impl Style {
       rotate: or(over.rotate, self.rotate),
       origin: or(over.origin, self.origin),
       transition: or(over.transition, self.transition),
-      transition_out: or(over.transition_out, self.transition_out),
+      // Read only from a button's own style, so a state style's is dropped.
+      transition_out: self.transition_out,
     }
   }
 

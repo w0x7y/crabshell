@@ -548,3 +548,13 @@ fn a_content_shadow_blends_as_a_box_shadow_and_switches_kind_at_once() {
     Shadow::new(0.0, 2.0, 4.0, gray).reach(rect)
   );
 }
+
+#[test]
+fn merge_keeps_the_bottom_styles_transition_out() {
+  use crate::Transition;
+
+  let own = Style::new().transition_out(Transition::new(300));
+  let hover = Style::new().transition_out(Transition::new(100));
+  assert_eq!(own.merge(hover).transition_out, own.transition_out);
+  assert_eq!(Style::new().merge(hover).transition_out, None);
+}

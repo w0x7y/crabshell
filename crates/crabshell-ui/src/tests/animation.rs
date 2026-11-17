@@ -824,6 +824,30 @@ fn a_spring_runs_while_it_moves_and_rests_when_it_settles() {
 }
 
 #[test]
+fn a_moving_spring_sent_to_infinity_stops_running_at_once() {
+  let h = Harness::new();
+  let target = h.cx.signal(0.0_f32);
+  let x = h.cx.spring(move || target.get(), Spring::default());
+  h.runtime.flush();
+  target.set(100.0);
+  h.runtime.flush();
+  let start = Instant::now();
+  tick(start, 0);
+  tick(start, 16);
+  target.set(f32::INFINITY);
+  h.runtime.flush();
+  assert!(!x.running().get(), "it jumped");
+  // A finite target before the next tick keeps the step on the clock.
+  target.set(5.0);
+  h.runtime.flush();
+  assert!(x.running().get());
+  let (_, stopped) = run_for(start + Duration::from_millis(32), 3000, x.value());
+  assert!(stopped.is_some());
+  assert!(!x.running().get());
+  assert_eq!(x.value().get(), 5.0);
+}
+
+#[test]
 fn a_transition_binding_picks_each_moves_curve() {
   let h = Harness::new();
   let open = h.cx.signal(false);
@@ -1292,6 +1316,65 @@ mod fades {
     advance_animations(start);
     advance_animations(start + Duration::from_millis(100));
     assert_eq!(background(&window), Some(Color::rgb(100, 50, 0)));
+  }
+
+  /// Fades from `from` back to black, ticking at 0 and 100 ms: over
+  /// FADE it is there, over SLOW only halfway.
+  fn halfway_back(window: &Window) -> Option<Color> {
+    let start = Instant::now();
+    advance_animations(start);
+    advance_animations(start + Duration::from_millis(100));
+    background(window)
+  }
+
+  #[test]
+  fn releasing_a_press_while_hovered_fades_back_over_transition_out() {
+    use crate::PointerButton;
+
+    let mut h = hover_harness();
+    let row = Row::new().align(Align::Start).child(
+      Button::new(Icon::new("x").size(20))
+        .style(NORMAL.transition_out(SLOW))
+        .pressed_style(HOVER),
+    );
+    let window = h.window(h.panel().child(row), 200.0, 30.0);
+    window.pointer_motion(Point::new(10.0, 10.0));
+    window.pointer_button(PointerButton::Left, true);
+    let start = Instant::now();
+    advance_animations(start);
+    assert!(!advance_animations(start + Duration::from_millis(100)));
+    assert_eq!(background(&window), Some(Color::rgb(200, 100, 0)));
+
+    window.pointer_button(PointerButton::Left, false);
+    assert_eq!(halfway_back(&window), Some(Color::rgb(100, 50, 0)));
+  }
+
+  #[test]
+  fn losing_the_focus_while_hovered_fades_back_over_transition_out() {
+    use crate::{Key, KeyEvent, Modifiers};
+
+    let mut h = hover_harness();
+    let row = Row::new().align(Align::Start).child(
+      Button::new(Icon::new("x").size(20))
+        .style(NORMAL.transition_out(SLOW))
+        .focus_style(HOVER),
+    );
+    let window = h.window(h.panel().child(row), 200.0, 30.0);
+    window.pointer_motion(Point::new(10.0, 10.0));
+    window.keyboard_enter();
+    window.key(&KeyEvent {
+      key: Key::Tab,
+      text: None,
+      modifiers: Modifiers::default(),
+      repeat: false,
+    });
+    let start = Instant::now();
+    advance_animations(start);
+    assert!(!advance_animations(start + Duration::from_millis(100)));
+    assert_eq!(background(&window), Some(Color::rgb(200, 100, 0)));
+
+    window.keyboard_leave();
+    assert_eq!(halfway_back(&window), Some(Color::rgb(100, 50, 0)));
   }
 
   fn hover_harness() -> Harness {
