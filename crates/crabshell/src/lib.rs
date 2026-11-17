@@ -52,6 +52,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod clipboard;
 mod colors;
 mod control;
 mod icon_theme;
@@ -66,6 +67,7 @@ mod tuned;
 #[cfg(test)]
 mod tests;
 
+pub use clipboard::{Clipboard, ClipboardContent, ClipboardEntry};
 /// The type of an output's `transform`, from
 /// [`cx.outputs()`](ShellExt::outputs). Out of the prelude, beside `Mode`.
 pub use crabshell_render::Turn;
@@ -86,7 +88,9 @@ pub use shell::{
 
 /// What a bar uses, in one `use crabshell::prelude::*`.
 pub mod prelude {
-  pub use crate::{IntoPanels, ShellExt, Toplevels, WindowManager};
+  pub use crate::{
+    Clipboard, ClipboardContent, ClipboardEntry, IntoPanels, ShellExt, Toplevels, WindowManager,
+  };
   pub use crabshell_reactive::{Effect, Memo, ReadSignal, Signal, untrack};
   pub use crabshell_services::{
     AudioChannel, AudioNode, AudioStream, AuthRequest, AuthState, BatteryState, Bluetooth,

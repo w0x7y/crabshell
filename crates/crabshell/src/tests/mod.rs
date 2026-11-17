@@ -1,6 +1,7 @@
 //! Unit tests: per_output's bookkeeping and the shell's settings, without
 //! a compositor.
 
+mod clipboard;
 mod colors;
 mod control;
 mod icon_theme;

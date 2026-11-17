@@ -21,6 +21,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tracing::level_filters::LevelFilter;
 
+use crate::clipboard::{Clipboard, History};
 use crate::colors::{self, Handle};
 use crate::control;
 use crate::icon_theme;
@@ -246,6 +247,7 @@ impl Shell {
       root: cx.owner(),
       toplevels: Cell::new(None),
       window_manager: Cell::new(None),
+      clipboard: Cell::new(None),
     });
     event_loop.platform().on_event(move |platform, event| {
       // First, so a per_output closure finds its output listed.
@@ -355,6 +357,7 @@ impl Shell {
       }
       // The next shell starts its own; these would run on beside them.
       crabshell_services::stop_programs(&cx);
+      remove_clipboard_files(&cx);
       let values = persisted.as_ref().map(|persisted| {
         let mut values = persisted.save();
         if let Some(state) = crabshell_services::save_state(&cx) {
@@ -406,6 +409,7 @@ impl Shell {
             service.ipc.remove_socket();
           }
           crabshell_services::stop_programs(&cx);
+          remove_clipboard_files(&cx);
           if let Err(error) = signal_hook::low_level::emulate_default_handler(signal) {
             tracing::error!(%error, "couldn't end by the signal");
           }
@@ -491,6 +495,7 @@ impl Shell {
     if let Some(service) = self.cx.service::<Service>() {
       service.ipc.remove_socket();
     }
+    remove_clipboard_files(&self.cx);
     crabshell_services::stop_programs(&self.cx);
   }
 
@@ -546,6 +551,8 @@ struct Service {
   toplevels: Cell<Option<Toplevels>>,
   /// `cx.window_manager()`, once a config asked.
   window_manager: Cell<Option<WindowManager>>,
+  /// `cx.clipboard()`, once a config asked.
+  clipboard: Cell<Option<Clipboard>>,
 }
 
 impl Service {
@@ -730,13 +737,23 @@ impl WindowManager {
 }
 
 /// Runs `f` with the platform soon, unless the handle's shell went.
-fn request(
+pub(crate) fn request(
   requests: Option<ReadSignal<Requests>>,
   what: &'static str,
   f: impl FnOnce(&mut Platform) + 'static,
 ) {
   if let Some(requests) = requests {
     requests.try_with(|requests| schedule(&requests.idle, &requests.signal, what, f));
+  }
+}
+
+/// Removes the clipboard history's image files, as the shell exits.
+fn remove_clipboard_files(cx: &Cx) {
+  if let Some(clipboard) = cx
+    .service::<Service>()
+    .and_then(|service| service.clipboard.get())
+  {
+    clipboard.remove_files();
   }
 }
 
@@ -748,9 +765,9 @@ fn set_if_changed<T: Clone + PartialEq + 'static>(list: Signal<Vec<T>>, now: &[T
   }
 }
 
-/// How a [`Toplevels`] or [`WindowManager`] reaches the platform: the
-/// shell's loop.
-struct Requests {
+/// How a [`Toplevels`], [`WindowManager`] or [`Clipboard`] reaches the
+/// platform: the shell's loop.
+pub(crate) struct Requests {
   idle: Idle,
   signal: LoopSignal,
 }
@@ -976,6 +993,22 @@ pub trait ShellExt {
   /// }
   /// ```
   fn window_manager(&self) -> WindowManager;
+
+  /// The clipboard: its text, a history of what was copied, and setting
+  /// it. Through `ext-data-control-v1` it follows every copy, from any
+  /// program, whether or not a shell window has the keyboard; without it,
+  /// only while one has, and that is logged. The first call starts
+  /// following it, so a config that never asks binds nothing.
+  ///
+  /// ```no_run
+  /// use crabshell::prelude::*;
+  ///
+  /// fn last_copied(cx: &Cx) -> Text {
+  ///     let text = cx.clipboard().text();
+  ///     Text::new(move || text.get().unwrap_or_default())
+  /// }
+  /// ```
+  fn clipboard(&self) -> Clipboard;
 
   /// Ends the shell with exit status `code`, as Quickshell's `Qt.quit()`:
   /// the programs the config started are stopped and the IPC socket
@@ -1238,6 +1271,33 @@ impl ShellExt for Cx {
     manager
   }
 
+  fn clipboard(&self) -> Clipboard {
+    let Some(service) = self.service::<Service>() else {
+      tracing::error!("cx.clipboard needs the shell crabshell::run starts; it stays empty");
+      return Clipboard {
+        text: self.signal(None),
+        history: self.signal(Vec::new()),
+        store: self.signal(History::new(None)),
+        requests: None,
+      };
+    };
+    if let Some(clipboard) = service.clipboard.get() {
+      return clipboard;
+    }
+    // Under the root owner, so every caller can share them.
+    let clipboard = Clipboard {
+      text: service.root.signal(None),
+      history: service.root.signal(Vec::new()),
+      store: service.root.signal(History::new(History::default_dir())),
+      requests: Some(service.requests()),
+    };
+    service.clipboard.set(Some(clipboard));
+    service.with_platform("cx.clipboard", move |platform| {
+      platform.watch_clipboard(move |selection| clipboard.heard(selection));
+    });
+    clipboard
+  }
+
   fn persist<T>(&self, key: &str, default: T) -> Signal<T>
   where
     T: Serialize + DeserializeOwned + 'static,
@@ -1280,6 +1340,7 @@ impl ShellExt for Cx {
       service.ipc.remove_socket();
     }
     crabshell_services::stop_programs(self);
+    remove_clipboard_files(self);
     std::process::exit(code)
   }
 

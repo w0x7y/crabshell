@@ -249,7 +249,6 @@ impl Sway {
   }
 
   /// A command for `program` that talks to this Sway and nothing else.
-  #[allow(dead_code, reason = "crabshell's tests don't use it")]
   pub fn client(&self, program: &str) -> Command {
     let mut command = Command::new(program);
     command

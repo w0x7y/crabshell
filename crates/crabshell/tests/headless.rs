@@ -1445,6 +1445,98 @@ fn the_root_context_hands_out_running_services() {
   });
 }
 
+/// What `wl-paste` prints, the shell running meanwhile, since it waits
+/// for the shell to write.
+fn wl_paste(sway: &Sway, shell: &mut Shell) -> String {
+  let mut child = Some(
+    sway
+      .client("wl-paste")
+      .arg("--no-newline")
+      .stdout(Stdio::piped())
+      .spawn()
+      .expect("wl-paste runs"),
+  );
+  let mut output = None;
+  run_until(shell, "wl-paste to finish", |_| {
+    if let Some(Ok(Some(_))) = child.as_mut().map(Child::try_wait) {
+      let done = child.take().expect("still held");
+      output = Some(done.wait_with_output().expect("its output"));
+    }
+    output.is_some()
+  });
+  String::from_utf8_lossy(&output.expect("finished").stdout).into_owned()
+}
+
+#[test]
+#[ignore = "needs headless Sway and wl-clipboard"]
+fn the_clipboard_follows_other_programs_keeps_a_history_and_sets_what_they_paste() {
+  let sway = Sway::start();
+  let mut held = None;
+  let mut shell = Shell::new(sway.connect(), |cx| {
+    held = Some(cx.clipboard());
+    cx.per_output(counter::bar);
+  })
+  .expect("the root closure runs");
+  let clipboard = held.expect("the root closure ran");
+  let (text, history) = (clipboard.text(), clipboard.history());
+  run_until(&mut shell, "the bar", |platform| {
+    shown_on(platform, "HEADLESS-1").is_some()
+  });
+  let texts = move || {
+    let entries = history.get_untracked();
+    let text = |entry: &ClipboardEntry| match &entry.content {
+      ClipboardContent::Text(text) => text.clone(),
+      ClipboardContent::Image(_) => String::from("<image>"),
+    };
+    entries.iter().map(text).collect::<Vec<_>>()
+  };
+
+  // The bar never has the keyboard, and still hears the copy.
+  let mut copy = sway
+    .client("wl-copy")
+    .args(["--foreground", "from elsewhere"])
+    .spawn()
+    .expect("wl-copy runs");
+  run_until(&mut shell, "the copy", |_| {
+    text.get_untracked().as_deref() == Some("from elsewhere")
+  });
+  clipboard.set_text("from the config");
+  run_until(&mut shell, "the config's own copy", |_| {
+    texts() == ["from the config", "from elsewhere"]
+  });
+  assert_eq!(wl_paste(&sway, &mut shell), "from the config");
+  let _ = copy.kill();
+  let _ = copy.wait();
+
+  let older = history.get_untracked()[1].id;
+  clipboard.copy(older);
+  run_until(&mut shell, "the entry back on top", |_| {
+    texts() == ["from elsewhere", "from the config"]
+  });
+  assert_eq!(wl_paste(&sway, &mut shell), "from elsewhere");
+  clipboard.remove(older);
+  assert_eq!(texts(), ["from the config"]);
+  settle(&mut shell);
+
+  // Following the clipboard wakes nothing while it doesn't change.
+  let before = shell.platform().stats();
+  let waited = Instant::now();
+  shell
+    .dispatch(Some(Duration::from_secs(3)))
+    .expect("the connection works");
+  let waited = waited.elapsed();
+  assert!(
+    waited >= Duration::from_millis(2950),
+    "woke after {waited:?}"
+  );
+  assert_eq!(
+    shell.platform().stats().wayland_wakeups,
+    before.wayland_wakeups
+  );
+  clipboard.clear_history();
+  assert!(texts().is_empty());
+}
+
 /// Set when this test binary runs again as a shell; the value says which.
 const CHILD: &str = "CRABSHELL_HEADLESS_CHILD";
 
