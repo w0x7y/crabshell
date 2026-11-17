@@ -287,6 +287,9 @@ pub(crate) struct Service {
   body_markup: Cell<bool>,
   /// What the shell before a reload kept, until the server starts.
   saved: RefCell<Option<Saved>>,
+  /// Whether expiries wait for the bus to answer the name request, so a
+  /// popup that expired during a reload is told to its app.
+  held: Cell<bool>,
 }
 
 /// What a reload keeps of the server: the history, the popups showing and
@@ -352,7 +355,13 @@ impl Kept {
     }
   }
 
+  /// The notification, within the caps of one that arrives, since the
+  /// file it came from is outside data.
   fn notification(self) -> Notification {
+    use server::{MAX_ACTIONS, MAX_BODY, MAX_SUMMARY, MAX_TEXT, cut, cut_markup};
+
+    let text = |text: &str| cut(text, MAX_TEXT);
+    let actions = self.actions.iter().take(MAX_ACTIONS);
     let image = match self.image {
       Some(Image::Name(name)) => Some(IconSource::Name(name)),
       Some(Image::File(path)) => Some(IconSource::File(path)),
@@ -360,16 +369,18 @@ impl Kept {
     };
     Notification {
       id: self.id,
-      app_name: self.app_name,
-      app_icon: self.app_icon,
-      summary: self.summary,
-      body: self.body,
-      actions: self.actions,
+      app_name: text(&self.app_name),
+      app_icon: text(&self.app_icon),
+      summary: cut(&self.summary, MAX_SUMMARY),
+      body: cut_markup(&self.body, MAX_BODY),
+      actions: actions
+        .map(|(key, label)| (text(key), text(label)))
+        .collect(),
       urgency: self.urgency,
       timeout: self.timeout,
       image,
-      desktop_entry: self.desktop_entry,
-      category: self.category,
+      desktop_entry: text(&self.desktop_entry),
+      category: text(&self.category),
       resident: self.resident,
       transient: self.transient,
       received: self.received,
@@ -431,6 +442,15 @@ impl Service {
       state: RefCell::new(None),
       body_markup: Cell::new(false),
       saved: RefCell::new(None),
+      held: Cell::new(false),
+    }
+  }
+
+  /// Lets expiries run, now that the name request was answered or never
+  /// will be.
+  fn release(self: &Rc<Self>) {
+    if self.held.replace(false) {
+      self.schedule();
     }
   }
 
@@ -495,6 +515,7 @@ impl Service {
       listeners: Vec::new(),
       next_listener: 0,
     });
+    self.held.set(self.shared.config.session_bus.is_some());
     self.schedule();
     match self.shared.config.session_bus.clone() {
       Some(address) => self.shared.spawn(run(Rc::clone(self), address)),
@@ -724,6 +745,9 @@ impl Service {
   /// Sets the one timer afresh, at the soonest expiry, or none while no
   /// popup expires.
   fn schedule(self: &Rc<Self>) {
+    if self.held.get() {
+      return;
+    }
     let Some(event_loop) = self.shared.event_loop() else {
       return;
     };
@@ -817,6 +841,7 @@ async fn run(service: Rc<Service>, address: zbus::Address) {
   let connection = match builder.build().await {
     Ok(connection) => connection,
     Err(error) => {
+      service.release();
       return tracing::info!(%error, "can't reach the session bus, so no notifications arrive");
     }
   };
@@ -828,10 +853,17 @@ async fn run(service: Rc<Service>, address: zbus::Address) {
   // Queued rather than refused, so the bus hands the name over when the
   // daemon that has it leaves. NameAcquired says so, in `on_signal`.
   let flags = RequestNameFlags::ALLOW_REPLACEMENT;
-  match connection
+  let requested = connection
     .request_name_with_flags(NOTIFICATIONS, flags)
-    .await
+    .await;
+  if let Ok(RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner) = requested
+    && let Some(state) = service.state.borrow_mut().as_mut()
   {
+    // As NameAcquired says too, so expiries held till now reach the apps.
+    state.serving = true;
+  }
+  service.release();
+  match requested {
     Ok(RequestNameReply::InQueue) => {
       tracing::info!("another program serves notifications; waiting for it to leave");
     }

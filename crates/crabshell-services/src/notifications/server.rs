@@ -17,11 +17,11 @@ use super::{CloseReason, NOTIFICATIONS_PATH, Notification, Service, Timeout, Urg
 
 /// The most bytes kept of a summary and of a body. With every other
 /// cap, 256 notifications stay within a few MiB however apps fill them.
-const MAX_SUMMARY: usize = 1024;
-const MAX_BODY: usize = 4 * 1024;
+pub(super) const MAX_SUMMARY: usize = 1024;
+pub(super) const MAX_BODY: usize = 4 * 1024;
 /// The most bytes kept of every other string: names, icons and actions.
-const MAX_TEXT: usize = 256;
-const MAX_ACTIONS: usize = 16;
+pub(super) const MAX_TEXT: usize = 256;
+pub(super) const MAX_ACTIONS: usize = 16;
 /// The largest picture side kept, the same as tray pixmaps'.
 const MAX_IMAGE_SIDE: i32 = 512;
 /// The most bytes a picture may send: one 512 px picture with alpha.
@@ -281,7 +281,7 @@ fn entity(name: &str) -> Option<char> {
 }
 
 /// `text`'s first `max` bytes at most, cut at a char boundary.
-fn cut(text: &str, max: usize) -> String {
+pub(super) fn cut(text: &str, max: usize) -> String {
   text[..text.floor_char_boundary(max)].to_owned()
 }
 

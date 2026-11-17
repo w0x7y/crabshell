@@ -1081,3 +1081,72 @@ fn a_saved_state_that_doesnt_fit_is_logged_and_starts_empty() {
     }))
   );
 }
+
+/// A saved notification as the shell before a reload kept it, showing
+/// with `left` ms to go.
+fn kept(id: u32, summary: String, transient: bool) -> serde_json::Value {
+  serde_json::json!({
+    "id": id, "app_name": "test app", "app_icon": "", "summary": summary,
+    "body": "the body", "actions": [], "urgency": "Normal", "timeout": "Default",
+    "image": null, "desktop_entry": "", "category": "", "resident": false,
+    "transient": transient,
+    "received": { "secs_since_epoch": 1_700_000_000_u64, "nanos_since_epoch": 0 },
+  })
+}
+
+#[test]
+fn restored_notifications_keep_to_the_caps_of_ones_that_arrive() {
+  let mut shell = Harness::new(offline());
+  let mut big = kept(1, "s".repeat(2000), false);
+  let long = "x".repeat(300);
+  big["app_name"] = long.clone().into();
+  big["app_icon"] = long.clone().into();
+  big["body"] = "b".repeat(5000).into();
+  big["desktop_entry"] = long.clone().into();
+  big["category"] = long.clone().into();
+  big["actions"] = (0..20)
+    .map(|n| serde_json::json!([format!("{n}{long}"), long]))
+    .collect();
+  let saved = serde_json::json!({ "next_id": 2, "history": [big], "showing": [] });
+  crate::restore_state(&shell.cx, serde_json::json!({ "notifications": saved }));
+  let notifications = shell.cx.notifications();
+  shell.run_until(Instant::now() + Duration::from_millis(20));
+  let restored = notifications.list().get_untracked()[0].clone();
+  assert_eq!(restored.summary.len(), 1024);
+  assert_eq!(restored.body.len(), 4096);
+  for text in [
+    &restored.app_name,
+    &restored.app_icon,
+    &restored.desktop_entry,
+    &restored.category,
+  ] {
+    assert_eq!(text.len(), 256);
+  }
+  assert_eq!(restored.actions.len(), 16);
+  assert!(
+    restored
+      .actions
+      .iter()
+      .all(|(key, label)| key.len() == 256 && label.len() == 256)
+  );
+}
+
+/// A popup whose time ran out during the swap goes once the server can
+/// tell its app, not before.
+#[test]
+fn a_restored_popup_that_expired_in_the_swap_tells_its_app() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let heard = listen(&mut shell, &bus);
+  let saved = serde_json::json!({
+    "next_id": 3,
+    "history": [kept(1, "gone".into(), true), kept(2, "stays".into(), false)],
+    "showing": [[1, 0], [2, null]],
+  });
+  crate::restore_state(&shell.cx, serde_json::json!({ "notifications": saved }));
+  let notifications = shell.cx.notifications();
+  let list = notifications.list();
+  wait_for(&mut shell, "the expired one to go", || ids(list) == [2]);
+  wait_for(&mut shell, "its signal", || !heard.borrow().is_empty());
+  assert_eq!(*heard.borrow(), ["NotificationClosed 1 1"]);
+}
