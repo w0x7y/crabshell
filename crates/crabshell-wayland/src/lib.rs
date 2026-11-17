@@ -30,44 +30,15 @@
 //!
 //! # How it works
 //!
-//! - Each loop iteration dispatches the ready sources, runs
-//!   `Runtime::flush`, lays out the windows that need it, draws each one
-//!   that is dirty and has its frame callback, and flushes the connection.
-//! - A window's layer surface is created after the first flush, once its
-//!   output is announced, and draws nothing before its first configure.
-//!   Settings layer-shell would refuse, such as a width of 0 without both
-//!   side anchors, are logged and never sent. The compositor's `closed`, or
-//!   the output going away, drops the window and its owner.
-//! - Each window has up to three ARGB8888 buffers, each in a pool of its
-//!   own, reused once released, sized `logical × scale` rounded halfway
-//!   away from zero as `wp_fractional_scale_v1` says, with a damage
-//!   history per window and an age per buffer. Every successful draw is
-//!   committed, reporting its rectangles with `damage_buffer`. While a
-//!   window has nothing to draw and nothing animates, the memory of each
-//!   released buffer but the one drawn last is given back.
-//! - Each commit asks for a frame callback. A window draws only once it
-//!   arrives and something changed; with nothing changed nothing is
-//!   committed, so an idle window gets no events.
-//! - Scale comes from `wp_fractional_scale_v1` with `wp_viewporter` when
-//!   the compositor has both, otherwise from whole scales and
-//!   `set_buffer_scale`. A new scale repaints the whole window.
-//! - Pointer events go to `crabshell-ui`'s hit testing; the cursor shape is
-//!   set with `wp_cursor_shape_v1` when offered.
-//! - A popup a widget opened is taken after the flush, laid out at the size
-//!   its content wants, and shown as an `xdg_popup` next to the widget,
-//!   beside it in a popup or a vertical bar and below it in any other bar,
-//!   flipped or slid to stay on the output. It grabs the pointer with the last button
-//!   event's serial, so a click outside makes the compositor dismiss it.
-//!   Only one chain of popups is open at a time, and they are destroyed
-//!   topmost first, as xdg-shell requires.
-//! - The screencopy views of one source in the shown windows share a
-//!   capture session through `ext-image-copy-capture-v1`, bound when the
-//!   first one shows. While one is live, it asks for each next frame,
-//!   which the compositor sends only once the source changes; a live view
-//!   out of sight takes no frames.
-//! - A session lock from [`Platform::add_session_lock`] locks through
-//!   `ext-session-lock-v1` while its `locked` says to, with a lock surface
-//!   on every output, drawn like any other window.
+//! Each loop iteration dispatches the ready sources, runs `Runtime::flush`,
+//! lays out the windows that need it, draws each dirty window whose frame
+//! callback has arrived, and flushes the connection. A window draws only
+//! when something changed, so an idle window gets no events. Buffers are
+//! `logical × scale`, from `wp_fractional_scale_v1` when offered. Popups
+//! are `xdg_popup`s and the session lock uses `ext-session-lock-v1`. The
+//! design doc's
+//! [Wayland platform](https://github.com/w0x7y/crabshell/blob/main/docs/design.md#wayland-platform)
+//! section has the full rules.
 //!
 //! [`Window`]: crabshell_ui::Window
 
