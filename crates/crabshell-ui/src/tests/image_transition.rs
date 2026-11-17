@@ -348,3 +348,45 @@ fn a_report_about_an_image_dropped_is_let_go() {
   drop(window);
   assert_eq!(crate::image::failed_reports(), 0);
 }
+
+#[test]
+fn a_transition_waits_at_its_start_while_its_new_picture_is_decoded() {
+  let mut h = Harness::new();
+  let source = h.cx.signal(path("a.png"));
+  let image = Image::new(move || source.get())
+    .width(40)
+    .height(30)
+    .transition(ImageTransition::crossfade(LINEAR));
+  let window = h.window(h.panel().child(Row::new().child(image)), 100.0, 64.0);
+  let id = match node_at(window.view().root(), &[0, 0]).content() {
+    Content::Image(image) => image.id,
+    _ => panic!("no image"),
+  };
+  source.set(path("b.png"));
+  h.frame(&window);
+  crate::image_source_decoding(id, Path::new("b.png"));
+  let start = Instant::now();
+  let ms = Duration::from_millis;
+  for at in [0, 50, 500] {
+    assert!(advance_animations(start + ms(at)), "it waits at {at} ms");
+    let (_, leaving) = shown_at(&window, &[0, 0]);
+    assert_eq!(leaving.expect("still running").1, 0.0, "at its start");
+  }
+  // The picture comes in: the clock starts at the next tick.
+  assert!(window.repaint_image(id));
+  assert!(advance_animations(start + ms(600)));
+  assert!(advance_animations(start + ms(650)));
+  let t = shown_at(&window, &[0, 0]).1.expect("still running").1;
+  assert!((t - 0.5).abs() < 1e-4, "halfway: {t}");
+  assert!(!advance_animations(start + ms(700)), "and it ends");
+
+  // A report about another source, or one an image dropped, holds
+  // nothing.
+  crate::image_source_decoding(id, Path::new("c.png"));
+  source.set(path("a.png"));
+  h.frame(&window);
+  assert!(advance_animations(start + ms(800)));
+  assert!(!advance_animations(start + ms(1000)), "ran its time");
+  drop(window);
+  assert_eq!(crate::image::decoding_reports(), 0);
+}

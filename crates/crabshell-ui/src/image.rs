@@ -26,6 +26,9 @@ thread_local! {
   /// Images whose transition's new source the renderer couldn't load,
   /// with that source, until the transition's next tick.
   static FAILED: RefCell<Vec<(u64, PathBuf)>> = const { RefCell::new(Vec::new()) };
+  /// Images whose transition's new source the renderer is decoding, with
+  /// that source, until the picture comes in.
+  static DECODING: RefCell<Vec<(u64, PathBuf)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// The ids of images removed, or in windows dropped, since the last call,
@@ -47,6 +50,44 @@ pub fn image_source_failed(id: u64, source: &Path) {
       failed.push((id, source.to_owned()));
     }
   });
+}
+
+/// Tells image `id`'s transition that the renderer is still decoding its
+/// new `source`, so its clock waits at the start, the old picture shown,
+/// until [`Window::repaint_image`] says the picture came in. A renderer
+/// calls it while drawing. A report for another source holds nothing.
+pub fn image_source_decoding(id: u64, source: &Path) {
+  DECODING.with(|decoding| {
+    let mut decoding = decoding.borrow_mut();
+    if decoding.len() < MAX_DROPPED
+      && !decoding
+        .iter()
+        .any(|(at, path)| *at == id && path == source)
+    {
+      decoding.push((id, source.to_owned()));
+    }
+  });
+}
+
+/// Whether the renderer said it is decoding `source` for image `id`.
+fn source_decoding(id: u64, source: Option<&PathBuf>) -> bool {
+  DECODING.with(|decoding| {
+    decoding
+      .borrow()
+      .iter()
+      .any(|(at, path)| *at == id && Some(path) == source)
+  })
+}
+
+/// Forgets what the renderer said it decodes for image `id`.
+fn decoded(id: u64) {
+  let _ = DECODING.try_with(|decoding| decoding.borrow_mut().retain(|(at, _)| *at != id));
+}
+
+/// How many decoding reports are held, for tests.
+#[cfg(test)]
+pub(crate) fn decoding_reports() -> usize {
+  DECODING.with(|decoding| decoding.borrow().len())
 }
 
 /// How many reports wait for a transition's tick, for tests.
@@ -80,6 +121,7 @@ impl Drop for ImageNode {
     });
     // A report about it would wait for a tick that never comes.
     let _ = FAILED.try_with(|failed| failed.borrow_mut().retain(|(id, _)| *id != self.id));
+    decoded(self.id);
   }
 }
 
@@ -297,6 +339,16 @@ impl Tree {
         let Ok(mut tree) = tree.try_borrow_mut() else {
           return true;
         };
+        // While its new picture is decoded, the clock waits at the start.
+        let held = tree.node(id).is_some_and(|node| {
+          matches!(&node.kind, NodeKind::Image(image)
+            if image.leaving.as_ref().is_some_and(|leaving| leaving.generation == generation)
+              && source_decoding(image.id, image.source.as_ref()))
+        });
+        if held {
+          started = None;
+          return true;
+        }
         let begun = *started.get_or_insert(now);
         let waiting = transition.waiting(begun, now);
         let (t, mut ended) = transition.progress(begun, now);
@@ -343,7 +395,8 @@ impl Tree {
 
 impl Window {
   /// Repaints the box of image `id`, as when the renderer says a GIF's
-  /// next frame is due, and returns whether it did. An image in another
+  /// next frame is due or a picture it decoded came in, which also ends
+  /// its transition's wait for it, and returns whether it did. An image in another
   /// window, removed, hidden or not laid out yet repaints nothing.
   pub fn repaint_image(&self, id: u64) -> bool {
     let mut tree = borrow(&self.tree);
@@ -351,6 +404,8 @@ impl Window {
       matches!(tree.node(node), Some(node) if node.rect.is_some()
         && matches!(&node.kind, NodeKind::Image(image) if image.id == id))
     });
+    // A picture that came in ends any wait for it.
+    decoded(id);
     let Some(node) = found else {
       return false;
     };

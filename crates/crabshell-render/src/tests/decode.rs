@@ -258,3 +258,49 @@ fn a_box_changing_size_while_it_waits_leaves_one_job() {
   );
   assert_eq!(scene.full(&window, 1.0).pixel(335, 150), [255, 0, 0, 255]);
 }
+
+#[test]
+fn a_transition_waits_at_its_start_until_its_picture_comes_in() {
+  use crabshell_ui::{Easing, ImageTransition, Transition, advance_animations};
+  let red = red_picture("transition-from");
+  let mut scene = scene();
+  let source = scene.cx.signal(red.to_path_buf());
+  let image = Image::new(move || source.get())
+    .width(300)
+    .height(300)
+    .fit(Fit::Fill)
+    .transition(ImageTransition::crossfade(
+      Transition::new(100).easing(Easing::Linear),
+    ));
+  let panel = scene
+    .panel()
+    .child(Row::new().align(Align::Start).child(image));
+  let window = scene.window(panel, 300.0, 300.0);
+  scene.full(&window, 1.0);
+  wait(&mut scene);
+  let id = image_id(&window, &[0, 0]);
+  assert!(window.repaint_image(id));
+  scene.full(&window, 1.0);
+
+  source.set(fixture("bands.png"));
+  scene.frame(&window);
+  let start = std::time::Instant::now();
+  let ms = Duration::from_millis;
+  advance_animations(start);
+  let drawn = scene.full(&window, 1.0);
+  assert_eq!(drawn.pixel(150, 150), [255, 0, 0, 255], "the old picture");
+  for at in [50, 500] {
+    assert!(advance_animations(start + ms(at)), "it waits at {at} ms");
+  }
+  let leaving = |window: &Window| match super::node_at(window.view().root(), &[0, 0]).content() {
+    Content::Image(image) => image.leaving.map(|(_, t)| t),
+    _ => None,
+  };
+  assert_eq!(leaving(&window), Some(0.0), "at its start");
+  assert_eq!(wait(&mut scene), [id]);
+  assert!(window.repaint_image(id));
+  assert!(advance_animations(start + ms(600)));
+  assert!(advance_animations(start + ms(650)));
+  assert_eq!(leaving(&window), Some(0.5), "halfway once it came in");
+  assert!(!advance_animations(start + ms(700)));
+}

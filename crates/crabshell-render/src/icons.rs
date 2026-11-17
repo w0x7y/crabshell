@@ -723,6 +723,10 @@ impl Icons {
     scale: f32,
   ) -> Option<Drawn<'_>> {
     self.waited = true;
+    if image.leaving.is_some() {
+      // Its transition waits at the start until the picture comes in.
+      crabshell_ui::image_source_decoding(image.id, image.path);
+    }
     let left = if image.transition == ImageTransition::None {
       None
     } else {
