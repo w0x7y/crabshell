@@ -62,6 +62,11 @@ impl IconLookup {
     themes.find(theme, name, size, 1)
   }
 
+  /// Looks icon names up in `theme` from now on.
+  pub fn set_theme(&self, theme: String) {
+    self.borrow().theme = theme;
+  }
+
   /// No user code runs while this is held.
   pub(crate) fn borrow(&self) -> RefMut<'_, Lookup> {
     self.0.borrow_mut()

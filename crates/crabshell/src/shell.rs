@@ -1028,9 +1028,11 @@ pub trait ShellExt {
 
   /// The file the icon theme resolves `name` to at `size` logical pixels,
   /// through the themes it inherits and `hicolor`, as an [`Icon`](crabshell_ui::Icon) finds
-  /// it; `.is_some()` says the theme has the icon. It isn't reactive
-  /// itself: a binding that reads the signal it sets the theme from runs
-  /// again when that changes. `None` without the shell [`run`] starts.
+  /// it; `.is_some()` says the theme has the icon. It sees a
+  /// [`set_icon_theme`](ShellExt::set_icon_theme) at once, but isn't
+  /// reactive itself: keep the theme's name in a signal, call
+  /// `set_icon_theme` before setting it, and read it in the binding that
+  /// calls this. `None` without the shell [`run`] starts.
   fn icon_path(&self, name: &str, size: u32) -> Option<PathBuf>;
 
   /// A signal whose value survives a reload. `key` names it: asking again
@@ -1367,6 +1369,11 @@ impl ShellExt for Cx {
       );
       return;
     };
+    // At once, so `cx.icon_path` right after finds icons in it; the
+    // platform's call then repaints.
+    if let Some(lookup) = self.service::<IconLookup>() {
+      lookup.set_theme(theme.clone());
+    }
     service.with_platform("set_icon_theme", move |platform| {
       platform.set_icon_theme(theme);
     });

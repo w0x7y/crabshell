@@ -1641,6 +1641,26 @@ fn run_as_child() {
       dashboard::shell(cx, feeds);
       cx.set_icon_theme(FIXTURE_ICONS);
     }),
+    // `cx.icon_path` after `cx.set_icon_theme` in one closure, and in a
+    // binding that reads the theme's name as the docs say.
+    Ok("icon path") => crabshell::run(|cx| {
+      cx.set_icon_theme(FIXTURE_ICONS);
+      let found = cx.icon_path("computer-symbolic", 16).is_some();
+      eprintln!("set then found: {found}");
+      let theme = cx.signal(String::from(FIXTURE_ICONS));
+      let probe = cx.clone();
+      cx.effect(move || {
+        let name = theme.get();
+        let found = probe.icon_path("computer-symbolic", 16).is_some();
+        eprintln!("bound to {name}: {found}");
+      });
+      let setter = cx.clone();
+      cx.after(Duration::from_millis(100), move || {
+        setter.set_icon_theme("hicolor");
+        theme.set(String::from("hicolor"));
+      });
+      cx.per_output(counter::bar);
+    }),
     // A red icon from the fixtures' theme, as a missing icon's fallback,
     // on a bar that names no theme.
     Ok("themed icon") => crabshell::run(|cx| {
@@ -5047,6 +5067,23 @@ fn the_dashboard_matches_its_goldens() {
 
 /// A config that names no icon theme gets GTK's, and one that names its
 /// own keeps it over GTK's.
+#[test]
+#[ignore = "needs headless Sway"]
+fn icon_path_sees_a_new_icon_theme_at_once() {
+  const TEST: &str = "icon_path_sees_a_new_icon_theme_at_once";
+  run_as_child();
+  let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+  let env = [
+    (CHILD, "icon path"),
+    ("XDG_DATA_DIRS", fixtures.to_str().expect("UTF-8")),
+  ];
+  let sway = Sway::start();
+  let shell = ExampleBar::spawn(&sway, this_as_shell(TEST), &env);
+  shell.wait_for("set then found: true");
+  shell.wait_for(&format!("bound to {FIXTURE_ICONS}: true"));
+  shell.wait_for("bound to hicolor: false");
+}
+
 #[test]
 #[ignore = "needs headless Sway"]
 fn a_config_without_an_icon_theme_gets_gtks_and_its_own_wins_over_it() {

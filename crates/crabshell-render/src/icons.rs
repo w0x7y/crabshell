@@ -488,7 +488,7 @@ impl Icons {
   }
 
   pub(crate) fn set_theme(&mut self, theme: String) {
-    self.lookup.borrow().theme = theme;
+    self.lookup.set_theme(theme);
   }
 
   pub(crate) fn lookup(&self) -> IconLookup {
