@@ -54,6 +54,7 @@ struct GridViewProps {
   scroll_bar: Option<Prop<Option<Style>>>,
   kinetic: Option<Prop<bool>>,
   overshoot: Option<Prop<bool>>,
+  mouse_drag: Option<Prop<bool>>,
 }
 
 impl GridView {
@@ -87,6 +88,7 @@ impl GridView {
         scroll_bar: None,
         kinetic: None,
         overshoot: None,
+        mouse_drag: None,
       },
       common: Common::default(),
     }
@@ -135,6 +137,13 @@ impl GridView {
   /// does. On by default.
   pub fn kinetic(mut self, kinetic: impl IntoProp<bool>) -> GridView {
     self.props.kinetic = Some(kinetic.into_prop());
+    self
+  }
+
+  /// Lets a mouse drag the grid's cells, as [`ScrollView::mouse_drag`]
+  /// does. On by default.
+  pub fn mouse_drag(mut self, mouse_drag: impl IntoProp<bool>) -> GridView {
+    self.props.mouse_drag = Some(mouse_drag.into_prop());
     self
   }
 
@@ -205,6 +214,7 @@ where
     scroll_bar,
     kinetic,
     overshoot,
+    mouse_drag,
   } = props;
   let offset = offset.unwrap_or_else(|| cx.signal(0.0));
   let cell_width = cx.memo(prop_fn(cell_width, GridView::DEFAULT_CELL));
@@ -384,6 +394,9 @@ where
   }
   if let Some(overshoot) = overshoot {
     scroll = scroll.overshoot(overshoot);
+  }
+  if let Some(mouse_drag) = mouse_drag {
+    scroll = scroll.mouse_drag(mouse_drag);
   }
   scroll = scroll.style(move || {
     let own = style.as_ref().map(|style| style()).unwrap_or_default();

@@ -454,6 +454,7 @@ fn a_panicking_kinetic_or_overshoot_binding_is_logged_with_its_path() {
       view
         .kinetic(|| -> bool { panic!("kinetic failure") })
         .overshoot(|| -> bool { panic!("overshoot failure") })
+        .mouse_drag(|| -> bool { panic!("mouse_drag failure") })
     });
     window.pointer_motion(Point::new(10.0, 10.0));
     swipe(&window, 10.0, 0);
@@ -465,6 +466,10 @@ fn a_panicking_kinetic_or_overshoot_binding_is_logged_with_its_path() {
   );
   assert!(
     logs.contains("PanelWindow[DP-1]/Row/ScrollView[0].overshoot"),
+    "{logs}"
+  );
+  assert!(
+    logs.contains("PanelWindow[DP-1]/Row/ScrollView[0].mouse_drag"),
     "{logs}"
   );
   assert!(offset.get() > 50.0, "the defaults hold and it still flings");
@@ -674,4 +679,65 @@ fn a_notch_or_a_fling_only_places_the_window_and_keeps_geometry_and_hover_right(
   }
   assert!(offset.get() > 400.0, "{}", offset.get());
   assert!(!hovered.get(), "it moved on from under the pointer");
+}
+
+#[test]
+fn without_mouse_drag_a_mouse_moved_over_a_button_clicks_and_a_finger_still_drags() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0);
+  let (window, clicks) = view(&mut h, offset, |view| view.mouse_drag(false));
+  // 12 pixels up, past the threshold, still over the first button.
+  window.pointer_motion_at(Point::new(10.0, 15.0), 0);
+  window.pointer_button_at(PointerButton::Left, true, 0);
+  window.pointer_motion_at(Point::new(10.0, 3.0), 100);
+  window.pointer_button_at(PointerButton::Left, false, 200);
+  assert_eq!((offset.get(), clicks.get()), (0.0, 1));
+  window.pointer_motion_at(Point::new(10.0, 45.0), 1000);
+  window.touch_at(true, 1000);
+  window.pointer_motion_at(Point::new(10.0, 25.0), 1100);
+  window.touch_at(false, 1400);
+  assert_eq!((offset.get(), clicks.get()), (20.0, 1), "a finger drags");
+  assert!(!animating());
+}
+
+#[test]
+fn a_list_or_a_grid_without_mouse_drag_clicks_a_row_the_mouse_moved_along() {
+  let mut h = Harness::new();
+  let clicks = Counter::default();
+  let (a, b) = (h.cx.signal(0.0), h.cx.signal(0.0));
+  let row = |clicks: &Counter| {
+    let c = clicks.clone();
+    Button::new(Icon::new("x").size(20)).on_click(move |_| c.hit())
+  };
+  let (one, two) = (clicks.clone(), clicks.clone());
+  let list = crate::ListView::new(
+    || (0..100).collect::<Vec<u32>>(),
+    |n| *n,
+    move |_, _| row(&one),
+  )
+  .row_height(20)
+  .height(50)
+  .offset(a)
+  .mouse_drag(false);
+  let grid = crate::GridView::new(
+    || (0..100).collect::<Vec<u32>>(),
+    |n| *n,
+    move |_, _| row(&two),
+  )
+  .cell_size(20, 20)
+  .height(50)
+  .offset(b)
+  .mouse_drag(false);
+  let lists = Row::new()
+    .align(Align::Start)
+    .child(Row::new().style(Style::new().width(20.0)).child(list))
+    .child(Row::new().style(Style::new().width(20.0)).child(grid));
+  let window = h.window(h.panel().child(lists), 100.0, 100.0);
+  for (x, time) in [(10.0, 0), (30.0, 1000)] {
+    window.pointer_motion_at(Point::new(x, 18.0), time);
+    window.pointer_button_at(PointerButton::Left, true, time);
+    window.pointer_motion_at(Point::new(x, 3.0), time + 100);
+    window.pointer_button_at(PointerButton::Left, false, time + 200);
+  }
+  assert_eq!((a.get(), b.get(), clicks.get()), (0.0, 0.0, 2));
 }

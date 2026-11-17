@@ -6,8 +6,8 @@ use std::rc::Rc;
 
 use crabshell_reactive::Runtime;
 use crabshell_ui::{
-  Align, Button, CursorShape, Cx, Icon, Output, PanelWindow, Point, PointerButton, Row,
-  ScrollSource, Size, TextSystem, Wheel, WheelAxis, Window,
+  Align, Button, Column, CursorShape, Cx, Icon, Output, PanelWindow, Point, PointerButton, Row,
+  ScrollSource, ScrollView, Size, Style, TextSystem, Wheel, WheelAxis, Window,
 };
 use smithay_client_toolkit::reexports::client::protocol::wl_pointer::AxisSource;
 use smithay_client_toolkit::reexports::protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape;
@@ -222,7 +222,7 @@ fn one_finger_is_a_pointer_that_taps_and_drags() {
     touch.down(1, window, (10.0, 5.0), 100),
     [
       Input::Motion(Point::new(10.0, 5.0), Some(100)),
-      Input::Button(PointerButton::Left, true, 100),
+      Input::Touch(true, 100),
     ]
   );
   assert_eq!(touch.window(), Some(window));
@@ -235,10 +235,7 @@ fn one_finger_is_a_pointer_that_taps_and_drags() {
     [Input::Motion(Point::new(30.0, 6.0), Some(150))]
   );
   assert_eq!(touch.motion(1, (f64::NAN, 6.0), 160), []);
-  assert_eq!(
-    touch.up(1, 200),
-    [Input::Button(PointerButton::Left, false, 200), Input::Leave]
-  );
+  assert_eq!(touch.up(1, 200), [Input::Touch(false, 200), Input::Leave]);
   assert_eq!(touch.window(), None);
   // A down at a point that isn't a number starts nothing.
   assert_eq!(touch.down(3, window, (f64::INFINITY, 0.0), 300), []);
@@ -384,6 +381,47 @@ fn a_tap_clicks_and_a_cancelled_touch_doesnt() {
     apply(&window, input);
   }
   assert_eq!(*log.borrow(), ["click"]);
+}
+
+#[test]
+fn a_finger_drags_a_view_that_a_mouse_doesnt() {
+  let runtime = Runtime::current();
+  let cx = Cx::new(runtime.new_owner());
+  let offset = cx.signal(0.0);
+  let column = (0..10).fold(Column::new(), |column, _| {
+    column.child(Icon::new("x").size(20))
+  });
+  let view = ScrollView::new(column)
+    .offset(offset)
+    .mouse_drag(false)
+    .style(Style::new().width(20.0).height(50.0));
+  let panel =
+    PanelWindow::new(&Output::new("HEADLESS-1")).child(Row::new().align(Align::Start).child(view));
+  let window = Window::new(&cx, panel);
+  window.set_size(Size::new(100.0, 100.0));
+  runtime.flush();
+  window.layout(&mut TextSystem::new());
+  let mouse = [
+    Input::Motion(Point::new(10.0, 40.0), Some(0)),
+    Input::Button(PointerButton::Left, true, 0),
+    Input::Motion(Point::new(10.0, 10.0), Some(100)),
+    Input::Button(PointerButton::Left, false, 400),
+  ];
+  for input in mouse {
+    apply(&window, input);
+  }
+  assert_eq!(offset.get(), 0.0);
+  let mut touch = Touch::default();
+  let id = WindowId(0);
+  let drag = [
+    touch.down(1, id, (10.0, 40.0), 1000),
+    touch.motion(1, (10.0, 10.0), 1100),
+    touch.up(1, 1400),
+  ];
+  for input in drag.concat() {
+    apply(&window, input);
+  }
+  assert_eq!(offset.get(), 30.0);
 }
 
 #[test]

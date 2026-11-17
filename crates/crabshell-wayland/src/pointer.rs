@@ -22,6 +22,9 @@ pub(crate) enum Input {
   Leave,
   /// A button went down (`true`) or up, at this time in milliseconds.
   Button(PointerButton, bool, u32),
+  /// A touchscreen's finger went down (`true`) or lifted, at this time in
+  /// milliseconds: a left button that drags any scroll view.
+  Touch(bool, u32),
   /// Scrolling on either axis, or its end, at this time in milliseconds.
   Scroll(Wheel, u32),
 }
@@ -119,6 +122,7 @@ pub(crate) fn apply(window: &Window, input: Input) -> CursorShape {
     Input::Motion(position, None) => return window.pointer_motion(position),
     Input::Leave => window.pointer_leave(),
     Input::Button(button, pressed, time) => window.pointer_button_at(button, pressed, time),
+    Input::Touch(pressed, time) => window.touch_at(pressed, time),
     Input::Scroll(wheel, time) => window.pointer_scroll_at(wheel, time),
   }
   window.cursor()
@@ -191,10 +195,7 @@ impl Touch {
       return Vec::new();
     };
     self.active = Some((id, window));
-    vec![
-      Input::Motion(at, Some(time)),
-      Input::Button(PointerButton::Left, true, time),
-    ]
+    vec![Input::Motion(at, Some(time)), Input::Touch(true, time)]
   }
 
   /// The followed finger moved, at `time`.
@@ -212,10 +213,7 @@ impl Touch {
       return Vec::new();
     }
     self.active = None;
-    vec![
-      Input::Button(PointerButton::Left, false, time),
-      Input::Leave,
-    ]
+    vec![Input::Touch(false, time), Input::Leave]
   }
 
   /// The compositor took the touch over: it leaves without a click.

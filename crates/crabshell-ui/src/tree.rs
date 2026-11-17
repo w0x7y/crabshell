@@ -240,6 +240,8 @@ pub(crate) struct ScrollNode {
   pub(crate) kinetic: bool,
   /// A touchpad, drag or fling may go past either end.
   pub(crate) overshoots: bool,
+  /// A mouse's left button drags the child, as a finger does.
+  pub(crate) mouse_drag: bool,
   /// What a list moved the offset by since a motion last looked.
   pub(crate) shifts: Option<Rc<Cell<f32>>>,
   /// Told whether the view is moving.
@@ -842,6 +844,7 @@ impl Tree {
           bar: None,
           kinetic: true,
           overshoots: true,
+          mouse_drag: true,
           shifts: props.shifts.take(),
           moving: props.moving.take(),
         }))
@@ -1007,6 +1010,12 @@ impl Tree {
           tree.update_scroll(id, |scroll| {
             scroll.overshoots = value;
             scroll.stop_overshoot()
+          });
+        });
+        self.bind_opt(id, props.mouse_drag, "mouse_drag", |tree, id, value| {
+          tree.update_scroll(id, |scroll| {
+            scroll.mouse_drag = value;
+            Change::None
           });
         });
         self.bind_opt(id, props.scroll_bar, "scroll_bar", |tree, id, value| {

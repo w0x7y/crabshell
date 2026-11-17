@@ -482,7 +482,16 @@ impl Window {
   /// `on_right_click`, `on_middle_click`, `on_back` or `on_forward` when
   /// released over the button they went down on.
   pub fn pointer_button_at(&self, button: PointerButton, pressed: bool, time: u32) {
-    let calls = borrow(&self.tree).button(button, pressed, time);
+    let calls = borrow(&self.tree).button(button, pressed, time, false);
+    run_all(calls);
+  }
+
+  /// A finger on a touchscreen went down or lifted at `time`, in
+  /// milliseconds as `wl_touch` counts them: a left press or release, as
+  /// [`pointer_button_at`](Self::pointer_button_at) gives, except that
+  /// its drag moves a scroll view's child even where `mouse_drag` is off.
+  pub fn touch_at(&self, pressed: bool, time: u32) {
+    let calls = borrow(&self.tree).button(PointerButton::Left, pressed, time, true);
     run_all(calls);
   }
 
@@ -799,15 +808,15 @@ impl Tree {
     }
   }
 
-  fn button(&mut self, button: PointerButton, pressed: bool, time: u32) -> Vec<Call> {
+  fn button(&mut self, button: PointerButton, pressed: bool, time: u32, touch: bool) -> Vec<Call> {
     if pressed {
-      self.press(button, time)
+      self.press(button, time, touch)
     } else {
       self.release(button, time)
     }
   }
 
-  fn press(&mut self, button: PointerButton, time: u32) -> Vec<Call> {
+  fn press(&mut self, button: PointerButton, time: u32, touch: bool) -> Vec<Call> {
     if button == PointerButton::Left {
       self.press_away(self.pointer.hovered);
     }
@@ -822,7 +831,7 @@ impl Tree {
       (button, self.pointer.pressed, self.pointer.position)
     {
       let drags = self.pointer.hovered.is_some_and(|id| self.drags(id));
-      self.press_views(at, drags);
+      self.press_views(at, drags, touch);
     }
     let (None, Some(id), Some(at)) = (
       self.pointer.pressed,

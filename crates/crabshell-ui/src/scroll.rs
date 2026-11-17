@@ -33,6 +33,7 @@ pub(crate) struct ScrollProps {
   pub(crate) both: Option<Prop<bool>>,
   pub(crate) kinetic: Option<Prop<bool>>,
   pub(crate) overshoot: Option<Prop<bool>>,
+  pub(crate) mouse_drag: Option<Prop<bool>>,
   pub(crate) scroll_bar: Option<Prop<Option<Style>>>,
   /// What a list moved the offset by to keep the rows shown still, which
   /// a fling takes as its own motion rather than a write that stops it.
@@ -70,6 +71,7 @@ impl ScrollView {
         both: None,
         kinetic: None,
         overshoot: None,
+        mouse_drag: None,
         scroll_bar: None,
         shifts: None,
         moving: None,
@@ -134,6 +136,15 @@ impl ScrollView {
   /// content. On by default.
   pub fn overshoot(mut self, overshoot: impl IntoProp<bool>) -> ScrollView {
     self.scroll.overshoot = Some(overshoot.into_prop());
+    self
+  }
+
+  /// Lets a mouse drag the child with its left button, as a finger does,
+  /// as Qt's `Flickable` does. Off, only a finger on a touchscreen and a
+  /// touchpad move it, and a mouse press that moves and comes up over a
+  /// button clicks it. On by default.
+  pub fn mouse_drag(mut self, mouse_drag: impl IntoProp<bool>) -> ScrollView {
+    self.scroll.mouse_drag = Some(mouse_drag.into_prop());
     self
   }
 
@@ -218,6 +229,7 @@ struct ListProps {
   scroll_bar: Option<Prop<Option<Style>>>,
   kinetic: Option<Prop<bool>>,
   overshoot: Option<Prop<bool>>,
+  mouse_drag: Option<Prop<bool>>,
   horizontal: Option<Prop<bool>>,
   highlight: Option<Prop<Option<Style>>>,
 }
@@ -251,6 +263,7 @@ impl ListView {
         scroll_bar: None,
         kinetic: None,
         overshoot: None,
+        mouse_drag: None,
         horizontal: None,
         highlight: None,
       },
@@ -313,6 +326,13 @@ impl ListView {
   /// does. On by default.
   pub fn kinetic(mut self, kinetic: impl IntoProp<bool>) -> ListView {
     self.props.kinetic = Some(kinetic.into_prop());
+    self
+  }
+
+  /// Lets a mouse drag the list's rows, as [`ScrollView::mouse_drag`]
+  /// does. On by default.
+  pub fn mouse_drag(mut self, mouse_drag: impl IntoProp<bool>) -> ListView {
+    self.props.mouse_drag = Some(mouse_drag.into_prop());
     self
   }
 
@@ -430,6 +450,7 @@ where
     scroll_bar,
     kinetic,
     overshoot,
+    mouse_drag,
     horizontal,
     highlight: highlight_style,
   } = props;
@@ -737,6 +758,9 @@ where
   }
   if let Some(overshoot) = overshoot {
     scroll = scroll.overshoot(overshoot);
+  }
+  if let Some(mouse_drag) = mouse_drag {
+    scroll = scroll.mouse_drag(mouse_drag);
   }
   scroll = scroll.style(move || {
     let own = style.as_ref().map(|style| style()).unwrap_or_default();

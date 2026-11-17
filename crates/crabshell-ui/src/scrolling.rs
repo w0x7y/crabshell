@@ -80,6 +80,8 @@ pub(crate) struct Flick {
   /// Whether a move may still start a drag: not over a button that drags
   /// itself, nor once a move found no view to drag.
   may_drag: bool,
+  /// A finger pressed, which drags a view whose `mouse_drag` is off.
+  touch: bool,
 }
 
 /// A scroll bar held by the left button.
@@ -598,9 +600,10 @@ impl Tree {
     running
   }
 
-  /// A left press at `at`: the scroll views under it stop where they
-  /// are, and unless it is on a button that drags, a move may drag one.
-  pub(crate) fn press_views(&mut self, at: Point, drags: bool) {
+  /// A left press at `at`, by a finger if `touch`: the scroll views under
+  /// it stop where they are, and unless it is on a button that drags, a
+  /// move may drag one.
+  pub(crate) fn press_views(&mut self, at: Point, drags: bool, touch: bool) {
     let mut views = self.scroll_views_at(at);
     views.retain(|&id| self.press_reaches(id));
     for &id in &views {
@@ -615,6 +618,7 @@ impl Tree {
       last: at,
       view: None,
       may_drag: !drags,
+      touch,
     });
   }
 
@@ -637,14 +641,14 @@ impl Tree {
     if !flick.may_drag || dx.abs().max(dy.abs()) <= DRAG_THRESHOLD {
       return false;
     }
-    let (from, views) = (flick.at, flick.views.clone());
+    let (from, views, touch) = (flick.at, flick.views.clone(), flick.touch);
     let sideways = dx.abs() > dy.abs();
     let along: Vec<(NodeId, Point)> = views
       .into_iter()
       .filter(|&id| {
         self
           .scroll_node(id)
-          .is_some_and(|scroll| scroll.runs(sideways))
+          .is_some_and(|scroll| scroll.runs(sideways) && (touch || scroll.mouse_drag))
       })
       .map(|id| (id, self.drag_delta(id, from, at)))
       .collect();
