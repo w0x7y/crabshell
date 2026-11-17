@@ -1844,6 +1844,36 @@ fn the_clipboard_watch_hears_a_password_managers_hint() {
 
 #[test]
 #[ignore = "needs headless Sway and wl-clipboard"]
+fn a_clipboard_watch_that_panics_is_logged_and_kept() {
+  let (logs, _logging) = capture_logs();
+  let sway = Sway::start();
+  let mut shell = Shell::new(&sway);
+  shell.wait_for_bar("HEADLESS-1");
+  let heard = Rc::new(RefCell::new(Vec::new()));
+  let keep = Rc::clone(&heard);
+  shell
+    .event_loop
+    .platform()
+    .watch_clipboard(move |selection| {
+      keep.borrow_mut().push(selection.text.clone());
+      panic!("clipboard panic");
+    });
+  let first = wl_copy(&sway, "text/plain", b"one");
+  run_until(&mut shell.event_loop, "the panic logged", |_| {
+    logs
+      .text()
+      .contains("a clipboard watch panicked: clipboard panic")
+  });
+  let second = wl_copy(&sway, "text/plain", b"two");
+  run_until(&mut shell.event_loop, "the watch kept", |_| {
+    heard.borrow().last() == Some(&Some(String::from("two")))
+  });
+  stop(first);
+  stop(second);
+}
+
+#[test]
+#[ignore = "needs headless Sway and wl-clipboard"]
 fn the_clipboard_wakes_nothing_while_it_doesnt_change_or_while_nothing_follows_it() {
   let sway = Sway::start();
   let mut shell = Shell::new(&sway);
