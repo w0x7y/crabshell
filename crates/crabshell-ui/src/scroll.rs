@@ -8,6 +8,7 @@ use std::rc::Rc;
 
 use crabshell_reactive::{Memo, Signal, untrack};
 
+use crate::animation::Transition;
 use crate::cx::Cx;
 use crate::geometry::{Point, Size};
 use crate::prop::{IntoProp, Prop};
@@ -315,9 +316,11 @@ impl ListView {
   /// Draws a box in this style behind the [`current`](Self::current)
   /// row, as long as the row and across the list. When the current row
   /// changes, the box moves to it over the style's `transition` rather
-  /// than jumping, and takes its length at once. It is drawn moved, so a
-  /// move repaints but doesn't lay the window out. No current row, or
-  /// `None`, the default, draws none.
+  /// than jumping, and takes its length over the same transition. It is
+  /// drawn moved, so a move between rows of one length repaints but
+  /// doesn't lay the window out; a new length lays the box out each frame
+  /// of the transition. No current row, or `None`, the default, draws
+  /// none.
   pub fn highlight(mut self, style: impl IntoProp<Option<Style>>) -> ListView {
     self.props.highlight = Some(style.into_prop());
     self
@@ -799,15 +802,47 @@ pub(crate) struct Spot {
 
 /// A box drawn in `style` at `spot`, behind what follows it. The outer
 /// box is moved there by a paint translate over the style's transition,
-/// and the inner one takes the size and the style, so a move fades
-/// without a layout while a new size comes at once.
+/// and the inner one takes the size and the style. A new target's size
+/// comes over the same transition, laying the box out each frame; the
+/// same target's, as a row is measured, comes at once.
 pub(crate) fn highlight(cx: &Cx, style: Memo<Option<Style>>, spot: Memo<Option<Spot>>) -> Stack {
   // A new size alone leaves the move as it is.
   let place = cx.memo(move || spot.get().map(|spot| (spot.at, spot.target)));
+  // Whether the size, read just before, came with a new target.
+  let slides = Rc::new(Cell::new(false));
+  let size = {
+    let read = Rc::clone(&slides);
+    let (mut target, mut size) = (None, Point::default());
+    cx.animate(
+      move || {
+        // Hidden, it keeps its size, and shown again it jumps.
+        let Some(spot) = spot.get() else {
+          target = None;
+          return size;
+        };
+        slides.set(
+          target
+            .replace(spot.target)
+            .is_some_and(|was| was != spot.target),
+        );
+        size = Point::new(spot.size.width, spot.size.height);
+        size
+      },
+      move || {
+        let transition = style.with(|style| style.and_then(|style| style.transition));
+        transition
+          .filter(|_| read.get())
+          .unwrap_or(Transition::new(0))
+      },
+    )
+  };
   let shape = Stack::new().style(move || {
     let own = style.get().unwrap_or_default();
     match spot.get() {
-      Some(spot) => own.width(spot.size.width).height(spot.size.height),
+      Some(_) => {
+        let size = size.get();
+        own.width(size.x).height(size.y)
+      }
       None => own,
     }
   });

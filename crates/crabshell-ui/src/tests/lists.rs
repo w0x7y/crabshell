@@ -460,7 +460,8 @@ fn the_highlight_moves_to_the_new_current_row_over_its_transition() {
     highlight(&window),
     Some((Point::new(0.0, 40.0), crate::Size::new(100.0, 20.0)))
   );
-  current.set(Some(3));
+  // Row 2 is as tall: only the place moves.
+  current.set(Some(2));
   h.frame(&window);
   let start = Instant::now();
   advance_animations(start);
@@ -470,18 +471,46 @@ fn the_highlight_moves_to_the_new_current_row_over_its_transition() {
     "a move places the window again without laying it out"
   );
   h.frame(&window);
-  // Halfway from 40 to row 3's 80, with row 3's height at once.
   assert_eq!(
     highlight(&window),
-    Some((Point::new(0.0, 60.0), crate::Size::new(100.0, 40.0)))
+    Some((Point::new(0.0, 50.0), crate::Size::new(100.0, 20.0)))
   );
   advance_animations(start + std::time::Duration::from_millis(100));
   h.frame(&window);
-  assert_eq!(highlight(&window).map(|(at, _)| at), at(0.0, 80.0));
+  assert_eq!(highlight(&window).map(|(at, _)| at), at(0.0, 60.0));
   assert!(
     !animating() && crate::next_timer().is_none() && !window.needs_layout(),
     "a highlight at rest wakes nothing"
   );
+}
+
+#[test]
+fn the_highlight_takes_a_new_rows_height_over_the_same_transition() {
+  let mut h = Harness::new();
+  let items = h.cx.signal((0..100).collect());
+  let offset = h.cx.signal(0.0);
+  let current = h.cx.signal(Some(1));
+  let window = list(&mut h, items, every_third_tall, offset, |list| {
+    list.current(move || current.get()).highlight(HIGHLIGHT)
+  });
+  current.set(Some(3));
+  h.frame(&window);
+  let start = Instant::now();
+  advance_animations(start);
+  advance_animations(start + std::time::Duration::from_millis(50));
+  h.frame(&window);
+  // Halfway from row 1 to row 3, at 80, and from 20 tall to 40.
+  assert_eq!(
+    highlight(&window),
+    Some((Point::new(0.0, 60.0), crate::Size::new(100.0, 30.0)))
+  );
+  advance_animations(start + std::time::Duration::from_millis(100));
+  h.frame(&window);
+  assert_eq!(
+    highlight(&window),
+    Some((Point::new(0.0, 80.0), crate::Size::new(100.0, 40.0)))
+  );
+  assert!(!animating() && crate::next_timer().is_none() && !window.needs_layout());
 }
 
 #[test]
