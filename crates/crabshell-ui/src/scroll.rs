@@ -781,7 +781,7 @@ where
 
 /// `style` with its width, if `horizontal`, or else its height, set to
 /// `length`.
-fn along(horizontal: bool, style: Style, length: f32) -> Style {
+pub(crate) fn along(horizontal: bool, style: Style, length: f32) -> Style {
   if horizontal {
     style.width(length)
   } else {

@@ -322,3 +322,85 @@ fn a_current_cell_that_changes_during_a_fling_leaves_the_view_moving() {
   let start = cell(&window, index as u32).expect("it shows").y + offset.get();
   assert_eq!(highlight(&window).map(|(at, _)| at.y), Some(start));
 }
+
+/// A horizontal grid of `count` numbered 20 by 20 cells, 100 wide, in a
+/// window 200 wide and `height` tall.
+fn sideways(
+  h: &mut Harness,
+  count: u32,
+  height: f32,
+  offset: Signal<f32>,
+  tune: impl FnOnce(GridView) -> GridView,
+) -> Window {
+  let grid = GridView::new(
+    move || (0..count).collect::<Vec<u32>>(),
+    |n| *n,
+    |_, n| Text::new(move || n.get().to_string()),
+  )
+  .horizontal(true)
+  .cell_size(20, 20)
+  .height(100)
+  .offset(offset);
+  h.window(h.panel().child(tune(grid)), 200.0, height)
+}
+
+#[test]
+fn a_horizontal_grid_fills_each_column_top_to_bottom_and_scrolls_sideways() {
+  let mut h = Harness::new();
+  let before = h.runtime.node_count();
+  let offset = h.cx.signal(0.0);
+  let window = sideways(&mut h, 10_000, 100.0, offset, |grid| grid);
+  // Five rows of 20 in 100; five columns show and one more is built.
+  assert_eq!(cells(&window).len(), 30);
+  assert_eq!(cell(&window, 7), Some(Rect::new(20.0, 40.0, 20.0, 20.0)));
+  offset.set(20_000.0);
+  h.frame(&window);
+  h.frame(&window);
+  // Column 1000 at the left, with a column each side.
+  let numbers: Vec<u32> = cells(&window).iter().map(|&(n, _)| n).collect();
+  assert_eq!(numbers.first(), Some(&4995));
+  assert_eq!(numbers.len(), 35);
+  assert_eq!(
+    cell(&window, 5000).map(|rect| (rect.x, rect.y)),
+    Some((0.0, 0.0))
+  );
+  assert!(!window.needs_layout(), "a grid at rest lays out nothing");
+  drop(window);
+  assert_eq!(h.runtime.node_count(), before + 1, "only the test's offset");
+}
+
+#[test]
+fn a_horizontal_grids_current_cell_and_highlight_go_by_column() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0);
+  let current = h.cx.signal(Some(7));
+  let window = sideways(&mut h, 1000, 100.0, offset, |grid| {
+    grid.current(move || current.get()).highlight(HIGHLIGHT)
+  });
+  assert_eq!(
+    highlight(&window),
+    Some((Point::new(20.0, 40.0), Size::new(20.0, 20.0)))
+  );
+  current.set(Some(57));
+  h.frame(&window);
+  // Column 11 ends at 240.
+  assert_eq!(offset.get(), 140.0);
+  assert_eq!(cell(&window, 57).map(|rect| rect.right()), Some(100.0));
+  current.set(Some(3));
+  h.frame(&window);
+  assert_eq!(offset.get(), 0.0);
+}
+
+#[test]
+fn a_horizontal_grid_made_taller_keeps_its_first_shown_cell_in_view() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(205.0);
+  let window = sideways(&mut h, 1000, 100.0, offset, |grid| grid);
+  // Column 10, cell 50, 5 pixels out to the left.
+  assert_eq!(cell(&window, 50).map(|rect| rect.x), Some(-5.0));
+  window.set_size(Size::new(200.0, 200.0));
+  h.frame(&window);
+  // Ten rows: cell 50 is in column 5, still 5 pixels out.
+  assert_eq!(offset.get(), 105.0);
+  assert_eq!(cell(&window, 50).map(|rect| rect.x), Some(-5.0));
+}

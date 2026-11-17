@@ -10,9 +10,11 @@ use crabshell_reactive::{Memo, Signal, untrack};
 use crate::cx::Cx;
 use crate::geometry::{Point, Size};
 use crate::prop::{IntoProp, Prop};
-use crate::scroll::{Built, ScrollView, Spot, highlight, keep_in_view, prop_fn};
+use crate::scroll::{self, Built, ScrollView, Spot, highlight, keep_in_view, prop_fn};
 use crate::style::Style;
-use crate::widgets::{Column, Common, Element, Row, Stack, Widget, visibility_methods};
+use crate::widgets::{
+  Column, Common, Element, ElementKind, Row, Stack, Widget, visibility_methods,
+};
 
 /// A scrolling grid of cells of one size, in as many columns as fit its
 /// width and at least one, for app and wallpaper pickers. It builds only
@@ -55,6 +57,7 @@ struct GridViewProps {
   kinetic: Option<Prop<bool>>,
   overshoot: Option<Prop<bool>>,
   mouse_drag: Option<Prop<bool>>,
+  horizontal: Option<Prop<bool>>,
 }
 
 impl GridView {
@@ -89,9 +92,21 @@ impl GridView {
         kinetic: None,
         overshoot: None,
         mouse_drag: None,
+        horizontal: None,
       },
       common: Common::default(),
     }
+  }
+
+  /// Fills each column top to bottom, then the next, and scrolls
+  /// sideways, as Qt's `GridView.FlowTopToBottom`. [`height`](Self::height)
+  /// then means the grid's width, its height comes from its style or its
+  /// parent, and a column holds as many cells as fit it, at least one.
+  /// [`current`](Self::current), the highlight and the offset go along
+  /// the columns. Off by default.
+  pub fn horizontal(mut self, horizontal: impl IntoProp<bool>) -> GridView {
+    self.props.horizontal = Some(horizontal.into_prop());
+    self
   }
 
   /// Sets every cell's width and height in logical pixels, 100 by
@@ -103,7 +118,8 @@ impl GridView {
     self
   }
 
-  /// Sets the grid's height in logical pixels. Its width comes from its
+  /// Sets the grid's height in logical pixels, or its width in a
+  /// [`horizontal`](Self::horizontal) grid. The other side comes from its
   /// style or its parent.
   pub fn height(mut self, height: impl IntoProp<u32>) -> GridView {
     self.props.height = Some(height.into_prop());
@@ -215,6 +231,7 @@ where
     kinetic,
     overshoot,
     mouse_drag,
+    horizontal,
   } = props;
   let offset = offset.unwrap_or_else(|| cx.signal(0.0));
   let cell_width = cx.memo(prop_fn(cell_width, GridView::DEFAULT_CELL));
@@ -225,22 +242,32 @@ where
       cell_height.get().max(1) as f32,
     )
   };
+  let horizontal = cx.memo(prop_fn(horizontal, false));
+  // A cell's length along the way the grid scrolls, and across it.
+  let length = move || along(horizontal.get(), cell());
+  let breadth = move || along(!horizontal.get(), cell());
   let height = cx.memo(prop_fn(height, GridView::DEFAULT_HEIGHT));
   let style = style.map(Prop::shared);
-  // The height cells show in: the grid's, less its padding and border.
+  // The length cells show in: the grid's, less its padding and border.
   let inner = {
     let style = style.clone();
     cx.memo(move || {
       let own = style.as_ref().map(|style| style()).unwrap_or_default();
       let padding = own.padding.unwrap_or_default();
       let border = own.border.map_or(0.0, |border| border.width.max(0.0));
-      let sides = (padding.top + padding.bottom) as f32 + 2.0 * border;
-      (height.get() as f32 - sides).max(0.0)
+      let sides = if horizontal.get() {
+        padding.left + padding.right
+      } else {
+        padding.top + padding.bottom
+      };
+      (height.get() as f32 - sides as f32 - 2.0 * border).max(0.0)
     })
   };
-  // The width cells fit in, 0 until the first layout.
+  // The room across the grid that cells fit in, 0 until the first layout.
   let width = cx.signal(0.0_f32);
-  let columns = cx.memo(move || ((width.get() / cell().width) as usize).max(1));
+  // Cells across: the columns, or the rows of a horizontal grid. Then
+  // `rows` are the lines of cells along it.
+  let columns = cx.memo(move || ((width.get() / breadth()) as usize).max(1));
   let all = cx.signal(Vec::<T>::new());
   // How often the items changed, for the highlight.
   let changes = cx.signal(0_u64);
@@ -252,7 +279,7 @@ where
   let rows = move || count.get().div_ceil(columns.get());
   // The offset as the scroll view shows it: past either end, that end.
   let shown = move || {
-    let most = (rows() as f32 * cell().height - inner.get()).max(0.0);
+    let most = (rows() as f32 * length() - inner.get()).max(0.0);
     let offset = offset.get();
     if offset.is_nan() {
       0.0
@@ -262,7 +289,7 @@ where
   };
   // The rows of cells in view, and one more each side.
   let range = cx.memo(move || {
-    let row = cell().height;
+    let row = length();
     let top = shown();
     let first = ((top / row).floor() as usize).saturating_sub(1);
     let last = (((top + inner.get()) / row).ceil() as usize + 1).min(rows());
@@ -283,7 +310,7 @@ where
       let columns = columns.get();
       let index = current.as_ref().and_then(|current| current());
       let viewport = inner.get();
-      let row = cell().height;
+      let row = length();
       let laid_out = width.get() > 0.0;
       let count = count.get();
       untrack(|| {
@@ -322,7 +349,8 @@ where
       });
     });
   }
-  let mut content = Column::new().style(move || Style::new().height(rows() as f32 * cell().height));
+  let mut content = Column::new()
+    .style(move || scroll::along(horizontal.get(), Style::new(), rows() as f32 * length()));
   if let (Some(style), Some(current)) = (highlight_style, current) {
     let spot = cx.memo(move || {
       let index = current()?;
@@ -330,61 +358,77 @@ where
         return None;
       }
       let (columns, size) = (columns.get(), cell());
+      let (line, place) = ((index / columns) as f32, (index % columns) as f32);
       Some(Spot {
-        at: Point::new(
-          (index % columns) as f32 * size.width,
-          (index / columns) as f32 * size.height,
-        ),
+        at: if horizontal.get() {
+          Point::new(line * size.width, place * size.height)
+        } else {
+          Point::new(place * size.width, line * size.height)
+        },
         size,
         target: (index, changes.get()),
       })
     });
     content = content.child(highlight(cx, cx.memo(prop_fn(Some(style), None)), spot));
   }
+  let mut cells = Box::new(
+    Row::new()
+      .wrap(true)
+      .style(move || {
+        let across = columns.get() as f32 * breadth();
+        scroll::along(!horizontal.get(), Style::new(), across).shrink(0.0)
+      })
+      .children_keyed(
+        move || {
+          let (range, columns) = (range.get(), columns.get());
+          all.with(|all| {
+            let end = (range.end * columns).min(all.len());
+            all[(range.start * columns).min(end)..end].to_vec()
+          })
+        },
+        key,
+        move |cx, item| {
+          Stack::new()
+            .style(move || {
+              let size = cell();
+              Style::new()
+                .width(size.width)
+                .height(size.height)
+                .shrink(0.0)
+            })
+            .child(view(cx, item))
+        },
+      ),
+  )
+  .into_element();
+  // A horizontal grid's cells fill a column, then wrap to the next.
+  if let ElementKind::Flex(flex) = &mut cells.kind {
+    flex.column_binding = Some((move || horizontal.get()).into_prop());
+  }
   let content = content
     .child(Stack::new().style(move || {
-      Style::new()
-        .height(range.get().start as f32 * cell().height)
-        .shrink(0.0)
+      let start = range.get().start as f32 * length();
+      scroll::along(horizontal.get(), Style::new(), start).shrink(0.0)
     }))
-    .child(
-      Row::new()
-        .wrap(true)
-        .style(move || {
-          Style::new()
-            .width(columns.get() as f32 * cell().width)
-            .shrink(0.0)
-        })
-        .children_keyed(
-          move || {
-            let (range, columns) = (range.get(), columns.get());
-            all.with(|all| {
-              let end = (range.end * columns).min(all.len());
-              all[(range.start * columns).min(end)..end].to_vec()
-            })
-          },
-          key,
-          move |cx, item| {
-            Stack::new()
-              .style(move || {
-                let size = cell();
-                Style::new()
-                  .width(size.width)
-                  .height(size.height)
-                  .shrink(0.0)
-              })
-              .child(view(cx, item))
-          },
-        ),
-    );
+    .child(Built(Some(cells)));
   let mut content = Box::new(content).into_element();
+  if let ElementKind::Flex(flex) = &mut content.kind {
+    flex.column_binding = Some((move || !horizontal.get()).into_prop());
+  }
   content.common.measure = Some(Rc::new(move |size: Size| {
     // Run with no effect running; a grid gone by then is left alone.
-    if width.try_get() != Some(size.width) {
-      width.try_set(size.width);
+    let across = if horizontal.try_get().unwrap_or_default() {
+      size.height
+    } else {
+      size.width
+    };
+    if width.try_get() != Some(across) {
+      width.try_set(across);
     }
   }));
-  let mut scroll = ScrollView::new(Built(Some(content))).offset(offset);
+  let mut scroll = ScrollView::new(Built(Some(content)))
+    .offset(offset)
+    .horizontal(move || horizontal.get());
   scroll.scroll.moving = Some(moving);
   if let Some(bar) = scroll_bar {
     scroll = scroll.scroll_bar(bar);
@@ -400,7 +444,13 @@ where
   }
   scroll = scroll.style(move || {
     let own = style.as_ref().map(|style| style()).unwrap_or_default();
-    own.height(height.get() as f32)
+    scroll::along(horizontal.get(), own, height.get() as f32)
   });
   Box::new(scroll).into_element()
+}
+
+/// `size`'s height, or its width if `horizontal`: its length along a
+/// grid that scrolls that way.
+fn along(horizontal: bool, size: Size) -> f32 {
+  if horizontal { size.width } else { size.height }
 }
