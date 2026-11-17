@@ -6,9 +6,9 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::rc::Rc;
 
-use crabshell_reactive::{Memo, Signal, untrack};
+use crabshell_reactive::{Memo, ReadSignal, Signal, untrack};
 
-use crate::animation::Transition;
+use crate::animation::{Animate, Transition};
 use crate::cx::Cx;
 use crate::geometry::{Point, Size};
 use crate::prop::{IntoProp, Prop};
@@ -319,7 +319,9 @@ impl ListView {
   /// than jumping, and takes its length over the same transition. It is
   /// drawn moved, so a move between rows of one length repaints but
   /// doesn't lay the window out; a new length lays the box out each frame
-  /// of the transition. No current row, or `None`, the default, draws
+  /// of the transition. A row measured while the box slides toward it, as
+  /// one far off is, turns the slide to where the row turns out to be; at
+  /// rest the box jumps. No current row, or `None`, the default, draws
   /// none.
   pub fn highlight(mut self, style: impl IntoProp<Option<Style>>) -> ListView {
     self.props.highlight = Some(style.into_prop());
@@ -796,70 +798,76 @@ pub(crate) struct Spot {
   pub(crate) at: Point,
   pub(crate) size: Size,
   /// The item it is on: its index and how often the items changed. A
-  /// spot that moves with the same target, as a row is measured, jumps.
+  /// spot that moves with the same target, as a row is measured, jumps,
+  /// unless a slide is under way, which goes on to it.
   pub(crate) target: (usize, u64),
 }
 
-/// A box drawn in `style` at `spot`, behind what follows it. The outer
-/// box is moved there by a paint translate over the style's transition,
-/// and the inner one takes the size and the style. A new target's size
-/// comes over the same transition, laying the box out each frame; the
-/// same target's, as a row is measured, comes at once.
+/// Where a highlight is drawn and how big, as an animation moves it.
+#[derive(Clone, Copy, PartialEq, Default)]
+struct Frame {
+  at: Point,
+  /// The width and height.
+  size: Point,
+}
+
+impl Animate for Frame {
+  fn lerp(&self, to: &Frame, t: f32) -> Frame {
+    Frame {
+      at: self.at.lerp(&to.at, t),
+      size: self.size.lerp(&to.size, t),
+    }
+  }
+}
+
+/// A box drawn in `style` at `spot`, behind what follows it. A new target
+/// slides it there over the style's transition, place and size together:
+/// the place as a paint translate, so a move between items of one size
+/// doesn't lay the window out, and the size laid out each frame. A spot
+/// that moves with the same target jumps, unless a slide is under way,
+/// which then goes on to it from where it is.
 pub(crate) fn highlight(cx: &Cx, style: Memo<Option<Style>>, spot: Memo<Option<Spot>>) -> Stack {
-  // A new size alone leaves the move as it is.
-  let place = cx.memo(move || spot.get().map(|spot| (spot.at, spot.target)));
-  // Whether the size, read just before, came with a new target.
+  // Whether the frame, read just before, slides; and the slide's state,
+  // known once it is made.
   let slides = Rc::new(Cell::new(false));
-  let size = {
-    let read = Rc::clone(&slides);
-    let (mut target, mut size) = (None, Point::default());
-    cx.animate(
-      move || {
-        // Hidden, it keeps its size, and shown again it jumps.
-        let Some(spot) = spot.get() else {
-          target = None;
-          return size;
-        };
-        slides.set(
-          target
-            .replace(spot.target)
-            .is_some_and(|was| was != spot.target),
-        );
-        size = Point::new(spot.size.width, spot.size.height);
-        size
-      },
-      move || {
-        let transition = style.with(|style| style.and_then(|style| style.transition));
-        transition
-          .filter(|_| read.get())
-          .unwrap_or(Transition::new(0))
-      },
-    )
-  };
+  let running: Rc<Cell<Option<ReadSignal<bool>>>> = Rc::new(Cell::new(None));
+  let (read, sliding) = (Rc::clone(&slides), Rc::clone(&running));
+  let (mut target, mut frame) = (None, Frame::default());
+  let animation = cx.animation(
+    move || {
+      // Hidden, it stays where it was, and shown again it jumps.
+      let Some(spot) = spot.get() else {
+        target = None;
+        return frame;
+      };
+      let was = target.replace(spot.target);
+      let under_way = sliding.get().is_some_and(|running| running.get_untracked());
+      slides.set(was.is_some_and(|was| was != spot.target) || under_way);
+      frame = Frame {
+        at: spot.at,
+        size: Point::new(spot.size.width, spot.size.height),
+      };
+      frame
+    },
+    move || {
+      let transition = style.with(|style| style.and_then(|style| style.transition));
+      transition
+        .filter(|_| read.get())
+        .unwrap_or(Transition::new(0))
+    },
+  );
+  running.set(Some(animation.running()));
+  let shown = animation.value();
   let shape = Stack::new().style(move || {
     let own = style.get().unwrap_or_default();
-    match spot.get() {
-      Some(_) => {
-        let size = size.get();
-        own.width(size.x).height(size.y)
-      }
-      None => own,
-    }
+    let size = shown.get().size;
+    own.width(size.x).height(size.y)
   });
-  let mut last = None;
   Stack::new()
     .visible(move || style.with(Option::is_some) && spot.with(Option::is_some))
     .style(move || {
-      // Hidden, so where doesn't matter, and shown again it jumps.
-      let Some((at, target)) = place.get() else {
-        return Style::new().left(0.0).top(0.0);
-      };
-      let moved = last.replace(target) != Some(target);
-      let mover = Style::new().left(0.0).top(0.0).translate(at.x, at.y);
-      match style.get().and_then(|style| style.transition) {
-        Some(transition) if moved => mover.transition(transition),
-        _ => mover,
-      }
+      let at = shown.get().at;
+      Style::new().left(0.0).top(0.0).translate(at.x, at.y)
     })
     .child(shape)
 }

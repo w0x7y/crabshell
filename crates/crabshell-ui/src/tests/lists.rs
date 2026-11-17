@@ -547,7 +547,7 @@ fn no_current_row_or_no_style_draws_no_highlight() {
 }
 
 #[test]
-fn a_row_measured_late_moves_the_highlight_at_once() {
+fn a_slide_to_a_row_measured_late_goes_on_to_where_it_is_measured() {
   let mut h = Harness::new();
   let items = h.cx.signal((0..100).collect());
   let offset = h.cx.signal(0.0);
@@ -560,17 +560,72 @@ fn a_row_measured_late_moves_the_highlight_at_once() {
     offset,
     |list| list.current(move || current.get()).highlight(HIGHLIGHT),
   );
-  assert_eq!(highlight(&window).map(|(at, _)| at), at(0.0, 40.0));
+  assert_eq!(
+    highlight(&window),
+    Some((Point::new(0.0, 40.0), crate::Size::new(100.0, 40.0)))
+  );
   // Far off, found by the estimate, then measured in the same layout:
-  // it is there before the first tick, not on its way to the estimate.
-  current.set(Some(50));
+  // the slide sets out from row 1 and goes on to where row 60 is.
+  current.set(Some(60));
   h.frame(&window);
   let start = Instant::now();
   advance_animations(start);
   h.frame(&window);
-  let shown = row(&window, 50).expect("row 50 shows").y + offset.get();
-  assert_eq!(highlight(&window).map(|(at, _)| at), at(0.0, shown));
-  assert!(shown > 1000.0, "past the estimate's 1000: {shown}");
+  assert_eq!(
+    highlight(&window),
+    Some((Point::new(0.0, 40.0), crate::Size::new(100.0, 40.0)))
+  );
+  let to = row(&window, 60).expect("row 60 shows").y + offset.get();
+  assert!(to > 1200.0, "past the estimate's 1200: {to}");
+  advance_animations(start + std::time::Duration::from_millis(50));
+  h.frame(&window);
+  assert_eq!(
+    highlight(&window),
+    Some((
+      Point::new(0.0, 40.0 + (to - 40.0) / 2.0),
+      crate::Size::new(100.0, 40.0)
+    ))
+  );
+  advance_animations(start + std::time::Duration::from_millis(100));
+  h.frame(&window);
+  assert_eq!(
+    highlight(&window),
+    Some((Point::new(0.0, to), crate::Size::new(100.0, 40.0)))
+  );
+  assert!(!animating() && crate::next_timer().is_none() && !window.needs_layout());
+}
+
+#[test]
+fn a_row_measured_while_nothing_slides_moves_the_highlight_at_once() {
+  let mut h = Harness::new();
+  let items = h.cx.signal((0..10).collect::<Vec<u32>>());
+  let offset = h.cx.signal(0.0);
+  let current = h.cx.signal(Some(2));
+  let tall = h.cx.signal(false);
+  let list = ListView::new(
+    move || items.get(),
+    |n| *n,
+    move |_, n| {
+      let n = n.get_untracked();
+      crate::Stack::new().style(move || {
+        let grows = n == 1 && tall.get();
+        Style::new().height(if grows { 40.0 } else { 20.0 })
+      })
+    },
+  )
+  .row_height(20)
+  .height(100)
+  .offset(offset)
+  .current(move || current.get())
+  .highlight(HIGHLIGHT);
+  let window = h.window(h.panel().child(list), 100.0, 200.0);
+  assert_eq!(highlight(&window).map(|(at, _)| at), at(0.0, 40.0));
+  // Row 1 grows: row 2, still current, moves down 20 with no slide.
+  tall.set(true);
+  h.frame(&window);
+  h.frame(&window);
+  assert_eq!(highlight(&window).map(|(at, _)| at), at(0.0, 60.0));
+  assert!(!animating());
 }
 
 #[test]
