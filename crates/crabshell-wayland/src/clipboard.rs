@@ -126,6 +126,7 @@ impl Platform {
   pub(crate) fn drop_data_device(&mut self, seat: &WlSeat) {
     self.data_devices.retain(|(ours, _)| ours != seat);
     self.primary.devices.retain(|(ours, _)| ours != seat);
+    self.drop_control_device(seat);
   }
 
   fn data_device(&self, seat: &WlSeat) -> Option<&DataDevice> {
@@ -256,17 +257,24 @@ impl Platform {
         return;
       }
     };
-    self.read_pipe(pipe, MAX_PASTE, move |platform, read| match read {
-      Received::Done(text) => {
-        if let Some(entry) = platform.windows.get(id) {
-          entry.window.paste(&String::from_utf8_lossy(&text));
+    // A paste still waiting on a program that never writes is dropped.
+    if let Some(token) = self.pasting.take() {
+      self.loop_handle().remove(token);
+    }
+    self.pasting = self.read_pipe(pipe, MAX_PASTE, move |platform, read| {
+      platform.pasting = None;
+      match read {
+        Received::Done(text) => {
+          if let Some(entry) = platform.windows.get(id) {
+            entry.window.paste(&String::from_utf8_lossy(&text));
+          }
         }
+        Received::TooLarge => tracing::warn!(
+          bytes = MAX_PASTE,
+          "the selection holds too much text to paste"
+        ),
+        Received::Failed => {}
       }
-      Received::TooLarge => tracing::warn!(
-        bytes = MAX_PASTE,
-        "the selection holds too much text to paste"
-      ),
-      Received::Failed => {}
     });
   }
 
@@ -414,8 +422,10 @@ impl DataDeviceHandler for Platform {
     let offer = found.and_then(|(_, ours)| ours.data().selection_offer());
     let types = offer
       .as_ref()
-      .map(|offer| offer.with_mime_types(<[String]>::to_vec));
-    self.read_selection(&types.unwrap_or_default(), |kind| {
+      .map(|offer| offer.with_mime_types(<[String]>::to_vec))
+      .unwrap_or_default();
+    let secret = types.iter().any(|kind| kind == crate::data_control::SECRET);
+    self.read_selection(&types, secret, |kind| {
       let offer = offer.ok_or_else(|| std::io::Error::other("no offer"))?;
       let pipe = offer.receive(kind);
       Ok(

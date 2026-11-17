@@ -31,7 +31,7 @@ const READ_TEXT: [&str; 3] = ["text/plain;charset=utf-8", "UTF8_STRING", "text/p
 const READ_IMAGE: [&str; 2] = ["image/png", "image/jpeg"];
 
 /// The type password managers mark a secret with.
-const SECRET: &str = "x-kde-passwordManagerHint";
+pub(crate) const SECRET: &str = "x-kde-passwordManagerHint";
 
 /// The most text read from a selection.
 const MAX_TEXT: usize = 4 * 1024 * 1024;
@@ -46,14 +46,22 @@ const MAX_TYPES: usize = 64;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Selection {
   /// Its text, when it offers `text/plain;charset=utf-8`, `UTF8_STRING`
-  /// or `text/plain` and holds at most 4 MiB.
+  /// or `text/plain`, holds at most 4 MiB and isn't a secret.
   pub text: Option<String>,
   /// Its MIME type and bytes, when it offers no text but a PNG or JPEG of
   /// at most 8 MiB, isn't a secret and images were asked for.
   pub image: Option<(String, Vec<u8>)>,
   /// Whether it offers `x-kde-passwordManagerHint`, which password
-  /// managers mark secrets with.
+  /// managers mark secrets with. A secret is never read.
   pub secret: bool,
+}
+
+/// The types an offer announced, up to the cap, and whether one was the
+/// secret hint, whatever the cap.
+#[derive(Clone, Default)]
+pub(crate) struct OfferTypes {
+  types: Vec<String>,
+  secret: bool,
 }
 
 /// What [`Platform::watch_clipboard`] calls.
@@ -65,7 +73,8 @@ pub(crate) struct Control {
   /// Whether a watch asked, so the manager is bound once at most.
   asked: bool,
   manager: Option<ExtDataControlManagerV1>,
-  device: Option<ExtDataControlDeviceV1>,
+  /// The device and the seat it follows.
+  device: Option<(WlSeat, ExtDataControlDeviceV1)>,
   /// The offer of the selection now.
   offer: Option<ExtDataControlOfferV1>,
   /// What this shell set as the selection.
@@ -119,7 +128,7 @@ impl Platform {
   /// windows, logged when there was none.
   pub fn set_clipboard(&mut self, types: &[&str], bytes: Vec<u8>) {
     let bytes: Rc<[u8]> = bytes.into();
-    if let (Some(manager), Some(device)) = (&self.control.manager, &self.control.device) {
+    if let (Some(manager), Some((_, device))) = (&self.control.manager, &self.control.device) {
       let source = manager.create_data_source(&self.qh, ());
       for kind in types {
         source.offer((*kind).to_owned());
@@ -150,7 +159,31 @@ impl Platform {
       return;
     };
     if self.control.device.is_none() {
-      self.control.device = Some(manager.get_data_device(seat, &self.qh, ()));
+      let device = manager.get_data_device(seat, &self.qh, ());
+      self.control.device = Some((seat.clone(), device));
+    }
+  }
+
+  /// Moves the data-control device to another seat, as `seat` goes, if it
+  /// was the one followed.
+  pub(crate) fn drop_control_device(&mut self, seat: &WlSeat) {
+    if !matches!(&self.control.device, Some((ours, _)) if ours == seat) {
+      return;
+    }
+    if let Some((_, device)) = self.control.device.take() {
+      device.destroy();
+    }
+    if let Some(offer) = self.control.offer.take() {
+      offer.destroy();
+    }
+    match self.seats.seats().find(|other| other != seat) {
+      Some(other) => {
+        tracing::info!("the clipboard's seat went, so it follows another seat");
+        self.add_control_device(&other);
+      }
+      None => {
+        tracing::warn!("the clipboard's seat went, and no other seat is left to follow it on")
+      }
     }
   }
 
@@ -159,11 +192,13 @@ impl Platform {
     self.control.on_change.is_some() && self.control.manager.is_none()
   }
 
-  /// Reads the new selection, which offers `types`, through `receive`, and
-  /// tells the watch. A read still going for an older one is dropped.
+  /// Reads the new selection, which offers `types` and is a secret if
+  /// `secret`, through `receive`, and tells the watch. A secret isn't
+  /// read. A read still going for an older selection is dropped.
   pub(crate) fn read_selection(
     &mut self,
     types: &[String],
+    secret: bool,
     receive: impl FnOnce(String) -> std::io::Result<OwnedFd>,
   ) {
     if let Some(token) = self.control.reading.take() {
@@ -173,10 +208,16 @@ impl Platform {
       let found = wanted.iter().find(|kind| types.iter().any(|t| t == *kind));
       found.map(|kind| (*kind).to_owned())
     };
-    let secret = types.iter().any(|kind| kind == SECRET);
     let (kind, cap) = match (offers(&READ_TEXT), offers(&READ_IMAGE)) {
+      _ if secret => {
+        self.report_selection(Selection {
+          secret,
+          ..Selection::default()
+        });
+        return;
+      }
       (Some(text), _) => (text, MAX_TEXT),
-      (None, Some(image)) if self.control.images && !secret => (image, MAX_IMAGE),
+      (None, Some(image)) if self.control.images => (image, MAX_IMAGE),
       _ => {
         self.report_selection(Selection {
           secret,
@@ -195,10 +236,7 @@ impl Platform {
     let text = cap == MAX_TEXT;
     self.control.reading = self.read_pipe(pipe, cap, move |platform, read| {
       platform.control.reading = None;
-      let mut selection = Selection {
-        secret,
-        ..Selection::default()
-      };
+      let mut selection = Selection::default();
       match read {
         Received::Done(bytes) if text => {
           selection.text = Some(String::from_utf8_lossy(&bytes).into_owned());
@@ -256,12 +294,12 @@ impl Dispatch<ExtDataControlDeviceV1, ()> for Platform {
         if let Some(old) = std::mem::replace(&mut platform.control.offer, id.clone()) {
           old.destroy();
         }
-        let types = id
+        let offered = id
           .as_ref()
-          .and_then(|offer| offer.data::<Mutex<Vec<String>>>())
-          .and_then(|types| types.lock().ok().map(|types| types.clone()))
+          .and_then(|offer| offer.data::<Mutex<OfferTypes>>())
+          .and_then(|offered| offered.lock().ok().map(|offered| offered.clone()))
           .unwrap_or_default();
-        platform.read_selection(&types, |kind| {
+        platform.read_selection(&offered.types, offered.secret, |kind| {
           let (read, write) = std::io::pipe()?;
           if let Some(offer) = &id {
             offer.receive(kind, std::os::fd::AsFd::as_fd(&write));
@@ -275,6 +313,9 @@ impl Dispatch<ExtDataControlDeviceV1, ()> for Platform {
         tracing::warn!("the compositor ended the clipboard's data control");
         device.destroy();
         platform.control.device = None;
+        if let Some(offer) = platform.control.offer.take() {
+          offer.destroy();
+        }
       }
       _ => {}
     }
@@ -285,22 +326,24 @@ impl Dispatch<ExtDataControlDeviceV1, ()> for Platform {
   ]);
 }
 
-impl Dispatch<ExtDataControlOfferV1, Mutex<Vec<String>>> for Platform {
+impl Dispatch<ExtDataControlOfferV1, Mutex<OfferTypes>> for Platform {
   fn event(
     _: &mut Platform,
     _: &ExtDataControlOfferV1,
     event: ext_data_control_offer_v1::Event,
-    types: &Mutex<Vec<String>>,
+    offered: &Mutex<OfferTypes>,
     _: &Connection,
     _: &QueueHandle<Platform>,
   ) {
     let ext_data_control_offer_v1::Event::Offer { mime_type } = event else {
       return;
     };
-    if let Ok(mut types) = types.lock()
-      && types.len() < MAX_TYPES
-    {
-      types.push(mime_type);
+    let Ok(mut offered) = offered.lock() else {
+      return;
+    };
+    offered.secret |= mime_type == SECRET;
+    if offered.types.len() < MAX_TYPES {
+      offered.types.push(mime_type);
     }
   }
 }

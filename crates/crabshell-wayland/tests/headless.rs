@@ -1817,20 +1817,25 @@ fn the_clipboard_watch_reads_images_when_asked_and_refuses_what_is_too_large() {
 
 #[test]
 #[ignore = "needs headless Sway"]
-fn the_clipboard_watch_hears_a_password_managers_hint() {
+fn the_clipboard_watch_hears_a_password_managers_hint_past_the_type_cap_and_reads_no_secret() {
   let sway = Sway::start();
   let mut shell = Shell::new(&sway);
   shell.wait_for_bar("HEADLESS-1");
   let heard = watch_clipboard(&mut shell);
-  // Another client offers a secret, as a password manager does.
+  // Another client offers a secret, as a password manager does, with the
+  // hint last among 70 types, past the 64 an offer keeps.
+  let fillers: Vec<String> = (0..68).map(|n| format!("x-filler/{n}")).collect();
+  let mut types = vec!["text/plain;charset=utf-8"];
+  types.extend(fillers.iter().map(String::as_str));
+  types.push("x-kde-passwordManagerHint");
+  assert_eq!(types.len(), 70);
   let mut manager = sway.connect();
   manager.platform().watch_clipboard(|_| {});
-  manager.platform().set_clipboard(
-    &["text/plain;charset=utf-8", "x-kde-passwordManagerHint"],
-    b"hunter2".to_vec(),
-  );
+  manager
+    .platform()
+    .set_clipboard(&types, b"hunter2".to_vec());
   let expected = Selection {
-    text: Some(String::from("hunter2")),
+    text: None,
     image: None,
     secret: true,
   };
@@ -1840,6 +1845,54 @@ fn the_clipboard_watch_hears_a_password_managers_hint() {
       .expect("the connection works");
     heard.borrow().last() == Some(&expected)
   });
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_new_paste_drops_one_still_waiting_on_a_program_that_doesnt_write() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let mut keyboard = VirtualKeyboard::new(&sway);
+  let setup = Setup {
+    keyboard: KeyboardFocus::Exclusive,
+    field: true,
+    ..PLAIN
+  };
+  let mut shell = Shell::build(&sway, setup);
+  shell.wait_for_bar("HEADLESS-1");
+  let typed = shell.knobs.typed;
+  // Another program takes the clipboard, then stops answering for a while.
+  let mut frozen = sway.connect();
+  frozen.platform().watch_clipboard(|_| {});
+  frozen.platform().set_clipboard_text(String::from("abc"));
+  frozen
+    .dispatch(Some(Duration::ZERO))
+    .expect("the connection works");
+  settle(&mut shell.event_loop);
+  for _ in 0..3 {
+    keyboard.ctrl(keys::V);
+  }
+  settle(&mut shell.event_loop);
+  assert_eq!(typed.get_untracked(), "", "nothing came yet");
+  let mut dispatch_both = |shell: &mut Shell| {
+    frozen
+      .dispatch(Some(Duration::ZERO))
+      .expect("the connection works");
+    shell
+      .event_loop
+      .dispatch(Some(Duration::from_millis(20)))
+      .expect("the connection works");
+  };
+  let deadline = Instant::now() + Duration::from_secs(10);
+  while typed.get_untracked().is_empty() {
+    assert!(Instant::now() < deadline, "timed out waiting for the paste");
+    dispatch_both(&mut shell);
+  }
+  let quiet = Instant::now() + Duration::from_secs(1);
+  while Instant::now() < quiet {
+    dispatch_both(&mut shell);
+  }
+  assert_eq!(typed.get_untracked(), "abc", "one paste, not three");
 }
 
 #[test]

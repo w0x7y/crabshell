@@ -488,12 +488,19 @@ impl TouchHandler for Platform {
     };
     let window = ours.state.window();
     let inputs = ours.state.up(id, time);
+    let seat = ours.seat.clone();
     if !inputs.is_empty() {
-      self.last_button = Some((ours.seat.clone(), serial));
+      self.last_button = Some((seat.clone(), serial));
       self.button_held = false;
     }
     if let Some(window) = window {
       self.touch_inputs(window, inputs);
+      // A selection dragged with a finger becomes the primary selection.
+      let asked = self
+        .windows
+        .get(window)
+        .and_then(|entry| entry.window.take_primary());
+      self.primary_asked(asked, &seat, serial, window);
     }
   }
 

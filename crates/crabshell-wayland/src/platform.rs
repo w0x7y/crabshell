@@ -328,6 +328,8 @@ pub struct Platform {
   pub(crate) data_devices: Vec<(WlSeat, DataDevice)>,
   /// The text this shell offers as the clipboard's.
   pub(crate) offered: Option<Offered>,
+  /// The paste from the clipboard or the primary selection under way.
+  pub(crate) pasting: Option<RegistrationToken>,
   /// The primary selection, which a middle click pastes.
   pub(crate) primary: Primary,
   /// The clipboard as configs follow it, once a watch asks.
@@ -487,6 +489,7 @@ impl Platform {
       data_devices_manager,
       data_devices: Vec::new(),
       offered: None,
+      pasting: None,
       primary,
       control: Control::default(),
       text_inputs: Vec::new(),

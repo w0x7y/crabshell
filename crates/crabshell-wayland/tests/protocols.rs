@@ -13,7 +13,8 @@ use std::time::{Duration, Instant};
 
 use crabshell_reactive::Runtime;
 use crabshell_ui::{
-  Button, Color, Cx, Edge, Output, PanelWindow, Region, Row, ScrollView, Stack, Style, Text, Window,
+  Button, Color, Cx, Edge, Output, PanelWindow, Region, Row, ScrollView, Stack, Style, Text,
+  TextInput, Window,
 };
 use crabshell_wayland::{EventLoop, WindowId, Windowset};
 use fake::{Fake, Globals};
@@ -389,6 +390,43 @@ fn a_finger_drags_a_view_whose_mouse_drag_is_off() {
   // 30 pixels left, past the threshold: the content follows the finger.
   fake.run(|state| state.tap((50.0, 10.0), -30.0, false));
   wait(&mut event_loop, "the drag", |_| offset.get() == 30.0);
+  cx.owner().dispose();
+}
+
+#[test]
+fn a_finger_drag_selection_is_offered_as_the_primary_selection_at_once() {
+  let (fake, mut event_loop) = connect(Globals {
+    touch: true,
+    ..Globals::default()
+  });
+  let cx = Cx::new(Runtime::current().new_owner());
+  let text = cx.signal(String::from("abcdef"));
+  let field = TextInput::new(text).style(Style::new().width(100.0));
+  let bar = PanelWindow::new(&Output::new("FAKE-1"))
+    .anchors(Edge::Top | Edge::Left | Edge::Right)
+    .height(30)
+    .child(Row::new().child(field));
+  let bar = event_loop.platform().add_window(Window::new(&cx, bar));
+  frames(&mut event_loop, bar, 1);
+  let logs = Logs::default();
+  let writer = logs.clone();
+  let subscriber = tracing_subscriber::fmt()
+    .with_writer(move || writer.clone())
+    .finish();
+  let guard = tracing::subscriber::set_default(subscriber);
+  // The fake has no primary selection, so offering it is logged.
+  fake.run(|state| state.tap((2.0, 10.0), 90.0, false));
+  wait(&mut event_loop, "the offer", |_| {
+    logs.text().contains("lacks the primary selection")
+  });
+  drop(guard);
+  let window = event_loop.platform().windows().find(|(id, _)| *id == bar);
+  let (_, window) = window.expect("the bar");
+  assert_eq!(
+    window.take_primary(),
+    None,
+    "nothing left for a later event"
+  );
   cx.owner().dispose();
 }
 
