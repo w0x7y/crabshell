@@ -66,7 +66,12 @@
 //!   grayscale masks, with the baseline on a whole pixel. It isn't clipped:
 //!   the window's damage covers text that overflows its widget.
 //! - Icons are rasterized at their size in pixels and cached by source and
-//!   that size.
+//!   that size. Once the platform calls
+//!   [`Renderer::decode_off_thread`], large image files are decoded on a
+//!   worker thread that runs only while it has work, and the platform
+//!   repaints the images that waited for them.
+//! - A transformed subtree is drawn at the resolution its transforms
+//!   scale it up to, up to four times, so scaled text stays sharp.
 //! - A screencopy view's frame is scaled to its box and kept, one per
 //!   view, until a new frame or box replaces it. [`capture_frame`] turns
 //!   a compositor's buffer into such a frame, scaled down to the view.
