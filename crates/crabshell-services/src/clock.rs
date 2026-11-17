@@ -1,4 +1,4 @@
-//! The clock: the time, truncated to a whole second or minute.
+//! The clock: the time, truncated to a whole second, minute or day.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -31,15 +31,9 @@ pub enum Precision {
   Second,
   /// On every whole minute.
   Minute,
-}
-
-impl Precision {
-  fn seconds(self) -> i64 {
-    match self {
-      Precision::Second => 1,
-      Precision::Minute => 60,
-    }
-  }
+  /// At every midnight in the system time zone, for a date: once a day,
+  /// 23 or 25 hours apart on a day the clocks change.
+  Day,
 }
 
 /// How early a timer may fire and still count as on its boundary.
@@ -67,8 +61,9 @@ pub(crate) fn clock(cx: &Cx, precision: Precision) -> ReadSignal<Zoned> {
   LOGGED.call_once(|| {
     tracing::warn!("cx.clock() needs the services the shell provides; this clock stands still");
   });
-  let (shown, _) = boundaries(Timestamp::now(), precision);
-  cx.signal(shown.to_zoned(TimeZone::system())).read_only()
+  let zone = TimeZone::system();
+  let (shown, _) = boundaries(Timestamp::now(), precision, &zone);
+  cx.signal(shown.to_zoned(zone)).read_only()
 }
 
 impl Clocks {
@@ -231,21 +226,29 @@ async fn subscribe(bus: zbus::Address) -> zbus::Result<(MessageStream, MessageSt
 /// should fire next.
 fn current(precision: Precision, zone: &TimeZone) -> (Zoned, Instant) {
   let now = Timestamp::now();
-  let (shown, next) = boundaries(now, precision);
+  let (shown, next) = boundaries(now, precision, zone);
   let wait = Duration::try_from(next.duration_since(now)).unwrap_or_default();
   // Read after the wall clock, so the deadline errs late, never early.
   (shown.to_zoned(zone.clone()), Instant::now() + wait)
 }
 
-/// The boundary `now` has just passed, and the one after it. A `now` up to
-/// [`EARLY`] before a boundary counts as on it, so a timer that fires a
-/// hair early shows the new value instead of waking again ms later.
-fn boundaries(now: Timestamp, precision: Precision) -> (Timestamp, Timestamp) {
-  let step = precision.seconds();
-  let shown = (now + EARLY).as_second().div_euclid(step) * step;
-  let at = |second| {
-    Timestamp::from_second(second).expect("the system clock is within jiff's years -9999 to 9999")
+/// The boundary `now` has just passed, and the one after it: a day's in
+/// `zone`. A `now` up to [`EARLY`] before a boundary counts as on it, so a
+/// timer that fires a hair early shows the new value instead of waking
+/// again ms later.
+fn boundaries(now: Timestamp, precision: Precision, zone: &TimeZone) -> (Timestamp, Timestamp) {
+  const RANGE: &str = "the system clock is within jiff's years -9999 to 9999";
+  let step = match precision {
+    Precision::Second => 1,
+    Precision::Minute => 60,
+    Precision::Day => {
+      let today = (now + EARLY).to_zoned(zone.clone());
+      let midnight = |day: &Zoned| day.start_of_day().expect(RANGE).timestamp();
+      return (midnight(&today), midnight(&today.tomorrow().expect(RANGE)));
+    }
   };
+  let shown = (now + EARLY).as_second().div_euclid(step) * step;
+  let at = |second| Timestamp::from_second(second).expect(RANGE);
   (at(shown), at(shown + step))
 }
 

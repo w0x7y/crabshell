@@ -10,7 +10,7 @@ use crabshell_ui::Cx;
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp, Zoned};
 
-use super::{Clocks, EARLY, Precision, boundaries, system_zone};
+use super::{Clocks, EARLY, Precision, boundaries, current, system_zone};
 use crate::testing::{Harness, PrivateBus, offline};
 use crate::{Config, ServicesExt};
 
@@ -22,16 +22,21 @@ fn at(time: &str) -> Timestamp {
 fn boundaries_truncate_to_the_precision() {
   let now = at("2026-11-11T10:41:27.6Z");
   assert_eq!(
-    boundaries(now, Precision::Second),
+    boundaries(now, Precision::Second, &TimeZone::UTC),
     (at("2026-11-11T10:41:27Z"), at("2026-11-11T10:41:28Z"))
   );
   assert_eq!(
-    boundaries(now, Precision::Minute),
+    boundaries(now, Precision::Minute, &TimeZone::UTC),
     (at("2026-11-11T10:41:00Z"), at("2026-11-11T10:42:00Z"))
   );
   // Exactly on a boundary shows that boundary.
   assert_eq!(
-    boundaries(at("2026-11-11T10:42:00Z"), Precision::Minute).0,
+    boundaries(
+      at("2026-11-11T10:42:00Z"),
+      Precision::Minute,
+      &TimeZone::UTC
+    )
+    .0,
     at("2026-11-11T10:42:00Z")
   );
 }
@@ -39,16 +44,29 @@ fn boundaries_truncate_to_the_precision() {
 #[test]
 fn a_timer_a_hair_early_shows_the_new_value() {
   assert_eq!(
-    boundaries(at("2026-11-11T10:41:59.99Z"), Precision::Minute),
+    boundaries(
+      at("2026-11-11T10:41:59.99Z"),
+      Precision::Minute,
+      &TimeZone::UTC
+    ),
     (at("2026-11-11T10:42:00Z"), at("2026-11-11T10:43:00Z"))
   );
   assert_eq!(
-    boundaries(at("2026-11-11T10:41:27.999Z"), Precision::Second),
+    boundaries(
+      at("2026-11-11T10:41:27.999Z"),
+      Precision::Second,
+      &TimeZone::UTC
+    ),
     (at("2026-11-11T10:41:28Z"), at("2026-11-11T10:41:29Z"))
   );
   // Further off is still the minute before.
   assert_eq!(
-    boundaries(at("2026-11-11T10:41:59.9Z"), Precision::Minute).0,
+    boundaries(
+      at("2026-11-11T10:41:59.9Z"),
+      Precision::Minute,
+      &TimeZone::UTC
+    )
+    .0,
     at("2026-11-11T10:41:00Z")
   );
 }
@@ -58,13 +76,64 @@ fn a_dst_change_is_a_minute_like_any_other() {
   // Central Europe springs forward at 02:00 on 2026-03-29, to 03:00.
   let cet = TimeZone::posix("CET-1CEST,M3.5.0,M10.5.0/3").expect("a valid POSIX zone");
   let shown_in = |time: Timestamp| time.to_zoned(cet.clone()).strftime("%H:%M %Z").to_string();
-  let (shown, next) = boundaries(at("2026-03-29T00:59:30Z"), Precision::Minute);
+  let (shown, next) = boundaries(
+    at("2026-03-29T00:59:30Z"),
+    Precision::Minute,
+    &TimeZone::UTC,
+  );
   assert_eq!(shown_in(shown), "01:59 CET");
   assert_eq!(shown_in(next), "03:00 CEST");
   // And falls back at 03:00 on 2026-10-25, to 02:00.
-  let (shown, next) = boundaries(at("2026-10-25T00:59:30Z"), Precision::Minute);
+  let (shown, next) = boundaries(
+    at("2026-10-25T00:59:30Z"),
+    Precision::Minute,
+    &TimeZone::UTC,
+  );
   assert_eq!(shown_in(shown), "02:59 CEST");
   assert_eq!(shown_in(next), "02:00 CET");
+}
+
+#[test]
+fn a_day_clock_shows_local_midnight_however_long_the_day() {
+  let new_york = TimeZone::get("America/New_York").expect("the zone database");
+  let day = |now: &str| boundaries(at(now), Precision::Day, &new_york);
+  assert_eq!(
+    day("2026-11-16T15:00:00Z"),
+    (at("2026-11-16T05:00:00Z"), at("2026-11-17T05:00:00Z"))
+  );
+  // New York's clocks go forward an hour on 2026-03-08 and back on
+  // 2026-11-01, so those days last 23 and 25 hours.
+  assert_eq!(
+    day("2026-03-08T12:00:00Z"),
+    (at("2026-03-08T05:00:00Z"), at("2026-03-09T04:00:00Z"))
+  );
+  assert_eq!(
+    day("2026-11-01T12:00:00Z"),
+    (at("2026-11-01T04:00:00Z"), at("2026-11-02T05:00:00Z"))
+  );
+  // A timer a hair early shows the new day; further off, the old one.
+  assert_eq!(day("2026-11-17T04:59:59.99Z").0, at("2026-11-17T05:00:00Z"));
+  assert_eq!(day("2026-11-17T04:59:59.9Z").0, at("2026-11-16T05:00:00Z"));
+  // Shown as midnight in the zone, and due then.
+  let (shown, due) = current(Precision::Day, &new_york);
+  assert_eq!((shown.hour(), shown.minute(), shown.second()), (0, 0, 0));
+  let midnight = shown.tomorrow().unwrap().start_of_day().unwrap();
+  let wait = Duration::try_from(Timestamp::now().duration_until(midnight.timestamp())).unwrap();
+  let off = due.saturating_duration_since(Instant::now()).abs_diff(wait);
+  assert!(
+    off < Duration::from_millis(100),
+    "due {off:?} from midnight"
+  );
+}
+
+#[test]
+fn a_day_clock_sleeps_until_midnight() {
+  let mut shell = Harness::new(offline());
+  let day = shell.cx.clock(Precision::Day);
+  assert_eq!(day.get_untracked().date(), Zoned::now().date());
+  assert_eq!(day.get_untracked().hour(), 0);
+  let wakeups = shell.run_until(Instant::now() + Duration::from_millis(500));
+  assert_eq!(wakeups, 1, "only the run's own deadline");
 }
 
 /// A link like `/etc/localtime`, in a directory of its own, into the
@@ -197,6 +266,7 @@ fn a_resync_replaces_each_timer() {
   let shell = Harness::new(offline());
   shell.cx.clock(Precision::Second);
   shell.cx.clock(Precision::Minute);
+  shell.cx.clock(Precision::Day);
   let clocks = shell.cx.service::<Clocks>().expect("provided");
   // Each timer holds the clocks, so a timer left behind shows here. It
   // would tick in the same dispatch as its replacement, unseen otherwise.
