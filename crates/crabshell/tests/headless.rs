@@ -808,7 +808,7 @@ fn measure_the_counter_bar() {
   };
   report += &format!(
     "counter bar in DejaVu Sans bundled with add_font, run from {build}, {}\n",
-    measure(&bundled)
+    measure_without_idle(&bundled)
   );
   drop(bundled);
   // Then the v0.1 bar, on workspace 1, then switching between 1 and 2. Its
@@ -938,6 +938,20 @@ fn measure(bar: &ExampleBar) -> String {
          first frame {first_frame_ms:.1} ms after run(), RSS {rss} KiB ({:.1} MiB) after 60 s, \
          {quiet} context switches by the time it was quiet, {idle} more while idle, \
          seen at {seen:.2?} s past the minute",
+    rss as f64 / 1024.0
+  )
+}
+
+/// [`measure`] without the idle wakeups, for a shell run as this test
+/// binary: libtest wakes it at 60 s to say the test is still running.
+fn measure_without_idle(bar: &ExampleBar) -> String {
+  let first_frame_ms = bar.first_frame_ms();
+  std::thread::sleep(Duration::from_secs(60));
+  let rss = bar.rss_kib();
+  format!(
+    "one 1920x1080 headless output at scale 1: \
+         first frame {first_frame_ms:.1} ms after run(), RSS {rss} KiB ({:.1} MiB) after 60 s, \
+         idle not counted, since the test harness wakes it",
     rss as f64 / 1024.0
   )
 }
