@@ -866,7 +866,8 @@ fn a_slow_user_lookup_never_holds_up_the_loop() {
   let users = slow_users(Duration::from_millis(800), Duration::from_secs(5));
   let mut polkit = Polkit::with(PASSWORD, users);
   let (agent, name) = polkit.agent();
-  let answer = polkit.begin(&name, "cookie-1", &[1000, 1001]);
+  // Not the session's own uid, which the agent would list first.
+  let answer = polkit.begin(&name, "cookie-1", &[4242, 4243]);
   let started = Instant::now();
   polkit.shell.run_until(started + Duration::from_millis(200));
   assert!(
@@ -880,7 +881,7 @@ fn a_slow_user_lookup_never_holds_up_the_loop() {
   );
   polkit.wait_state(&agent, asking);
   let shown = agent.request().get_untracked().expect("a request");
-  assert_eq!(shown.identities, ["user1000", "user1001"]);
+  assert_eq!(shown.identities, ["user4242", "user4243"]);
   agent.respond("hunter2");
   assert_eq!(polkit.answered(&answer), Ok(()));
 }
