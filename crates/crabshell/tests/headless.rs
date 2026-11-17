@@ -5016,9 +5016,18 @@ fn notes_link_on_screen(sway: &Sway, layout: (u32, u32)) -> ((u32, u32), String)
   (((left + x) as u32, (top + y) as u32), path)
 }
 
+/// The notes example's clock in proportional digits, at its size.
+const PROPORTIONAL_CLOCK: Style = Style::new().font(
+  Font::new("sans-serif", 36.0)
+    .weight(300)
+    .features(&PROPORTIONAL_DIGITS),
+);
+const PROPORTIONAL_DIGITS: [FontFeature; 1] = [FontFeature::new(*b"pnum", 1)];
+
 /// Part of Phase 17's exit check, in this process with plain signals for
 /// the services: the notes example's clock, in tabular digits, is as wide
-/// at 00:00:00 as at 11:11:11, as its `geometry` says; its note takes
+/// at 00:00:00 as at 11:11:11, as its `geometry` says, while one in
+/// proportional digits beside it changes width; its note takes
 /// typed keys and an input method's text into its persisted signal; and
 /// then the loop sleeps.
 #[test]
@@ -5033,8 +5042,9 @@ fn the_notes_clock_holds_its_width_and_its_note_takes_keys_and_input_method_text
   let mut shell = Shell::new(sway.connect(), |cx| {
     let now = cx.signal(notes_time(NOTES_NOW));
     let clock = cx.signal(Rect::default());
+    let proportional = cx.signal(Rect::default());
     let note = cx.persist(notes::NOTE_KEY, String::new());
-    knobs.set(Some((now, clock, note)));
+    knobs.set(Some((now, clock, proportional, note)));
     let feeds = notes::Feeds {
       now: now.read_only(),
       notifications: cx.signal(notes_notifications()).read_only(),
@@ -5043,15 +5053,24 @@ fn the_notes_clock_holds_its_width_and_its_note_takes_keys_and_input_method_text
     cx.per_output(move |cx, output| {
       let probe = PanelWindow::new(output)
         .anchors(Edge::Top | Edge::Left)
-        .width(320)
+        .width(400)
         .height(60)
         .namespace("clock")
-        .child(Row::new().child(notes::clock(now.read_only()).geometry(clock)));
+        .child(
+          Row::new()
+            .gap(8)
+            .child(notes::clock(now.read_only()).geometry(clock))
+            .child(
+              notes::clock(now.read_only())
+                .style(PROPORTIONAL_CLOCK)
+                .geometry(proportional),
+            ),
+        );
       vec![notes::panel(cx, output, feeds), probe]
     });
   })
   .expect("the root closure runs");
-  let (now, clock, note) = knobs.get().expect("the root closure ran");
+  let (now, clock, proportional, note) = knobs.get().expect("the root closure ran");
   run_until(&mut shell, "both windows' first frames", |platform| {
     let shown = platform.windows().filter(|(id, _)| {
       platform
@@ -5071,13 +5090,17 @@ fn the_notes_clock_holds_its_width_and_its_note_takes_keys_and_input_method_text
     })
   };
   assert_eq!(clock_text(shell.platform()), "11:11:11");
-  let ones = clock.get_untracked();
-  assert!(ones.width > 0.0, "laid out: {ones:?}");
+  let ones = (clock.get_untracked(), proportional.get_untracked());
+  assert!(ones.0.width > 0.0, "laid out: {ones:?}");
   now.set(notes_time("2026-11-17T00:00:00"));
   settle(&mut shell);
   assert_eq!(clock_text(shell.platform()), "00:00:00");
-  let zeros = clock.get_untracked();
-  assert_eq!(ones.width, zeros.width, "11:11:11, then 00:00:00");
+  let zeros = (clock.get_untracked(), proportional.get_untracked());
+  // Noto Sans, the goldens' sans-serif, has tabular figures anyway, so the
+  // example's feature matters for fonts like Inter. The proportional clock
+  // shows this probe sees digits change width.
+  assert_ne!(ones.1.width, zeros.1.width, "proportional digits");
+  assert_eq!(ones.0.width, zeros.0.width, "11:11:11, then 00:00:00");
 
   // A click in the note gives the panel the keyboard and the area the focus.
   let (x, y) = notes_area(shell.platform());
