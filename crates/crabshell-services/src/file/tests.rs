@@ -423,7 +423,65 @@ fn a_file_still_being_written_is_read_once_its_writes_pause() {
   file.write_all(b"x").unwrap();
   run(&mut shell, 20);
   child.owner().dispose();
-  assert_eq!(run(&mut shell, 300), 1, "the timer went with the view");
+  // The kernel says the file's removed watch is gone, once; the timer
+  // would be one more.
+  assert!(run(&mut shell, 300) <= 2, "the timer went with the view");
+}
+
+#[test]
+fn a_neighbor_written_through_a_handle_kept_open_wakes_nothing() {
+  use std::io::Write;
+  let dir = Dir::new();
+  let path = dir.join("note");
+  std::fs::write(&path, "one").unwrap();
+  std::fs::write(dir.join("history"), "").unwrap();
+  let mut shell = Harness::new(offline());
+  let _text = shell.cx.file_view(&path).text();
+  // As a shell's history or a log beside the followed file.
+  let mut history = std::fs::OpenOptions::new()
+    .append(true)
+    .open(dir.join("history"))
+    .unwrap();
+  run(&mut shell, 20);
+  for _ in 0..5 {
+    history.write_all(b"ls\n").unwrap();
+  }
+  assert_eq!(run(&mut shell, 300), 1, "only the run's own deadline");
+}
+
+#[test]
+fn a_file_made_or_replaced_later_is_followed_while_it_is_written() {
+  use std::io::Write;
+  let dir = Dir::new();
+  let path = dir.join("log");
+  let mut shell = Harness::new(offline());
+  let text = shell.cx.file_view(&path).text();
+  run(&mut shell, 20);
+  // Made and written at once, and kept open.
+  let mut file = std::fs::OpenOptions::new()
+    .create(true)
+    .append(true)
+    .open(&path)
+    .unwrap();
+  file.write_all(b"one").unwrap();
+  run(&mut shell, 100);
+  assert_eq!(text.get_untracked().as_deref(), Some("one"));
+  file.write_all(b" two").unwrap();
+  run(&mut shell, 100);
+  assert_eq!(text.get_untracked().as_deref(), Some("one two"));
+
+  // Replaced by a rename: the new file's writes are followed.
+  std::fs::write(dir.join("new"), "three").unwrap();
+  std::fs::rename(dir.join("new"), &path).unwrap();
+  run(&mut shell, 20);
+  assert_eq!(text.get_untracked().as_deref(), Some("three"));
+  let mut file = std::fs::OpenOptions::new()
+    .append(true)
+    .open(&path)
+    .unwrap();
+  file.write_all(b" four").unwrap();
+  run(&mut shell, 100);
+  assert_eq!(text.get_untracked().as_deref(), Some("three four"));
 }
 
 #[test]

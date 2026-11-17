@@ -1,5 +1,5 @@
-//! Watching directories for changes, with one inotify instance per shell
-//! that sleeps in the loop until the kernel reports one.
+//! Watching directories and files for changes, with one inotify instance
+//! per shell that sleeps in the loop until the kernel reports one.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -14,12 +14,13 @@ use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask};
 
 use crate::Shared;
 
-/// What every watch hears: a file written or closed after writing, a
-/// file or directory made, removed or renamed, and the directory itself
-/// removed or renamed. One mask serves all, since the kernel keeps one
-/// per directory, so a listener passes over what it doesn't want.
-const CHANGES: WatchMask = WatchMask::CLOSE_WRITE
-  .union(WatchMask::MODIFY)
+/// What a directory's watch hears: a file closed after writing, a file
+/// or directory made, removed or renamed, and the directory itself
+/// removed or renamed. The kernel keeps one mask per inode, so every
+/// directory watch takes this one and a listener passes over what it
+/// doesn't want. A write to a file still open isn't in it, so a log
+/// beside a followed file never wakes the shell.
+pub(crate) const DIRECTORY: WatchMask = WatchMask::CLOSE_WRITE
   .union(WatchMask::CREATE)
   .union(WatchMask::DELETE)
   .union(WatchMask::MOVED_FROM)
@@ -70,12 +71,15 @@ pub(crate) struct Watch {
   id: u64,
 }
 
-/// Calls `on_change` for each change in `dir`, until the returned
-/// [`Watch`] drops. A directory watched twice has two listeners. One
-/// that drops may still hear the changes read along with its last.
+/// Calls `on_change` for each change `mask` names at `path`, a directory
+/// with [`DIRECTORY`] or another inode with a mask of its own, until the
+/// returned [`Watch`] drops. An inode watched twice has two listeners,
+/// and the kernel keeps the last mask it was given. One that drops may
+/// still hear the changes read along with its last.
 pub(crate) fn watch(
   shared: &Rc<Shared>,
-  dir: &Path,
+  path: &Path,
+  mask: WatchMask,
   on_change: impl Fn(&Change) + 'static,
 ) -> io::Result<Watch> {
   let mut slot = shared.watcher.0.borrow_mut();
@@ -83,7 +87,7 @@ pub(crate) fn watch(
     *slot = Some(Instance::new(shared)?);
   }
   let instance = slot.as_mut().expect("invariant: made above");
-  let wd = match instance.inotify.watches().add(dir, CHANGES) {
+  let wd = match instance.inotify.watches().add(path, mask) {
     Ok(wd) => wd,
     Err(error) => {
       if instance.listeners.is_empty() {
@@ -215,7 +219,7 @@ mod tests {
 
   use inotify::EventMask;
 
-  use super::watch;
+  use super::{DIRECTORY, watch};
   use crate::Shared;
   use crate::testing::{Harness, TempDir, offline};
 
@@ -249,7 +253,7 @@ mod tests {
     let shared = shared(&shell);
     let dir = TempDir::new();
     let (heard, listener) = heard();
-    let watch = watch(&shared, dir.path(), listener).expect("a watch");
+    let watch = watch(&shared, dir.path(), DIRECTORY, listener).expect("a watch");
     // Asleep until something changes.
     assert_eq!(run(&mut shell, 200), 1);
 
@@ -285,9 +289,9 @@ mod tests {
     let shared = shared(&shell);
     let dir = TempDir::new();
     let (first, listener) = heard();
-    let first_watch = watch(&shared, dir.path(), listener).expect("a watch");
+    let first_watch = watch(&shared, dir.path(), DIRECTORY, listener).expect("a watch");
     let (second, listener) = heard();
-    let _second_watch = watch(&shared, dir.path(), listener).expect("a watch");
+    let _second_watch = watch(&shared, dir.path(), DIRECTORY, listener).expect("a watch");
 
     std::fs::write(dir.path().join("a"), "x").expect("a file");
     run(&mut shell, 100);
@@ -309,7 +313,7 @@ mod tests {
     let shared = shared(&shell);
     let dir = TempDir::new();
     let (_, listener) = heard();
-    assert!(watch(&shared, &dir.path().join("missing"), listener).is_err());
+    assert!(watch(&shared, &dir.path().join("missing"), DIRECTORY, listener).is_err());
     assert_eq!(Rc::weak_count(&shared), 0);
     assert!(shared.watcher.0.borrow().is_none());
   }

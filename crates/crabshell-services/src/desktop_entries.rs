@@ -585,17 +585,15 @@ impl Scan<'_> {
     }
   }
 
-  /// Reads the list again on each change in `dir` that `counts`. A
-  /// write that isn't done never counts: its close comes next.
+  /// Reads the list again on each change in `dir` that `counts`.
   fn watch(&mut self, dir: &Path, counts: impl Fn(&Change) -> bool + 'static) {
     let service = self.service.clone();
     let on_change = move |change: &Change| {
-      let counts = !change.mask.contains(EventMask::MODIFY) && counts(change);
-      if let Some(service) = service.upgrade().filter(|_| counts) {
+      if let Some(service) = service.upgrade().filter(|_| counts(change)) {
         service.changed();
       }
     };
-    match watch::watch(self.shared, dir, on_change) {
+    match watch::watch(self.shared, dir, watch::DIRECTORY, on_change) {
       Ok(watch) => self.watches.push(watch),
       Err(error) => {
         tracing::warn!(%error, dir = %dir.display(), "can't watch a directory of applications")

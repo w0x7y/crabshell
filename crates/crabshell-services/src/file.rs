@@ -16,7 +16,7 @@ use calloop::RegistrationToken;
 use calloop::timer::TimeoutAction;
 use crabshell_reactive::{ReadSignal, Signal, untrack};
 use crabshell_ui::Cx;
-use inotify::EventMask;
+use inotify::{EventMask, WatchMask};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -48,6 +48,9 @@ struct Follow {
   shared: Rc<Shared>,
   path: PathBuf,
   watch: RefCell<Option<Watch>>,
+  /// A watch on the file's own inode for writes while it is open, as its
+  /// directory's watch hears only their close.
+  file: RefCell<Option<Watch>>,
   /// The timer that reads a file still being written, while one waits.
   writing: Cell<Option<RegistrationToken>>,
   /// Reads the file again.
@@ -62,6 +65,7 @@ impl Follow {
       shared: Rc::clone(shared),
       path,
       watch: RefCell::new(None),
+      file: RefCell::new(None),
       writing: Cell::new(None),
       changed: Box::new(changed),
     });
@@ -73,6 +77,7 @@ impl Follow {
   /// directory above it that is there, for the next name on the way.
   fn rewatch(self: &Rc<Self>) {
     self.watch.replace(None);
+    self.file.replace(None);
     let (Some(dir), Some(name)) = (self.path.parent(), self.path.file_name()) else {
       return;
     };
@@ -100,12 +105,6 @@ impl Follow {
         return;
       };
       let moved = EventMask::DELETE_SELF | EventMask::MOVE_SELF;
-      if change.mask.contains(EventMask::MODIFY) {
-        if own && change.name.as_ref() == Some(&next) {
-          follow.written();
-        }
-        return;
-      }
       match &change.name {
         // The directory itself went, or changes were lost: start over.
         None => {
@@ -114,11 +113,15 @@ impl Follow {
           }
           follow.read();
         }
-        // Not on a create, when a writer hasn't written yet: its close
-        // comes next.
+        // Not on a create, when a writer hasn't written yet: its
+        // writes or its close come next. One that wrote before the
+        // watch on the new file was in is read after [`WRITING`].
         Some(changed) if *changed == next && own => {
+          follow.watch_file();
           if !change.mask.contains(EventMask::CREATE) {
             follow.read();
+          } else if follow.path.metadata().is_ok_and(|meta| meta.len() > 0) {
+            follow.written();
           }
         }
         // A directory on the way came or went.
@@ -129,7 +132,7 @@ impl Follow {
         Some(_) => {}
       }
     };
-    match watch::watch(&self.shared, dir, listener) {
+    match watch::watch(&self.shared, dir, watch::DIRECTORY, listener) {
       Ok(watch) => {
         self.watch.replace(Some(watch));
       }
@@ -138,6 +141,35 @@ impl Follow {
         tracing::info!(%path, %error, "can't watch the file, so changes to it aren't seen");
       }
     }
+    if own {
+      self.watch_file();
+    }
+  }
+
+  /// Watches the regular file at the path, if one is there, for writes
+  /// while it is open; a directory or a pipe is left to its directory's
+  /// watch, as the kernel keeps one mask per inode.
+  fn watch_file(self: &Rc<Self>) {
+    if !self.path.metadata().is_ok_and(|meta| meta.is_file()) {
+      self.file.replace(None);
+      return;
+    }
+    let weak = Rc::downgrade(self);
+    let listener = move |change: &watch::Change| {
+      if let Some(follow) = weak
+        .upgrade()
+        .filter(|_| change.mask.contains(EventMask::MODIFY))
+      {
+        follow.written();
+      }
+    };
+    // The new one first, so the same inode keeps its kernel watch.
+    let watched = watch::watch(&self.shared, &self.path, WatchMask::MODIFY, listener);
+    if let Err(error) = &watched {
+      let path = self.path.display();
+      tracing::debug!(%path, %error, "can't watch the file's writes; its close still counts");
+    }
+    self.file.replace(watched.ok());
   }
 }
 
