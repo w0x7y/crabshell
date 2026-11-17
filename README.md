@@ -2,7 +2,7 @@
 
 # crabshell
 
-a rust replacement for quickshell: your whole desktop shell is a rust crate, and everything quickshell does, crabshell will do. v0.5 is on crates.io. it has a bar for sway and other wlroots compositors, floating windows and keyboard input, animations and blur, desktop services like bluetooth, networks, media players and notifications, launchers, a lock screen, greeter and polkit agent, and hyprland's workspaces, monitors and windows. and it has been checked against every quickshell type: of its 149 types, 125 are built and the rest are written down with a reason. v0.4 adds phase 14: timers, springs, transforms and exit animations. v0.5 adds phases 15 and 16: flexible layout and grids, every pointer gesture, drag and drop, sliders, kinetic scrolling and grid views, then a canvas, per-corner radii, sweep gradients, dashed borders, tinted icons, image filters and blur, animated gifs, masks, shadows that follow text and icons, and wallpaper transitions. main also has phase 17: italic, letter spacing, tabular digits, alignment, line height, underlines, eliding at either end or the middle, measured text, bundled fonts, styled spans with notification markup and links, selectable labels, drag-select and a multi-line editor, plus a run that closed the gaps earlier phases left, from inset shadows and two-way scrolling to a bluetooth pairing agent and notifications kept across a reload. phases 18 and 19 bring the rest of what quickshell configs take from qt itself, like http and native pipewire. [the design doc](docs/design.md) shows each phase
+a rust replacement for quickshell: your whole desktop shell is a rust crate, and everything quickshell does, crabshell will do. v0.5 is on crates.io, with bars, launchers, lock screens, notifications, animation and drawing for sway, hyprland and other wlroots compositors. [the design doc](docs/design.md) has every decision and the phases still to come, and [the site](docs/site/index.html) has the full docs
 
 ### ai disclosure
 
@@ -68,7 +68,7 @@ every widget property takes a value or a closure. a closure runs again when a si
 
 ### numbers
 
-on headless sway with one 1920×1080 output at v0.5, the counter example uses 17.6 MiB and draws its first frame in 9.8 ms, and the v0.1 bar uses 20.9 MiB. neither wakes while idle, except the bar's clock once a minute. on a 1280×720 output, a reload rebuilds a one-line edit in 0.7 s and leaves no bar for 13 to 19 ms. quickshell drawing the [phase 0 test bar](spike/RESULTS.md) used 125 MiB and took 219 ms to its first frame. the [design doc](docs/design.md#performance-targets) has every phase's numbers
+on headless sway with one 1920×1080 output, the counter example uses 17.8 MiB and draws its first frame in about 14 ms, and the v0.1 bar uses 21.2 MiB. neither wakes while idle, except the bar's clock once a minute. on a 1280×720 output, a reload rebuilds a one-line edit in 0.9 s and leaves no bar for 16 ms. quickshell drawing the [phase 0 test bar](spike/RESULTS.md) used 125 MiB and took 219 ms to its first frame. the [design doc](docs/design.md#performance-targets) has the latest numbers
 
 ### crates
 
@@ -81,25 +81,8 @@ on headless sway with one 1920×1080 output at v0.5, the counter example uses 17
 ~ [crabshell-cli](crates/crabshell-cli/), the `crabshell` command: `init`, `check`, `ipc` and `run`\
 ~ [spike](spike/) and [baseline](baseline/), the phase 0 prototype and the quickshell bar it was measured against
 
-### tests
+### development
 
-```sh
-cargo test --workspace
-env -u SWAYSOCK cargo test -p crabshell-wayland --test headless -- --ignored --test-threads=1
-env -u SWAYSOCK cargo test -p crabshell --test headless -- --ignored --test-threads=1
-env -u SWAYSOCK cargo test -p crabshell-services --lib sway::tests::headless -- --ignored --test-threads=1
-env -u SWAYSOCK cargo test -p crabshell-cli --test exit_check -- --ignored --nocapture
-```
-
-the first needs `dbus-daemon` and `dbus-monitor`, and its golden images expect noto sans as your `sans-serif`, plus dejavu sans. ci runs it with fmt and clippy on every push. the others run only on your machine. each test starts a private sway from a copy of `sway`, so nothing reaches your session, and they refuse to start with `SWAYSOCK` set. they need `sway`, `swaymsg`, `grim`, `labwc`, `wl-copy`, `wl-paste`, `pipewire` and `pactl`. `CRABSHELL_BLESS=1` rewrites the golden images
-
-### formatting
-
-2 spaces everywhere. `cargo fmt --all` reads [rustfmt.toml](rustfmt.toml), and the rest gets
-
-```sh
-ruff format --config indent-width=2 baseline/
-prettier --tab-width 2 --write $(git ls-files '*.md' '*.yml' '*.html' '*.css' '*.js')
-```
+[AGENTS.md](AGENTS.md) has the test and formatting commands. `cargo test --workspace` needs `dbus-daemon` and `dbus-monitor`, and its golden images expect noto sans as your `sans-serif`, plus dejavu sans. ci runs it with fmt and clippy on every push. the headless suites run only on your machine, each against a private sway started from a copy of `sway`, so nothing reaches your session. they need `sway`, `swaymsg`, `grim`, `labwc`, `wl-copy`, `wl-paste`, `pipewire` and `pactl`. everything is indented with 2 spaces
 
 _license: [mit](./LICENSE-MIT) or [apache-2.0](./LICENSE-APACHE), your choice_
