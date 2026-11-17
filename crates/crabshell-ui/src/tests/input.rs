@@ -560,6 +560,27 @@ fn a_clip_hides_its_children_from_the_pointer_outside_its_corners() {
 }
 
 #[test]
+fn a_clip_hides_its_children_outside_a_corner_larger_than_half_a_side() {
+  // A 30 pixel corner on a 200 by 40 box keeps its size, as it is drawn,
+  // so a point 8 pixels in from the corner is outside its curve, though
+  // it would be inside the 20 pixel corner half the height allows.
+  let mut h = Harness::new();
+  let clicks = Counter::default();
+  let c = clicks.clone();
+  let row = Row::new()
+    .align(Align::Start)
+    .style(Style::new().radii(30.0, 0.0, 0.0, 0.0).clip(true))
+    .child(Button::new(Icon::new("x").size(200)).on_click(move |_| c.hit()));
+  let window = h.window(h.panel().child(row), 200.0, 40.0);
+  window.pointer_motion(Point::new(6.0, 6.0));
+  click(&window, PointerButton::Left);
+  assert_eq!(clicks.get(), 0, "outside the curve");
+  window.pointer_motion(Point::new(12.0, 12.0));
+  click(&window, PointerButton::Left);
+  assert_eq!(clicks.get(), 1, "inside it");
+}
+
+#[test]
 fn hovered_is_true_while_the_pointer_is_over_the_button_or_inside_it() {
   let mut h = Harness::new();
   let (outer, inner) = (h.cx.signal(false), h.cx.signal(false));

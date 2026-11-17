@@ -73,6 +73,15 @@ fn an_ellipse_is_widest_at_its_middle_and_symmetric() {
 }
 
 #[test]
+fn one_large_corner_beside_square_ones_keeps_its_radius_as_in_css() {
+  // A 30 pixel corner on a 40 by 40 square fits along both its sides, so
+  // it isn't cut down to 20. Five rows down, a 30 pixel circle cuts 13.4
+  // pixels in, a 20 pixel one 6.8.
+  let widths = widths(&Region::rect(0, 0, 40, 40).radii(30.0, 0.0, 0.0, 0.0));
+  assert_eq!(widths[5], 40 - 13, "{widths:?}");
+}
+
+#[test]
 fn rounded_corners_cut_only_their_rows_and_sides() {
   let rounded = widths(&Region::rect(0, 0, 40, 40).radii(10.0, 0.0, 0.0, 0.0));
   assert!(rounded[0] < 40 && rounded[0] > 30, "{rounded:?}");

@@ -413,6 +413,39 @@ fn radii_sets_each_corner_and_radius_all_four() {
 }
 
 #[test]
+fn radii_are_fitted_by_one_factor_over_the_four_sides_as_css_does() {
+  let tab = Radii {
+    top_left: 30.0,
+    top_right: 0.0,
+    bottom_right: 4.0,
+    bottom_left: 6.0,
+  };
+  // Every side has room: nothing changes, though 30 is past half of 40.
+  assert_eq!(tab.fit(200.0, 40.0), tab);
+  // The left side, 30 by 20, takes 36 of radius: every corner shrinks by
+  // the same 20 / 36.
+  let squeezed = tab.fit(200.0, 20.0);
+  let f = 20.0 / 36.0;
+  for (got, want) in squeezed.corners().into_iter().zip(tab.corners()) {
+    assert!((got - want * f).abs() < 1e-5, "{squeezed:?}");
+  }
+  // Equal corners still stop at half the shorter side, a pill's.
+  assert_eq!(Radii::all(100.0).fit(80.0, 20.0), Radii::all(10.0));
+  assert_eq!(Radii::all(f32::INFINITY).fit(80.0, 20.0), Radii::all(10.0));
+  // Numbers that can't be corners are square ones.
+  let odd = Radii {
+    top_left: f32::NAN,
+    top_right: -3.0,
+    bottom_right: 5.0,
+    bottom_left: 0.0,
+  };
+  assert_eq!(odd.fit(40.0, 40.0).corners(), [0.0, 0.0, 5.0, 0.0]);
+  // A box with no size has no corners.
+  assert_eq!(Radii::all(4.0).fit(0.0, 20.0), Radii::all(0.0));
+  assert_eq!(Radii::all(4.0).fit(f32::NAN, 20.0), Radii::all(0.0));
+}
+
+#[test]
 fn a_fade_moves_each_corner_from_where_it_was() {
   let round = Style::new().radius(4.0);
   let tab = Style::new().radii(0.0, 8.0, 16.0, 4.0);

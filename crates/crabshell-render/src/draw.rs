@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use cosmic_text::{FontSystem, LayoutGlyph, SwashCache, SwashContent, SwashImage};
 use crabshell_ui::{
   Affine, CaptureView, Color, Content, Gradient, GradientShape, IconView, ImageView, InputView,
-  NodeView, Rect, Shadow, Size, Style, TextSystem, TextView, WindowView,
+  NodeView, Radii, Rect, Shadow, Size, Style, TextSystem, TextView, WindowView,
 };
 use tiny_skia::{
   FillRule, FilterQuality, GradientStop, LineCap, LineJoin, LinearGradient, Mask, Paint,
@@ -676,15 +676,12 @@ impl Painter<'_> {
   }
 
   /// A widget's rectangle on the pixel grid and each corner's radius in
-  /// pixels, clamped to half the shorter side, so two on one side never
-  /// overlap. `None` if it covers no pixel.
+  /// pixels, fitted to it as CSS does, so two on one side never overlap.
+  /// `None` if it covers no pixel.
   fn box_shape(&self, rect: Rect, style: &Style) -> Option<(tiny_skia::Rect, Corners)> {
     let area = self.grid.rect(rect)?;
-    let most = area.width().min(area.height()) / 2.0;
-    let corners = style.radius.unwrap_or_default().corners().map(|radius| {
-      let radius = (radius * self.grid.scale).clamp(0.0, most);
-      if radius.is_nan() { 0.0 } else { radius }
-    });
+    let corners = style.radius.unwrap_or_default().corners();
+    let corners = fit(corners.map(|radius| radius * self.grid.scale), area);
     Some((area, corners))
   }
 
@@ -878,15 +875,14 @@ impl Painter<'_> {
     };
     // As CSS: a corner smaller than the spread grows by less, so a square
     // box keeps square corners.
-    let most = shape.width().min(shape.height()) / 2.0;
     let corners = corners.map(|radius| {
-      let radius = if spread > 0.0 && radius < spread {
+      if spread > 0.0 && radius < spread {
         radius + spread * (1.0 + (radius / spread - 1.0).powi(3))
       } else {
         radius + spread
-      };
-      radius.clamp(0.0, most)
+      }
     });
+    let corners = fit(corners, shape);
     // A cut-out shadow leaves clear what the box's background covers.
     let cut = if shadow.cut_out {
       self.box_mask(pixmap, rect, style)
@@ -1301,6 +1297,20 @@ fn fill(pixmap: &mut PixmapMut<'_>, path: PathBuilder, color: Color, rule: FillR
 
 /// Each corner's radius in pixels, from the top left clockwise.
 type Corners = [f32; 4];
+
+/// `corners` fitted to `area` as CSS fits them ([`Radii::fit`]).
+fn fit(
+  [top_left, top_right, bottom_right, bottom_left]: Corners,
+  area: tiny_skia::Rect,
+) -> Corners {
+  let radii = Radii {
+    top_left,
+    top_right,
+    bottom_right,
+    bottom_left,
+  };
+  radii.fit(area.width(), area.height()).corners()
+}
 
 /// `corners` for a shape `by` pixels inside the edge.
 fn inset(corners: Corners, by: f32) -> Corners {

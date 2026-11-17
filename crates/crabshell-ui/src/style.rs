@@ -317,8 +317,9 @@ pub struct Border {
 }
 
 /// How round each corner of a widget's box is: the radius in logical
-/// pixels, 0 for a square corner. Each is clamped to half the box's
-/// shorter side, so two on one side never overlap.
+/// pixels, 0 for a square corner. When two corners on a side need more
+/// than its length, all four shrink by the same factor until they fit,
+/// as in CSS, so two on one side never overlap.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Radii {
   /// The top-left corner.
@@ -352,6 +353,22 @@ impl Radii {
     ]
   }
 
+  /// These corners on a `width` by `height` box, as CSS fits them: a
+  /// number that isn't one, or a negative one, is 0, and when two corners
+  /// on a side add up to more than its length, all four are multiplied
+  /// by the one factor that makes the tightest side fit. Drawing and
+  /// pointer input both use it, so they agree.
+  pub fn fit(&self, width: f32, height: f32) -> Radii {
+    let [top_left, top_right, bottom_right, bottom_left] =
+      fit_corners(self.corners(), width, height);
+    Radii {
+      top_left,
+      top_right,
+      bottom_right,
+      bottom_left,
+    }
+  }
+
   /// `t` of the way to `to`, each corner on its own.
   pub(crate) fn lerp(&self, to: &Radii, t: f32) -> Radii {
     Radii {
@@ -362,11 +379,9 @@ impl Radii {
     }
   }
 
-  /// Whether `point` is inside `rect` with these corners, each clamped
-  /// to half its shorter side, after `inset` is taken off every side and
-  /// every corner.
+  /// Whether `point` is inside `rect` with these corners, [fitted](Self::fit)
+  /// to it, after `inset` is taken off every side and every corner.
   pub(crate) fn contains(&self, rect: Rect, inset: f32, point: Point) -> bool {
-    let most = rect.width.min(rect.height) / 2.0;
     let inner = Rect::new(
       rect.x + inset,
       rect.y + inset,
@@ -377,8 +392,9 @@ impl Radii {
       return false;
     }
     let [top_left, top_right, bottom_right, bottom_left] = self
+      .fit(rect.width, rect.height)
       .corners()
-      .map(|r| (if r.is_nan() { 0.0 } else { r.clamp(0.0, most) } - inset).max(0.0));
+      .map(|r| (r - inset).max(0.0));
     let (left, top, right, bottom) = (inner.x, inner.y, inner.right(), inner.bottom());
     // Each corner's circle, and the side of its middle the corner is on.
     [
@@ -405,6 +421,30 @@ impl Radii {
       r <= 0.0 || dx * sx <= 0.0 || dy * sy <= 0.0 || dx.hypot(dy) <= r
     })
   }
+}
+
+/// `corners`, from the top left clockwise, fitted to a `width` by
+/// `height` box as [`Radii::fit`] says.
+pub(crate) fn fit_corners(corners: [f32; 4], width: f32, height: f32) -> [f32; 4] {
+  // A radius past this is a pill's either way, and two of them still add
+  // up to a finite number.
+  const MOST: f32 = 1e6;
+  let corners = corners.map(|r| if r.is_nan() { 0.0 } else { r.clamp(0.0, MOST) });
+  let [top_left, top_right, bottom_right, bottom_left] = corners;
+  let sides = [
+    (width, top_left + top_right),
+    (height, top_right + bottom_right),
+    (width, bottom_right + bottom_left),
+    (height, bottom_left + top_left),
+  ];
+  let factor = sides
+    .into_iter()
+    .filter(|&(_, radii)| radii > 0.0)
+    // `max` makes a side that isn't a number 0, leaving no corners.
+    .fold(1.0_f32, |factor, (side, radii)| {
+      factor.min(side.max(0.0) / radii)
+    });
+  corners.map(|r| r * factor)
 }
 
 /// Colors that blend into each other across a widget's box, drawn over
@@ -1096,8 +1136,9 @@ impl Style {
   }
 
   /// Rounds each corner on its own, in logical pixels, as CSS's
-  /// `border-radius` with four values. Each is clamped to half the box's
-  /// shorter side. Everything that follows the corners follows each one:
+  /// `border-radius` with four values. When two on a side need more than
+  /// its length, all four shrink by one factor, as in CSS
+  /// ([`Radii::fit`]). Everything that follows the corners follows each one:
   /// the background, gradient, border, shadow, a clip and the scroll
   /// bar's cut.
   ///

@@ -72,7 +72,8 @@ impl Region {
     self.radii(radius, radius, radius, radius)
   }
 
-  /// Rounds each corner of a [`rect`](Self::rect) on its own. It does
+  /// Rounds each corner of a [`rect`](Self::rect) on its own, fitted to
+  /// it as a widget's are ([`Radii::fit`](crate::Radii::fit)). It does
   /// nothing to other shapes.
   pub fn radii(
     mut self,
@@ -177,9 +178,9 @@ fn rect_spans([left, top, right, bottom]: [i32; 4], radii: [f32; 4], y: f32) -> 
   if y < top as f32 || y >= bottom as f32 {
     return Spans::new();
   }
-  // A radius can't be more than half the shorter side.
-  let most = (right as f32 - left as f32).min(bottom as f32 - top as f32) / 2.0;
-  let [top_left, top_right, bottom_right, bottom_left] = radii.map(|r| r.clamp(0.0, most));
+  let (width, height) = (right as f32 - left as f32, bottom as f32 - top as f32);
+  let [top_left, top_right, bottom_right, bottom_left] =
+    crate::style::fit_corners(radii, width, height);
   // How far a corner of radius `r` cuts into a row `dy` inside its edge.
   let inset = |r: f32, dy: f32| {
     if dy >= r {

@@ -50,13 +50,29 @@ fn each_corner_is_rounded_on_its_own() {
 }
 
 #[test]
-fn a_corner_past_half_the_shorter_side_is_clamped_to_it() {
+fn a_corner_too_large_for_its_sides_shrinks_until_they_fit_as_in_css() {
+  // Alone on a 40 pixel square, a corner of 100 takes each of its sides
+  // whole, not half.
   let past = boxed(one(0, 100.0).background(WHITE), None);
-  let half = boxed(one(0, 20.0).background(WHITE), None);
-  assert!(past.pixels == half.pixels);
+  let whole = boxed(one(0, 40.0).background(WHITE), None);
+  assert!(past.pixels == whole.pixels);
+  // 42 pixels from the 40 pixel corner's middle, inside a 20 pixel one.
+  assert_eq!(past.pixel(30, 20)[3], 0);
   // Its neighbors stay square.
   assert_eq!(past.pixel(58, 11)[3], 255);
   assert_eq!(past.pixel(21, 48)[3], 255);
+  // Beside a corner of 20 on the same side, both shrink by 40 / 120.
+  let shared = boxed(
+    Style::new().radii(100.0, 20.0, 0.0, 0.0).background(WHITE),
+    None,
+  );
+  let fitted = boxed(
+    Style::new()
+      .radii(100.0 / 3.0, 20.0 / 3.0, 0.0, 0.0)
+      .background(WHITE),
+    None,
+  );
+  assert!(shared.pixels == fitted.pixels);
 }
 
 #[test]
