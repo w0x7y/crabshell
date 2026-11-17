@@ -392,22 +392,27 @@ impl DataSourceHandler for Platform {
   fn action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: DndAction) {}
 }
 
-/// Drags aren't taken, so their events are ignored.
+/// Drags go to `dnd.rs`.
 impl DataDeviceHandler for Platform {
   fn enter(
     &mut self,
     _: &Connection,
     _: &QueueHandle<Self>,
-    _: &WlDataDevice,
-    _: f64,
-    _: f64,
-    _: &WlSurface,
+    device: &WlDataDevice,
+    x: f64,
+    y: f64,
+    surface: &WlSurface,
   ) {
+    self.drag_enter(device, surface, (x, y));
   }
 
-  fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+  fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {
+    self.drag_leave();
+  }
 
-  fn motion(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, _: f64, _: f64) {}
+  fn motion(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, x: f64, y: f64) {
+    self.drag_motion((x, y));
+  }
 
   /// Without data control, a config's clipboard follows this, which the
   /// compositor tells only while a shell window has the keyboard.
@@ -436,7 +441,9 @@ impl DataDeviceHandler for Platform {
     });
   }
 
-  fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+  fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {
+    self.drag_drop();
+  }
 }
 
 impl DataOfferHandler for Platform {

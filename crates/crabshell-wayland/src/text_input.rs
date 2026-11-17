@@ -259,7 +259,7 @@ impl Dispatch<ZwpTextInputV3, ()> for Platform {
 
 impl Platform {
   /// The window whose surface is `surface`.
-  fn window_of(&self, surface: &WlSurface) -> Option<WindowId> {
+  pub(crate) fn window_of(&self, surface: &WlSurface) -> Option<WindowId> {
     self
       .windows
       .entries

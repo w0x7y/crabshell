@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 use crabshell_reactive::Runtime;
 use crabshell_ui::{
-  Button, Color, Cx, Edge, Output, PanelWindow, Region, Row, ScrollView, Stack, Style, Text,
-  TextInput, Window,
+  Button, Color, Cx, DragContent, Edge, Output, PanelWindow, Region, Row, ScrollView, Stack, Style,
+  Text, TextInput, Window,
 };
 use crabshell_wayland::{EventLoop, WindowId, Windowset};
 use fake::{Fake, Globals};
@@ -537,4 +537,141 @@ fn a_sync_is_done_after_every_event_sent_before_it() {
   });
   assert_eq!(names(&mut event_loop), ["FAKE-1", "FAKE-2"]);
   assert!(event_loop.platform().synced(ticket - 1), "an older ticket");
+}
+
+/// Two bars on `FAKE-1`, along the top and the bottom, 30 high, each
+/// holding a 100 by 30 button `build` makes.
+fn dnd_bars(build: impl FnOnce(&Cx) -> (Button, Button)) -> (Fake, EventLoop, Cx) {
+  let (fake, mut event_loop) = connect(Globals {
+    pointer: true,
+    data_device: true,
+    ..Globals::default()
+  });
+  let cx = Cx::new(Runtime::current().new_owner());
+  let (top, bottom) = build(&cx);
+  let size = Style::new().width(100.0).height(30.0);
+  for (edge, button) in [(Edge::Top, top), (Edge::Bottom, bottom)] {
+    let bar = PanelWindow::new(&Output::new("FAKE-1"))
+      .anchors(edge | Edge::Left | Edge::Right)
+      .height(30)
+      .child(Row::new().child(button.style(size)));
+    let bar = event_loop.platform().add_window(Window::new(&cx, bar));
+    frames(&mut event_loop, bar, 1);
+  }
+  (fake, event_loop, cx)
+}
+
+/// Waits for the fake to log `line`.
+fn logged(fake: &Fake, event_loop: &mut EventLoop, line: &str) {
+  wait(event_loop, line, |_| fake.log().iter().any(|l| l == line));
+}
+
+/// After a drag, once its frames are drawn, nothing wakes the loop: no
+/// timer, pipe or callback is left in it.
+fn asleep_after(event_loop: &mut EventLoop) {
+  run_for(event_loop, Duration::from_millis(50));
+  let (start, iterations) = (Instant::now(), event_loop.platform().stats().iterations);
+  event_loop
+    .dispatch(Some(Duration::from_millis(300)))
+    .expect("the connection works");
+  assert!(start.elapsed() >= Duration::from_millis(300), "woken early");
+  assert_eq!(event_loop.platform().stats().iterations, iterations + 1);
+}
+
+type Dropped = Rc<RefCell<Vec<DragContent>>>;
+
+fn content_target(dropped: &Dropped, hovered: crabshell_reactive::Signal<bool>) -> Button {
+  let dropped = Rc::clone(dropped);
+  Button::new(Text::new("in"))
+    .on_drop_content(move |_, content| dropped.borrow_mut().push(content))
+    .drop_hovered(hovered)
+}
+
+#[test]
+fn another_programs_drag_lights_a_button_and_drops_its_uris_there() {
+  let dropped = Dropped::default();
+  let mut hovered = None;
+  let (fake, mut event_loop, cx) = dnd_bars(|cx| {
+    let lit = cx.signal(false);
+    hovered = Some(lit);
+    (
+      content_target(&dropped, lit),
+      Button::new(Text::new("other")),
+    )
+  });
+  let hovered = hovered.expect("built");
+  let list = b"# a comment\r\nfile:///a\r\n\r\nfile:///b c\r\n".to_vec();
+  fake.run(move |state| {
+    let types: &[&str] = &["text/plain", "text/uri-list"];
+    state.drag_enter(0, (150.0, 10.0), Some((types, list)));
+  });
+  run_for(&mut event_loop, Duration::from_millis(30));
+  assert!(!hovered.get(), "beside the button");
+  fake.run(|state| state.drag_motion((50.0, 10.0)));
+  logged(&fake, &mut event_loop, "accept text/uri-list");
+  assert!(hovered.get());
+  fake.run(|state| state.drag_drop());
+  wait(&mut event_loop, "the drop", |_| {
+    !dropped.borrow().is_empty()
+  });
+  let uris = vec![String::from("file:///a"), String::from("file:///b c")];
+  assert_eq!(*dropped.borrow(), [DragContent::Uris(uris)]);
+  assert!(!hovered.get());
+  logged(&fake, &mut event_loop, "finish");
+  let log = fake.log();
+  assert!(
+    log.contains(&String::from("receive text/uri-list")),
+    "{log:?}"
+  );
+  asleep_after(&mut event_loop);
+  cx.owner().dispose();
+}
+
+#[test]
+fn a_drop_past_its_cap_drops_nothing_and_text_drops_as_text() {
+  let dropped = Dropped::default();
+  let (fake, mut event_loop, cx) = dnd_bars(|cx| {
+    let target = content_target(&dropped, cx.signal(false));
+    (target, Button::new(Text::new("other")))
+  });
+  let mut list = b"file:///".to_vec();
+  list.resize(1024 * 1024 + 1, b'a');
+  fake.run(move |state| {
+    let types: &[&str] = &["text/uri-list"];
+    state.drag_enter(0, (50.0, 10.0), Some((types, list)));
+  });
+  logged(&fake, &mut event_loop, "accept text/uri-list");
+  fake.run(|state| state.drag_drop());
+  logged(&fake, &mut event_loop, "finish");
+  run_for(&mut event_loop, Duration::from_millis(30));
+  assert!(dropped.borrow().is_empty(), "over 1 MiB of URIs");
+
+  fake.clear();
+  fake.run(|state| {
+    let types: &[&str] = &["text/plain;charset=utf-8"];
+    state.drag_enter(
+      0,
+      (50.0, 10.0),
+      Some((types, vec![b'a'; 4 * 1024 * 1024 + 1])),
+    );
+  });
+  logged(&fake, &mut event_loop, "accept text/plain;charset=utf-8");
+  fake.run(|state| state.drag_drop());
+  logged(&fake, &mut event_loop, "finish");
+  run_for(&mut event_loop, Duration::from_millis(30));
+  assert!(dropped.borrow().is_empty(), "over 4 MiB of text");
+
+  fake.clear();
+  fake.run(|state| {
+    let types: &[&str] = &["UTF8_STRING"];
+    state.drag_enter(0, (50.0, 10.0), Some((types, b"hi".to_vec())));
+  });
+  logged(&fake, &mut event_loop, "accept UTF8_STRING");
+  fake.run(|state| state.drag_drop());
+  wait(&mut event_loop, "the text", |_| {
+    !dropped.borrow().is_empty()
+  });
+  assert_eq!(*dropped.borrow(), [DragContent::Text(String::from("hi"))]);
+  assert!(fake.log().contains(&String::from("receive UTF8_STRING")));
+  cx.owner().dispose();
 }

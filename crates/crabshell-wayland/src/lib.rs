@@ -50,6 +50,7 @@ mod blur;
 mod buffers;
 mod clipboard;
 mod data_control;
+mod dnd;
 mod events;
 mod ext_toplevels;
 mod focus_grab;

@@ -11,7 +11,9 @@
 //! commit, at the size it asked for or the output's, and each frame
 //! callback is answered at the next commit, so windows draw freely. The
 //! requests a test checks are written to a log as short lines, such as
-//! `blur 0,0,200,30` or `deactivate two`.
+//! `blur 0,0,200,30` or `deactivate two`. Drags are in `dnd.rs`.
+
+mod dnd;
 
 use std::os::unix::net::UnixStream;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -42,6 +44,7 @@ use wayland_server::protocol::{
   wl_buffer::WlBuffer,
   wl_callback::WlCallback,
   wl_compositor::{self, WlCompositor},
+  wl_data_device_manager::WlDataDeviceManager,
   wl_output::{self, WlOutput},
   wl_pointer::{self, WlPointer},
   wl_region::{self, WlRegion},
@@ -80,6 +83,8 @@ pub struct Globals {
   /// as `token <app id> serial <serial> on <panel|other|none>`, answers
   /// it with `token-<n>`, and logs `token destroyed`.
   pub activation: bool,
+  /// `wl_data_device_manager` 3, for drags.
+  pub data_device: bool,
 }
 
 /// Something the test runs on the fake's thread, with its state.
@@ -111,6 +116,7 @@ impl Fake {
       serial: 0,
       copying: false,
       tokens: 0,
+      dnd: dnd::Dnd::default(),
     };
     let thread = std::thread::spawn(move || serve(ours, state, received));
     let fake = Fake {
@@ -174,6 +180,9 @@ fn serve(stream: UnixStream, mut state: State, commands: Receiver<Command>) {
   if state.globals.activation {
     handle.create_global::<State, XdgActivationV1, ()>(1, ());
   }
+  if state.globals.data_device {
+    handle.create_global::<State, WlDataDeviceManager, ()>(3, ());
+  }
   handle
     .insert_client(stream, Arc::new(Gone))
     .expect("the client");
@@ -225,6 +234,7 @@ pub struct State {
   copying: bool,
   /// The activation tokens handed out.
   tokens: u32,
+  dnd: dnd::Dnd,
 }
 
 impl State {
@@ -239,11 +249,16 @@ impl State {
 
   /// The first surface with a layer surface, the panel's.
   fn panel(&self) -> WlSurface {
-    let panel = self.surfaces.iter().find(|surface| {
+    self.layer(0)
+  }
+
+  /// The surface of the layer surface made `index`th.
+  fn layer(&self, index: usize) -> WlSurface {
+    let mut layers = self.surfaces.iter().filter(|surface| {
       let data = surface.data::<Mutex<Surface>>().expect("a surface's data");
       data.lock().expect("a surface").layer.is_some()
     });
-    panel.expect("a panel").clone()
+    layers.nth(index).expect("a panel").clone()
   }
 
   /// Releases every buffer shown, and from now on each as it is
@@ -360,7 +375,13 @@ macro_rules! plain_global {
   )*};
 }
 
-plain_global!(WlCompositor, XdgWmBase, ZwlrLayerShellV1, XdgActivationV1);
+plain_global!(
+  WlCompositor,
+  XdgWmBase,
+  ZwlrLayerShellV1,
+  XdgActivationV1,
+  WlDataDeviceManager
+);
 
 impl GlobalDispatch<WlShm, ()> for State {
   fn bind(

@@ -34,6 +34,7 @@ use crate::activation::Activation;
 use crate::blur::Effects;
 use crate::clipboard::{Offered, Primary};
 use crate::data_control::Control;
+use crate::dnd::Drags;
 use crate::events::{self, Event, Listener};
 use crate::focus_grab::FocusGrabs;
 use crate::foreign_toplevels::Foreign;
@@ -334,6 +335,8 @@ pub struct Platform {
   pub(crate) pasting: Option<RegistrationToken>,
   /// The primary selection, which a middle click pastes.
   pub(crate) primary: Primary,
+  /// The drag over the shell's windows.
+  pub(crate) drags: Drags,
   /// The clipboard as configs follow it, once a watch asks.
   pub(crate) control: Control,
   /// Present when the compositor relays input methods.
@@ -493,6 +496,7 @@ impl Platform {
       offered: None,
       pasting: None,
       primary,
+      drags: Drags::default(),
       control: Control::default(),
       text_inputs: Vec::new(),
       last_button: None,
