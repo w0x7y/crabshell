@@ -150,10 +150,9 @@ impl SocketServer {
   /// UNIX-CONNECT:path` does, has its last line passed on, and the
   /// connection stays open for the reply until the config closes it, a
   /// write fails or 5 s pass, as the shell's own IPC socket waits. One
-  /// that hangs up while still sending ends the connection at once; one
-  /// that hangs up after it stopped sending, as socat does once its wait
-  /// for a reply ends, keeps its place until a write fails or the 5 s
-  /// pass, so a config that answers should close the connection.
+  /// that hangs up ends the connection at once, whether it was still
+  /// sending or, as socat does once its wait for a reply ends, had
+  /// stopped.
   ///
   /// It runs on the main thread. If it panics, that is logged with the
   /// server's path and where `on_connection` was called, that connection

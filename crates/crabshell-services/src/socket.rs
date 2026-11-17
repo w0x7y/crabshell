@@ -313,8 +313,8 @@ impl Inner {
   }
 
   /// Stops reading a server's connection whose client stopped sending,
-  /// and keeps it open for the reply until the config closes it, a write
-  /// fails or [`HALF_OPEN`] passes.
+  /// and keeps it open for the reply until the config closes it, the
+  /// client hangs up, a write fails or [`HALF_OPEN`] passes.
   fn half_close(self: &Rc<Self>) {
     let Some(event_loop) = self.shared.as_ref().and_then(|shared| shared.event_loop()) else {
       return;
@@ -323,8 +323,28 @@ impl Inner {
     let Some(connection) = state.connection.as_mut() else {
       return;
     };
-    // At its end it would be readable for good.
+    // At its end it would be readable for good, so it waits for nothing
+    // but the hang-up, which the kernel reports anyway.
     event_loop.remove(connection.reader);
+    let inner = Rc::clone(self);
+    let hung_up = move || {
+      let gone = inner
+        .state
+        .borrow()
+        .connection
+        .as_ref()
+        .map(|c| hung_up(&c.stream));
+      if gone == Some(true) {
+        inner.drop_connection("the client hung up");
+      }
+    };
+    match connection.stream.as_fd().try_clone_to_owned() {
+      Ok(fd) => {
+        let watch = event_loop.insert_fd(fd, Interest::EMPTY, Box::new(hung_up));
+        connection.reader = watch.unwrap_or(connection.reader);
+      }
+      Err(error) => tracing::debug!(%error, "a half-open connection's hang-up isn't watched"),
+    }
     let inner = Rc::clone(self);
     let expire = move || {
       // Gone with this call, so the close doesn't remove it again.

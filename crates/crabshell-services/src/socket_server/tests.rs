@@ -332,6 +332,27 @@ fn a_client_that_hangs_up_ends_its_connection_at_once() {
 }
 
 #[test]
+fn a_client_that_hangs_up_after_it_stopped_sending_ends_its_connection_at_once() {
+  let dir = Dir::new();
+  let mut shell = Harness::new(offline());
+  let (_server, held) = keeping(&shell, &dir.join("s"));
+  let peer = client(&dir.join("s"));
+  peer.shutdown(std::net::Shutdown::Write).unwrap();
+  run(&mut shell, 50);
+  let socket = held.borrow()[0].clone();
+  assert_eq!(socket.connected().try_get(), Some(true), "open for a reply");
+  assert!(run(&mut shell, 100) <= 1, "nothing spins meanwhile");
+  // As socat does once its wait for a reply ends.
+  drop(peer);
+  run(&mut shell, 50);
+  assert_eq!(
+    socket.connected().try_get(),
+    None,
+    "closed with no write, well before the 300 ms cap"
+  );
+}
+
+#[test]
 fn a_server_and_its_connections_leave_no_nodes_behind() {
   let dir = Dir::new();
   let mut shell = Harness::new(offline());
