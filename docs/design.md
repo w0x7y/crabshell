@@ -1638,7 +1638,7 @@ Phase 13 matched Quickshell's own types, but a Quickshell config is QML, and mos
 
 **Phase 19, the parity remainder.**
 
-- Native PipeWire for what the PulseAudio protocol can't carry: the link graph, screen-share video nodes and the five types the features page marks as not built, as a service that costs memory only while a config follows it, measured against libpulse's RSS. libpulse stays for volume, sinks and meters.
+- Native PipeWire for what the PulseAudio protocol can't carry: the link graph, screen-share video nodes and the four link types (`PwLink`, `PwLinkGroup`, `PwLinkState`, `PwNodeLinkTracker`), the only ones the Phase 13 count left not built now that `mapped_geometry` covers `TransformWatcher`, as a service that costs memory only while a config follows it, measured against libpulse's RSS. libpulse stays for volume, sinks and meters.
 - `NMSettings` write, the Wi-Fi scanner while a config asks for it, and a wired device's own network.
 - A screen reader through AccessKit over AT-SPI, if `accesskit_unix` can share zbus on calloop.
 - A reload that starts the new shell before stopping the old one, so no frame misses the bar and notifications sent during the swap aren't lost, and a reload a config can ask for, as `Quickshell.reload` does.
