@@ -331,14 +331,15 @@ impl<'a> TextView<'a> {
     self.text.spans.get(index)
   }
 
-  /// Whether `span` is a link drawn lit, because the pointer is over it
-  /// or the keyboard focus is on it: underlined, and in
+  /// Whether `glyph`, on the run of buffer line `line`, belongs to a
+  /// link drawn lit, because the pointer is over it or the keyboard focus
+  /// is on it: underlined, and in
   /// [`link_hover_color`](Self::link_hover_color) if the text has one.
-  pub fn link_lit(&self, span: &Span) -> bool {
+  pub fn glyph_lit(&self, line: usize, glyph: &LayoutGlyph) -> bool {
     let text = self.text;
     (text.hovered_link.is_some() || text.focused_link.is_some())
-      && (text.spans.iter())
-        .position(|other| std::ptr::eq(other, span))
+      && text
+        .glyph_span(line, glyph)
         .is_some_and(|index| text.lit(index))
   }
 

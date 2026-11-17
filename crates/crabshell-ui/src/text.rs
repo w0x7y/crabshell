@@ -942,10 +942,15 @@ impl TextNode {
       .is_some_and(|handler| !handler.disabled())
   }
 
-  /// Whether link span `index` draws lit: under the pointer or holding
-  /// the focus.
+  /// Whether link span `index` draws lit: still a link, under the
+  /// pointer or holding the focus.
   pub(crate) fn lit(&self, index: usize) -> bool {
-    self.links_on() && (self.hovered_link == Some(index) || self.focused_link == Some(index))
+    self.links_on()
+      && (self.hovered_link == Some(index) || self.focused_link == Some(index))
+      && self
+        .spans
+        .get(index)
+        .is_some_and(|span| span.link.is_some())
   }
 
   /// The link spans Tab stops on, in text order: each with a glyph

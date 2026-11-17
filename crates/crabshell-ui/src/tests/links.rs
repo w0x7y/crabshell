@@ -294,10 +294,13 @@ fn lit(window: &Window, path: &[usize], span: usize) -> bool {
     panic!("not a text");
   };
   let found = text.runs().find_map(|run| {
-    let glyph = run.glyphs.iter().find(|glyph| glyph.metadata == span + 1)?;
-    text.span(run.line_i, glyph)
+    let glyph = run
+      .glyphs
+      .iter()
+      .find(|glyph| glyph.metadata == span + 1 && glyph.start < glyph.end)?;
+    Some(text.glyph_lit(run.line_i, glyph))
   });
-  text.link_lit(found.expect("the span is shown"))
+  found.expect("the span is shown")
 }
 
 fn key(key: crate::Key, shift: bool) -> crate::KeyEvent {
@@ -468,4 +471,103 @@ fn a_panicking_link_hover_color_is_logged_and_the_link_still_works() {
     "{logs}"
   );
   assert_eq!(*opened.borrow(), ["https://e.org"]);
+}
+
+#[test]
+fn a_link_unlit_inside_a_content_shadow_repaints_the_shadow_too() {
+  let mut h = Harness::new();
+  let (text, _) = linked(spans());
+  // A sharp shadow 20 pixels below what the row draws.
+  let shadow = crate::Shadow::new(0.0, 20.0, 0.0, crate::Color::rgb(0, 0, 0)).follow_content();
+  let row = Row::new()
+    .align(Align::Start)
+    .style(Style::new().shadow(shadow))
+    .child(text);
+  let window = h.window(h.panel().child(row), 300.0, 80.0);
+  let link = span_point(&window, &[0, 0], 1, 0);
+  window.pointer_motion(link);
+  h.frame(&window);
+  window.take_damage();
+  window.pointer_leave();
+  let damage = window.take_damage();
+  let shadowed = Point::new(link.x, link.y + 20.0);
+  assert!(
+    damage.iter().any(|rect| rect.contains(shadowed)),
+    "the underline's shadow at {shadowed:?} stays: {damage:?}"
+  );
+}
+
+#[test]
+fn a_focused_link_that_becomes_plain_text_loses_the_focus() {
+  use crate::Key;
+  let mut h = Harness::new();
+  let plain = h.cx.signal(false);
+  let opened = Rc::new(RefCell::new(Vec::new()));
+  let log = Rc::clone(&opened);
+  let text = Text::rich(move || {
+    let two = Span::new("two");
+    let two = if plain.get() {
+      two
+    } else {
+      two.link("https://two.org")
+    };
+    vec![
+      Span::new("one").link("https://one.org"),
+      Span::new(" and "),
+      two,
+    ]
+  })
+  .on_link(move |_cx, url| log.borrow_mut().push(url.to_owned()));
+  let window = window(&mut h, text);
+  window.key(&key(Key::Tab, false));
+  window.key(&key(Key::Tab, false));
+  assert!(lit(&window, &[0, 0], 2));
+
+  plain.set(true);
+  h.frame(&window);
+  assert!(!lit(&window, &[0, 0], 2), "plain text drawn as a link");
+  assert_eq!(window.focused(), None);
+  window.key(&key(Key::Enter, false));
+  assert!(opened.borrow().is_empty(), "{:?}", opened.borrow());
+  // Tab starts again from the first stop.
+  window.key(&key(Key::Tab, false));
+  assert!(lit(&window, &[0, 0], 0));
+}
+
+#[test]
+fn a_span_that_is_not_a_link_never_draws_lit() {
+  let mut fonts = crate::text::Fonts::new();
+  let mut node = crate::text::TextNode::new();
+  node.set_spans(spans());
+  node.on_link = Some(Rc::new(crate::input::Handler::new(
+    |_: &crate::Cx, _: &str| {},
+  )));
+  node.prepare(crate::Font::new("sans-serif", 13.0), &mut fonts);
+  node.focused_link = Some(0);
+  node.hovered_link = Some(0);
+  assert!(!node.lit(0));
+  node.focused_link = Some(1);
+  assert!(node.lit(1));
+}
+
+#[test]
+fn a_link_whose_on_link_panics_from_the_keyboard_is_repainted_plain() {
+  let mut h = Harness::new();
+  let text = Text::rich(spans()).on_link(|_, _| panic!("no browser"));
+  let window = window(&mut h, text);
+  let link = span_point(&window, &[0, 0], 1, 0);
+  window.pointer_motion(link);
+  window.key(&key(crate::Key::Tab, false));
+  assert!(lit(&window, &[0, 0], 1));
+  h.frame(&window);
+  window.take_damage();
+  capture_logs(|| {
+    window.key(&key(crate::Key::Enter, false));
+  });
+  assert!(!lit(&window, &[0, 0], 1));
+  let damage = window.take_damage();
+  assert!(
+    damage.iter().any(|rect| rect.contains(link)),
+    "the link isn't repainted plain: {damage:?}"
+  );
 }

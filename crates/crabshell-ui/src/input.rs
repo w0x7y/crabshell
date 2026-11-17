@@ -651,7 +651,7 @@ impl Tree {
       .flat_map(|index| text.link_areas(index))
       .collect();
     for area in areas {
-      let area = self.window_rect(id, area);
+      let area = self.window_area(id, area);
       add_damage(&mut self.damage, area);
     }
   }
@@ -1008,7 +1008,7 @@ impl Tree {
       cx: node.cx.clone(),
       path: Rc::clone(&node.path),
       handlers: None,
-      action: Action::Link(handler, url),
+      action: Action::Link(handler, url, self.this.clone(), id),
     })
   }
 
@@ -1404,8 +1404,9 @@ enum Action {
   Drag(Drag, Option<Rc<Cell<bool>>>),
   /// A drop, which says whether its `on_drop` ran and returned.
   Drop(DragValue, Rc<Cell<bool>>),
-  /// A text's `on_link`, with the URL of the link clicked.
-  Link(LinkHandler, String),
+  /// A text's `on_link`, with the URL of the link clicked, and the tree
+  /// and text to repaint plain if it panics.
+  Link(LinkHandler, String, Weak<RefCell<Tree>>, NodeId),
 }
 
 /// A handler to run once the tree is released.
@@ -1429,8 +1430,16 @@ enum Picked {
 impl Call {
   pub(crate) fn run(self) {
     let (path, cx) = (&self.path, &self.cx);
-    if let Action::Link(handler, url) = &self.action {
+    if let Action::Link(handler, url, tree, id) = &self.action {
       run_isolated(path, "on_link", Rc::clone(handler), |f| f(cx, url));
+      // A handler that panicked leaves its links plain text.
+      if handler.disabled()
+        && let Some(tree) = tree.upgrade()
+        && let Ok(mut tree) = tree.try_borrow_mut()
+      {
+        tree.light_link(*id, false, None);
+        tree.light_link(*id, true, None);
+      }
       return;
     }
     let Some(handlers) = self.handlers else {

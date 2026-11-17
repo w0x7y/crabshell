@@ -237,6 +237,21 @@ impl Tree {
     self.focus_link(id, None);
   }
 
+  /// Drops the focus from text `id` if the link span it is on is no
+  /// longer a link, so Tab starts again from the first stop.
+  pub(crate) fn drop_stale_link_focus(&mut self, id: NodeId) {
+    let (Some(focused), Some(link)) = (self.keyboard.focused, self.keyboard.link) else {
+      return;
+    };
+    let still = match self.node(id).map(|node| &node.kind) {
+      Some(NodeKind::Text(text)) => text.spans.get(link).is_some_and(|span| span.link.is_some()),
+      _ => false,
+    };
+    if focused == id && !still {
+      self.focus(None);
+    }
+  }
+
   /// Moves the focus to `id`, on its link span `link` if it is a text.
   fn focus_link(&mut self, id: Option<NodeId>, link: Option<usize>) {
     if id.is_some_and(|id| !self.shown(id)) {

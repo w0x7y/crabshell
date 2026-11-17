@@ -349,7 +349,6 @@ impl Tree {
     chain.extend(transform.map(Step::Transform));
     // Inside the transform: the shadow turns with what casts it. A fading
     // one reaches anywhere between its start and its end.
-    let fading = node.fade.as_ref().map(|fade| fade.from);
     let refused = node
       .effective_style()
       .shadow
@@ -360,12 +359,7 @@ impl Tree {
         node.path
       );
     }
-    let shadows = [Some(node.effective_style()), fading]
-      .into_iter()
-      .flatten()
-      .filter_map(|style| style.shadow)
-      .filter(Shadow::casts_from_content);
-    chain.extend(shadows.map(Step::Shadow));
+    chain.extend(content_shadows(node));
     let mut children = Rect::default();
     for child in self.taffy.children(id).unwrap_or_default() {
       children = children.union(self.place(child, origin, chain, fonts));
@@ -558,6 +552,40 @@ pub(crate) enum Step {
   /// A shadow cast by what the node and its children draw, which reaches
   /// past what casts it.
   Shadow(Shadow),
+}
+
+/// The content shadows `node` casts, a fading one's too, as steps out
+/// of it.
+fn content_shadows(node: &Node) -> Vec<Step> {
+  let fading = node.fade.as_ref().map(|fade| fade.from);
+  [Some(node.effective_style()), fading]
+    .into_iter()
+    .flatten()
+    .filter_map(|style| style.shadow)
+    .filter(Shadow::casts_from_content)
+    .map(Step::Shadow)
+    .collect()
+}
+
+impl Tree {
+  /// Where `rect`, in the coordinates node `id`'s rectangle is in, lands
+  /// in the window, as the place pass works it out: through the
+  /// transforms and content shadows of the node and its ancestors.
+  pub(crate) fn window_area(&self, id: NodeId, rect: Rect) -> Rect {
+    let chain: Vec<Step> = self
+      .path_to(id)
+      .into_iter()
+      .filter_map(|id| self.node(id))
+      .flat_map(|node| {
+        node
+          .transform
+          .map(Step::Transform)
+          .into_iter()
+          .chain(content_shadows(node))
+      })
+      .collect();
+    through(&chain, rect)
+  }
 }
 
 /// Where `rect`, in the innermost space of `chain`, lands in the window:

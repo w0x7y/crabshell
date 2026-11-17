@@ -1120,13 +1120,14 @@ impl Painter<'_> {
         continue;
       }
       // A lit link takes the hover color, if the text has one.
-      let span_color = |span: &Span| match text.link_lit(span) {
+      let span_color = |span: &Span, glyph: &LayoutGlyph| match text.glyph_lit(run.line_i, glyph) {
         true => text.link_hover_color().or(span.color),
         false => span.color,
       };
       for glyph in run.glyphs.iter() {
         let span = text.span(run.line_i, glyph);
-        let color = span.and_then(span_color).unwrap_or(text.color());
+        let color = span.and_then(|span| span_color(span, glyph));
+        let color = color.unwrap_or(text.color());
         if color.a == 0 {
           continue;
         }
@@ -1169,9 +1170,10 @@ impl Painter<'_> {
         let Some(span) = text.span(run.line_i, &glyphs[0]) else {
           continue;
         };
-        let lines = (span.underline || text.link_lit(span), span.strikethrough);
+        let lit = text.glyph_lit(run.line_i, &glyphs[0]);
+        let lines = (span.underline || lit, span.strikethrough);
         if lines != (false, false) {
-          let color = span_color(span).unwrap_or(text.color());
+          let color = span_color(span, &glyphs[0]).unwrap_or(text.color());
           self.decorations(pixmap, origin, glyphs, baseline, lines, color);
         }
       }

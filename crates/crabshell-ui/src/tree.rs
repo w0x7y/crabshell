@@ -947,7 +947,8 @@ impl Tree {
           })
         });
         self.bind_opt(id, props.spans, "spans", |tree, id, value| {
-          tree.update_text(id, |text| text.set_spans(value))
+          tree.update_text(id, |text| text.set_spans(value));
+          tree.drop_stale_link_focus(id);
         });
         self.bind_opt(id, props.selectable, "selectable", Tree::set_selectable);
         let hover = props.link_hover_color;
