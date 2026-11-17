@@ -390,6 +390,27 @@ fn what_cant_start_is_logged_and_runs_nothing() {
 }
 
 #[test]
+fn an_exec_the_spec_refuses_runs_as_a_shell_splits_it_logged_once() {
+  let dirs = Dirs::new();
+  let (program, out) = dirs.recorder("record");
+  let exec = format!("{} --opt=\"a b\" 'c d' e\\ f", program.display());
+  write(&dirs.user(), "loose.desktop", &app("Loose", &exec, ""));
+  let (mut shell, entries) = shell(dirs.sources());
+  run(&mut shell, 50);
+  let logs = capture_logs(|| {
+    for _ in 0..2 {
+      entries.launch("loose");
+      shell.retry_until("the program's output", || out.exists(), |_| {});
+      let lines = std::fs::read_to_string(&out).expect("its output");
+      std::fs::remove_file(&out).expect("removed");
+      let args: Vec<&str> = lines.lines().skip(2).collect();
+      assert_eq!(args, ["--opt=a b", "c d", "e f"]);
+    }
+  });
+  assert_eq!(logs.matches("split as a shell would").count(), 1, "{logs}");
+}
+
+#[test]
 fn a_d_bus_application_is_activated_and_falls_back_to_its_exec() {
   let dirs = Dirs::new();
   let (program, out) = dirs.recorder("record");

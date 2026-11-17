@@ -196,7 +196,7 @@ impl DesktopEntries {
     };
     let find = |apps: &Vec<DesktopEntry>| apps.iter().find(|app| app.id == id).cloned();
     match untrack(|| self.applications.try_with(find)).flatten() {
-      Some(app) => launch(&service.shared, &app, action),
+      Some(app) => launch(service, &app, action),
       None => tracing::warn!(id, "no application has this ID, so nothing starts"),
     }
   }
@@ -224,7 +224,7 @@ fn lookup<'a>(apps: &'a [DesktopEntry], app_id: &str) -> Option<&'a DesktopEntry
 
 /// Starts `app`, or its `action`, apart from the shell: over D-Bus if
 /// it says so, falling back to its `Exec`.
-fn launch(shared: &Rc<Shared>, app: &DesktopEntry, action: Option<&str>) {
+fn launch(service: &Rc<Service>, app: &DesktopEntry, action: Option<&str>) {
   let id = app.id.as_str();
   let exec = match action {
     None => &app.exec,
@@ -240,27 +240,27 @@ fn launch(shared: &Rc<Shared>, app: &DesktopEntry, action: Option<&str>) {
     },
   };
   if !app.dbus_activatable {
-    return run(shared, app, exec);
+    return run(service, app, exec);
   }
   let Some(path) = object_path(id) else {
     tracing::warn!(
       id,
       "the application's ID isn't a D-Bus name, so it can't start over D-Bus"
     );
-    return run(shared, app, exec);
+    return run(service, app, exec);
   };
-  let Some(address) = shared.config.session_bus.clone() else {
+  let Some(address) = service.shared.config.session_bus.clone() else {
     tracing::warn!(id, "no session bus to start the application over D-Bus");
-    return run(shared, app, exec);
+    return run(service, app, exec);
   };
-  let (shared, app) = (Rc::clone(shared), app.clone());
+  let (service, app) = (Rc::clone(service), app.clone());
   let (exec, action) = (exec.clone(), action.map(str::to_owned));
-  let started = Rc::clone(&shared);
-  started.spawn(async move {
-    let activated = activate(&shared, address, &app.id, path, action.as_deref()).await;
+  let shared = Rc::clone(&service.shared);
+  shared.spawn(async move {
+    let activated = activate(&service.shared, address, &app.id, path, action.as_deref()).await;
     if let Err(error) = activated {
       tracing::warn!(id = app.id, %error, "couldn't start the application over D-Bus");
-      run(&shared, &app, &exec);
+      run(&service, &app, &exec);
     }
   });
 }
@@ -304,8 +304,8 @@ async fn activate(
 }
 
 /// Runs `exec`, `app`'s or one of its actions', apart from the shell.
-fn run(shared: &Rc<Shared>, app: &DesktopEntry, exec: &str) {
-  let id = app.id.as_str();
+fn run(service: &Service, app: &DesktopEntry, exec: &str) {
+  let (id, shared) = (app.id.as_str(), &service.shared);
   if exec.is_empty() {
     return tracing::warn!(
       id,
@@ -316,6 +316,16 @@ fn run(shared: &Rc<Shared>, app: &DesktopEntry, exec: &str) {
     Ok(argv) => argv,
     Err(why) => return tracing::warn!(id, exec, why, "a malformed Exec, so nothing starts"),
   };
+  if let Err(why) = parse::split_exec(exec)
+    && service.split_logged.borrow_mut().insert(id.to_owned())
+  {
+    tracing::info!(
+      id,
+      exec,
+      why,
+      "an Exec the spec refuses, split as a shell would"
+    );
+  }
   let mut command = if app.terminal {
     let path = &shared.config.desktop_entries.path;
     let Some(terminal) = parse::find("xdg-terminal-exec", path) else {
@@ -358,6 +368,8 @@ pub(crate) fn desktop_entries(cx: &Cx) -> DesktopEntries {
 pub(crate) struct Service {
   shared: Rc<Shared>,
   state: RefCell<Option<State>>,
+  /// The IDs whose `Exec` was split as a shell would, each logged once.
+  split_logged: RefCell<HashSet<String>>,
 }
 
 struct State {
@@ -385,6 +397,7 @@ impl Service {
     Service {
       shared,
       state: RefCell::new(None),
+      split_logged: RefCell::default(),
     }
   }
 

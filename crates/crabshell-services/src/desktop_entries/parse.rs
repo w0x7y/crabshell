@@ -278,13 +278,65 @@ pub(super) fn split_exec(exec: &str) -> Result<Vec<String>, String> {
   }
 }
 
+/// The words of a command line as GLib's `g_shell_parse_argv` splits
+/// them, by the POSIX shell's quoting with nothing expanded, as GLib's
+/// launchers run an `Exec` the spec's rules refuse. `None` when GLib
+/// refuses it too: a quote left open, a backslash at the end, or no
+/// words.
+pub(super) fn shell_split(line: &str) -> Option<Vec<String>> {
+  let mut args = Vec::new();
+  // The word being read, once one started: `''` starts an empty one.
+  let mut word: Option<String> = None;
+  let mut chars = line.chars();
+  while let Some(c) = chars.next() {
+    match c {
+      ' ' | '\t' | '\n' => args.extend(word.take()),
+      '#' if word.is_none() => {
+        chars.by_ref().find(|c| *c == '\n');
+      }
+      '\\' => match chars.next()? {
+        '\n' => {}
+        c => word.get_or_insert_default().push(c),
+      },
+      '\'' => {
+        let word = word.get_or_insert_default();
+        loop {
+          match chars.next()? {
+            '\'' => break,
+            c => word.push(c),
+          }
+        }
+      }
+      '"' => {
+        let word = word.get_or_insert_default();
+        loop {
+          match chars.next()? {
+            '"' => break,
+            '\\' => match chars.next()? {
+              '\n' => {}
+              c @ ('$' | '`' | '"' | '\\') => word.push(c),
+              c => word.extend(['\\', c]),
+            },
+            c => word.push(c),
+          }
+        }
+      }
+      c => word.get_or_insert_default().push(c),
+    }
+  }
+  args.extend(word);
+  (!args.is_empty()).then_some(args)
+}
+
 /// What `exec`, `entry`'s or one of its actions', runs when launched with
 /// no files or URLs: the program, then its arguments, or what makes it
 /// malformed. `%f`, `%F`, `%u`, `%U` and the deprecated codes go, `%i`
 /// is `--icon` and the icon, `%c` the name, `%k` the file and `%%` a `%`.
+/// A line the spec's quoting refuses is split as [`shell_split`] does.
 pub(super) fn command_line(exec: &str, entry: &DesktopEntry) -> Result<Vec<String>, String> {
   let mut argv = Vec::new();
-  for arg in split_exec(exec)? {
+  let words = split_exec(exec).or_else(|why| shell_split(exec).ok_or(why))?;
+  for arg in words {
     if arg == "%i" {
       if !entry.icon.is_empty() {
         argv.extend(["--icon".to_owned(), entry.icon.clone()]);
@@ -324,7 +376,9 @@ pub(super) fn command_line(exec: &str, entry: &DesktopEntry) -> Result<Vec<Strin
 mod tests {
   use std::path::PathBuf;
 
-  use super::{command_line, entry, groups, list, locales, localized, split_exec, unescape};
+  use super::{
+    command_line, entry, groups, list, locales, localized, shell_split, split_exec, unescape,
+  };
   use crate::desktop_entries::{DesktopEntry, Sources};
 
   #[test]
@@ -427,6 +481,35 @@ mod tests {
     ] {
       assert_eq!(split_exec(exec), Err(why.to_owned()), "{exec}");
     }
+  }
+
+  #[test]
+  fn a_line_the_spec_refuses_splits_as_a_shell_would() {
+    for (exec, args) in [
+      ("sh -c 'echo hi; exit'", &["sh", "-c", "echo hi; exit"][..]),
+      (r#"prog --opt="a b" a"b"c"#, &["prog", "--opt=a b", "abc"]),
+      (r"prog a\ b \'q\' x\\y", &["prog", "a b", "'q'", r"x\y"]),
+      ("prog a|b ~/file\tc", &["prog", "a|b", "~/file", "c"]),
+      (r#"prog "\n\$\"" '\n'"#, &["prog", r#"\n$""#, r"\n"]),
+      (r#"prog "$HOME" `x`"#, &["prog", "$HOME", "`x`"]),
+      ("prog a#b # a comment\nnext", &["prog", "a#b", "next"]),
+      ("prog a\\\nb ''", &["prog", "ab", ""]),
+    ] {
+      assert_eq!(shell_split(exec).expect(exec), args, "{exec}");
+    }
+    for exec in [r#"prog "open"#, "prog 'open", r"prog a\", "  ", "# only"] {
+      assert_eq!(shell_split(exec), None, "{exec:?}");
+    }
+    // What both refuse is refused with the spec's reason.
+    let app = app("");
+    assert_eq!(
+      command_line(r#"prog "open"#, &app),
+      Err("a quote isn't closed".to_owned())
+    );
+    assert_eq!(
+      command_line("sh -c 'echo %c' %U", &app).expect("split as a shell would"),
+      ["sh", "-c", "echo My App"]
+    );
   }
 
   /// The entry `body` makes under `[Desktop Entry]`, for `sources`.
