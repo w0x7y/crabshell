@@ -472,3 +472,42 @@ fn a_meter_gone_before_the_server_made_its_stream_leaves_nothing_recording() {
   assert_eq!(recordings(), "");
   stop(tone);
 }
+
+#[test]
+#[ignore = "needs pipewire; run by hand"]
+fn a_sound_plays_once_then_nothing_wakes() {
+  let _one = one_at_a_time();
+  let server = PrivateServer::start("sound");
+  let mut shell = Harness::new(&server.address());
+  let audio = shell.cx.audio();
+  let (sinks, streams) = (audio.sinks(), audio.streams());
+  let peaks = audio.peaks(test_sink());
+  shell.run_until(|_| sinks.get_untracked().len() == 2);
+  // A second of a square wave, 0.5 left and 0.25 right, as 32-bit
+  // float, 24 frames high then 24 low.
+  let frame = |sign: f32| [0.5 * sign, 0.25 * sign].map(f32::to_le_bytes).concat();
+  let wave = [frame(1.0).repeat(24), frame(-1.0).repeat(24)].concat();
+  let dir = crate::testing::TempDir::new();
+  let path = dir.path().join("tone.wav");
+  let file = super::sound::wav(3, 2, 48_000, 32, &wave.repeat(1000));
+  std::fs::write(&path, file).expect("a test file");
+  audio.play_sound(&path);
+  shell.run_until(|_| {
+    server.link();
+    near(&peaks.get_untracked(), &[0.5, 0.25])
+  });
+  assert_eq!(streams.get_untracked().len(), 1, "the sound's stream");
+  // It ends once played, and leaves nothing behind.
+  shell.run_until(|_| streams.get_untracked().is_empty());
+  let sounds = || {
+    let service = shell.service();
+    let pulse = service.pulse.borrow();
+    pulse.as_ref().map_or(0, |pulse| pulse.sounds.len())
+  };
+  assert_eq!(sounds(), 0);
+  shell.run_for(Duration::from_millis(500));
+  let switches = libpulse_switches();
+  // The meter's sink is idle now; one wakeup: the one that ends the run.
+  assert_eq!(shell.run_for(Duration::from_secs(2)), 1);
+  assert_eq!(libpulse_switches(), switches, "libpulse's thread slept");
+}

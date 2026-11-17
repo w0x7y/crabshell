@@ -25,6 +25,7 @@ use fake::{
 mod fake;
 mod peaks;
 mod pipewire;
+mod sound;
 
 const NORM: u32 = Volume::NORMAL.0;
 

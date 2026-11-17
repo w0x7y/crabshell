@@ -12,6 +12,7 @@ use super::NoServer;
 /// The native protocol's command numbers, from PulseAudio's
 /// `native-common.h`.
 pub(super) const REPLY: u32 = 2;
+pub(super) const CREATE_PLAYBACK_STREAM: u32 = 3;
 pub(super) const CREATE_RECORD_STREAM: u32 = 5;
 pub(super) const AUTH: u32 = 8;
 pub(super) const SET_CLIENT_NAME: u32 = 9;

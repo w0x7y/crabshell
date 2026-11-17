@@ -31,6 +31,7 @@ use crate::Shared;
 use crate::dbus::set_changed;
 
 mod peaks;
+mod sound;
 #[cfg(test)]
 mod tests;
 
@@ -363,6 +364,7 @@ pub(crate) struct AudioService {
   next_meter: Cell<u64>,
   /// What a meter that can't record shows, made with `sink`.
   no_peaks: OnceCell<Signal<Vec<f32>>>,
+  bad_sounds: RefCell<sound::BadSounds>,
 }
 
 /// What libpulse's thread sends: the generation of the context it came
@@ -398,6 +400,10 @@ pub(crate) enum Event {
   MeterState(u64),
   /// A closing peak meter's stream changed its state.
   Closing,
+  /// The sound with this id changed its state or wants samples.
+  Sound(u64),
+  /// The server played the sound with this id.
+  SoundDone(u64),
 }
 
 impl AudioService {
@@ -410,6 +416,7 @@ impl AudioService {
       meters: RefCell::new(Vec::new()),
       next_meter: Cell::new(0),
       no_peaks: OnceCell::new(),
+      bad_sounds: RefCell::default(),
     }
   }
 
@@ -470,6 +477,8 @@ impl AudioService {
     let pulse = Pulse {
       meters: Vec::new(),
       closing: Vec::new(),
+      sounds: Vec::new(),
+      next_sound: 0,
       intro: None,
       context: None,
       mainloop,
@@ -554,6 +563,8 @@ impl AudioService {
       Event::Peaks(id) => pulse.read_peaks(id),
       Event::MeterState(id) => pulse.on_meter_state(id),
       Event::Closing => pulse.on_closing(),
+      Event::Sound(id) => pulse.feed_sound(id),
+      Event::SoundDone(id) => pulse.sound_done(id),
     }
   }
 
@@ -617,6 +628,8 @@ struct Pulse {
   meters: Vec<peaks::Meter>,
   /// Streams of meters closed before the server made them, waiting to be.
   closing: Vec<peaks::Recording>,
+  sounds: Vec<sound::Sound>,
+  next_sound: u64,
   intro: Option<Introspector>,
   context: Option<Context>,
   mainloop: Mainloop,
@@ -1121,6 +1134,7 @@ impl Pulse {
   fn disconnect(&mut self) -> bool {
     let lock = Locked::new(&mut self.mainloop);
     peaks::close_all(&mut self.meters, &mut self.closing);
+    self.sounds.clear();
     self.intro = None;
     if let Some(mut context) = self.context.take() {
       // Cleared first: disconnecting calls the state callback.
