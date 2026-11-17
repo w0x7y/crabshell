@@ -10,8 +10,9 @@ pub(crate) const FIRST_DELAY: Duration = Duration::from_secs(1);
 /// The longest wait: each crash doubles the last one up to this.
 pub(crate) const MAX_DELAY: Duration = Duration::from_secs(30);
 
-/// How long a shell runs before it counts as working: then its build is
-/// kept as `last-good`, and the wait goes back to [`FIRST_DELAY`].
+/// How long a shell runs after it said `ready` before it counts as
+/// working: then its build is kept as `last-good`, and the wait goes back
+/// to [`FIRST_DELAY`].
 pub(crate) const HEALTHY_AFTER: Duration = Duration::from_secs(60);
 
 /// How many crashes within [`HEALTHY_AFTER`] of a new build's first start
@@ -49,7 +50,8 @@ impl Exit {
 pub(crate) enum Binary {
   /// The newest build.
   Build,
-  /// The copy of the last build that ran for [`HEALTHY_AFTER`].
+  /// The copy of the last build that ran for [`HEALTHY_AFTER`] after it
+  /// said `ready`.
   LastGood,
 }
 
@@ -72,6 +74,8 @@ pub(crate) struct Policy {
   /// Its crashes since then.
   crashes: usize,
   delay: Duration,
+  /// The running shell said `ready`.
+  said_ready: bool,
 }
 
 impl Policy {
@@ -82,6 +86,7 @@ impl Policy {
       build_started: None,
       crashes: 0,
       delay: FIRST_DELAY,
+      said_ready: false,
     }
   }
 
@@ -93,12 +98,23 @@ impl Policy {
 
   /// A shell is starting now.
   pub(crate) fn started(&mut self, now: Instant) {
+    self.said_ready = false;
     if self.binary == Binary::Build && self.build_started.is_none() {
       self.build_started = Some(now);
     }
   }
 
-  /// The shell has run for [`HEALTHY_AFTER`]: the next crash waits
+  /// The shell said `ready` at `now`. Returns when it counts as healthy,
+  /// [`HEALTHY_AFTER`] later, or `None` if it said so already since it
+  /// started. A shell that never says it never counts.
+  pub(crate) fn ready(&mut self, now: Instant) -> Option<Instant> {
+    if std::mem::replace(&mut self.said_ready, true) {
+      return None;
+    }
+    Some(now + HEALTHY_AFTER)
+  }
+
+  /// The shell has run for [`HEALTHY_AFTER`] since `ready`: the next crash waits
   /// [`FIRST_DELAY`] again.
   pub(crate) fn healthy(&mut self) {
     self.delay = FIRST_DELAY;

@@ -303,18 +303,10 @@ impl Supervisor {
       return;
     }
     self.shell = Some((child, now));
-    self.healthy_timer = self
-      .handle
-      .insert_source(Timer::from_duration(HEALTHY_AFTER), |_, _, supervisor| {
-        supervisor.healthy();
-        TimeoutAction::Drop
-      })
-      .map_err(|error| log(&format!("can't time the shell: {}", error.error)))
-      .ok();
   }
 
-  /// The shell has run for [`HEALTHY_AFTER`]: a build is kept as
-  /// `last-good`.
+  /// The shell has run for [`HEALTHY_AFTER`] since it said `ready`: a
+  /// build is kept as `last-good`.
   fn healthy(&mut self) {
     self.healthy_timer = None;
     self.policy.healthy();
@@ -329,7 +321,7 @@ impl Supervisor {
     let ran = PathBuf::from(format!("/proc/{}/exe", child.id()));
     match keep(&ran, &self.last_good) {
       Ok(()) => log(&format!(
-        "the shell ran {} s, so its build is kept as {}",
+        "the shell ran {} s after it said ready, so its build is kept as {}",
         HEALTHY_AFTER.as_secs(),
         self.last_good.display()
       )),
@@ -431,20 +423,33 @@ impl Supervisor {
     }
   }
 
-  /// The shell said `ready`.
+  /// The shell said `ready`: it counts as healthy [`HEALTHY_AFTER`] from
+  /// now.
   fn ready(&mut self) {
-    if let Some((_, started)) = &self.shell {
+    let Some((_, started)) = &self.shell else {
+      return;
+    };
+    log(&format!(
+      "the shell is ready, {} ms after it started",
+      started.elapsed().as_millis()
+    ));
+    if let Some(ended) = self.reload_gap.take() {
       log(&format!(
-        "the shell is ready, {} ms after it started",
-        started.elapsed().as_millis()
+        "reloaded with {} ms between the old shell's exit and the new one's ready",
+        ended.elapsed().as_millis()
       ));
-      if let Some(ended) = self.reload_gap.take() {
-        log(&format!(
-          "reloaded with {} ms between the old shell's exit and the new one's ready",
-          ended.elapsed().as_millis()
-        ));
-      }
     }
+    let Some(due) = self.policy.ready(Instant::now()) else {
+      return;
+    };
+    self.healthy_timer = self
+      .handle
+      .insert_source(Timer::from_deadline(due), |_, _, supervisor| {
+        supervisor.healthy();
+        TimeoutAction::Drop
+      })
+      .map_err(|error| log(&format!("can't time the shell: {}", error.error)))
+      .ok();
   }
 
   /// The watcher woke the loop: rebuild once the files are quiet for

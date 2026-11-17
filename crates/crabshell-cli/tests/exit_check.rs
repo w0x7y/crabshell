@@ -201,6 +201,38 @@ fn phase_5_exit_check() {
   assert!(log.contains("last-good starts"), "{log}");
   assert_eq!(log.matches("panicked at src/main.rs").count(), 3, "{log}");
 
+  // 5. So does a config whose bars all panic at startup: the shell has
+  // nothing to show and exits with 1.
+  let bars_panicking = Instant::now();
+  edit(&|code| {
+    code
+      .replace("\n  panic!(\"the exit check's startup panic\");", "")
+      .replacen(
+        "-> PanelWindow {",
+        "-> PanelWindow {\n    panic!(\"the exit check's bar panic\");",
+        1,
+      )
+  });
+  let notes = bus.wait_for(3, Duration::from_secs(300));
+  assert_eq!(notes.len(), 3, "{notes:?}");
+  assert_eq!(notes[2].0, "Your Crabshell config keeps crashing");
+  wait_for_line(
+    &supervised,
+    "the shell is ready",
+    5,
+    Duration::from_secs(30),
+  );
+  let bars_fallback = bars_panicking.elapsed();
+  let log = supervised.log();
+  assert_eq!(log.matches("has nothing to show").count(), 3, "{log}");
+  assert_eq!(
+    log
+      .matches("per_output[HEADLESS-1] (called at src/main.rs:")
+      .count(),
+    3,
+    "{log}"
+  );
+
   supervised.signal("-TERM");
   let (code, log) = supervised.wait(Duration::from_secs(10));
   assert_eq!(code, Some(0), "{log}");
@@ -212,10 +244,12 @@ fn phase_5_exit_check() {
      reload gap, old shell's exit to the new one's ready: {gap} ms\n\
      back after kill -9: {} ms\n\
      edit to last-good ready after three startup panics: {:.1} s\n\
+     edit to last-good ready after three starts whose bars all panic: {:.1} s\n\
      supervisor RSS with the shell up: {supervisor_rss} KiB\n",
     after_build.as_millis(),
     back.as_millis(),
     fallback.as_secs_f64(),
+    bars_fallback.as_secs_f64(),
   );
   std::fs::write(cache.join("results.txt"), &results).expect("the results");
   println!("{results}");

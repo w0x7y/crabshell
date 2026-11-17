@@ -217,7 +217,8 @@ fn a_new_config_checks_clean_and_a_mistake_fails_the_check() {
 /// appends `build` or `last-good`, its process id and the time in
 /// milliseconds to `starts` once it said `ready`. The word in `mode` picks
 /// what it does next: `crash` exits 1, `logout` exits 2 as with no
-/// compositor, `deaf` stays up and ignores the supervisor, and anything
+/// compositor, `deaf` stays up and ignores the supervisor, `late` says
+/// `ready` only once a file `go` appears and then stays up, and anything
 /// else stays up until told to save, when it appends its process id to
 /// `saves` and exits 0.
 const FAKE_SHELL: &str = r#"
@@ -231,11 +232,13 @@ fn main() {
     .duration_since(std::time::UNIX_EPOCH)
     .expect("after 1970")
     .as_millis();
-  let control = std::env::var_os("CRABSHELL_CONTROL").map(|path| {
-    let mut stream = std::os::unix::net::UnixStream::connect(path).expect("the supervisor");
-    stream.write_all(b"ready\n").expect("ready");
-    stream
+  let mode = std::fs::read_to_string(dir.join("mode")).unwrap_or_default();
+  let mut control = std::env::var_os("CRABSHELL_CONTROL").map(|path| {
+    std::os::unix::net::UnixStream::connect(path).expect("the supervisor")
   });
+  if mode.trim() != "late" {
+    control.iter_mut().for_each(|stream| stream.write_all(b"ready\n").expect("ready"));
+  }
   // After connecting, so a test that sees the start can reload it.
   let mut starts = std::fs::OpenOptions::new()
     .append(true)
@@ -245,10 +248,16 @@ fn main() {
   // One write, so a reader never sees half a line.
   let line = format!("{name} {} {now}\n", std::process::id());
   starts.write_all(line.as_bytes()).expect("written");
-  match std::fs::read_to_string(dir.join("mode")).unwrap_or_default().trim() {
+  match mode.trim() {
     "crash" => std::process::exit(1),
     "logout" => std::process::exit(2),
     "deaf" => {}
+    "late" => {
+      while !dir.join("go").exists() {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+      }
+      control.iter_mut().for_each(|stream| stream.write_all(b"ready\n").expect("ready"));
+    }
     _ => {
       use std::io::BufRead;
       for line in control.iter().flat_map(|stream| std::io::BufReader::new(stream).lines()) {
@@ -507,6 +516,33 @@ fn a_shell_that_runs_60_s_is_kept_as_last_good() {
   let (code, log) = supervised.wait(Duration::from_secs(5));
   assert_eq!(code, Some(0), "{log}");
   assert!(log.contains("its build is kept as"), "{log}");
+}
+
+/// Stays up 62 s without `ready`, then says it: only 60 s after that is
+/// the build kept.
+#[test]
+#[ignore = "waits 2 minutes"]
+fn a_shell_is_kept_as_last_good_60_s_after_ready_not_after_its_start() {
+  let home = Home::new("run-late-ready");
+  home.fake_config("late");
+  let supervised = home.supervise();
+  home.wait_for_starts(1, Duration::from_secs(60));
+  let last_good = home.0.join("cache/crabshell/last-good");
+  std::thread::sleep(Duration::from_secs(62));
+  assert!(!last_good.exists(), "kept before it said ready");
+  std::fs::write(home.config().join("go"), "").expect("written");
+  let ready = Instant::now();
+  let deadline = ready + Duration::from_secs(90);
+  while !last_good.exists() && Instant::now() < deadline {
+    std::thread::sleep(Duration::from_millis(200));
+  }
+  let kept = ready.elapsed();
+  assert!(last_good.exists(), "never kept");
+  assert!(kept >= Duration::from_secs(59), "kept {kept:?} after ready");
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(5));
+  assert_eq!(code, Some(0), "{log}");
+  assert!(log.contains("the shell is ready"), "{log}");
 }
 
 /// Crashes for over a minute, so a timer left from an earlier start would

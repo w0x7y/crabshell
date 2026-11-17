@@ -230,6 +230,20 @@ fn the_first_error_is_kept_for_the_notification() {
 }
 
 #[test]
+fn a_shell_is_healthy_60_s_after_it_says_ready_once_per_start() {
+  let start = Instant::now();
+  let mut policy = Policy::new(Binary::Build);
+  policy.started(start);
+  // Counted from `ready`, not from the start: a shell that never says it
+  // is never due.
+  assert_eq!(policy.ready(start + secs(5)), Some(start + secs(65)));
+  assert_eq!(policy.ready(start + secs(6)), None, "said already");
+  policy.exited(start + secs(7), Exit::Crashed, true);
+  policy.started(start + secs(8));
+  assert_eq!(policy.ready(start + secs(9)), Some(start + secs(69)));
+}
+
+#[test]
 fn a_new_build_starts_over() {
   let start = Instant::now();
   let mut policy = Policy::new(Binary::Build);
