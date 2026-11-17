@@ -59,6 +59,9 @@ pub(crate) struct Tree {
   /// A transform changed, so where things are drawn is worked out again,
   /// without laying anything out.
   pub(crate) needs_place: bool,
+  /// A scroll offset changed, so the placing that follows moves content
+  /// under the pointer and hovers again.
+  pub(crate) scrolled: bool,
   /// Areas to repaint, gathered since the renderer last took them.
   pub(crate) damage: Vec<Rect>,
   pub(crate) pointer: Pointer,
@@ -531,6 +534,7 @@ impl Tree {
       needs_layout: true,
       fonts_added: 0,
       needs_place: false,
+      scrolled: false,
       damage: Vec::new(),
       pointer: Pointer::default(),
       keyboard: Keyboard::default(),
@@ -966,10 +970,15 @@ impl Tree {
             (move || signal.get()).into_prop(),
             "offset",
             |tree, id, value| {
-              tree.update(id, |node| match &mut node.kind {
-                NodeKind::Scroll(scroll) => replace(&mut scroll.offset, value),
+              // The child keeps its layout; only where it is drawn moves.
+              let change = tree.update(id, |node| match &mut node.kind {
+                NodeKind::Scroll(scroll) if scroll.offset != value => {
+                  scroll.offset = value;
+                  Change::Place
+                }
                 _ => Change::None,
               });
+              tree.scrolled |= change == Change::Place;
             },
           );
         }

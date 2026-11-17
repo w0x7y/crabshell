@@ -782,3 +782,27 @@ fn a_view_stopped_by_a_press_a_slow_lift_or_a_notch_keeps_current_in_view_again(
   window.pointer_scroll(wheel(120));
   assert!(shown_after(&mut h, 600), "after a notch");
 }
+
+#[test]
+fn a_list_lays_out_only_when_the_rows_it_builds_change() {
+  let mut h = Harness::new();
+  let items = h.cx.signal((0..100).collect());
+  let offset = h.cx.signal(0.0);
+  let window = list(&mut h, items, |_| 20, offset, |list| list);
+  window.pointer_motion(Point::new(10.0, 10.0));
+  let labels =
+    |window: &Window| -> Vec<String> { rows(window).into_iter().map(|(label, _)| label).collect() };
+  let mut layouts = 0;
+  for n in 0..12 {
+    let before = labels(&window);
+    window.pointer_scroll_at(pixels(5.0), n * 10);
+    h.runtime.flush();
+    let laid_out = window.tree.borrow().needs_layout;
+    h.frame(&window);
+    let after = labels(&window);
+    assert_eq!(laid_out, before != after, "at {}", offset.get());
+    layouts += u32::from(laid_out);
+  }
+  assert_eq!(offset.get(), 60.0);
+  assert!((1..12).contains(&layouts), "{layouts} layouts");
+}

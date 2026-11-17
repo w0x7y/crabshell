@@ -7,8 +7,8 @@ use crabshell_reactive::Signal;
 
 use super::{Counter, Harness, capture_logs, lift, pixels, rect_at, wheel};
 use crate::{
-  Align, Button, Column, Icon, Point, PointerButton, Row, ScrollSource, ScrollView, Style, Wheel,
-  WheelAxis, Window, advance_animations, animating, next_timer,
+  Align, Button, Column, Icon, Point, PointerButton, Rect, Row, ScrollSource, ScrollView, Style,
+  Wheel, WheelAxis, Window, advance_animations, animating, next_timer,
 };
 
 /// A 20 by 50 view of 30 icons of 20 pixels: 600 pixels, scrolling 550.
@@ -623,4 +623,55 @@ fn a_press_on_the_bar_stops_a_fling_and_its_drag_starts_from_there() {
   window.pointer_button_at(PointerButton::Left, false, 550);
   run_clock(&mut h, &window, Instant::now());
   assert_eq!(first_y(&window), -550.0);
+}
+
+#[test]
+fn a_notch_or_a_fling_only_places_the_window_and_keeps_geometry_and_hover_right() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0);
+  let geometry = h.cx.signal(Rect::default());
+  let hovered = h.cx.signal(false);
+  let column = (0..30).fold(Column::new(), |column, n| {
+    let icon = Icon::new("x").size(20);
+    let icon = if n == 5 {
+      icon.geometry(geometry)
+    } else {
+      icon
+    };
+    let button = Button::new(icon);
+    column.child(if n == 3 {
+      button.hovered(hovered)
+    } else {
+      button
+    })
+  });
+  let view = ScrollView::new(column)
+    .offset(offset)
+    .style(Style::new().width(20.0).height(50.0));
+  let row = Row::new().align(Align::Start).child(view);
+  let window = h.window(h.panel().child(row), 100.0, 100.0);
+  assert_eq!(geometry.get().y, 100.0);
+  window.pointer_motion(Point::new(10.0, 20.0));
+  // 48 pixels up, the fourth button, from 60 to 80, is under the pointer.
+  window.pointer_scroll_at(wheel(120), 0);
+  h.runtime.flush();
+  assert!(!window.tree.borrow().needs_layout, "a notch only places it");
+  h.frame(&window);
+  assert_eq!(geometry.get().y, 52.0);
+  assert!(hovered.get(), "the button scrolled under the pointer");
+  swipe(&window, 10.0, 100);
+  let start = Instant::now();
+  let mut ticks = 0;
+  while animating() {
+    advance_animations(start + Duration::from_millis(16 * ticks));
+    h.runtime.flush();
+    assert!(!window.tree.borrow().needs_layout, "a fling only places it");
+    h.frame(&window);
+    let y = geometry.get().y;
+    assert!((y - (100.0 - offset.get())).abs() < 1e-3, "{y}");
+    ticks += 1;
+    assert!(ticks < 200);
+  }
+  assert!(offset.get() > 400.0, "{}", offset.get());
+  assert!(!hovered.get(), "it moved on from under the pointer");
 }

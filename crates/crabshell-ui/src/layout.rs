@@ -65,6 +65,10 @@ impl Tree {
     if self.needs_place && !self.needs_layout {
       self.place(root, Point::default(), &mut Vec::new(), text.font_system());
       self.needs_place = false;
+      // Scrolled content moved under the pointer, as a layout would.
+      if std::mem::take(&mut self.scrolled) {
+        self.pointer_after_layout();
+      }
       // A drag holds the hover, but what it would drop on may have moved.
       self.drop_after_place();
       return;
@@ -119,6 +123,7 @@ impl Tree {
     }
     self.needs_layout = false;
     self.needs_place = false;
+    self.scrolled = false;
     self.pointer_after_layout();
   }
 
