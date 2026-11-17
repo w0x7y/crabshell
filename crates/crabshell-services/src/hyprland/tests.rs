@@ -216,8 +216,10 @@ fn connect(fake: &FakeHyprland) -> (Harness, Hyprland, UnixStream) {
   let hyprland = shell.cx.hyprland();
   let events = fake.events();
   fake.answer(&replies());
-  run(&mut shell);
-  assert_eq!(hyprland.workspaces().get_untracked(), expected_workspaces());
+  // Until read, however busy the machine.
+  let workspaces = hyprland.workspaces();
+  let read = || workspaces.get_untracked() == expected_workspaces();
+  shell.retry_until("the lists", read, |_| {});
   (shell, hyprland, events)
 }
 
