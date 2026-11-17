@@ -602,6 +602,24 @@ fn text_styles() {
   });
 }
 
+/// Underlined and struck text with a snowman from DejaVu Sans among
+/// Noto Sans letters: each font's run of glyphs takes its own font's
+/// place and thickness.
+#[test]
+fn fallback_decorations() {
+  check_fonts();
+  let large = Font::new("sans-serif", 24.0);
+  check("fallback_decorations", 220.0, 40.0, |scene| {
+    scene.panel().style(BAR).child(
+      Row::new()
+        .padding(4, 6)
+        .gap(12)
+        .child(Text::new("snow \u{2603} man").style(Style::new().font(large).underline(true)))
+        .child(Text::new("a\u{2603}b").style(Style::new().font(large).strikethrough(true))),
+    )
+  });
+}
+
 #[test]
 fn rich_text() {
   check_fonts();

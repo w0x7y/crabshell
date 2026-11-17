@@ -1173,12 +1173,32 @@ impl Painter<'_> {
     }
   }
 
-  /// The underline and strikethrough across `glyphs`, at the place and
-  /// thickness the first glyph's font gives, as cosmic-text draws them.
+  /// The underline and strikethrough across `glyphs`, each run of
+  /// glyphs from one font at the place and thickness that font gives, so
+  /// a fallback glyph's line sits where its own font puts it.
+  fn decorations(
+    &mut self,
+    pixmap: &mut PixmapMut<'_>,
+    origin: f32,
+    glyphs: &[LayoutGlyph],
+    baseline: f32,
+    lines: (bool, bool),
+    color: Color,
+  ) {
+    let same_font = |a: &LayoutGlyph, b: &LayoutGlyph| {
+      (a.font_id, a.font_weight, a.font_size) == (b.font_id, b.font_weight, b.font_size)
+    };
+    for glyphs in glyphs.chunk_by(same_font) {
+      self.font_decorations(pixmap, origin, glyphs, baseline, lines, color);
+    }
+  }
+
+  /// The underline and strikethrough across `glyphs`, all from one font,
+  /// at the place and thickness it gives, as cosmic-text draws them.
   /// Edges snap to whole pixels in the buffer, so every tile agrees, and
   /// each line is at least a pixel thick. A line is kept within half an
   /// em of the baseline, which the text's painted area covers.
-  fn decorations(
+  fn font_decorations(
     &mut self,
     pixmap: &mut PixmapMut<'_>,
     origin: f32,

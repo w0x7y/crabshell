@@ -172,3 +172,51 @@ fn an_ellipsis_takes_the_texts_color_not_the_first_spans() {
   }
   assert!(inked > 0, "the ellipsis was drawn");
 }
+
+/// The rows, from the baseline down, that are inked all the way across
+/// each glyph of `content` underlined in `font` at 48 pixels, a pixel in
+/// from each side of its advance: the underline beneath it, since no
+/// glyph's own ink fills its advance.
+fn underline_rows(content: &str, font: Font) -> Vec<Vec<i32>> {
+  let mut scene = Scene::new();
+  let style = Style::new().font(font).underline(true);
+  let panel = scene.panel().child(
+    Row::new()
+      .padding(20, 20)
+      .child(Text::new(content).style(style)),
+  );
+  let window = scene.window(panel, 200.0, 120.0);
+  let buffer = scene.full(&window, 1.0);
+  let view = window.view();
+  let Content::Text(text) = super::node_at(view.root(), &[0, 0]).content() else {
+    panic!("a text node has text content");
+  };
+  let origin = text.origin();
+  let run = text.runs().next().expect("one line");
+  let baseline = (origin.y + run.line_y).round() as i32;
+  run
+    .glyphs
+    .iter()
+    .map(|glyph| {
+      let x0 = (origin.x + glyph.x).ceil() as u32 + 1;
+      let x1 = (origin.x + glyph.x + glyph.w).floor() as u32 - 1;
+      (0..120)
+        .filter(|&y| (x0..x1).all(|x| buffer.pixel(x, y)[3] > 128))
+        .map(|y| y as i32 - baseline)
+        .collect()
+    })
+    .collect()
+}
+
+#[test]
+fn an_underline_takes_its_place_from_each_glyphs_own_font() {
+  // Noto Sans, the goldens' sans-serif, has no snowman; DejaVu Sans
+  // draws it, with its own underline position and thickness.
+  let sans = Font::new("sans-serif", 48.0);
+  let mixed = underline_rows("a\u{2603}", sans);
+  let latin = underline_rows("a", sans);
+  let snowman = underline_rows("\u{2603}", Font::new("DejaVu Sans", 48.0));
+  assert!(!latin[0].is_empty() && !snowman[0].is_empty());
+  assert_ne!(latin[0], snowman[0], "the two fonts place it alike");
+  assert_eq!(mixed, [latin[0].clone(), snowman[0].clone()]);
+}
