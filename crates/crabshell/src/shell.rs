@@ -41,6 +41,14 @@ pub const EXIT_NO_COMPOSITOR: i32 = 2;
 /// Starts the shell: connects to the compositor, calls `root` with the
 /// root context, and runs the event loop. It never returns.
 ///
+/// Started without the supervisor on glibc, `run` first starts the
+/// program again, with `GLIBC_TUNABLES` fixing malloc's `mmap` threshold,
+/// unless it sets one already, as the supervisor does: otherwise the
+/// memory of a freed wallpaper stays in use. So code in `main` before
+/// `run` runs twice; keep `main` to the `run` call. In secure mode, as a
+/// setuid program, or when it can't start again, it logs why and runs on
+/// as it is.
+///
 /// `root` sets the shell up, usually with [`ShellExt::per_output`]. Errors
 /// are logged, and the process exits with:
 ///
@@ -54,7 +62,8 @@ pub const EXIT_NO_COMPOSITOR: i32 = 2;
 /// Logs go to stderr through `tracing`, at the level `CRABSHELL_LOG` names
 /// (`error`, `warn`, `info`, `debug` or `trace`; `info` if unset or empty;
 /// any other value is warned about). The time from this call to the first
-/// committed frame is logged at `info`, and so is the time from each of
+/// committed frame, in the program's first start if `run` started it
+/// again, is logged at `info`, and so is the time from each of
 /// Sway's workspace events to the commit that shows it.
 ///
 /// Under the supervisor, `CRABSHELL_CONTROL` names its socket. The shell
@@ -69,9 +78,15 @@ pub const EXIT_NO_COMPOSITOR: i32 = 2;
 /// `WAYLAND_DISPLAY`.
 pub fn run(root: impl FnOnce(&Cx)) -> ! {
   let started = Instant::now();
+  #[cfg(target_env = "gnu")]
+  let restart_failed = crate::tuned::start_again_tuned(started);
   init_logging();
   #[cfg(target_env = "gnu")]
-  crate::tuned::start_again_tuned();
+  if let Some(problem) = restart_failed {
+    tracing::warn!("{problem}");
+  }
+  #[cfg(target_env = "gnu")]
+  let started = crate::tuned::first_start().unwrap_or(started);
   let mut event_loop = match EventLoop::connect() {
     Ok(event_loop) => event_loop,
     Err(error) => {

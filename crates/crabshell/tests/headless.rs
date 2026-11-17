@@ -5049,6 +5049,36 @@ fn a_1080p_wallpaper_crossfade_holds_both_pictures_only_while_it_runs() {
   sleeps(&mut shell);
 }
 
+/// A shell started again by `run` counts its first frame from its first
+/// start, which the first process leaves in `CRABSHELL_STARTED`, so the
+/// logged time includes the restart. Here the variable says 2 s ago and
+/// the tunable is set already, so nothing starts again.
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_restarted_shell_counts_its_first_frame_from_its_first_start() {
+  let sway = Sway::start();
+  let ago = std::time::SystemTime::now() - Duration::from_secs(2);
+  let nanos = ago
+    .duration_since(std::time::UNIX_EPOCH)
+    .expect("after 1970")
+    .as_nanos()
+    .to_string();
+  let counter = ExampleBar::start(
+    &sway,
+    "counter",
+    false,
+    &[
+      ("CRABSHELL_STARTED", &nanos),
+      ("GLIBC_TUNABLES", "glibc.malloc.mmap_threshold=131072"),
+    ],
+  );
+  let ms = counter.first_frame_ms();
+  assert!(
+    (2000.0..4000.0).contains(&ms),
+    "first frame {ms:.1} ms after the first start"
+  );
+}
+
 /// A shell started without the supervisor, as the dashboard example
 /// from a terminal, starts itself again with the `GLIBC_TUNABLES` the
 /// supervisor gives a shell, so a wallpaper it replaces is given back:
@@ -5074,6 +5104,10 @@ fn a_shell_run_alone_starts_again_with_the_mmap_threshold_and_frees_a_replaced_w
     tuned,
     "the shell started again with the supervisor's tunable"
   );
+  let first_start = environ
+    .split(|&byte| byte == 0)
+    .any(|entry| entry.starts_with(b"CRABSHELL_STARTED="));
+  assert!(first_start, "the first start's time carried over");
   ipc_call(&sway, "dashboard", "close");
   dashboard.wait_until_quiet();
   let resting = dashboard.rss_kib() as f64 / 1024.0;

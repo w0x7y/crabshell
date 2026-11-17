@@ -41,6 +41,12 @@ pub(crate) fn spawn(shared: &Rc<Shared>, command: &mut Command) -> io::Result<u3
 /// crabshell-cli's `supervise::TUNABLE`, which a test there checks.
 const TUNABLE: &str = "glibc.malloc.mmap_threshold=131072";
 
+/// Where a shell `crabshell::run` starts again leaves the time it first
+/// started, so its first frame is counted from then. Not passed on to
+/// the programs the shell starts.
+#[doc(hidden)]
+pub const FIRST_START: &str = "CRABSHELL_STARTED";
+
 /// `GLIBC_TUNABLES` for the shell: `old` with the shell's fixed `mmap`
 /// threshold added, or `None` if it sets that threshold already.
 /// `crabshell::run` starts the shell again with it when the supervisor
@@ -67,7 +73,8 @@ pub fn shell_tunables(old: Option<OsString>) -> Option<OsString> {
 /// Takes what is the shell's own out of what `command` inherits, so the
 /// programs it starts run as they would anywhere else: the supervisor's
 /// socket, which a crabshell started from a launched terminal would
-/// otherwise take for its own, and the shell's glibc tunable.
+/// otherwise take for its own, the shell's glibc tunable and the time it
+/// first started.
 pub(crate) fn untune(command: &mut Command) {
   untune_from(command, std::env::var_os("GLIBC_TUNABLES"));
 }
@@ -75,6 +82,7 @@ pub(crate) fn untune(command: &mut Command) {
 /// [`untune`], given the shell's `GLIBC_TUNABLES`.
 fn untune_from(command: &mut Command, ours: Option<OsString>) {
   command.env_remove("CRABSHELL_CONTROL");
+  command.env_remove(FIRST_START);
   if ours.is_some_and(|value| value == TUNABLE) {
     command.env_remove("GLIBC_TUNABLES");
   }
@@ -207,5 +215,9 @@ mod tests {
       .get_envs()
       .any(|(name, value)| name == OsStr::new("CRABSHELL_CONTROL") && value.is_none());
     assert!(control, "the supervisor's socket isn't passed on");
+    let started = command
+      .get_envs()
+      .any(|(name, value)| name == OsStr::new(super::FIRST_START) && value.is_none());
+    assert!(started, "the shell's first start isn't passed on");
   }
 }
