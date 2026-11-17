@@ -94,7 +94,7 @@ pub struct NiriKeyboardLayouts {
   /// Each layout's XKB name, such as `English (US)`.
   #[serde(deserialize_with = "texts")]
   pub names: Vec<String>,
-  /// Which of `names` is in use.
+  /// Which of `names` is in use; always one of them.
   pub current_idx: u32,
 }
 
@@ -231,8 +231,8 @@ struct State {
   raw: Raw,
   /// The event stream, while it is open.
   stream: Option<Stream>,
-  /// Whether the stream was opened again since niri last sent anything
-  /// past a stream's first read.
+  /// Whether the stream was opened again since niri last sent an event
+  /// that isn't one of [`STATE_EVENTS`].
   reconnected: bool,
   /// Actions waiting for niri's reply.
   actions: Vec<Action>,
@@ -259,8 +259,6 @@ struct Stream {
   inbox: Vec<u8>,
   /// Whether niri's reply to `"EventStream"`, its first line, came.
   answered: bool,
-  /// Whether a read with a whole line in it came.
-  read_once: bool,
 }
 
 struct Action {
@@ -373,7 +371,6 @@ impl Service {
       reader,
       inbox: Vec::new(),
       answered: false,
-      read_once: false,
     });
     true
   }
@@ -411,16 +408,11 @@ impl Service {
       Err(error) => return self.closed(guard, &error.to_string()),
     }
     let Some(whole) = whole_lines(&mut stream.inbox) else {
-      return self.closed(guard, "niri sent a line over 1 MiB");
+      // Reconnecting would only read it again.
+      return self.lost(state, "niri sent a line over 1 MiB");
     };
-    if whole.is_empty() {
-      return;
-    }
-    // niri sends its whole state at once, so this is past it.
-    if std::mem::replace(&mut stream.read_once, true) {
-      state.reconnected = false;
-    }
     let mut events = Vec::new();
+    let mut touched = 0;
     for line in whole
       .split(|&byte| byte == b'\n')
       .filter(|line| !line.is_empty())
@@ -443,15 +435,20 @@ impl Service {
           continue;
         }
       };
-      if let Err(error) = state.raw.apply(&event) {
-        let name = event_name(&event);
-        tracing::warn!(name, %error, "a bad event from niri");
+      let name = event_name(&event);
+      if !STATE_EVENTS.contains(&name) {
+        // Past niri's state, so a later close is worth a reconnect.
+        state.reconnected = false;
+      }
+      match state.raw.apply(&event) {
+        Ok(parts) => touched |= parts,
+        Err(error) => tracing::warn!(name, %error, "a bad event from niri"),
       }
       if !state.handlers.is_empty() {
         events.push(event);
       }
     }
-    state.show();
+    state.show(touched);
     drop(guard);
     for event in events {
       self.deliver(&event);
@@ -576,8 +573,8 @@ impl Service {
   /// The event stream ended for `why`. niri closes a client that falls
   /// behind and runs on, so while its socket is there, this connects once
   /// again and takes in the whole state niri sends first, keeping the
-  /// lists meanwhile. A stream that ends again before niri sent anything
-  /// past its first read is lost.
+  /// lists meanwhile. A stream that ends again before niri sent an event
+  /// past its state is lost.
   fn closed(self: &Rc<Self>, mut guard: RefMut<'_, Option<State>>, why: &str) {
     let state = guard
       .as_mut()
@@ -603,7 +600,7 @@ impl Service {
     tracing::warn!(why, "lost niri; its lists are empty");
     self.drop_stream(state);
     state.raw = Raw::default();
-    state.show();
+    state.show(ALL);
   }
 
   /// Closes every connection for good, once the lists are gone.
@@ -627,20 +624,49 @@ impl Service {
 }
 
 impl State {
-  /// Sets each signal whose value changed.
-  fn show(&self) {
-    set_changed(self.workspaces, self.raw.workspaces.clone());
-    set_changed(self.windows, self.raw.windows.clone());
-    set_changed(self.keyboard_layouts, self.raw.keyboard_layouts.clone());
-    set_changed(self.overview_open, self.raw.overview_open);
+  /// Sets each signal of the `parts` given whose value changed.
+  fn show(&self, parts: u8) {
+    let raw = &self.raw;
+    if parts & WORKSPACES != 0 {
+      set_changed(self.workspaces, raw.workspaces.clone());
+    }
+    if parts & WINDOWS != 0 {
+      set_changed(self.windows, raw.windows.clone());
+    }
+    if parts & LAYOUTS != 0 {
+      set_changed(self.keyboard_layouts, raw.keyboard_layouts.clone());
+    }
+    if parts & OVERVIEW != 0 {
+      set_changed(self.overview_open, raw.overview_open);
+    }
   }
 }
+
+/// The parts of [`Raw`] an event can change, as bits.
+const WORKSPACES: u8 = 1;
+const WINDOWS: u8 = 2;
+const LAYOUTS: u8 = 4;
+const OVERVIEW: u8 = 8;
+const ALL: u8 = WORKSPACES | WINDOWS | LAYOUTS | OVERVIEW;
+
+/// The events niri sends a new stream as its whole state, from niri-ipc's
+/// `EventStreamState::replicate`.
+const STATE_EVENTS: [&str; 7] = [
+  "WorkspacesChanged",
+  "WindowsChanged",
+  "KeyboardLayoutsChanged",
+  "OverviewOpenedOrClosed",
+  "ConfigLoaded",
+  "CastsChanged",
+  "TouchpadToggled",
+];
 
 impl Raw {
   /// Takes in one event, as niri-ipc's `EventStreamState` does. An event
   /// this doesn't know is skipped, since niri adds events between
   /// versions, and so is one about a workspace or window it doesn't have.
-  fn apply(&mut self, event: &Value) -> Result<(), serde_json::Error> {
+  /// Which parts it changed, as bits.
+  fn apply(&mut self, event: &Value) -> Result<u8, serde_json::Error> {
     let Some((name, body)) = event
       .as_object()
       .filter(|event| event.len() == 1)
@@ -658,7 +684,7 @@ impl Raw {
         let id: u64 = get(body, "id")?;
         let focused: bool = get(body, "focused")?;
         let Some(output) = self.workspace(id).map(|workspace| workspace.output.clone()) else {
-          return Ok(());
+          return Ok(0);
         };
         for workspace in &mut self.workspaces {
           let activated = workspace.id == id;
@@ -719,17 +745,27 @@ impl Raw {
           window.is_urgent = urgent;
         }
       }
-      "KeyboardLayoutsChanged" => self.keyboard_layouts = Some(get(body, "keyboard_layouts")?),
+      "KeyboardLayoutsChanged" => {
+        let layouts: NiriKeyboardLayouts = get(body, "keyboard_layouts")?;
+        in_names(&layouts.names, layouts.current_idx)?;
+        self.keyboard_layouts = Some(layouts);
+      }
       "KeyboardLayoutSwitched" => {
         let idx = get(body, "idx")?;
         if let Some(layouts) = &mut self.keyboard_layouts {
+          in_names(&layouts.names, idx)?;
           layouts.current_idx = idx;
         }
       }
       "OverviewOpenedOrClosed" => self.overview_open = get(body, "is_open")?,
-      _ => {}
+      _ => return Ok(0),
     }
-    Ok(())
+    Ok(match name.as_str() {
+      name if name.starts_with("Workspace") => WORKSPACES,
+      name if name.starts_with("Window") => WINDOWS,
+      name if name.starts_with("Keyboard") => LAYOUTS,
+      _ => OVERVIEW,
+    })
   }
 
   fn workspace(&mut self, id: u64) -> Option<&mut NiriWorkspace> {
@@ -737,6 +773,15 @@ impl Raw {
       .workspaces
       .iter_mut()
       .find(|workspace| workspace.id == id)
+  }
+}
+
+/// Refuses a layout index past `names`, as after their cap, so
+/// `names[current_idx]` is always there.
+fn in_names(names: &[String], idx: u32) -> Result<(), serde_json::Error> {
+  match usize::try_from(idx) {
+    Ok(idx) if idx < names.len() => Ok(()),
+    _ => Err(serde_json::Error::custom("a layout index past the names")),
   }
 }
 

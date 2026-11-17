@@ -412,30 +412,49 @@ fn past_64_waiting_actions_one_is_refused() {
   assert_eq!(fake.actions(r#"{"Ok":"Handled"}"#).len(), MAX_ACTIONS);
 }
 
-#[test]
-fn a_line_over_the_cap_drops_the_stream() {
-  let fake = FakeNiri::new();
-  let (mut shell, niri, mut stream) = connect(&fake);
+/// Sends a line over the cap on `stream`, and checks the shell drops it
+/// for good.
+fn assert_over_the_cap_is_lost(
+  fake: &FakeNiri,
+  shell: &mut Harness,
+  niri: &Niri,
+  stream: UnixStream,
+) {
+  let mut stream = stream;
   let writer = std::thread::spawn(move || {
     // The shell hangs up partway, so the write fails.
     let _ = stream.write_all(&vec![b' '; MAX_LINE + 1]);
   });
-  let again = RefCell::new(None);
   let logs = capture_logs(|| {
-    let connected = || again.borrow().is_some();
-    shell.retry_until("a new stream", connected, |_| {
-      *again.borrow_mut() = fake.accept();
-    });
+    shell.retry_until("the writer done", || writer.is_finished(), |_| {});
+    run(shell);
   });
   writer.join().expect("the writer");
   assert!(logs.contains("over 1 MiB"), "{logs}");
-  assert!(logs.contains("connecting again"), "{logs}");
-  let (request, mut stream) = again.take().expect("a new stream");
-  assert_eq!(request, "\"EventStream\"\n");
-  let answer = format!("{{\"Ok\":\"Handled\"}}\n{}", state());
-  stream.write_all(answer.as_bytes()).expect("the state");
+  assert!(logs.contains("lost niri"), "{logs}");
+  assert!(niri.workspaces().get_untracked().is_empty());
+  assert!(fake.accept().is_none(), "nothing reconnects");
+  assert_eq!(run(shell), 1, "nothing retries");
+}
+
+#[test]
+fn a_line_over_the_cap_loses_the_stream() {
+  let fake = FakeNiri::new();
+  let (mut shell, niri, stream) = connect(&fake);
+  assert_over_the_cap_is_lost(&fake, &mut shell, &niri, stream);
+}
+
+#[test]
+fn a_state_line_over_the_cap_loses_the_stream() {
+  let fake = FakeNiri::new();
+  let mut shell = Harness::new(fake.config());
+  let niri = shell.cx.niri();
+  let (_, mut stream) = fake.accept().expect("an event stream");
+  stream
+    .write_all(b"{\"Ok\":\"Handled\"}\n")
+    .expect("the reply");
   run(&mut shell);
-  assert_eq!(niri.workspaces().get_untracked(), expected_workspaces());
+  assert_over_the_cap_is_lost(&fake, &mut shell, &niri, stream);
 }
 
 #[test]
@@ -476,6 +495,34 @@ fn long_texts_are_cut_at_a_character_and_long_lists_capped() {
   );
 }
 
+/// niri writes its reply and each state event apart, so they may come in
+/// reads of their own.
+#[test]
+fn a_stream_that_closes_after_its_state_in_many_reads_is_opened_again_once() {
+  let fake = FakeNiri::new();
+  let mut shell = Harness::new(fake.config());
+  let niri = shell.cx.niri();
+  for connection in 0..2 {
+    let (_, mut stream) = fake.accept().expect("an event stream");
+    stream
+      .write_all(b"{\"Ok\":\"Handled\"}\n")
+      .expect("the reply");
+    run(&mut shell);
+    for line in state().lines() {
+      send(&mut shell, &mut stream, line);
+    }
+    assert_eq!(niri.workspaces().get_untracked(), expected_workspaces());
+    drop(stream);
+    let logs = capture_logs(|| {
+      run(&mut shell);
+    });
+    let expected = ["connecting again", "lost niri"][connection];
+    assert!(logs.contains(expected), "{logs}");
+  }
+  assert!(niri.workspaces().get_untracked().is_empty());
+  assert!(fake.accept().is_none(), "no third connection");
+}
+
 /// niri closes an event client that falls behind, and runs on, so its
 /// socket is still there.
 #[test]
@@ -499,13 +546,17 @@ fn a_closed_stream_is_opened_again_once() {
   send(
     &mut shell,
     &mut stream,
-    r#"{"OverviewOpenedOrClosed":{"is_open":true}}"#,
+    r#"{"WindowFocusChanged":{"id":null}}"#,
   );
   drop(stream);
   run(&mut shell);
   let stream = fake.stream(&state());
   run(&mut shell);
-  assert!(!niri.overview_open().get_untracked(), "the new state");
+  assert_eq!(
+    niri.windows().get_untracked(),
+    expected_windows(),
+    "the new state"
+  );
 
   // A stream that ends with nothing past its state isn't.
   drop(stream);
@@ -682,4 +733,30 @@ fn an_on_event_goes_with_its_context() {
   let logs = capture_logs(|| stale.on_event(move |_| kept.set(kept.get() + 1)));
   assert!(logs.contains("context that is gone"), "{logs}");
   assert_eq!(Rc::strong_count(&heard), 1, "the handler wasn't kept");
+}
+
+#[test]
+fn a_layout_index_past_the_names_is_refused() {
+  let fake = FakeNiri::new();
+  let (mut shell, niri, mut stream) = connect(&fake);
+  let names: Vec<_> = (0..=MAX_LIST).map(|n| format!("\"l{n}\"")).collect();
+  let capped = format!(
+    r#"{{"KeyboardLayoutsChanged":{{"keyboard_layouts":{{"names":[{}],"current_idx":{MAX_LIST}}}}}}}"#,
+    names.join(",")
+  );
+  let logs = capture_logs(|| {
+    send(&mut shell, &mut stream, &capped);
+    send(
+      &mut shell,
+      &mut stream,
+      r#"{"KeyboardLayoutSwitched":{"idx":2}}"#,
+    );
+  });
+  assert_eq!(
+    logs.matches("a layout index past the names").count(),
+    2,
+    "{logs}"
+  );
+  let layouts = niri.keyboard_layouts().get_untracked().expect("layouts");
+  assert_eq!((layouts.names.len(), layouts.current_idx), (2, 0), "kept");
 }
