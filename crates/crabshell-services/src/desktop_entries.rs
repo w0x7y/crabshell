@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use calloop::timer::TimeoutAction;
 use crabshell_reactive::{ReadSignal, Signal, untrack};
 use crabshell_ui::Cx;
-use inotify::EventMask;
+use inotify::{EventMask, WatchMask};
 use zbus::OwnedObjectPath;
 use zbus::names::WellKnownName;
 
@@ -28,6 +28,12 @@ use crate::dbus::{CALL_TIMEOUT, set_changed};
 use crate::watch::{self, Change, Watch};
 use crate::{Shared, spawn};
 
+/// What a link's own watch hears: its last name going, as a link renamed
+/// over it takes it, and the link itself removed or moved.
+const LINK: WatchMask = WatchMask::DONT_FOLLOW
+  .union(WatchMask::ATTRIB)
+  .union(WatchMask::DELETE_SELF)
+  .union(WatchMask::MOVE_SELF);
 /// The interface a D-Bus activatable application is started through.
 const APPLICATION: &str = "org.freedesktop.Application";
 /// How long the files stay still after a change before the list is read
@@ -549,15 +555,17 @@ impl Scan<'_> {
       root.file_name(),
     ) {
       let name = name.to_owned();
-      self.watch(parent, move |change| {
+      self.watch(parent, watch::DIRECTORY, move |change| {
         change.name.as_ref().is_none_or(|changed| *changed == name)
       });
     }
   }
 
-  /// Watches the directory that holds each link on the way to `root`,
-  /// and on the way to what each names, so a link swapped for another,
-  /// as a NixOS profile is, reads the list again.
+  /// Watches each link on the way to `root`, and on the way to what each
+  /// names, so a link swapped for another, as a NixOS profile is, reads
+  /// the list again. The link itself is watched, not the directory that
+  /// holds it, which may be `$HOME`: renamed over, the old link loses its
+  /// last name, and the read watches the new one.
   fn links(&mut self, root: &Path) {
     let mut paths = vec![root.to_owned()];
     // As many as the kernel follows before it calls it a loop.
@@ -571,32 +579,29 @@ impl Scan<'_> {
           continue;
         };
         links += 1;
-        let (Some(dir), Some(name), true) = (prefix.parent(), prefix.file_name(), links <= 40)
-        else {
+        let (Some(dir), true) = (prefix.parent(), links <= 40) else {
           return;
         };
-        let name = name.to_owned();
-        self.watch(dir, move |change| {
-          change.name.as_ref().is_none_or(|changed| *changed == name)
-        });
+        self.watch(&prefix, LINK, |_| true);
         paths.push(dir.join(target).join(components.as_path()));
         break;
       }
     }
   }
 
-  /// Reads the list again on each change in `dir` that `counts`.
-  fn watch(&mut self, dir: &Path, counts: impl Fn(&Change) -> bool + 'static) {
+  /// Reads the list again on each change `mask` names at `path` that
+  /// `counts`.
+  fn watch(&mut self, path: &Path, mask: WatchMask, counts: impl Fn(&Change) -> bool + 'static) {
     let service = self.service.clone();
     let on_change = move |change: &Change| {
       if let Some(service) = service.upgrade().filter(|_| counts(change)) {
         service.changed();
       }
     };
-    match watch::watch(self.shared, dir, watch::DIRECTORY, on_change) {
+    match watch::watch(self.shared, path, mask, on_change) {
       Ok(watch) => self.watches.push(watch),
       Err(error) => {
-        tracing::warn!(%error, dir = %dir.display(), "can't watch a directory of applications")
+        tracing::warn!(%error, path = %path.display(), "can't watch a directory of applications")
       }
     }
   }
@@ -609,7 +614,7 @@ impl Scan<'_> {
       return;
     }
     // Before the read, so a change during it is heard.
-    self.watch(dir, |change| {
+    self.watch(dir, watch::DIRECTORY, |change| {
       let name = change.name.as_ref().map(Path::new);
       let entry = name.is_some_and(|name| name.extension() == Some(OsStr::new("desktop")));
       // A link made or removed carries no ISDIR, and may lead to a

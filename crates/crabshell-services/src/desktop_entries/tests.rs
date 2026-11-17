@@ -578,6 +578,12 @@ fn a_link_on_the_way_to_a_root_swapped_for_another_reads_again() {
   let (mut shell, entries) = shell(sources);
   run(&mut shell, 50);
   assert_eq!(ids(&entries), ["x"]);
+  // Files saved beside the links, as dotfiles beside a NixOS profile in
+  // `$HOME`, wake nothing.
+  std::fs::write(base.join("profiles/notes"), "x").expect("a file");
+  std::fs::write(base.join(".bashrc"), "x").expect("a file");
+  std::fs::rename(base.join(".bashrc"), base.join(".profile")).expect("renamed");
+  assert_eq!(run(&mut shell, 300), 1, "only the run's own deadline");
 
   let swap = |target: &str| {
     let new = base.join("profiles/profile.new");
