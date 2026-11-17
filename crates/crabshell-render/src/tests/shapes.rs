@@ -721,3 +721,45 @@ mod shadows {
     }
   }
 }
+
+/// An opaque background on whole pixels is filled straight into the
+/// pixels, as tiny-skia's antialiased path fill gives it, past the
+/// pixmap's edges included; anything else is left to the path fill.
+#[test]
+fn an_opaque_whole_pixel_fill_matches_the_path_fill() {
+  let color = Color::rgb(30, 102, 245);
+  let rect = |l, t, r, b| tiny_skia::Rect::from_ltrb(l, t, r, b).expect("a rect");
+  for area in [
+    rect(0.0, 0.0, 64.0, 64.0),
+    rect(3.0, 5.0, 20.0, 9.0),
+    rect(-10.0, -4.0, 30.0, 80.0),
+    rect(50.0, 60.0, 900.0, 700.0),
+  ] {
+    let mut path = tiny_skia::Pixmap::new(64, 64).expect("a pixmap");
+    path.fill(tiny_skia::Color::from_rgba8(9, 9, 9, 255));
+    let mut direct = path.clone();
+    let mut paint = tiny_skia::Paint::default();
+    paint.set_color_rgba8(color.r, color.g, color.b, color.a);
+    paint.anti_alias = true;
+    let shape = tiny_skia::PathBuilder::from_rect(area);
+    path.fill_path(
+      &shape,
+      &paint,
+      tiny_skia::FillRule::Winding,
+      tiny_skia::Transform::identity(),
+      None,
+    );
+    assert!(crate::draw::fill_opaque(&mut direct.as_mut(), area, color));
+    assert!(direct == path, "{area:?} differs from the path fill");
+  }
+  let mut pixmap = tiny_skia::Pixmap::new(8, 8).expect("a pixmap");
+  let half = rect(0.5, 0.0, 4.0, 4.0);
+  assert!(!crate::draw::fill_opaque(&mut pixmap.as_mut(), half, color));
+  let whole = rect(0.0, 0.0, 4.0, 4.0);
+  let translucent = Color::rgba(30, 102, 245, 128);
+  assert!(!crate::draw::fill_opaque(
+    &mut pixmap.as_mut(),
+    whole,
+    translucent
+  ));
+}

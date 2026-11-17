@@ -68,6 +68,8 @@ pub(crate) struct Icons {
   failed_masks: HashSet<PathBuf>,
   /// How many icons were rasterized, for tests.
   rasterized: usize,
+  /// How many times an image's file was looked up, for tests.
+  lookups: usize,
   /// Each screencopy view's frame, scaled to its box: one a view, replaced
   /// when its frame or box changes.
   captures: HashMap<u64, Capture>,
@@ -99,6 +101,53 @@ pub(crate) struct Icons {
   decoded_off_thread: usize,
   /// Whether the draw drew an image whose picture is being decoded.
   waited: bool,
+  /// What the last still image drawn showed, so its other tiles in the
+  /// same draw skip the lookups.
+  memo: Option<Memo>,
+}
+
+/// The pictures an image showed in a draw: its own and the one its
+/// transition leaves, as [`Icons::leaving`] gives it. A still picture
+/// shown again in the same draw from the same view, at the same size, has
+/// no more to record.
+struct Memo {
+  /// The draw, the image's id, its size in pixels and its scale's bits.
+  at: (u64, u64, (u32, u32), u32),
+  /// What else of the view picks the pictures: its file, the file its
+  /// transition leaves, its fit, filters and transition.
+  path: PathBuf,
+  leaving: Option<PathBuf>,
+  fit: Fit,
+  filters: FilterKey,
+  transition: ImageTransition,
+  to: Key,
+  from: Option<Option<Key>>,
+}
+
+impl Memo {
+  fn new(at: (u64, u64, (u32, u32), u32), image: &ImageView<'_>, scale: f32, to: Key) -> Memo {
+    Memo {
+      at,
+      path: image.path.to_owned(),
+      leaving: image.leaving.map(|(path, _)| path.to_owned()),
+      fit: image.fit,
+      filters: FilterKey::new(&image.filters, scale),
+      transition: image.transition,
+      to,
+      from: None,
+    }
+  }
+
+  /// Whether `image`, drawn at `at` and `scale`, shows what this did.
+  fn matches(&self, at: (u64, u64, (u32, u32), u32), image: &ImageView<'_>, scale: f32) -> bool {
+    self.at == at
+      && self.path.as_os_str() == image.path.as_os_str()
+      && self.leaving.as_deref().map(Path::as_os_str)
+        == image.leaving.map(|(path, _)| path.as_os_str())
+      && self.fit == image.fit
+      && self.filters == FilterKey::new(&image.filters, scale)
+      && self.transition == image.transition
+  }
 }
 
 /// What an image with a transition shows.
@@ -307,6 +356,7 @@ impl Icons {
       failed: HashSet::new(),
       failed_masks: HashSet::new(),
       rasterized: 0,
+      lookups: 0,
       captures: HashMap::new(),
       playbacks: HashMap::new(),
       transitions: HashMap::new(),
@@ -320,6 +370,7 @@ impl Icons {
       ready: Vec::new(),
       decoded_off_thread: 0,
       waited: false,
+      memo: None,
     }
   }
 
@@ -459,6 +510,12 @@ impl Icons {
       .sum()
   }
 
+  /// How many times an image's file was looked up, for tests.
+  #[cfg(test)]
+  pub(crate) fn lookups(&self) -> usize {
+    self.lookups
+  }
+
   /// The number of times an icon was rasterized, for tests.
   #[cfg(test)]
   pub(crate) fn rasterized(&self) -> usize {
@@ -539,6 +596,23 @@ impl Icons {
     size: (u32, u32),
     scale: f32,
   ) -> Option<Drawn<'_>> {
+    let at = (self.frame, image.id, size, scale.to_bits());
+    if self
+      .memo
+      .as_ref()
+      .is_some_and(|memo| memo.matches(at, image, scale))
+    {
+      let memo = self.memo.as_ref()?;
+      let to = frame(&self.cache, &memo.to, 0)?;
+      return Some(match (&memo.from, image.leaving) {
+        (Some(from), Some((_, t))) => Drawn::Two {
+          from: from.as_ref().and_then(|from| frame(&self.cache, from, 0)),
+          to,
+          t,
+        },
+        _ => Drawn::One(to),
+      });
+    }
     let key = self.load(image.path, image, size, scale, true, Some(image.id));
     if self.pending.contains_key(&key) {
       return self.waiting(image, &key, size, scale);
@@ -565,6 +639,9 @@ impl Icons {
         self.forget(left, image.id, Some(&key));
       }
       self.show(image.id, &key);
+      if count == 1 {
+        self.memo = Some(Memo::new(at, image, scale, key.clone()));
+      }
       return frame(&self.cache, &key, index).map(Drawn::One);
     }
     let from = self.leaving(image, &key, size, scale);
@@ -583,6 +660,12 @@ impl Icons {
     }
     shown.good = Some(image.path.to_owned());
     self.show(image.id, &key);
+    if count == 1 {
+      self.memo = Some(Memo {
+        from: from.clone(),
+        ..Memo::new(at, image, scale, key.clone())
+      });
+    }
     let to = frame(&self.cache, &key, index)?;
     Some(match (from, image.leaving) {
       (Some(from), Some((_, t))) => Drawn::Two {
@@ -759,6 +842,7 @@ impl Icons {
         .any(|(&other, shown)| other != id && shown.left.as_ref() == Some(&key));
     if !kept {
       self.cache.remove(&key);
+      self.memo = None;
     }
   }
 
@@ -781,6 +865,7 @@ impl Icons {
     (width, height): (u32, u32),
     scale: f32,
   ) -> (Key, u64) {
+    self.lookups += 1;
     let (modified, length) = match self.modified.get(path) {
       Some(file) => *file,
       None => {

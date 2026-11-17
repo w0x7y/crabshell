@@ -890,3 +890,74 @@ fn a_source_that_cant_load_ends_its_transition_and_its_box_stops_repainting() {
   scene.frame(&window.window);
   assert!(window.window.take_damage().is_empty(), "nothing repaints");
 }
+
+/// A picture over many tiles is looked up once a draw, not once a tile:
+/// for a 1080p wallpaper that was 510 lookups a frame, each cloning its
+/// paths and hashing them. A transition looks up both of its pictures.
+#[test]
+fn an_image_over_many_tiles_is_looked_up_once_a_draw() {
+  let (_dir, a, b) = pair("lookups");
+  let mut scene = Scene::new();
+  let next = scene.cx.signal(false);
+  let image = switching(next, &a, &b, ImageTransition::crossfade(LINEAR))
+    .width(200)
+    .height(200);
+  let window = scene.window(scene.panel().child(image), 200.0, 200.0);
+  let mut history = crate::DamageHistory::new();
+  let mut buffer = Buffer::new(&window, 1.0);
+  scene.draw(&window, &mut history, &mut buffer);
+  let before = scene.renderer.image_lookups();
+  // A new history repaints every tile.
+  scene.draw(&window, &mut crate::DamageHistory::new(), &mut buffer);
+  assert_eq!(scene.renderer.image_lookups() - before, 1, "a still");
+
+  next.set(true);
+  scene.frame(&window);
+  let start = Instant::now();
+  tick(start, 0);
+  tick(start, 50);
+  scene.draw(&window, &mut history, &mut buffer);
+  let before = scene.renderer.image_lookups();
+  tick(start, 60);
+  scene.frame(&window);
+  assert!(
+    scene.draw(&window, &mut history, &mut buffer).len() == 1,
+    "repainted whole"
+  );
+  assert_eq!(scene.renderer.image_lookups() - before, 2, "both pictures");
+  tick(start, 1000);
+}
+
+/// A translucent picture is blended over what is under it, alone or
+/// halfway through a crossfade; only an opaque row is copied whole.
+#[test]
+fn a_translucent_picture_blends_over_the_background() {
+  let dir = dir("translucent");
+  let red = picture(&dir, "red.png", (8, 8), |_, _| [255, 0, 0, 128]);
+  let blue = picture(&dir, "blue.png", (8, 8), |_, _| [0, 0, 255, 128]);
+  // Premultiplied, over green: the picture plus half of the green.
+  for (t, expected) in [(0.0, [128, 127, 0, 255]), (0.5, [64, 127, 64, 255])] {
+    let mut scene = Scene::new();
+    partway(
+      &mut scene,
+      (8.0, 8.0),
+      t,
+      |next, panel| {
+        panel
+          .style(Style::new().background(Color::rgb(0, 255, 0)))
+          .child(
+            switching(next, &red, &blue, ImageTransition::crossfade(LINEAR))
+              .width(8)
+              .height(8),
+          )
+      },
+      |scene, window| {
+        let got = scene.full(window, 1.0).pixel(3, 3);
+        assert!(
+          got.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 1),
+          "at {t}: {got:?}, not {expected:?}"
+        );
+      },
+    );
+  }
+}

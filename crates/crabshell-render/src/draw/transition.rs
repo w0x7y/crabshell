@@ -123,7 +123,14 @@ fn target(stride: usize, (left, top): (i32, i32), x: usize, y: usize) -> usize {
 /// Blends the premultiplied `row` over `target`, copying it whole when it
 /// is opaque.
 fn put_row(target: &mut [u8], row: &[u8]) {
-  if row.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 255) {
+  // Every alpha byte ANDed together, without stopping early, which
+  // vectorizes: a 1080p picture's rows took a millisecond the other way.
+  let alpha = row
+    .as_chunks::<4>()
+    .0
+    .iter()
+    .fold(u32::MAX, |all, pixel| all & u32::from_le_bytes(*pixel));
+  if alpha >> 24 == 255 {
     target.copy_from_slice(row);
     return;
   }

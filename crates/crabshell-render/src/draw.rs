@@ -112,6 +112,12 @@ impl Renderer {
     }
   }
 
+  /// How many times an image's file was looked up, for tests.
+  #[cfg(test)]
+  pub(crate) fn image_lookups(&self) -> usize {
+    self.icons.lookups()
+  }
+
   /// The number of glyph images cached, for tests.
   #[cfg(test)]
   pub(crate) fn cached_glyphs(&self) -> usize {
@@ -396,8 +402,11 @@ fn copy(scratch: &[u8], area: PixelRect, pixels: &mut [u8], width: u32, format: 
       PixelFormat::Argb8888 => {
         let (to, _) = target.as_chunks_mut::<4>();
         let (from, _) = source.as_chunks::<4>();
+        // Red and blue swapped in a whole word, which vectorizes, unlike
+        // moving the bytes one by one.
         for (to, from) in to.iter_mut().zip(from) {
-          *to = [from[2], from[1], from[0], from[3]];
+          let pixel = u32::from_le_bytes(*from);
+          *to = (pixel & 0xff00_ff00 | (pixel >> 16) & 0xff | (pixel & 0xff) << 16).to_le_bytes();
         }
       }
     }
@@ -831,7 +840,9 @@ impl Painter<'_> {
       return;
     }
 
-    if let Some(color) = style.background {
+    if let Some(color) = style.background
+      && !(corners == [0.0; 4] && fill_opaque(pixmap, area, color))
+    {
       let mut path = PathBuilder::new();
       rounded_rect(&mut path, area, corners);
       fill(pixmap, path, color, FillRule::Winding);
@@ -1921,4 +1932,35 @@ pub(crate) fn fit_dash(perimeter: f32, on: f32, off: f32) -> Option<(f32, f32)> 
   let count = (perimeter / period).round().max(1.0);
   let stretch = perimeter / (count * period);
   Some((on * stretch, off * stretch))
+}
+
+/// Fills `area` with the opaque `color` straight into the pixels, as
+/// tiny-skia's path fill gives it, without its raster pipeline: a
+/// window's background under a picture was half of a 1080p repaint.
+/// `false`, drawing nothing, unless `color` is opaque and every edge is on
+/// a whole pixel.
+pub(crate) fn fill_opaque(pixmap: &mut PixmapMut<'_>, area: tiny_skia::Rect, color: Color) -> bool {
+  let edges = [area.left(), area.top(), area.right(), area.bottom()];
+  if color.a != 255 || edges.iter().any(|edge| edge.fract() != 0.0) {
+    return false;
+  }
+  let (width, height) = (pixmap.width() as f32, pixmap.height() as f32);
+  let [left, top, right, bottom] = [
+    area.left().clamp(0.0, width),
+    area.top().clamp(0.0, height),
+    area.right().clamp(0.0, width),
+    area.bottom().clamp(0.0, height),
+  ]
+  .map(|edge| edge as usize);
+  let stride = pixmap.width() as usize * 4;
+  let pixel = [color.r, color.g, color.b, 255];
+  for row in pixmap
+    .data_mut()
+    .chunks_exact_mut(stride)
+    .take(bottom)
+    .skip(top)
+  {
+    row[left * 4..right * 4].as_chunks_mut::<4>().0.fill(pixel);
+  }
+  true
 }
