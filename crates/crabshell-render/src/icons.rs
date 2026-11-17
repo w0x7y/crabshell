@@ -16,6 +16,7 @@ use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, PixmapRef, Transform};
 
 use crate::animation::Frames;
 use crate::theme::Themes;
+use crate::worker::{Job, Worker};
 
 /// How many rasterized icons stay cached. Past that, icons no draw used
 /// within the last [`RECENT`] draws are dropped.
@@ -42,6 +43,14 @@ const MAX_PNG_SIDE: u32 = 1024;
 /// The widest and tallest raw tray pixmap drawn.
 const MAX_PIXELS_SIDE: u32 = 512;
 
+/// The largest image file decoded on the loop's thread once decoding has
+/// a worker, with [`SMALL_PIXELS`]: an avatar or a small icon shows in the
+/// first frame, and decodes in well under a millisecond.
+const SMALL_FILE: u64 = 64 * 1024;
+
+/// The most pixels such an image is drawn at, 256 by 256.
+const SMALL_PIXELS: u64 = 256 * 256;
+
 /// The theme icon names are looked up in when the config doesn't set one.
 pub const DEFAULT_THEME: &str = "hicolor";
 
@@ -66,9 +75,9 @@ pub(crate) struct Icons {
   playbacks: HashMap<u64, Playback>,
   /// What each image with a transition shows, by image id.
   transitions: HashMap<u64, Shown>,
-  /// Each image file's modification time, looked at once a draw rather
-  /// than once a tile.
-  modified: HashMap<PathBuf, Option<std::time::SystemTime>>,
+  /// Each image file's modification time and length, looked at once a
+  /// draw rather than once a tile.
+  modified: HashMap<PathBuf, (Option<std::time::SystemTime>, u64)>,
   /// The picture each image last drew as its own, and when.
   shows: HashMap<u64, (Key, u64)>,
   /// The damage history of the window being drawn.
@@ -78,6 +87,16 @@ pub(crate) struct Icons {
   /// The pictures masks used, and in which draw, so a transition that
   /// stops leaving one doesn't drop it.
   masked: HashMap<Key, u64>,
+  /// Decodes large image files off the loop's thread; `None` decodes
+  /// each as it is first drawn.
+  worker: Option<Worker>,
+  /// The pictures the worker decodes: each one's job, and the images
+  /// waiting for it.
+  pending: HashMap<Key, (u64, Vec<u64>)>,
+  /// Images whose picture came in, to repaint.
+  ready: Vec<u64>,
+  /// How many jobs the worker did, for tests.
+  decoded_off_thread: usize,
 }
 
 /// What an image with a transition shows.
@@ -294,7 +313,69 @@ impl Icons {
       window: 0,
       tile: (0, 0),
       masked: HashMap::new(),
+      worker: None,
+      pending: HashMap::new(),
+      ready: Vec::new(),
+      decoded_off_thread: 0,
     }
+  }
+
+  /// How many jobs the worker did, and whether it runs, for tests.
+  #[cfg(test)]
+  pub(crate) fn worker_work(&self) -> (usize, bool) {
+    let running = self.worker.as_ref().is_some_and(Worker::running);
+    (self.decoded_off_thread, running)
+  }
+
+  /// Decodes image files past [`SMALL_FILE`] or [`SMALL_PIXELS`], or
+  /// blurred, on a worker thread from now on.
+  pub(crate) fn decode_off_thread(&mut self) {
+    self.worker.get_or_insert_with(Worker::default);
+  }
+
+  /// Whether pictures are being decoded for images drawn, or came in and
+  /// weren't taken yet.
+  pub(crate) fn decoding(&self) -> bool {
+    !self.pending.is_empty() || !self.ready.is_empty()
+  }
+
+  /// Calls `wake` once, from the worker, when a picture is decoded, or at
+  /// once if one waits to be taken.
+  pub(crate) fn wake_when_decoded(&mut self, wake: Box<dyn FnOnce() + Send>) {
+    match &mut self.worker {
+      Some(worker) if self.ready.is_empty() => worker.wake_when_done(wake),
+      _ => wake(),
+    }
+  }
+
+  /// Caches the pictures decoded since the last call, logging a failure
+  /// once, and returns the ids of the images that wait for them.
+  pub(crate) fn take_decoded(&mut self) -> Vec<u64> {
+    let mut ready = std::mem::take(&mut self.ready);
+    let done = self.worker.as_mut().map(Worker::take).unwrap_or_default();
+    for (job, frames) in done {
+      self.decoded_off_thread += 1;
+      // A job taken over by a draw that needed its picture at once.
+      let Some(key) = self
+        .pending
+        .iter()
+        .find(|(_, (number, _))| *number == job)
+        .map(|(key, _)| key.clone())
+      else {
+        continue;
+      };
+      if let Some((_, images)) = self.pending.remove(&key) {
+        ready.extend(images);
+      }
+      let path = match &key {
+        Key::Image { path, .. } => path.display().to_string(),
+        _ => String::new(),
+      };
+      self.store(key, frames, || format!("image {path}"));
+    }
+    ready.sort_unstable();
+    ready.dedup();
+    ready
   }
 
   /// Starts a draw of the window whose damage history is `window`.
@@ -429,7 +510,10 @@ impl Icons {
     size: (u32, u32),
     scale: f32,
   ) -> Option<Drawn<'_>> {
-    let key = self.load(image.path, image, size, scale, true);
+    let key = self.load(image.path, image, size, scale, true, Some(image.id));
+    if self.pending.contains_key(&key) {
+      return self.waiting(image, &key, size, scale);
+    }
     // A failure is marked used too, so it isn't read and logged again.
     let entry = self.cache.get_mut(&key)?;
     entry.used = self.frame;
@@ -464,7 +548,7 @@ impl Icons {
         crabshell_ui::image_source_failed(image.id, image.path);
       }
       let good = shown.good.clone()?;
-      let key = self.load(&good, image, size, scale, true);
+      let key = self.load(&good, image, size, scale, true, Some(image.id));
       self.show(image.id, &key);
       return frame(&self.cache, &key, 0).map(Drawn::One);
     }
@@ -496,7 +580,7 @@ impl Icons {
       leaving: None,
     };
     let log = !self.failed_masks.contains(path);
-    let key = self.load(path, &image, size, scale, log);
+    let key = self.load(path, &image, size, scale, log, None);
     self.masked.insert(key.clone(), self.frame);
     if self
       .cache
@@ -563,13 +647,15 @@ impl Icons {
       Some((before, drawn)) if before == named => drawn.clone(),
       _ => {
         let good = shown.good.clone();
-        let loads = {
-          let left = self.load(named, image, size, scale, true);
-          self
-            .cache
-            .get(&left)
-            .is_some_and(|entry| entry.frames.is_some())
-        };
+        let left = self.load(named, image, size, scale, true, Some(image.id));
+        if self.pending.contains_key(&left) {
+          // Looked at again once it is decoded.
+          return Some(None);
+        }
+        let loads = self
+          .cache
+          .get(&left)
+          .is_some_and(|entry| entry.frames.is_some());
         let drawn = if loads { Some(named.to_owned()) } else { good };
         let shown = self.transitions.entry(image.id).or_default();
         shown.leaving = Some((named.to_owned(), drawn.clone()));
@@ -578,7 +664,9 @@ impl Icons {
     };
     let nothing = drawn.is_none();
     let left = match drawn {
-      Some(drawn) => Some(self.load(&drawn, image, size, scale, true)).filter(|left| left != key),
+      Some(drawn) => {
+        Some(self.load(&drawn, image, size, scale, true, Some(image.id))).filter(|left| left != key)
+      }
       None => None,
     };
     let shown = self.transitions.entry(image.id).or_default();
@@ -592,6 +680,34 @@ impl Icons {
       Some(left) => Some(Some(left)),
       None => nothing.then_some(None),
     }
+  }
+
+  /// What `image` draws while `key`, its picture, is decoded: the
+  /// picture its transition leaves, or else the one it drew before at
+  /// this size, as during a change of source; nothing if neither is
+  /// cached.
+  fn waiting(
+    &mut self,
+    image: &ImageView<'_>,
+    key: &Key,
+    size: (u32, u32),
+    scale: f32,
+  ) -> Option<Drawn<'_>> {
+    let left = if image.transition == ImageTransition::None {
+      None
+    } else {
+      let shown = self.transitions.entry(image.id).or_default();
+      shown.used = self.frame;
+      shown.window = self.window;
+      self.leaving(image, key, size, scale).flatten()
+    };
+    let before = left.or_else(|| {
+      let (shown, _) = self.shows.get(&image.id)?;
+      matches!(shown, Key::Image { width, height, .. } if (*width, *height) == size)
+        .then(|| shown.clone())
+    })?;
+    self.cache.get_mut(&before)?.used = self.frame;
+    frame(&self.cache, &before, 0).map(Drawn::One)
   }
 
   /// Drops the picture cached under `key`, which image `id`'s transition
@@ -626,37 +742,46 @@ impl Icons {
     }
   }
 
-  /// The cache key of the file at `path` drawn as `image` is.
+  /// The cache key of the file at `path` drawn as `image` is, and the
+  /// file's length.
   fn key(
     &mut self,
     path: &Path,
     image: &ImageView<'_>,
     (width, height): (u32, u32),
     scale: f32,
-  ) -> Key {
-    let modified = match self.modified.get(path) {
-      Some(modified) => *modified,
+  ) -> (Key, u64) {
+    let (modified, length) = match self.modified.get(path) {
+      Some(file) => *file,
       None => {
-        let modified = std::fs::metadata(path)
-          .and_then(|metadata| metadata.modified())
-          .ok();
-        self.modified.insert(path.to_owned(), modified);
-        modified
+        let metadata = std::fs::metadata(path).ok();
+        let file = (
+          metadata
+            .as_ref()
+            .and_then(|metadata| metadata.modified().ok()),
+          metadata.map_or(0, |metadata| metadata.len()),
+        );
+        self.modified.insert(path.to_owned(), file);
+        file
       }
     };
-    Key::Image {
+    let key = Key::Image {
       path: path.to_owned(),
       modified,
       width,
       height,
       fit: image.fit,
       filters: FilterKey::new(&image.filters, scale),
-    }
+    };
+    (key, length)
   }
 
   /// The key of the file at `path` drawn as `image` is, decoded into the
   /// cache on first use, marked used by this draw. A failure is logged
-  /// only with `log`.
+  /// only with `log`. For a `waiter`, the image that draws it, a large
+  /// file goes to the worker, if there is one, and stays out of the cache
+  /// until it comes back; without, it is decoded at once, taking over a
+  /// job the worker hasn't started.
   fn load(
     &mut self,
     path: &Path,
@@ -664,14 +789,41 @@ impl Icons {
     size: (u32, u32),
     scale: f32,
     log: bool,
+    waiter: Option<u64>,
   ) -> Key {
-    let key = self.key(path, image, size, scale);
+    let (key, length) = self.key(path, image, size, scale);
     if !self.cache.contains_key(&key) {
       if !log {
         // Counted as logged already.
         self.failed.insert(key.clone());
       }
       let room = MAX_CACHED_BYTES.saturating_sub(self.bytes_in_use());
+      let small = length <= SMALL_FILE
+        && image.filters.blur == 0.0
+        && u64::from(size.0) * u64::from(size.1) <= SMALL_PIXELS;
+      if let (Some(worker), Some(id), false) = (&mut self.worker, waiter, small) {
+        let (_, images) = self.pending.entry(key.clone()).or_insert_with(|| {
+          let job = Job {
+            path: path.to_owned(),
+            size,
+            fit: image.fit,
+            filters: image.filters,
+            scale,
+            room,
+          };
+          (worker.send(job), Vec::new())
+        });
+        if !images.contains(&id) {
+          images.push(id);
+        }
+        return key;
+      }
+      if let Some((job, images)) = self.pending.remove(&key) {
+        if let Some(worker) = &mut self.worker {
+          worker.cancel(job);
+        }
+        self.ready.extend(images);
+      }
       let rasterized = crate::animation::frames(path, size, image.fit, &image.filters, scale, room);
       self.store(key.clone(), rasterized, || {
         format!("image {}", path.display())

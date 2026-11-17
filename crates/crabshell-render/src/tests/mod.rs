@@ -15,6 +15,7 @@ mod colors;
 mod corners;
 mod damage;
 mod dashes;
+mod decode;
 mod effects;
 mod filters;
 mod glyphs;

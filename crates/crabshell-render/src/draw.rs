@@ -165,6 +165,44 @@ impl Renderer {
     self.icons.forget_captures(gone);
   }
 
+  /// From now on, decodes image files on a worker thread, which starts
+  /// with the first and ends once none is left: a GIF's frames, a blurred
+  /// picture, and any file past 64 KiB or drawn past 256 by 256 pixels.
+  /// Until its picture comes in, an image draws the picture its
+  /// transition leaves, or the one it drew before at its size, or
+  /// nothing. Without this, as for a snapshot, each is decoded as it is
+  /// first drawn.
+  ///
+  /// The platform then follows [`decoding`](Self::decoding), and while it
+  /// holds asks to be woken with
+  /// [`wake_when_decoded`](Self::wake_when_decoded) and calls
+  /// [`take_decoded`](Self::take_decoded) when it is.
+  pub fn decode_off_thread(&mut self) {
+    self.icons.decode_off_thread();
+  }
+
+  /// Whether pictures are being decoded for images drawn, or came in and
+  /// weren't taken with [`take_decoded`](Self::take_decoded) yet.
+  pub fn decoding(&self) -> bool {
+    self.icons.decoding()
+  }
+
+  /// Calls `wake` once, from the worker thread, when a picture is
+  /// decoded, or at once if one waits to be taken. It replaces a `wake`
+  /// given before.
+  pub fn wake_when_decoded(&mut self, wake: impl FnOnce() + Send + 'static) {
+    self.icons.wake_when_decoded(Box::new(wake));
+  }
+
+  /// Caches the pictures decoded since the last call, logging each
+  /// failure once, and returns the ids of the images that wait for them,
+  /// for the platform to repaint with
+  /// [`Window::repaint_image`](crabshell_ui::Window::repaint_image) in
+  /// every window.
+  pub fn take_decoded(&mut self) -> Vec<u64> {
+    self.icons.take_decoded()
+  }
+
   /// When the next frame of an animated GIF is due, counting from `now`
   /// for one drawn since the last call. `None` while no GIF drawn plays.
   /// The platform wakes then and calls
@@ -180,6 +218,18 @@ impl Renderer {
   /// longer shown wakes nothing more.
   pub fn advance_images(&mut self, now: std::time::Instant) -> Vec<u64> {
     self.icons.advance(now)
+  }
+
+  /// How many jobs the decoding thread did, for tests.
+  #[cfg(test)]
+  pub(crate) fn decoded_off_thread(&self) -> usize {
+    self.icons.worker_work().0
+  }
+
+  /// Whether the decoding thread runs, for tests.
+  #[cfg(test)]
+  pub(crate) fn decoder_running(&self) -> bool {
+    self.icons.worker_work().1
   }
 
   /// The number of screencopy frames kept scaled, for tests.

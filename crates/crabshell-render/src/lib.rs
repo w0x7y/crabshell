@@ -85,6 +85,7 @@ mod filters;
 mod icons;
 mod images;
 mod theme;
+mod worker;
 
 #[cfg(test)]
 mod tests;
