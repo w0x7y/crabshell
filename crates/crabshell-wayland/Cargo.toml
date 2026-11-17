@@ -28,3 +28,8 @@ wayland-scanner.workspace = true
 png.workspace = true
 # To capture log lines in tests.
 tracing-subscriber.workspace = true
+# The fake compositor in tests/fake, with the server side of the
+# protocols it offers.
+wayland-protocols = { workspace = true, features = ["server"] }
+wayland-protocols-wlr = { workspace = true, features = ["server"] }
+wayland-server.workspace = true

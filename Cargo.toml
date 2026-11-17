@@ -64,6 +64,9 @@ wayland-protocols-wlr = { version = "=0.3.12", default-features = false, feature
 # crates/crabshell-wayland/protocols, as wayland-protocols does. The
 # version wayland-client uses.
 wayland-scanner = "=0.31.11"
+# The fake compositor crabshell-wayland's protocol tests run against. The
+# version that matches wayland-client's backend.
+wayland-server = "=0.31.14"
 zbus = { version = "=6.2.1", default-features = false, features = ["default-rt", "proxy"] }
 
 # The workspace's own crates.
