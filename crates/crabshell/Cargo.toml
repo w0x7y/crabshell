@@ -41,3 +41,5 @@ smithay-client-toolkit.workspace = true
 wayland-protocols = { workspace = true, features = ["server"] }
 wayland-protocols-wlr = { workspace = true, features = ["server"] }
 wayland-server.workspace = true
+# The fake logind the lock example sleeps with.
+zbus.workspace = true

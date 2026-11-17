@@ -1,6 +1,7 @@
 //! A lock screen: `crabshell ipc lock on` locks the session, as an idle
-//! daemon would, and it locks before the machine sleeps. Every monitor shows a password field; Enter checks the
-//! password with PAM and unlocks, or says it was wrong.
+//! daemon would, and it locks before the machine sleeps. Every monitor
+//! shows a password field; Enter checks the password with PAM and
+//! unlocks, or says it was wrong.
 //!
 //! ```sh
 //! cargo run --release -p crabshell --example lock

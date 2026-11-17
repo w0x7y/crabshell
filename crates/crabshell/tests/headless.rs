@@ -3610,6 +3610,166 @@ fn the_lock_example_locks_again_after_a_crash() {
   });
 }
 
+/// The lock example's background, which fills a locked screen.
+const LOCK_SCREEN: [u8; 3] = [0x11, 0x11, 0x1b];
+/// What the shell logs when the compositor says the session is locked.
+const LOCKED: &str = "the compositor locked the session";
+
+/// Phase 18's exit check for logind: the lock example holds a delay
+/// inhibitor from a fake logind, and when logind says the machine is
+/// about to sleep, it lets go only after the compositor said the session
+/// is locked, and its lock screen shows.
+#[test]
+#[ignore = "needs headless Sway"]
+fn the_lock_example_locks_before_the_machine_sleeps() {
+  const TEST: &str = "the_lock_example_locks_before_the_machine_sleeps";
+  run_as_child();
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1280x720", "scale", "1"]);
+  let bus = PrivateBus::start();
+  let logind = FakeLogind::start(&bus);
+  let shell = ExampleBar::spawn(
+    &sway,
+    this_as_shell(TEST),
+    &[
+      (CHILD, "lock example"),
+      ("DBUS_SYSTEM_BUS_ADDRESS", &bus.address),
+    ],
+  );
+  let inhibitor = logind
+    .inhibitors
+    .recv_timeout(Duration::from_secs(10))
+    .expect("the lock example asks for an inhibitor");
+  let let_go = hung_up(inhibitor);
+  std::thread::sleep(Duration::from_millis(500));
+  assert!(let_go.try_recv().is_err(), "let go before any sleep");
+  let early = shell.drain();
+  assert!(!early.iter().any(|line| line.contains(LOCKED)), "{early:?}");
+
+  logind.prepare_for_sleep(&bus, true);
+  let let_go_at = let_go
+    .recv_timeout(Duration::from_secs(10))
+    .expect("the inhibitor let go");
+  let line = shell.wait_for(LOCKED);
+  let locked_at: crabshell::jiff::Timestamp = line
+    .split_whitespace()
+    .next()
+    .and_then(|time| time.parse().ok())
+    .unwrap_or_else(|| panic!("no time in {line:?}"));
+  assert!(
+    locked_at <= let_go_at,
+    "let go at {let_go_at}, before the lock at {locked_at}"
+  );
+  wait_for_shot(&sway, "HEADLESS-1", "the lock screen", |shot| {
+    mostly(shot, LOCK_SCREEN)
+  });
+  // After the resume, it holds sleep off again.
+  logind.prepare_for_sleep(&bus, false);
+  logind
+    .inhibitors
+    .recv_timeout(Duration::from_secs(10))
+    .expect("a new inhibitor after the resume");
+}
+
+/// A channel that gets the time once every write end of `pipe` is
+/// closed, as logind sees an inhibitor go.
+fn hung_up(mut pipe: std::io::PipeReader) -> mpsc::Receiver<crabshell::jiff::Timestamp> {
+  use std::io::Read;
+
+  let (sender, receiver) = mpsc::channel();
+  std::thread::spawn(move || {
+    let mut byte = [0];
+    while pipe.read(&mut byte).is_ok_and(|read| read > 0) {}
+    let _ = sender.send(crabshell::jiff::Timestamp::now());
+  });
+  receiver
+}
+
+/// A stand-in for logind on a private system bus, answering on a thread
+/// of its own until the bus goes. `Inhibit` hands out a pipe's write end
+/// and sends its read end to [`inhibitors`](Self::inhibitors).
+struct FakeLogind {
+  inhibitors: mpsc::Receiver<std::io::PipeReader>,
+}
+
+impl FakeLogind {
+  fn start(bus: &PrivateBus) -> FakeLogind {
+    let (sender, inhibitors) = mpsc::channel();
+    let (up, started) = mpsc::channel();
+    let address = bus.address.clone();
+    std::thread::spawn(move || zbus::block_on(fake_logind(address, sender, up)));
+    started
+      .recv_timeout(Duration::from_secs(5))
+      .expect("the fake logind on the bus");
+    FakeLogind { inhibitors }
+  }
+
+  /// Has it send `PrepareForSleep(start)`. Only logind's own connection
+  /// counts, so a test method of its own asks it to.
+  fn prepare_for_sleep(&self, bus: &PrivateBus, start: bool) {
+    let output = Command::new("gdbus")
+      .args(["call", "--address", &bus.address])
+      .args(["--dest", "org.freedesktop.login1"])
+      .args(["--object-path", "/org/freedesktop/login1"])
+      .args(["--method", "org.example.FakeLogind.PrepareForSleep"])
+      .arg(start.to_string())
+      .output()
+      .expect("gdbus runs");
+    assert!(output.status.success(), "gdbus: {output:?}");
+  }
+}
+
+/// The fake logind: `Inhibit`, `Get` of `PreparingForSleep`, which is
+/// false, and the test's `PrepareForSleep`.
+async fn fake_logind(
+  address: String,
+  inhibitors: mpsc::Sender<std::io::PipeReader>,
+  up: mpsc::Sender<()>,
+) {
+  use std::future::poll_fn;
+  use std::os::fd::OwnedFd;
+  use std::pin::Pin;
+
+  use zbus::export::futures_core::Stream;
+
+  let connection = zbus::connection::Builder::address(address.as_str())
+    .name("org.freedesktop.login1")
+    .build()
+    .await
+    .expect("the fake logind joins the bus");
+  let mut messages = zbus::MessageStream::from(&connection);
+  let _ = up.send(());
+  while let Some(Ok(call)) = poll_fn(|cx| Pin::new(&mut messages).poll_next(cx)).await {
+    let header = call.header();
+    if header.message_type() != zbus::message::Type::MethodCall {
+      continue;
+    }
+    let reply = zbus::Message::method_return(&header);
+    let reply = match header.member().map(|member| member.as_str()) {
+      Some("Inhibit") => {
+        let (read, write) = std::io::pipe().expect("a pipe");
+        let _ = inhibitors.send(read);
+        reply.build(&zbus::Fd::from(OwnedFd::from(write)))
+      }
+      Some("Get") => reply.build(&zbus::Variant::from(false)),
+      Some("PrepareForSleep") => {
+        let start: bool = call.body().deserialize().expect("a bool");
+        let (path, interface) = ("/org/freedesktop/login1", "org.freedesktop.login1.Manager");
+        connection
+          .emit_signal(None::<&str>, path, interface, "PrepareForSleep", &start)
+          .await
+          .expect("PrepareForSleep sent");
+        reply.build(&())
+      }
+      _ => zbus::Message::error(&header, "org.freedesktop.DBus.Error.UnknownMethod")
+        .build(&"the fake logind has no such method"),
+    };
+    if connection.send(&reply.expect("a reply")).await.is_err() {
+      return;
+    }
+  }
+}
+
 /// A stand-in for Hyprland: its two sockets under the private Sway's
 /// runtime directory, answered on threads of their own from `lists`.
 /// Hyprland itself is never started.
