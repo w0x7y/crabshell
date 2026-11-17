@@ -37,8 +37,8 @@ pub enum Precision {
 }
 
 /// How long after the first clock the system bus is reached, so its
-/// connection stays off a first frame's path: a suspend before then
-/// leaves nothing to resync.
+/// connection stays off a first frame's path. A suspend before the
+/// watcher listens goes unannounced, so it resyncs once it does.
 const WATCH_AFTER: Duration = if cfg!(test) {
   Duration::from_millis(200)
 } else {
@@ -200,6 +200,8 @@ async fn watch(clocks: Rc<Clocks>, bus: zbus::Address) {
       return;
     }
   };
+  // For a resume before the match rules were in, which nobody heard.
+  clocks.resync();
   loop {
     let next = poll_fn(|cx| match Pin::new(&mut sleep).poll_next(cx) {
       Poll::Pending => Pin::new(&mut zone).poll_next(cx),

@@ -383,6 +383,29 @@ async fn properties_changed(from: zbus::Connection, property: &'static str) {
 }
 
 #[test]
+fn the_clock_resyncs_once_the_bus_is_reached() {
+  // A suspend before the watcher's match rules are in, whose resume
+  // logind announced to nobody, is caught up at once.
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(Config {
+    localtime: None,
+    system_bus: Some(bus.address.parse().expect("dbus-daemon's address")),
+    ..offline()
+  });
+  shell.cx.clock(Precision::Minute);
+  let clocks = shell.cx.service::<Clocks>().expect("provided");
+  let timer = || clocks.started.borrow()[0].timer;
+  let armed = timer();
+  shell.run_until(Instant::now() + Duration::from_millis(100));
+  assert_eq!(timer(), armed, "a tick keeps its timer");
+  shell.retry_until(
+    "a re-sync once the bus is reached",
+    || timer() != armed,
+    |_| {},
+  );
+}
+
+#[test]
 fn logind_and_timedated_resync_the_clock() {
   let bus = PrivateBus::start();
   let localtime = Localtime::new("Europe/Paris");
@@ -411,12 +434,16 @@ fn logind_and_timedated_resync_the_clock() {
     shell.block_on(bus.connect(&["org.freedesktop.login1", "org.freedesktop.timedate1"]));
   let stranger = shell.block_on(bus.connect(&[]));
 
-  // A resume re-syncs, until the watcher's match rules are in.
+  // The watcher re-syncs once its match rules are in, then a resume
+  // re-syncs again.
   let armed = timer();
+  shell.retry_until("the watcher's re-sync", || timer() != armed, |_| {});
+  let armed = timer();
+  shell.block_on(prepare_for_sleep(system.clone(), false));
   shell.retry_until(
     "re-sync after PrepareForSleep(false)",
     || timer() != armed,
-    |shell| shell.block_on(prepare_for_sleep(system.clone(), false)),
+    |_| {},
   );
 
   // Going to sleep, other timedated properties and other senders change
