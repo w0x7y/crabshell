@@ -238,6 +238,15 @@ impl Axis {
     Some(to.clamp(0.0, self.most))
   }
 
+  /// Stops the axis's motion and shows no overshoot along it, at once.
+  /// Returns whether the overshoot shown changed.
+  fn stop(&mut self) -> bool {
+    self.motion.generation += 1;
+    self.motion.samples.clear();
+    self.motion.raw = 0.0;
+    std::mem::replace(&mut self.overshoot, 0.0) != 0.0
+  }
+
   /// Whether `delta` can still move the offset, rather than only push
   /// past an end.
   fn can_move(&self, delta: f32) -> bool {
@@ -264,10 +273,7 @@ impl ScrollNode {
     self.set_moving(false);
     let mut change = Change::None;
     for axis in &mut self.axes {
-      axis.motion.generation += 1;
-      axis.motion.samples.clear();
-      axis.motion.raw = 0.0;
-      if std::mem::replace(&mut axis.overshoot, 0.0) != 0.0 {
+      if axis.stop() {
         change = Change::Place;
       }
     }
@@ -569,9 +575,13 @@ impl Tree {
       if let Some(shifts) = shifts.as_ref().filter(|_| step.axis == 0) {
         *written += shifts.take();
       }
-      // A write from outside, or content that shrank under it, stops it.
+      // A write from outside, or content that shrank under it, stops this
+      // axis; the other goes on.
       if offset != *written {
-        return scroll.stop_overshoot();
+        let moved = axis.stop();
+        // Only a list is told, and a list has one axis.
+        scroll.set_moving(false);
+        return if moved { Change::Place } else { Change::None };
       }
       let seconds = step.seconds;
       let mut to = offset;

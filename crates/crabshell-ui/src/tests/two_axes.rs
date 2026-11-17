@@ -229,3 +229,34 @@ fn a_drag_mostly_down_over_a_view_that_cant_go_down_moves_the_view_around_it() {
   window.pointer_button_at(PointerButton::Left, false, 600);
   assert_eq!((outer.get(), x.get(), y.get()), (30.0, 0.0, 0.0));
 }
+
+#[test]
+fn a_write_to_one_axis_stops_only_that_axis() {
+  let mut h = Harness::new();
+  let (x, y) = (h.cx.signal(0.0), h.cx.signal(0.0));
+  let window = view(&mut h, (x, y), |view| view);
+  window.pointer_motion(Point::new(10.0, 10.0));
+  // Past the left end across, and down at 1000 pixels a second.
+  for n in 0..5 {
+    window.pointer_scroll_at(fingers(-10.0, 10.0), n * 10);
+  }
+  window.pointer_scroll_at(lift(), 45);
+  let start = Instant::now();
+  for tick in 0..2 {
+    advance_animations(start + Duration::from_millis(16 * tick));
+    h.frame(&window);
+  }
+  let springing = child_at(&window).x;
+  assert!(springing > 0.0, "{springing}");
+  y.set(10.0);
+  advance_animations(start + Duration::from_millis(32));
+  h.frame(&window);
+  let now = child_at(&window).x;
+  assert!(
+    now > 0.0 && now < springing,
+    "x springs on from {springing}: {now}"
+  );
+  run_clock(&mut h, &window);
+  assert_eq!((x.get(), y.get()), (0.0, 10.0));
+  assert_eq!(child_at(&window), Point::new(0.0, -10.0));
+}
