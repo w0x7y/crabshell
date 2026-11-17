@@ -383,6 +383,10 @@ fn remote_art_is_downloaded_once_and_reused() {
   assert_eq!(mode & 0o777, 0o700);
   assert_eq!(art_files(&cache).len(), 1, "no part left");
 
+  // Downloaded, it wakes nothing.
+  let wakeups = shell.run_until(Instant::now() + Duration::from_millis(300));
+  assert_eq!(wakeups, 1, "asleep: only the run's own deadline");
+
   let again = shell.cx.cover_art(server.url("/art.png"));
   Runtime::current().flush();
   assert_eq!(again.get_untracked(), Some(path));
@@ -544,4 +548,49 @@ fn stop_programs_stops_curl_before_the_shell_exits() {
   let proc = PathBuf::from(format!("/proc/{}", pid.trim()));
   crate::stop_programs(&shell.cx);
   run_until(&mut shell, "curl reaped", move || !proc.exists());
+}
+
+#[test]
+fn a_wide_art_cache_is_tightened_to_the_user_alone() {
+  use std::os::unix::fs::PermissionsExt;
+  if !curl_installed() {
+    return;
+  }
+  let server = Server::start();
+  let dir = TempDir::new();
+  let cache = dir.path().join("cache/art");
+  std::fs::create_dir_all(&cache).unwrap();
+  std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o755)).unwrap();
+  let mut shell = art_shell(&dir);
+  let art = shell.cx.cover_art(server.url("/art.png"));
+  run_until(&mut shell, "art", move || art.get_untracked().is_some());
+  let mode = std::fs::metadata(&cache).unwrap().permissions().mode();
+  assert_eq!(mode & 0o777, 0o700);
+}
+
+#[test]
+fn a_linked_art_cache_is_refused() {
+  if !curl_installed() {
+    return;
+  }
+  let server = Server::start();
+  let dir = TempDir::new();
+  let elsewhere = dir.path().join("elsewhere");
+  std::fs::create_dir_all(&elsewhere).unwrap();
+  std::fs::create_dir_all(dir.path().join("cache")).unwrap();
+  std::os::unix::fs::symlink(&elsewhere, dir.path().join("cache/art")).unwrap();
+  let mut shell = art_shell(&dir);
+  let url = server.url("/art.png");
+  let logs = capture_logs(|| {
+    let art = shell.cx.cover_art(url.as_str());
+    Runtime::current().flush();
+    shell.run_until(Instant::now() + Duration::from_millis(300));
+    assert_eq!(art.get_untracked(), None);
+  });
+  assert!(
+    logs.contains("isn't a directory of the user's own"),
+    "{logs}"
+  );
+  assert_eq!(server.hits("/art.png"), 0);
+  assert!(art_files(&elsewhere).is_empty());
 }

@@ -3,10 +3,10 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
-use std::fs::{DirBuilder, File, OpenOptions};
+use std::fs::{DirBuilder, File, OpenOptions, Permissions};
 use std::io::Read;
 use std::os::unix::ffi::OsStringExt;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::panic::Location;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
@@ -132,6 +132,14 @@ impl Art {
         "no cache directory, as neither XDG_CACHE_HOME nor HOME is set",
       );
     };
+    if let Err(why) = ready(&dir) {
+      thread_local!(static LOGGED: Cell<bool> = const { Cell::new(false) });
+      if !LOGGED.replace(true) {
+        let dir = dir.display();
+        tracing::warn!(%dir, why, "remote cover art isn't shown");
+      }
+      return None;
+    }
     let key = key(url);
     if let Some(cached) = cached(&dir, &key) {
       // So a trim keeps what is shown.
@@ -155,11 +163,6 @@ impl Art {
       let message = format!("couldn't write the cache: {error}");
       HttpError::new(super::HttpErrorKind::Network, message)
     };
-    DirBuilder::new()
-      .recursive(true)
-      .mode(0o700)
-      .create(dir)
-      .map_err(network)?;
     thread_local!(static NEXT: Cell<u64> = const { Cell::new(0) });
     let n = NEXT.replace(NEXT.get() + 1);
     let part = dir.join(format!(".{key}-{}-{n}.part", std::process::id()));
@@ -218,6 +221,30 @@ impl Art {
       }
     }
   }
+}
+
+/// Makes the cache directory if it is missing, and checks that it is a
+/// directory of the user's own, not a link, tightening a wider one to
+/// `0700`.
+fn ready(dir: &Path) -> Result<(), String> {
+  DirBuilder::new()
+    .recursive(true)
+    .mode(0o700)
+    .create(dir)
+    .map_err(|error| format!("couldn't make the cache directory: {error}"))?;
+  let meta = dir
+    .symlink_metadata()
+    .map_err(|error| format!("couldn't read the cache directory: {error}"))?;
+  if !meta.is_dir() || meta.uid() != rustix::process::geteuid().as_raw() {
+    return Err(String::from(
+      "the cache directory isn't a directory of the user's own",
+    ));
+  }
+  if meta.mode() & 0o077 != 0 {
+    std::fs::set_permissions(dir, Permissions::from_mode(0o700))
+      .map_err(|error| format!("couldn't make the cache directory private: {error}"))?;
+  }
+  Ok(())
 }
 
 /// Logs why the art at `url` isn't shown, once per URL.
