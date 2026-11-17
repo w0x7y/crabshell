@@ -373,10 +373,10 @@ pub trait ServicesExt {
   /// slow disk delays the frame.
   fn file_view(&self, path: impl Into<PathBuf>) -> FileView;
 
-  /// The folder at `path`, as Quickshell's `FolderListModel`: its
-  /// entries, read at the next flush and again once the loop has
-  /// dispatched a burst of changes in it, and followed as `file_view`
-  /// follows a file when the folder is made later, removed or replaced.
+  /// The folder at `path`, as Qt's `FolderListModel`: its entries, read
+  /// at the next flush and again 50 ms after a change in it, so a burst
+  /// of changes reads it once, and followed as `file_view` follows a
+  /// file when the folder is made later, removed or replaced.
   /// `path` takes a value or a closure; a new path follows the new
   /// folder, and a panic in the closure is logged and empties the view
   /// until the next change. Each call reads its own, which goes with
@@ -736,10 +736,6 @@ trait EventLoop {
   /// Removes a source. One that is already gone is ignored.
   fn remove(&self, token: RegistrationToken);
 
-  /// Calls `idle` once the loop has dispatched what is ready, before it
-  /// sleeps again.
-  fn insert_idle(&self, idle: Box<dyn FnOnce()>);
-
   /// Adds the services' executor. `false`, logged, if the loop refused it.
   fn insert_executor(&self, executor: Executor<()>) -> bool;
 
@@ -798,10 +794,6 @@ impl<D: 'static> EventLoop for LoopHandle<'static, D> {
 
   fn remove(&self, token: RegistrationToken) {
     LoopHandle::remove(self, token);
-  }
-
-  fn insert_idle(&self, idle: Box<dyn FnOnce()>) {
-    LoopHandle::insert_idle(self, move |_| idle());
   }
 
   fn insert_executor(&self, executor: Executor<()>) -> bool {

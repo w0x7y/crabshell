@@ -74,13 +74,13 @@ fn a_burst_of_changes_reads_the_folder_once() {
     touch(&dir.path().join(format!("new{n:02}")));
   }
   std::fs::rename(dir.path().join("old"), dir.path().join("renamed")).unwrap();
-  run(&mut shell, 50);
+  run(&mut shell, 100);
   assert_eq!(reads() - before, 1);
   let listed = names(view);
   assert_eq!(listed.len(), 21);
   assert!(listed.contains(&"renamed".to_owned()) && !listed.contains(&"old".to_owned()));
   std::fs::remove_file(dir.path().join("new00")).unwrap();
-  run(&mut shell, 50);
+  run(&mut shell, 100);
   assert_eq!(names(view).len(), 20);
 }
 
@@ -94,7 +94,7 @@ fn a_name_that_isnt_utf8_is_left_out_and_logged_once() {
     let view = shell.cx.folder_view(dir.path());
     Runtime::current().flush();
     touch(&dir.path().join("more"));
-    run(&mut shell, 50);
+    run(&mut shell, 100);
     assert_eq!(names(view), ["fine", "more"]);
   });
   assert_eq!(logs.matches("isn't UTF-8").count(), 1, "{logs}");
@@ -110,7 +110,10 @@ fn a_folder_view_lists_at_most_10000_entries() {
   let logs = capture_logs(|| {
     let view = shell.cx.folder_view(dir.path());
     Runtime::current().flush();
-    assert_eq!(view.entries().get_untracked().len(), 10_000);
+    // The first 10000 by name: "9999" sorts last.
+    let listed = names(view);
+    assert_eq!(listed.len(), 10_000);
+    assert!(listed.contains(&"10000".to_owned()) && !listed.contains(&"9999".to_owned()));
     touch(&dir.path().join("more"));
     run(&mut shell, 100);
     assert_eq!(view.entries().get_untracked().len(), 10_000);
@@ -123,29 +126,28 @@ fn a_folder_view_follows_its_folder_made_later_removed_and_replaced() {
   let dir = TempDir::new();
   let path = dir.path().join("later/walls");
   let mut shell = Harness::new(offline());
-  let view = shell.cx.folder_view(path.as_path());
+  let view = shell.cx.folder_view(&path);
   Runtime::current().flush();
   assert_eq!(kind(view), Some(FileErrorKind::NotFound));
 
-  // Read when it is made, not after the wait a new file gets.
   std::fs::create_dir(dir.path().join("later")).unwrap();
-  run(&mut shell, 20);
+  run(&mut shell, 80);
   std::fs::create_dir(&path).unwrap();
-  run(&mut shell, 20);
+  run(&mut shell, 80);
   assert_eq!(kind(view), None);
   touch(&path.join("one"));
-  run(&mut shell, 50);
+  run(&mut shell, 100);
   assert_eq!(names(view), ["one"]);
   assert_eq!(kind(view), None);
 
   std::fs::remove_dir_all(dir.path().join("later")).unwrap();
-  run(&mut shell, 50);
+  run(&mut shell, 100);
   assert_eq!(names(view), Vec::<String>::new());
   assert_eq!(kind(view), Some(FileErrorKind::NotFound));
 
   std::fs::create_dir_all(&path).unwrap();
   touch(&path.join("two"));
-  run(&mut shell, 50);
+  run(&mut shell, 100);
   assert_eq!(names(view), ["two"]);
 
   // Another folder renamed over it is listed and then followed.
@@ -154,16 +156,16 @@ fn a_folder_view_follows_its_folder_made_later_removed_and_replaced() {
   touch(&other.join("three"));
   std::fs::remove_dir_all(&path).unwrap();
   std::fs::rename(&other, &path).unwrap();
-  run(&mut shell, 50);
+  run(&mut shell, 100);
   assert_eq!(names(view), ["three"]);
   touch(&path.join("four"));
-  run(&mut shell, 50);
+  run(&mut shell, 100);
   assert_eq!(names(view), ["four", "three"]);
 
   // A file in its place isn't a folder.
   std::fs::remove_dir_all(&path).unwrap();
   touch(&path);
-  run(&mut shell, 50);
+  run(&mut shell, 100);
   assert_eq!(kind(view), Some(FileErrorKind::NotAFile));
 }
 
@@ -182,10 +184,10 @@ fn a_new_path_follows_the_new_folder_and_drops_the_old() {
   assert_eq!(names(view), ["b"]);
   let before = reads();
   touch(&first.path().join("ignored"));
-  run(&mut shell, 50);
+  run(&mut shell, 100);
   assert_eq!(reads(), before);
   touch(&second.path().join("c"));
-  run(&mut shell, 50);
+  run(&mut shell, 100);
   assert_eq!(names(view), ["b", "c"]);
 }
 
@@ -227,7 +229,7 @@ fn an_unchanged_folder_wakes_nothing_and_goes_with_its_context() {
   let mut shell = Harness::new(offline());
   let nodes = Runtime::current().node_count();
   let child = shell.cx.child();
-  let view = child.folder_view(path.as_path());
+  let view = child.folder_view(&path);
   Runtime::current().flush();
   assert_eq!(names(view), ["a"]);
   assert_eq!(run(&mut shell, 300), 1);
@@ -237,4 +239,65 @@ fn an_unchanged_folder_wakes_nothing_and_goes_with_its_context() {
   assert_eq!(Runtime::current().node_count(), nodes);
   let files = shell.cx.service::<Files>().expect("the files service");
   assert!(!files.0.watcher.is_open());
+}
+
+#[test]
+fn a_folder_moved_away_is_no_longer_listed() {
+  let dir = TempDir::new();
+  let path = dir.path().join("walls");
+  std::fs::create_dir(&path).unwrap();
+  touch(&path.join("a"));
+  let mut shell = Harness::new(offline());
+  let view = shell.cx.folder_view(&path);
+  Runtime::current().flush();
+  assert_eq!(names(view), ["a"]);
+  let away = dir.path().join("away");
+  std::fs::rename(&path, &away).unwrap();
+  run(&mut shell, 100);
+  assert_eq!(kind(view), Some(FileErrorKind::NotFound));
+  let before = reads();
+  touch(&away.join("b"));
+  run(&mut shell, 100);
+  assert_eq!(reads(), before, "the folder moved away is still watched");
+  assert_eq!(names(view), Vec::<String>::new());
+}
+
+#[test]
+fn a_folder_reached_through_a_link_is_listed_and_followed() {
+  let dir = TempDir::new();
+  let target = dir.path().join("target");
+  std::fs::create_dir(&target).unwrap();
+  touch(&target.join("a"));
+  let link = dir.path().join("walls");
+  std::os::unix::fs::symlink(&target, &link).unwrap();
+  let mut shell = Harness::new(offline());
+  let view = shell.cx.folder_view(&link);
+  Runtime::current().flush();
+  assert_eq!(names(view), ["a"]);
+  assert_eq!(view.entries().get_untracked()[0].path, link.join("a"));
+  touch(&target.join("b"));
+  run(&mut shell, 100);
+  assert_eq!(names(view), ["a", "b"]);
+}
+
+#[test]
+fn a_steady_writer_reads_the_folder_at_most_20_times_a_second() {
+  let dir = TempDir::new();
+  let path = dir.path().join("walls");
+  std::fs::create_dir(&path).unwrap();
+  let mut shell = Harness::new(offline());
+  let view = shell.cx.folder_view(&path);
+  Runtime::current().flush();
+  let before = reads();
+  let start = Instant::now();
+  for n in 0..100 {
+    touch(&path.join(format!("{n:03}")));
+    run(&mut shell, 5);
+  }
+  run(&mut shell, 100);
+  // One read per 50 ms of writing, and the last after them.
+  let most = start.elapsed().as_millis() as usize / 50 + 2;
+  let read = reads() - before;
+  assert!(read <= most, "{read} reads, at most {most}");
+  assert_eq!(names(view).len(), 100);
 }

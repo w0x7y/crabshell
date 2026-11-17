@@ -1,4 +1,4 @@
-//! A folder's entries, followed as they change, as Quickshell's
+//! A folder's entries, followed as they change, as Qt's
 //! `FolderListModel` gives a wallpaper picker.
 
 #[cfg(test)]
@@ -9,7 +9,10 @@ use std::os::unix::fs::MetadataExt;
 use std::panic::{self, AssertUnwindSafe, Location};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
+
+use calloop::RegistrationToken;
+use calloop::timer::TimeoutAction;
 
 use crabshell_reactive::{ReadSignal, Signal, untrack};
 use crabshell_ui::{Cx, IntoProp};
@@ -21,6 +24,10 @@ use crate::watch::{self, Watch};
 
 /// The most entries a folder view lists; the rest are dropped, logged.
 const MAX_ENTRIES: usize = 10_000;
+
+/// How long after a change the folder is read, so a burst of changes,
+/// or a program writing steadily, reads it at most 20 times a second.
+const SETTLE: Duration = Duration::from_millis(50);
 
 #[cfg(test)]
 thread_local! {
@@ -115,8 +122,8 @@ struct Folder {
   follow: RefCell<Option<Rc<Follow>>>,
   /// The watch on the folder itself, with its device and inode.
   own: RefCell<Option<(Watch, (u64, u64))>>,
-  /// Whether a read waits for the loop to finish dispatching.
-  queued: Cell<bool>,
+  /// The timer of a read waiting for [`SETTLE`] to pass.
+  waiting: Cell<Option<RegistrationToken>>,
   logged_names: Cell<bool>,
   logged_cap: Cell<bool>,
 }
@@ -129,7 +136,7 @@ impl Folder {
       view,
       follow: RefCell::new(None),
       own: RefCell::new(None),
-      queued: Cell::new(false),
+      waiting: Cell::new(None),
       logged_names: Cell::new(false),
       logged_cap: Cell::new(false),
     });
@@ -146,26 +153,30 @@ impl Folder {
     folder
   }
 
-  /// Reads the folder once the loop has dispatched what is ready, so a
-  /// burst of changes reads it once.
+  /// Reads the folder [`SETTLE`] from now, on a timer that exists only
+  /// while it waits, unless a read already waits.
   fn queue(self: &Rc<Self>) {
+    if self.waiting.get().is_some() {
+      return;
+    }
     let Some(event_loop) = self.shared.as_ref().and_then(|shared| shared.event_loop()) else {
       return;
     };
-    if self.queued.replace(true) {
-      return;
-    }
     let weak = Rc::downgrade(self);
-    event_loop.insert_idle(Box::new(move || {
+    let tick = Box::new(move || {
       if let Some(folder) = weak.upgrade() {
+        folder.waiting.set(None);
         folder.read();
       }
-    }));
+      TimeoutAction::Drop
+    });
+    self
+      .waiting
+      .set(event_loop.insert_timer(Instant::now() + SETTLE, tick));
   }
 
   /// Reads the folder now and shows what it holds.
   fn read(self: &Rc<Self>) {
-    self.queued.set(false);
     #[cfg(test)]
     READS.with(|reads| reads.set(reads.get() + 1));
     let meta = std::fs::metadata(&self.path);
@@ -228,9 +239,9 @@ impl Folder {
     }
   }
 
-  /// The folder's entries, sorted, up to [`MAX_ENTRIES`].
+  /// The folder's entries, sorted, the first [`MAX_ENTRIES`] of them.
   fn list(&self) -> Result<Vec<FolderEntry>, FileError> {
-    let mut entries = Vec::new();
+    let mut names = Vec::new();
     for entry in std::fs::read_dir(&self.path)? {
       let entry = match entry {
         Ok(entry) => entry,
@@ -247,25 +258,39 @@ impl Folder {
         }
         continue;
       };
-      if entries.len() == MAX_ENTRIES {
-        if !self.logged_cap.replace(true) {
-          let path = self.path.display();
-          tracing::info!(%path, "the folder holds over 10000 entries; the rest are left out");
-        }
-        break;
+      names.push(name);
+    }
+    names.sort_by_cached_key(|name| (name.to_lowercase(), name.clone()));
+    if names.len() > MAX_ENTRIES {
+      names.truncate(MAX_ENTRIES);
+      if !self.logged_cap.replace(true) {
+        let path = self.path.display();
+        tracing::info!(%path, "the folder holds over 10000 entries; the rest are left out");
       }
-      let path = entry.path();
+    }
+    let entries = names.into_iter().map(|name| {
+      let path = self.path.join(&name);
       // A link counts as what it names, and as itself when that's gone.
-      let meta = std::fs::metadata(&path).or_else(|_| entry.metadata()).ok();
-      entries.push(FolderEntry {
+      let meta = std::fs::metadata(&path)
+        .or_else(|_| std::fs::symlink_metadata(&path))
+        .ok();
+      FolderEntry {
         is_dir: meta.as_ref().is_some_and(std::fs::Metadata::is_dir),
         size: meta.as_ref().map_or(0, std::fs::Metadata::len),
         modified: meta.and_then(|meta| meta.modified().ok()),
         path,
         name,
-      });
+      }
+    });
+    Ok(entries.collect())
+  }
+}
+
+impl Drop for Folder {
+  fn drop(&mut self) {
+    let event_loop = self.shared.as_ref().and_then(|shared| shared.event_loop());
+    if let (Some(token), Some(event_loop)) = (self.waiting.take(), event_loop) {
+      event_loop.remove(token);
     }
-    entries.sort_by_cached_key(|entry| (entry.name.to_lowercase(), entry.name.clone()));
-    Ok(entries)
   }
 }

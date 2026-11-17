@@ -602,3 +602,16 @@ fn a_file_view_doesnt_show_a_file_made_but_not_written_yet() {
   run(&mut shell, 50);
   assert_eq!(*seen.borrow(), [None, Some(String::from("full"))]);
 }
+
+#[test]
+fn a_directory_made_at_the_path_reads_as_not_a_file_at_once() {
+  let dir = Dir::new();
+  let path = dir.join("note");
+  let mut shell = Harness::new(offline());
+  let view = shell.cx.file_view(&path);
+  assert_eq!(kind(&view), Some(FileErrorKind::NotFound));
+  std::fs::create_dir(&path).unwrap();
+  // Under the 50 ms a new file waits for its writer.
+  run(&mut shell, 20);
+  assert_eq!(kind(&view), Some(FileErrorKind::NotAFile));
+}
