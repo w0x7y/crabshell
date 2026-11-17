@@ -103,9 +103,9 @@ pub mod prelude {
     Notifications, PairingKind, PairingRequest, Pam, PamError, PamMessage, PamResult, PamState,
     PeakTarget, PerformanceDegradation, PlaybackStatus, Player, PolkitAgent, PowerDevice,
     PowerProfile, PowerProfiles, Precision, Process, SavedConnection, ServicesExt, Sink, Socket,
-    SocketServer, Sway, SwayEvent, SwayEventKind, SwayOutput, Timeout, Tray, TrayCategory,
-    TrayHost, TrayItem, TrayMenu, TrayStatus, UPower, Urgency, WifiMode, WifiNetwork, WifiSecurity,
-    Workspace,
+    SocketServer, Sway, SwayEvent, SwayEventKind, SwayOutput, SystemStats, Temperature, Timeout,
+    Tray, TrayCategory, TrayHost, TrayItem, TrayMenu, TrayStatus, UPower, Urgency, WifiMode,
+    WifiNetwork, WifiSecurity, Workspace,
   };
   pub use crabshell_services::{Backlight, Brightness, Logind};
   pub use crabshell_ui::{

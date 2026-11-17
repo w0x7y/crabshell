@@ -40,6 +40,7 @@ mod process;
 mod socket;
 mod socket_server;
 mod spawn;
+mod stats;
 mod sway;
 #[cfg(test)]
 mod testing;
@@ -96,6 +97,7 @@ pub use socket::Socket;
 pub use socket_server::SocketServer;
 #[doc(hidden)]
 pub use spawn::{FIRST_START, shell_tunables};
+pub use stats::{SystemStats, Temperature};
 pub use sway::{Sway, SwayEvent, SwayEventKind, SwayOutput, Workspace};
 pub use tray::{
   MenuEntry, MenuToggle, Tray, TrayCategory, TrayHost, TrayItem, TrayMenu, TrayStatus,
@@ -132,6 +134,7 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(desktop_entries::Service::new(Rc::clone(&shared)));
   cx.provide(file::Files(Rc::clone(&shared)));
   cx.provide(http::Service::new(Rc::clone(&shared)));
+  cx.provide(stats::Service(Rc::clone(&shared)));
   cx.provide(greetd::Service::new(Rc::clone(&shared)));
   cx.provide(pam::Service(Rc::clone(&shared)));
   cx.provide(polkit::Service::new(Rc::clone(&shared)));
@@ -381,6 +384,12 @@ pub trait ServicesExt {
   /// only when the folder changes.
   fn folder_view(&self, path: impl IntoProp<PathBuf>) -> FolderView;
 
+  /// CPU, memory and temperature stats, sampled at once and then every
+  /// `period`, at least 250 ms, from `/proc` and `/sys/class/hwmon`. Each
+  /// call samples on its own timer, which goes with this context, so
+  /// stats wake the shell only while a context that shows them lives.
+  fn system_stats(&self, period: Duration) -> ReadSignal<SystemStats>;
+
   /// greetd, for a greeter: makes a session for a user, answers its
   /// questions and starts it, over the socket `GREETD_SOCK` names. One
   /// connection per shell, made at the first request; it wakes the shell
@@ -535,6 +544,10 @@ impl ServicesExt for Cx {
   #[track_caller]
   fn folder_view(&self, path: impl IntoProp<PathBuf>) -> FolderView {
     folder::folder_view(self, path, std::panic::Location::caller())
+  }
+
+  fn system_stats(&self, period: Duration) -> ReadSignal<SystemStats> {
+    stats::system_stats(self, period)
   }
 
   fn greetd(&self) -> Greetd {
@@ -887,6 +900,9 @@ struct Config {
   art_cache: Option<PathBuf>,
   /// Where the backlights are, `/sys/class/backlight`.
   backlight: PathBuf,
+  /// Where procfs and sysfs are, `/proc` and `/sys`, for the stats.
+  proc: PathBuf,
+  sys: PathBuf,
 }
 
 impl Config {
@@ -932,6 +948,8 @@ impl Config {
       curl: PathBuf::from("curl"),
       art_cache: http::art::cache_dir(),
       backlight: PathBuf::from("/sys/class/backlight"),
+      proc: PathBuf::from("/proc"),
+      sys: PathBuf::from("/sys"),
     }
   }
 }
