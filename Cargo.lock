@@ -191,6 +191,9 @@ dependencies = [
  "smithay-client-toolkit",
  "tracing",
  "tracing-subscriber",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
+ "wayland-server",
 ]
 
 [[package]]

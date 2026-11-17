@@ -29,10 +29,11 @@ pub(crate) fn connect() -> Option<UnixStream> {
 }
 
 /// Whether the shell is ready: every panel it shows has drawn a frame,
-/// and it shows at least one. `panels` gives each panel's `(shown,
-/// commits)`. One waiting for its output, or whose settings layer-shell
-/// would refuse, isn't shown and doesn't count.
-pub(crate) fn ready(panels: impl IntoIterator<Item = (bool, u64)>) -> bool {
+/// and it shows at least one, or it shows none and `started` says the
+/// startup judgement passed, so there is nothing to wait for. `panels`
+/// gives each panel's `(shown, commits)`. One waiting for its output, or
+/// whose settings layer-shell would refuse, isn't shown and doesn't count.
+pub(crate) fn ready(panels: impl IntoIterator<Item = (bool, u64)>, started: bool) -> bool {
   let mut drawn = false;
   for (shown, commits) in panels {
     if shown {
@@ -42,7 +43,7 @@ pub(crate) fn ready(panels: impl IntoIterator<Item = (bool, u64)>) -> bool {
       drawn = true;
     }
   }
-  drawn
+  drawn || started
 }
 
 /// Tells the supervisor the shell is ready. A failure is logged.

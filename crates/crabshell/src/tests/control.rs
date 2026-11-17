@@ -63,10 +63,20 @@ fn ready_is_one_line() {
 
 #[test]
 fn ready_means_every_shown_panel_drew_and_one_did_at_least() {
-  assert!(control::ready([(true, 1), (true, 3)]));
-  assert!(!control::ready([(true, 1), (true, 0)]), "one still to draw");
+  assert!(control::ready([(true, 1), (true, 3)], false));
+  assert!(
+    !control::ready([(true, 1), (true, 0)], false),
+    "one still to draw"
+  );
   // Waiting for its output, or refused: not shown, and not waited for.
-  assert!(control::ready([(true, 1), (false, 0)]));
-  assert!(!control::ready([(false, 0)]), "nothing on screen");
-  assert!(!control::ready([]), "no panel");
+  assert!(control::ready([(true, 1), (false, 0)], false));
+  assert!(!control::ready([(false, 0)], false), "nothing on screen");
+  assert!(!control::ready([], false), "no panel");
+}
+
+#[test]
+fn once_started_nothing_shown_is_nothing_to_wait_for() {
+  assert!(control::ready([], true), "no panel");
+  assert!(control::ready([(false, 0)], true), "a hidden one");
+  assert!(!control::ready([(true, 0)], true), "one still to draw");
 }

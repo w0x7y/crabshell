@@ -9,6 +9,7 @@ mod logging;
 mod per_output;
 mod persist;
 mod prelude;
+mod startup;
 mod switch_log;
 mod window_manager;
 

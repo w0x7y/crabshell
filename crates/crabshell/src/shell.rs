@@ -30,7 +30,8 @@ use crate::persist::{self, Persisted};
 use crate::switch_log::SwitchLog;
 
 /// The exit status when the config is broken: the root closure panicked,
-/// or every `per_output` closure panicked at startup, so nothing shows.
+/// or every `per_output` closure panicked at startup and no other window
+/// was made, so nothing shows.
 pub const EXIT_ROOT_PANICKED: i32 = 1;
 
 /// The exit status when the compositor can't be reached, or the connection
@@ -44,8 +45,8 @@ pub const EXIT_NO_COMPOSITOR: i32 = 2;
 /// are logged, and the process exits with:
 ///
 /// - [`EXIT_ROOT_PANICKED`] (1) if `root` panics, or if every
-///   [`per_output`](ShellExt::per_output) closure panics for the first
-///   outputs announced: the config is broken;
+///   [`per_output`](ShellExt::per_output) closure panics for the outputs
+///   there at startup and no other window was made: the config is broken;
 /// - [`EXIT_NO_COMPOSITOR`] (2) if there is no compositor to connect to,
 ///   it lacks a protocol the shell needs, or the connection is lost later,
 ///   as at logout.
@@ -57,7 +58,8 @@ pub const EXIT_NO_COMPOSITOR: i32 = 2;
 /// Sway's workspace events to the commit that shows it.
 ///
 /// Under the supervisor, `CRABSHELL_CONTROL` names its socket. The shell
-/// says `ready` there once each window has drawn, and on `save` writes its
+/// says `ready` there once each window has drawn, or, with no window to
+/// draw, once it has started with something to run, and on `save` writes its
 /// [`persist`](ShellExt::persist)ed values to
 /// `$XDG_RUNTIME_DIR/crabshell/state.json` and exits with 0. It starts from
 /// that file, if there is one, and removes it.
@@ -164,7 +166,24 @@ pub struct Shell {
   switches: SwitchLog,
   /// The supervisor's socket, until the shell has said it is ready.
   control: Option<UnixStream>,
+  /// Whether the config showed anything at startup.
+  pub(crate) startup: Startup,
   cx: Cx,
+}
+
+/// The startup judgement: whether every `per_output` closure panicked for
+/// the outputs there at startup, and nothing else was made to show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Startup {
+  /// No output yet.
+  Waiting,
+  /// An output came, and the compositor is asked to answer after the
+  /// rest it announced with it: then every builder has run for them.
+  Syncing(u64),
+  /// Something was shown, or nothing failed.
+  Passed,
+  /// Every `per_output` closure panicked, and there is no other window.
+  NothingToShow,
 }
 
 impl Shell {
@@ -242,6 +261,7 @@ impl Shell {
       first_frame: false,
       switches: SwitchLog::default(),
       control: None,
+      startup: Startup::Waiting,
       cx,
     };
     if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| root(&shell.cx))) {
@@ -273,9 +293,33 @@ impl Shell {
         elapsed.as_secs_f64() * 1000.0
       );
     }
+    self.judge_startup();
     self.log_switch(commits);
     self.tell_ready();
     Ok(())
+  }
+
+  /// Moves the startup judgement on: when the first output is listed, asks
+  /// for a sync, and when it is answered, judges. Popups don't count as
+  /// something to show; they open from a window.
+  fn judge_startup(&mut self) {
+    let platform = self.event_loop.platform();
+    self.startup = match self.startup {
+      Startup::Waiting if platform.outputs().next().is_some() => Startup::Syncing(platform.sync()),
+      Startup::Syncing(ticket) if platform.synced(ticket) => {
+        let windows = platform.windows().any(|(_, window)| !window.is_popup());
+        let only_panicked = self
+          .cx
+          .service::<Service>()
+          .is_some_and(|service| service.per_output.borrow().only_panicked());
+        if only_panicked && !windows {
+          Startup::NothingToShow
+        } else {
+          Startup::Passed
+        }
+      }
+      startup => startup,
+    };
   }
 
   /// Follows the supervisor on `stream`: tells it when the shell is
@@ -360,7 +404,7 @@ impl Shell {
   }
 
   /// Says `ready` to the supervisor once every panel shown has drawn a
-  /// frame. A shell that shows no panel never says it.
+  /// frame, or, with none shown, once the startup judgement passed.
   fn tell_ready(&mut self) {
     if self.control.is_none() {
       return;
@@ -371,7 +415,7 @@ impl Shell {
       .filter(|(_, window)| !window.is_popup())
       .filter_map(|(id, _)| platform.window_info(id))
       .map(|info| (info.shown, info.commits));
-    if control::ready(panels)
+    if control::ready(panels, self.startup == Startup::Passed)
       && let Some(mut stream) = self.control.take()
     {
       control::send_ready(&mut stream);
@@ -401,34 +445,28 @@ impl Shell {
   }
 
   /// Runs the event loop until the connection is lost, then logs it and
-  /// exits with [`EXIT_NO_COMPOSITOR`]. If every `per_output` closure
-  /// panicked in the first turn that announced an output, it logs that
-  /// the shell has nothing to show and exits with [`EXIT_ROOT_PANICKED`],
-  /// so a supervisor can fall back to a config that works. A closure that
-  /// panics for an output announced later is only logged.
+  /// exits with [`EXIT_NO_COMPOSITOR`].
+  ///
+  /// When the first output is listed, the shell asks the compositor for a
+  /// sync, which it answers after describing every output it announced
+  /// with that one. If by then every `per_output` closure panicked and no
+  /// other window was made, it logs that the shell has nothing to show
+  /// and exits with [`EXIT_ROOT_PANICKED`], so a supervisor can fall back
+  /// to a config that works. A closure that panics for an output
+  /// announced later is only logged.
   pub fn run(mut self) -> ! {
-    // shortcut: assumes the compositor announces its outputs in one turn,
-    // as Sway does; the verdict would come early for one that doesn't.
-    let mut judged = false;
     loop {
       if let Err(error) = self.dispatch(None) {
         self.stop_services();
         tracing::error!(%error, "the shell stops");
         std::process::exit(EXIT_NO_COMPOSITOR);
       }
-      if !judged && self.event_loop.platform().outputs().next().is_some() {
-        judged = true;
-        let only_panicked = self
-          .cx
-          .service::<Service>()
-          .is_some_and(|service| service.per_output.borrow().only_panicked());
-        if only_panicked {
-          self.stop_services();
-          tracing::error!(
-            "every per_output closure panicked at startup, so the shell has nothing to show; exiting"
-          );
-          std::process::exit(EXIT_ROOT_PANICKED);
-        }
+      if self.startup == Startup::NothingToShow {
+        self.stop_services();
+        tracing::error!(
+          "every per_output closure panicked at startup, so the shell has nothing to show; exiting"
+        );
+        std::process::exit(EXIT_ROOT_PANICKED);
       }
     }
   }
@@ -762,7 +800,8 @@ pub trait ShellExt {
   /// call ends and every window it built goes. A panic in `f` is logged
   /// with its path, such as `per_output[DP-1] (called at src/main.rs:4)`,
   /// and the other outputs carry on. If every closure panics for the
-  /// outputs there at startup, [`run`] exits with [`EXIT_ROOT_PANICKED`].
+  /// outputs there at startup and no other window was made, [`run`] exits
+  /// with [`EXIT_ROOT_PANICKED`].
   ///
   /// Call it from the root closure, or from inside another `per_output`'s
   /// `f`. Called from an effect, it would start another set of windows
