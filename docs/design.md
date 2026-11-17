@@ -10,7 +10,7 @@ Nothing from Quickshell carries over. Users write their shell as a Rust crate th
 
 | Decision           | Choice                                     | What it costs                                                                                                                                 |
 | ------------------ | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| Config language    | Plain Rust, compiled                       | First build takes 1-5 min, then 2-10 s per edit. Every user needs a Rust toolchain.                                                           |
+| Config language    | Plain Rust, compiled                       | First build takes about 3 min, then under a second per one-line edit. Every user needs a Rust toolchain.                                      |
 | Config API         | Builder methods and fine-grained signals   | Users learn closures and `move`. Signals are `Copy`, so nobody clones handles.                                                                |
 | Reload             | Supervisor rebuilds, saves state, restarts | The shell blinks for about 100 ms per reload.                                                                                                 |
 | Styling            | Typed Rust styles only                     | Every color change is a rebuild.                                                                                                              |
