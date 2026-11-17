@@ -34,7 +34,7 @@ User code (bindings, effects, event handlers, `per_output` builders, listeners) 
 
 ## A note from the maintainer
 
-I'm new to Rust and review every change through agents, so make your work reviewable: one crate per task, about 500 changed lines per commit, and a plain-words reason for each Rust choice in your report (`Rc` or `Arc`, a lifetime, `Box<dyn Trait>` or generics). Build the smallest thing that fully does the job; _yagni_ beats architecture that only looks impressive.
+I'm new to Rust and review every change through agents, so make your work reviewable: one crate per task, about 500 changed lines per commit, and a plain-words reason for each Rust choice in your report (`Rc` or `Arc`, a lifetime, `Box<dyn Trait>` or generics). Build the smallest thing that fully does the job; _yagni_ beats architecture that only looks impressive. Say in the report what I must check by hand on a real screen. Don't add a widget, service or option the design doc doesn't list; propose it in your report instead.
 
 Treat this file as good defaults. What I say in the conversation overrides it.
 
@@ -74,6 +74,7 @@ The most common defect here is a change that works where you tested it and break
   env -u SWAYSOCK cargo test -p crabshell-wayland --test headless -- --ignored --test-threads=1
   env -u SWAYSOCK cargo test -p crabshell --test headless -- --ignored --test-threads=1
   env -u SWAYSOCK cargo test -p crabshell-services --lib sway::tests::headless -- --ignored --test-threads=1
+  env -u SWAYSOCK cargo test -p crabshell-cli --test exit_check -- --ignored --nocapture
   env -u SWAYSOCK CRABSHELL_MEASURE=1 cargo test -p crabshell --test headless measure_the_counter_bar -- --ignored
   ```
 
@@ -106,16 +107,16 @@ Keep plans, review proof tests and scratch files in your scratchpad or `/tmp`, o
 
 ## How it works
 
-Everything runs on one thread. A calloop loop dispatches ready sources, runs `runtime.flush()`, lays out the windows marked for layout, draws each dirty window whose frame callback has arrived, flushes the Wayland connection and sleeps. The reactive core keeps signals, memos and effects in a thread-local arena under owners. ui turns widgets into a taffy layout with cosmic-text text and records layout or paint damage. render draws the damaged area with tiny-skia into an RGBA scratch pixmap, then copies it into an ARGB8888 shm buffer, which is BGRA in memory, so red and blue swap. wayland owns the layer-shell surfaces, buffers, fractional scale, pointer input and output hotplug. `crabshell` ties it together with `run()` and `per_output`.
+Everything runs on one thread: a calloop loop dispatches ready sources, runs `runtime.flush()`, lays out and draws the dirty windows whose frame callbacks have arrived, flushes the Wayland connection and sleeps. The design doc's "Event loop" section has the details.
 
 ## Where code lives
 
 - `crates/crabshell-reactive`: signals, memos, effects, owners and `flush`.
-- `crates/crabshell-ui`: `Cx`, widgets, styles, layout and grids, text with its styles and `cx.measure_text`, bundled fonts, styled spans and the notification markup parser (`rich.rs`), text editing with drag-select and the multi-line `TextArea` (`text_area.rs`, `select.rs`), keyboard focus, pointer input with drag and drop, hit testing, invalidation, scroll views with flings (`scrolling.rs`), the slider, lists and grid views, the canvas's recorded drawing (`canvas.rs`), image bindings and transitions (`image.rs`), timers, the animation clock with `cx.animate` and style fades, and the `SessionLock` declaration.
-- `crates/crabshell-render`: drawing, damage history, clipping, gradients, shadows, masks and content shadows, canvases, glyphs, icons, images with their filters (`filters.rs`), animated GIFs (`animation.rs`) and transitions, the decode worker for large pictures (`worker.rs`), dithered gradients (`draw/gradient.rs`), and the in-house icon theme lookup. Goldens are in `tests/golden`.
-- `crates/crabshell-wayland`: the event loop, layer-shell and floating windows, popups, shm buffers, scale, pointer, keyboard, input methods, the clipboard, outputs, the animation timer, the GIF frame timer, blur behind windows, idle watches and inhibitors, other programs' windows over wlr-foreign-toplevel-management, the session lock over ext-session-lock-v1, workspaces over ext-workspace-v1, the shortcuts inhibitor, and Hyprland's global shortcuts, focus grab and surface opacity and visible mask, generated from the XML in `protocols/hyprland`, `wl_display.sync` tickets (`sync.rs`), and activation tokens over xdg-activation-v1 (`activation.rs`). The headless tests and shared Sway helper are in `tests/`, and a fake compositor built on `wayland-server` is in `tests/fake`, used by `tests/protocols.rs`, which needs no Sway.
-- `crates/crabshell-services`: the services configs read: Sway's workspaces, outputs and events, Hyprland's IPC, the tray, audio, the clock, UPower and power profiles, Bluetooth with its pairing agent (`bluetooth/agent.rs`), NetworkManager, MPRIS media players, the notification server, desktop entries, programs (`process.rs`), files and JSON files, Unix sockets and socket servers, PAM (`pam.rs`, through `nonstick`), greetd and the polkit agent, with the shared D-Bus driver in `dbus.rs`, detached spawning and reaping in `spawn.rs`, the one inotify instance in `watch.rs`, activation tokens for launches in `activation.rs`, and a fake daemon for tests in `testing.rs`.
-- `crates/crabshell`: `run`, `Shell`, `ShellExt::per_output`, `cx.floating`, `cx.persist`, `cx.idle_monitor`, `cx.ipc` and its socket, `cx.quantize_colors`, `cx.toplevels`, `cx.session_lock`, `cx.exit`, `cx.window_manager`, `cx.global_shortcut`, `cx.outputs`, GTK's icon theme as the default (`icon_theme.rs`), the startup exit when every `per_output` closure panics, the restart with malloc's `mmap` threshold when run without the supervisor (`tuned.rs`), the prelude and the examples (`counter`, `bar`, `launcher`, `effects`, `desktop`, `overview`, `lock`, `greeter`, `hyprland`, `motion`, `control`, `dashboard`, `notes`). Its headless tests, goldens and exit-code tests are in `tests/`.
+- `crates/crabshell-ui`: `Cx`, widgets, styles, layout, text, input, focus, scrolling, animation and timers, and the damage each change records.
+- `crates/crabshell-render`: drawing with tiny-skia into shm buffers, damage history, text, icons and images with the decode worker. Goldens are in `tests/golden`.
+- `crates/crabshell-wayland`: the event loop and every Wayland protocol: windows, popups, buffers, scale, input, outputs, the session lock, workspaces, toplevels and Hyprland's protocols (generated from `protocols/hyprland`). Its headless tests and Sway helper are in `tests/`, and a fake compositor in `tests/fake`, used by `tests/protocols.rs`.
+- `crates/crabshell-services`: what configs read from other programs, from Sway, Hyprland, the tray and audio to D-Bus services, processes, files, sockets, PAM, greetd and polkit, with a fake daemon for tests in `testing.rs`.
+- `crates/crabshell`: `run`, `Shell`, `ShellExt`, the prelude and the examples. Its headless tests, goldens and exit-code tests are in `tests/`.
 - `crates/crabshell-cli`: the `crabshell` command (`init`, `check`, `ipc`, and `run` with the supervisor) and the config template in `template/`, which must match the design doc's "Writing a config".
 - `spike/` and `baseline/`: the frozen Phase 0 prototype, the Quickshell bar it was measured against, and `baseline/harness.py`, which measured both.
 
