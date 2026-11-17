@@ -22,7 +22,7 @@ use crabshell_ui::Cx;
 use rustix::process::{Pid, PidfdFlags, Signal as Kill, kill_process_group, pidfd_open};
 
 use crate::lines::{Lines, decode, panic_message};
-use crate::{Shared, spawn};
+use crate::{Shared, activation, spawn};
 
 /// The most of each output kept in [`Process::stdout`] and
 /// [`Process::stderr`]. Lines still reach `on_line` past it.
@@ -34,7 +34,7 @@ pub(crate) const MAX_INPUT: usize = 4 * 1024 * 1024;
 
 /// What `cx.process` and `cx.exec_detached` need from the shell: the loop.
 pub(crate) struct Processes {
-  shared: Rc<Shared>,
+  pub(crate) shared: Rc<Shared>,
   /// Every `cx.process`, so the shell can stop them all before it exits.
   live: RefCell<Vec<Weak<Inner>>>,
 }
@@ -247,8 +247,14 @@ pub(crate) fn exec_detached(cx: &Cx, command: impl IntoCommand) {
   let Some(mut command) = command.into_command() else {
     return tracing::warn!("cx.exec_detached() got an empty command; nothing runs");
   };
-  // Logged there.
-  let _ = spawn::spawn(&processes.shared, &mut command);
+  let shared = Rc::clone(&processes.shared);
+  activation::with_token(&processes.shared, None, move |token| {
+    if let Some(token) = &token {
+      activation::set_env(&mut command, token);
+    }
+    // Logged there.
+    let _ = spawn::spawn(&shared, &mut command);
+  });
 }
 
 /// Stops the program when the starting context's owner drops it.

@@ -26,7 +26,7 @@ use zbus::names::WellKnownName;
 
 use crate::dbus::{CALL_TIMEOUT, set_changed};
 use crate::watch::{self, Change, Watch};
-use crate::{Shared, spawn};
+use crate::{Shared, activation, spawn};
 
 /// What a link's own watch hears: its last name going, as a link renamed
 /// over it takes it, and the link itself removed or moved.
@@ -185,6 +185,14 @@ impl DesktopEntries {
   /// that fails. What can't start is logged: an unknown ID, a malformed
   /// `Exec`, a terminal app without `xdg-terminal-exec` on `PATH`, and a
   /// D-Bus app that didn't start with no `Exec` to fall back on.
+  ///
+  /// When the compositor hands out activation tokens, the shell asks for
+  /// one first, with the app's ID and the last click or key press on its
+  /// windows, and starts the app once it comes, or after 100 ms without
+  /// one. The token goes in `XDG_ACTIVATION_TOKEN` and
+  /// `DESKTOP_STARTUP_ID` for `Exec`, and in the platform data's
+  /// `activation-token` and `desktop-startup-id` over D-Bus, so the
+  /// compositor may focus the app's window.
   pub fn launch(&self, id: &str) {
     self.launch_with(id, None);
   }
@@ -245,30 +253,54 @@ fn launch(service: &Rc<Service>, app: &DesktopEntry, action: Option<&str>) {
       }
     },
   };
+  let (shared, then) = (&service.shared, Rc::clone(service));
+  let (app, exec, action) = (app.clone(), exec.clone(), action.map(str::to_owned));
+  activation::with_token(shared, Some(id), move |token| {
+    start(&then, app, exec, action, token);
+  });
+}
+
+/// Starts `app` with `exec`, or with its `action` over D-Bus, given the
+/// activation token `token` if one came.
+fn start(
+  service: &Rc<Service>,
+  app: DesktopEntry,
+  exec: String,
+  action: Option<String>,
+  token: Option<String>,
+) {
+  let id = app.id.as_str();
   if !app.dbus_activatable {
-    return run(service, app, exec);
+    return run(service, &app, &exec, token.as_deref());
   }
   let Some(path) = object_path(id) else {
     tracing::warn!(
       id,
       "the application's ID isn't a D-Bus name, so it can't start over D-Bus"
     );
-    return run(service, app, exec);
+    return run(service, &app, &exec, token.as_deref());
   };
   let Some(address) = service.shared.config.session_bus.clone() else {
     tracing::warn!(id, "no session bus to start the application over D-Bus");
-    return run(service, app, exec);
+    return run(service, &app, &exec, token.as_deref());
   };
-  let (service, app) = (Rc::clone(service), app.clone());
-  let (exec, action) = (exec.clone(), action.map(str::to_owned));
+  let service = Rc::clone(service);
   let shared = Rc::clone(&service.shared);
   shared.spawn(async move {
-    let activated = activate(&service.shared, address, &app.id, path, action.as_deref()).await;
-    match activated {
+    let token = token.as_deref();
+    let activated = activate(
+      &service.shared,
+      address,
+      &app.id,
+      path,
+      action.as_deref(),
+      token,
+    );
+    match activated.await {
       Ok(()) => {}
       Err((error, true)) => {
         tracing::warn!(id = app.id, %error, "couldn't start the application over D-Bus");
-        run(&service, &app, &exec);
+        run(&service, &app, &exec, token);
       }
       // It may have started all the same, and a second would open twice.
       Err((error, false)) => tracing::warn!(
@@ -291,20 +323,25 @@ fn object_path(id: &str) -> Option<OwnedObjectPath> {
 
 /// Calls `Activate`, or `ActivateAction` for `action`, on the
 /// application `id` at `path` on the session bus, which starts it first
-/// if it isn't running. An error comes with whether the call surely
-/// never reached the app: no bus, or a refusal from the bus or from an
-/// app without that object or method.
+/// if it isn't running, with the activation `token` in its platform
+/// data. An error comes with whether the call surely never reached the
+/// app: no bus, or a refusal from the bus or from an app without that
+/// object or method.
 async fn activate(
   shared: &Shared,
   address: zbus::Address,
   id: &str,
   path: OwnedObjectPath,
   action: Option<&str>,
+  token: Option<&str>,
 ) -> Result<(), (zbus::Error, bool)> {
   let built = zbus::connection::Builder::address(address).build().await;
   let connection = built.map_err(|error| (error, true))?;
-  // No startup notification or activation token: the shell has neither.
-  let platform_data = HashMap::<&str, zbus::Variant<'_>>::new();
+  let mut platform_data = HashMap::<&str, zbus::Variant<'_>>::new();
+  if let Some(token) = token {
+    platform_data.insert("activation-token", token.into());
+    platform_data.insert("desktop-startup-id", token.into());
+  }
   let (destination, interface) = (Some(id), Some(APPLICATION));
   let reply = match action {
     None => {
@@ -346,8 +383,9 @@ fn refused(error: &zbus::Error) -> bool {
   }
 }
 
-/// Runs `exec`, `app`'s or one of its actions', apart from the shell.
-fn run(service: &Service, app: &DesktopEntry, exec: &str) {
+/// Runs `exec`, `app`'s or one of its actions', apart from the shell,
+/// with the activation `token` if one came.
+fn run(service: &Service, app: &DesktopEntry, exec: &str, token: Option<&str>) {
   let (id, shared) = (app.id.as_str(), &service.shared);
   if exec.is_empty() {
     return tracing::warn!(
@@ -387,6 +425,9 @@ fn run(service: &Service, app: &DesktopEntry, exec: &str) {
   };
   if let Some(dir) = &app.working_dir {
     command.current_dir(dir);
+  }
+  if let Some(token) = token {
+    activation::set_env(&mut command, token);
   }
   // A failure is logged there.
   let _ = spawn::spawn(shared, &mut command);

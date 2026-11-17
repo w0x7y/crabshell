@@ -629,3 +629,115 @@ fn a_fifo_named_like_an_entry_is_skipped() {
   run(&mut shell, 50);
   assert_eq!(ids(&entries), ["a"]);
 }
+
+/// What the shell was asked tokens for, and each request's callback.
+type Asked = Rc<RefCell<Vec<(Option<String>, Box<dyn FnOnce(String)>)>>>;
+
+/// Lets `shell`'s services ask for activation tokens, keeping each request
+/// for the test to answer.
+fn ask_for_tokens(shell: &Harness) -> Asked {
+  let asked = Asked::default();
+  let into = Rc::clone(&asked);
+  crate::provide_activation_tokens(&shell.cx, move |app_id, done| {
+    into.borrow_mut().push((app_id.map(str::to_owned), done));
+  });
+  asked
+}
+
+/// Answers the one request waiting with `token`, checking it named `id`.
+fn answer(asked: &Asked, id: &str, token: &str) {
+  let (app_id, done) = asked.borrow_mut().pop().expect("a token's request");
+  assert!(asked.borrow().is_empty());
+  assert_eq!(app_id.as_deref(), Some(id));
+  done(token.to_owned());
+}
+
+#[test]
+fn a_launched_program_gets_the_activation_token_and_nothing_stays_in_the_loop() {
+  let dirs = Dirs::new();
+  let tokens = dirs.bin().join("tokens");
+  let script = format!(
+    "#!/bin/sh\necho \"$XDG_ACTIVATION_TOKEN $DESKTOP_STARTUP_ID\" > \"{0}.tmp\" && mv \"{0}.tmp\" \"{0}\"\n",
+    tokens.display()
+  );
+  let program = dirs.bin().join("tokened");
+  std::fs::write(&program, script).expect("a program");
+  std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("its mode");
+  let exec = format!("\"{}\"", program.display());
+  write(&dirs.user(), "tokened.desktop", &app("Tokened", &exec, ""));
+  let (mut shell, entries) = shell(dirs.sources());
+  let asked = ask_for_tokens(&shell);
+  run(&mut shell, 50);
+
+  entries.launch("tokened");
+  run(&mut shell, 50);
+  assert!(!tokens.exists(), "it waits for the token");
+  answer(&asked, "tokened", "token-7");
+  shell.retry_until("the program's output", || tokens.exists(), |_| {});
+  let read = std::fs::read_to_string(&tokens).expect("its output");
+  assert_eq!(read, "token-7 token-7\n");
+  // Its exit and the end of the run wake the loop; no timer is left.
+  let wakeups = run(&mut shell, 300);
+  assert!(wakeups <= 2, "{wakeups} wakeups");
+  assert_eq!(run(&mut shell, 300), 1);
+
+  // A token that never comes: it starts after the wait, with none.
+  std::fs::remove_file(&tokens).expect("removed");
+  let launched = Instant::now();
+  entries.launch("tokened");
+  shell.retry_until("the program's output", || tokens.exists(), |_| {});
+  assert!(launched.elapsed() >= super::activation::WAIT);
+  let read = std::fs::read_to_string(&tokens).expect("its output");
+  assert_eq!(read, " \n");
+}
+
+#[test]
+fn a_d_bus_application_gets_the_activation_token_in_its_platform_data() {
+  let dirs = Dirs::new();
+  let extra = "DBusActivatable=true\nActions=new-window;\n\
+               [Desktop Action new-window]\nName=New Window\nExec=true";
+  write(
+    &dirs.user(),
+    "org.example.Notes.desktop",
+    &app("Notes", "true", extra),
+  );
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(Config {
+    desktop_entries: dirs.sources(),
+    session_bus: Some(bus.address.parse().expect("dbus-daemon's address")),
+    ..offline()
+  });
+  let entries = shell.cx.desktop_entries();
+  let asked = ask_for_tokens(&shell);
+  run(&mut shell, 50);
+
+  type Data = std::collections::HashMap<String, zbus::OwnedVariant>;
+  let data: Rc<RefCell<Vec<Data>>> = Rc::default();
+  let fake = FakeService::start(&mut shell, &bus, "org.example.Notes");
+  let into = Rc::clone(&data);
+  fake.on("Activate", move |call| {
+    let (platform_data,): (Data,) = call.body().deserialize().expect("(a{sv})");
+    into.borrow_mut().push(platform_data);
+    reply(call, &())
+  });
+  let into = Rc::clone(&data);
+  fake.on("ActivateAction", move |call| {
+    type Body = (String, Vec<zbus::OwnedVariant>, Data);
+    let (_, _, platform_data): Body = call.body().deserialize().expect("(sava{sv})");
+    into.borrow_mut().push(platform_data);
+    reply(call, &())
+  });
+  fake.own(&mut shell);
+
+  entries.launch("org.example.Notes");
+  answer(&asked, "org.example.Notes", "token-1");
+  entries.launch_action("org.example.Notes", "new-window");
+  answer(&asked, "org.example.Notes", "token-2");
+  shell.retry_until("both calls", || data.borrow().len() == 2, |_| {});
+  for (platform_data, token) in data.borrow().iter().zip(["token-1", "token-2"]) {
+    for key in ["activation-token", "desktop-startup-id"] {
+      let value = platform_data.get(key).expect("the token");
+      assert_eq!(<&str>::try_from(&**value).ok(), Some(token), "{key}");
+    }
+  }
+}

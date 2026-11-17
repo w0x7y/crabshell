@@ -15,6 +15,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod activation;
 mod audio;
 mod bluetooth;
 mod clock;
@@ -122,6 +123,21 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(greetd::Service::new(Rc::clone(&shared)));
   cx.provide(pam::Service(Rc::clone(&shared)));
   cx.provide(polkit::Service::new(Rc::clone(&shared)));
+}
+
+/// Lets the services ask the compositor for activation tokens for the
+/// programs they start, so it may focus them: `request` asks for one for
+/// a program with the app id given, if any, and hands it to the callback.
+/// The shell calls this once, when the compositor offers tokens; without
+/// it programs start at once with none.
+#[doc(hidden)]
+pub fn provide_activation_tokens(
+  cx: &Cx,
+  request: impl Fn(Option<&str>, Box<dyn FnOnce(String)>) + 'static,
+) {
+  if let Some(processes) = cx.service::<process::Processes>() {
+    let _ = processes.shared.activation.set(Box::new(request));
+  }
 }
 
 /// Stops every program a config started with `cx.process`. The shell
@@ -308,7 +324,11 @@ pub trait ServicesExt {
 
   /// Starts `command` and lets it run on its own, as a launcher does:
   /// its input and outputs are empty, it has a process group of its own,
-  /// and it is reaped when it ends. A failure to start is logged.
+  /// and it is reaped when it ends. A failure to start is logged. When
+  /// the compositor hands out activation tokens, it starts once one comes,
+  /// or after 100 ms without one, with the token in
+  /// `XDG_ACTIVATION_TOKEN` and `DESKTOP_STARTUP_ID`, so the compositor
+  /// may focus its window.
   fn exec_detached(&self, command: impl IntoCommand);
 
   /// The text file at `path`, as Quickshell's `FileView`: read now, and
@@ -476,6 +496,8 @@ struct Shared {
   executor: OnceCell<Option<Scheduler<()>>>,
   /// The one inotify instance, made for the first directory watched.
   watcher: watch::Watcher,
+  /// How to ask for an activation token, once the shell gives it.
+  activation: OnceCell<activation::Request>,
   config: Config,
 }
 
@@ -491,6 +513,7 @@ impl Shared {
       }),
       executor: OnceCell::new(),
       watcher: watch::Watcher::default(),
+      activation: OnceCell::new(),
       config,
     }
   }

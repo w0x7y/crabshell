@@ -73,8 +73,9 @@ pub fn shell_tunables(old: Option<OsString>) -> Option<OsString> {
 /// Takes what is the shell's own out of what `command` inherits, so the
 /// programs it starts run as they would anywhere else: the supervisor's
 /// socket, which a crabshell started from a launched terminal would
-/// otherwise take for its own, the shell's glibc tunable and the time it
-/// first started.
+/// otherwise take for its own, the shell's glibc tunable, the time it
+/// first started, and the activation token the shell was started with,
+/// unless `command` was given one of its own.
 pub(crate) fn untune(command: &mut Command) {
   untune_from(command, std::env::var_os("GLIBC_TUNABLES"));
 }
@@ -83,6 +84,12 @@ pub(crate) fn untune(command: &mut Command) {
 fn untune_from(command: &mut Command, ours: Option<OsString>) {
   command.env_remove("CRABSHELL_CONTROL");
   command.env_remove(FIRST_START);
+  // A token is spent on the window it was given for, the shell's here.
+  for name in ["XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID"] {
+    if !command.get_envs().any(|(set, _)| set == name) {
+      command.env_remove(name);
+    }
+  }
   if ours.is_some_and(|value| value == TUNABLE) {
     command.env_remove("GLIBC_TUNABLES");
   }
@@ -219,5 +226,29 @@ mod tests {
       .get_envs()
       .any(|(name, value)| name == OsStr::new(super::FIRST_START) && value.is_none());
     assert!(started, "the shell's first start isn't passed on");
+  }
+
+  #[test]
+  fn the_shells_activation_token_isnt_passed_on_but_one_set_is() {
+    use std::ffi::OsStr;
+    let token = |command: &Command, name: &str| {
+      let set = command.get_envs().find(|(set, _)| *set == OsStr::new(name));
+      set.map(|(_, value)| value.map(OsStr::to_owned))
+    };
+    let mut command = Command::new("true");
+    super::untune_from(&mut command, None);
+    for name in ["XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID"] {
+      assert_eq!(token(&command, name), Some(None), "{name} removed");
+    }
+    let mut command = Command::new("true");
+    crate::activation::set_env(&mut command, "ours");
+    super::untune_from(&mut command, None);
+    for name in ["XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID"] {
+      assert_eq!(
+        token(&command, name),
+        Some(Some("ours".into())),
+        "{name} kept"
+      );
+    }
   }
 }
