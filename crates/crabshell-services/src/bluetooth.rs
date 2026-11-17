@@ -1,5 +1,7 @@
-//! Bluetooth adapters and devices from BlueZ, on the system bus.
+//! Bluetooth adapters and devices from BlueZ, on the system bus, and the
+//! shell's own pairing agent.
 
+pub(crate) mod agent;
 #[cfg(test)]
 mod tests;
 
@@ -12,6 +14,7 @@ use crabshell_reactive::{ReadSignal, Signal};
 use crabshell_ui::Cx;
 use zbus::{Connection, Message, ObjectPath, OwnedObjectPath, Variant};
 
+pub use self::agent::{BluetoothAgent, PairingKind, PairingRequest};
 use crate::Shared;
 use crate::dbus::{self, CALL_TIMEOUT, Daemon, OBJECT_MANAGER, PROPERTIES, Props, set_changed};
 
@@ -247,10 +250,10 @@ impl Bluetooth {
     self.call(device, DEVICE, "Disconnect", ());
   }
 
-  /// Pairs with the device at `device`. The shell answers no pairing
-  /// questions, so a device that asks for a PIN or a confirmation fails,
-  /// and that is logged, unless another program on the desktop answers
-  /// for BlueZ.
+  /// Pairs with the device at `device`. A device that asks for a PIN, a
+  /// passkey or a confirmation asks through `cx.bluetooth_agent()`; with
+  /// no agent of the shell's, it fails, and that is logged, unless another
+  /// program on the desktop answers for BlueZ.
   pub fn pair(&self, device: &str) {
     self.call(device, DEVICE, "Pair", ());
   }

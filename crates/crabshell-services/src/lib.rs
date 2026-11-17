@@ -60,7 +60,8 @@ use crabshell_ui::Cx;
 
 pub use audio::{Audio, AudioChannel, AudioNode, AudioStream, PeakTarget, Sink};
 pub use bluetooth::{
-  Bluetooth, BluetoothAdapter, BluetoothAdapterState, BluetoothDevice, BluetoothDeviceState,
+  Bluetooth, BluetoothAdapter, BluetoothAdapterState, BluetoothAgent, BluetoothDevice,
+  BluetoothDeviceState, PairingKind, PairingRequest,
 };
 pub use clock::Precision;
 pub use desktop_entries::{DesktopAction, DesktopEntries, DesktopEntry};
@@ -108,6 +109,7 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(power::UPowerService::new(Rc::clone(&shared)));
   cx.provide(power::ProfilesService::new(Rc::clone(&shared)));
   cx.provide(bluetooth::BluetoothService::new(Rc::clone(&shared)));
+  cx.provide(bluetooth::agent::Service::new(Rc::clone(&shared)));
   cx.provide(notifications::Service::new(Rc::clone(&shared)));
   cx.provide(mpris::Service::new(Rc::clone(&shared)));
   cx.provide(network::NetworkService::new(Rc::clone(&shared)));
@@ -219,6 +221,14 @@ pub trait ServicesExt {
   /// does while BlueZ isn't there, and wakes the shell only when BlueZ
   /// says something changed.
   fn bluetooth(&self) -> Bluetooth;
+
+  /// The shell's Bluetooth pairing agent: when BlueZ needs a PIN, a
+  /// passkey or a yes to pair a device, it asks the shell, and a config
+  /// shows the prompt. The first call registers the agent with BlueZ on
+  /// the system bus, as `KeyboardDisplay`, again whenever BlueZ starts
+  /// again; a shell that never calls it never answers BlueZ. Every caller
+  /// shares the one agent, which wakes the shell only when BlueZ calls.
+  fn bluetooth_agent(&self) -> BluetoothAgent;
 
   /// The notification server on the session bus: what apps sent, and
   /// the popups still showing. Every caller shares one connection, which
@@ -363,6 +373,10 @@ impl ServicesExt for Cx {
 
   fn bluetooth(&self) -> Bluetooth {
     bluetooth::bluetooth(self)
+  }
+
+  fn bluetooth_agent(&self) -> BluetoothAgent {
+    bluetooth::agent::bluetooth_agent(self)
   }
 
   fn notifications(&self) -> Notifications {
