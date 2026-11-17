@@ -39,7 +39,8 @@ fn a_character_the_font_lacks_loads_a_fallback() {
   assert!(node.prepare(Font::new("sans-serif", 13.0), &mut text));
   let glyphs: Vec<_> = node
     .runs()
-    .flat_map(|run| run.glyphs.iter().map(|glyph| glyph.glyph_id))
+    .flat_map(|run| run.glyphs.into_owned())
+    .map(|glyph| glyph.glyph_id)
     .collect();
   assert_eq!(glyphs.len(), 3);
   assert!(
@@ -65,7 +66,8 @@ fn bold_text_gets_a_bold_fallback_face() {
   bold.prepare(Font::new("sans-serif", 13.0).weight(700), &mut text);
   let font_id = bold
     .runs()
-    .flat_map(|run| run.glyphs.iter().map(|glyph| glyph.font_id))
+    .flat_map(|run| run.glyphs.into_owned())
+    .map(|glyph| glyph.font_id)
     .next()
     .expect("one glyph");
   let weight = text
@@ -152,7 +154,8 @@ fn a_variable_font_fallback_is_shaped_again() {
   node.prepare(Font::new("sans-serif", 13.0).weight(700), &mut text);
   let glyphs: Vec<u16> = node
     .runs()
-    .flat_map(|run| run.glyphs.iter().map(|glyph| glyph.glyph_id))
+    .flat_map(|run| run.glyphs.into_owned())
+    .map(|glyph| glyph.glyph_id)
     .collect();
   assert!(
     glyphs.iter().all(|&id| id != 0),
@@ -170,7 +173,7 @@ fn a_variable_font_draws_heavier_at_a_heavier_weight() {
     node.prepare(Font::new("Noto Emoji", 40.0).weight(weight), &mut text);
     let glyph = node
       .runs()
-      .flat_map(|run| run.glyphs.iter())
+      .flat_map(|run| run.glyphs.into_owned())
       .next()
       .expect("one glyph")
       .physical((0.0, 0.0), 1.0);

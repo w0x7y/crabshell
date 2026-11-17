@@ -3,7 +3,7 @@
 use std::cell::Ref;
 use std::path::Path;
 
-use cosmic_text::{Buffer, LayoutGlyph, LayoutRun};
+use cosmic_text::{Buffer, LayoutGlyph};
 
 use crate::canvas::CanvasOp;
 use crate::geometry::{Affine, Point, Rect, Size};
@@ -12,7 +12,7 @@ use crate::rich::Span;
 use crate::screencopy::CaptureFrame;
 use crate::select::{highlights, text_selection};
 use crate::style::{Color, Style};
-use crate::text::TextNode;
+use crate::text::{TextNode, TextRun};
 use crate::tree::{Node, NodeId, NodeKind, Tree, centered, icon_rect};
 use crate::widgets::{Fit, IconSource, ImageFilters};
 
@@ -308,7 +308,7 @@ impl<'a> TextView<'a> {
 
   /// The lines to draw: the buffer's lines, at most `max_lines`. Glyph
   /// positions are relative to [`origin`](Self::origin).
-  pub fn runs(&self) -> impl Iterator<Item = LayoutRun<'a>> + 'a {
+  pub fn runs(&self) -> impl Iterator<Item = TextRun<'a>> + 'a {
     self.text.runs()
   }
 

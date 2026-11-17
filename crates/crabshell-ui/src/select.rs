@@ -248,13 +248,22 @@ pub(crate) fn index_of(buffer: &Buffer, cursor: Cursor) -> usize {
   before + cursor.index
 }
 
-/// The byte of `text` nearest `point`, in window coordinates.
+/// The byte of `text` nearest `point`, in window coordinates. On a line
+/// whose leading blanks were dropped, cosmic-text is asked where its own
+/// layout has the glyph drawn there, and nothing before the first glyph
+/// shown is hit.
 pub(crate) fn text_hit(text: &TextNode, point: Point) -> usize {
-  let origin = text.origin;
-  text
-    .buffer
-    .hit(point.x - origin.x, point.y - origin.y)
-    .map_or(0, |cursor| index_of(&text.buffer, cursor))
+  let (x, y) = (point.x - text.origin.x, point.y - text.origin.y);
+  let run = text
+    .runs()
+    .find(|run| y >= run.line_top && y < run.line_top + run.line_height);
+  let (line, shift, first) = run.map_or((0, 0.0, 0), |run| (run.line_i, run.shift, run.first));
+  text.buffer.hit(x + shift, y).map_or(0, |mut cursor| {
+    if cursor.line == line {
+      cursor.index = cursor.index.max(first);
+    }
+    index_of(&text.buffer, cursor)
+  })
 }
 
 /// Where bytes `range` of `text` show, in window coordinates: a rectangle
@@ -274,10 +283,11 @@ pub(crate) fn highlights(text: &TextNode, range: Range<usize>) -> Vec<Rect> {
     .filter(|run| (start.line..=end.line).contains(&run.line_i))
     .flat_map(|run| {
       let empty = (run.glyphs.is_empty() && run.line_i < end.line).then(|| {
-        let x = text.empty_line_place(&run) * (width - half_em).max(0.0);
+        let x = text.empty_line_place(run.rtl) * (width - half_em).max(0.0);
         (x, half_em)
       });
       run
+        .layout()
         .highlight(start, end)
         .chain(empty)
         .map(move |(x, width)| {

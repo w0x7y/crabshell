@@ -470,7 +470,7 @@ fn check_fonts() {
     // slants draws other pixels.
     let face = text
       .runs()
-      .flat_map(|run| run.glyphs.iter())
+      .flat_map(|run| run.glyphs.into_owned())
       .next()
       .and_then(|glyph| {
         let fonts = scene.text.font_system();

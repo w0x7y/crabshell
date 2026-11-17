@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use cosmic_text::{Affinity, FontSystem, LayoutRun};
+use cosmic_text::{Affinity, FontSystem};
 use crabshell_reactive::Signal;
 
 use crate::cx::Cx;
@@ -14,7 +14,7 @@ use crate::keyboard::{Key, KeyEvent};
 use crate::prop::{IntoProp, Prop};
 use crate::select::{cursor_at, highlights, index_of};
 use crate::style::Style;
-use crate::text::TextNode;
+use crate::text::{TextNode, TextRun};
 use crate::tree::{NodeKind, borrow};
 use crate::widgets::{Common, Element, ElementKind, Widget, visibility_methods};
 use crate::window::Window;
@@ -407,7 +407,7 @@ impl InputNode {
 
   /// The line the caret before byte `at` of what is shown is drawn on:
   /// the first of two that meet there when `upstream`, else the last.
-  fn caret_run(&self, at: usize, upstream: bool) -> Option<LayoutRun<'_>> {
+  fn caret_run(&self, at: usize, upstream: bool) -> Option<TextRun<'_>> {
     let cursor = cursor_at(&self.text.buffer, at);
     let mut runs = self.text.runs().filter(|run| {
       run.line_i == cursor.line
@@ -430,9 +430,10 @@ impl InputNode {
       .caret_run(at, upstream)
       .or_else(|| self.text.runs().next())?;
     let x = if run.glyphs.is_empty() || self.showing_placeholder() {
-      self.text.empty_line_place(&run) * self.text.layout_width()
+      self.text.empty_line_place(run.rtl) * self.text.layout_width()
     } else {
       run
+        .layout()
         .cursor_position(&cursor_at(&self.text.buffer, at))
         .unwrap_or(0.0)
     };

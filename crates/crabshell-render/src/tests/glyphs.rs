@@ -35,7 +35,7 @@ fn draw_color_glyph(family: &'static str, text: &str) -> (Buffer, Vec<u8>, i32, 
   let mut cache = SwashCache::new();
   for run in text.runs() {
     let baseline = (origin.y + run.line_y).round();
-    for glyph in run.glyphs {
+    for glyph in run.glyphs.iter() {
       let physical = glyph.physical((origin.x, baseline), 1.0);
       let Some(image) = cache.get_image_uncached(&mut scene.text.font_system(), physical.cache_key)
       else {

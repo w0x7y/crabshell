@@ -11,6 +11,7 @@
 //! read from its bytes, and a family it provides is used before fontconfig
 //! is asked, so a config whose fonts are all bundled never starts it.
 
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
@@ -926,10 +927,10 @@ impl TextNode {
 
   /// Where an empty line sits across the width the text was laid out
   /// in, from 0 at the left to 1 at the right, as its alignment and
-  /// direction put a line that has glyphs. cosmic-text places every
-  /// empty line at 0.
-  pub(crate) fn empty_line_place(&self, run: &LayoutRun<'_>) -> f32 {
-    let start = if run.rtl { 1.0 } else { 0.0 };
+  /// direction (`rtl`) put a line that has glyphs. cosmic-text places
+  /// every empty line at 0.
+  pub(crate) fn empty_line_place(&self, rtl: bool) -> f32 {
+    let start = if rtl { 1.0 } else { 0.0 };
     match self.style.and_then(|style| style.align) {
       Some(TextAlign::Center) => 0.5,
       Some(TextAlign::End) => 1.0 - start,
@@ -943,9 +944,19 @@ impl TextNode {
     self.buffer.size().0.unwrap_or_else(|| self.width())
   }
 
-  /// The lines shown, at most `max_lines`.
-  pub(crate) fn runs(&self) -> impl Iterator<Item = LayoutRun<'_>> {
-    self.buffer.layout_runs().take(self.max_lines as usize)
+  /// The lines shown, at most `max_lines`. Everything that reads the
+  /// lines goes through here, so drawing, hit testing, selection and
+  /// links agree.
+  pub(crate) fn runs(&self) -> impl Iterator<Item = TextRun<'_>> {
+    self
+      .buffer
+      .layout_runs()
+      .take(self.max_lines as usize)
+      .map(|run| {
+        // Without blanks dropped, the left edge stays where it is.
+        let moved = 1.0 - self.empty_line_place(false);
+        TextRun::shown(run, moved)
+      })
   }
 
   pub(crate) fn width(&self) -> f32 {
@@ -954,5 +965,99 @@ impl TextNode {
 
   fn height(&self) -> f32 {
     self.runs().map(|run| run.line_height).sum()
+  }
+}
+
+/// A line of text as shown: cosmic-text's layout run, less the blank
+/// that cosmic-text 0.19 starts an elided line with when the line before
+/// it wrapped at a space.
+#[derive(Clone, Debug)]
+pub struct TextRun<'a> {
+  /// The index of the buffer line it is part of.
+  pub line_i: usize,
+  /// That buffer line's text, which glyphs index into.
+  pub text: &'a str,
+  /// Whether the paragraph runs right to left.
+  pub rtl: bool,
+  /// The glyphs to draw, left to right, from the text's origin.
+  pub glyphs: Cow<'a, [LayoutGlyph]>,
+  /// From the text's top to the baseline.
+  pub line_y: f32,
+  /// From the text's top to the line's top.
+  pub line_top: f32,
+  /// The line's height.
+  pub line_height: f32,
+  /// The line's width.
+  pub line_w: f32,
+  /// How far left the glyphs were moved, and the first byte shown.
+  pub(crate) shift: f32,
+  pub(crate) first: usize,
+}
+
+impl<'a> TextRun<'a> {
+  /// `run` with the blanks dropped that open an elided left-to-right line
+  /// cut out of a longer one, the glyphs after them moved left by
+  /// `moved` times what they took: 1 for a line placed from the left, a
+  /// half for a centered one and 0 for one placed from the right.
+  ///
+  /// shortcut: works around cosmic-text 0.19's word wrap, which starts
+  /// the elided line at the blank before the word that wrapped; drop it
+  /// once an upgrade fixes that.
+  fn shown(run: LayoutRun<'a>, moved: f32) -> TextRun<'a> {
+    // The ellipsis holds no bytes; a line that starts inside its buffer
+    // line was wrapped.
+    let elided = run.glyphs.iter().any(|glyph| glyph.start == glyph.end);
+    let blank = |glyph: &&LayoutGlyph| {
+      glyph.start > 0
+        && glyph.start < glyph.end
+        && run
+          .text
+          .get(glyph.start..glyph.end)
+          .is_some_and(|text| text.chars().all(char::is_whitespace))
+    };
+    let dropped = match elided && !run.rtl {
+      true => run.glyphs.iter().take_while(blank).count(),
+      false => 0,
+    };
+    let (glyphs, width, shift, first) = if dropped == 0 {
+      (Cow::Borrowed(run.glyphs), 0.0, 0.0, 0)
+    } else {
+      let width: f32 = run.glyphs[..dropped].iter().map(|glyph| glyph.w).sum();
+      let shift = width * moved;
+      let glyphs = run.glyphs[dropped..].iter().map(|glyph| LayoutGlyph {
+        x: glyph.x - shift,
+        ..glyph.clone()
+      });
+      let first = run.glyphs.get(dropped).map_or(0, |glyph| glyph.start);
+      (Cow::Owned(glyphs.collect()), width, shift, first)
+    };
+    TextRun {
+      first,
+      line_i: run.line_i,
+      text: run.text,
+      rtl: run.rtl,
+      glyphs,
+      line_y: run.line_y,
+      line_top: run.line_top,
+      line_height: run.line_height,
+      line_w: run.line_w - width,
+      shift,
+    }
+  }
+
+  /// The line as a cosmic-text layout run, for its selection and caret
+  /// helpers. Decoration spans aren't drawn, so it has none.
+  pub(crate) fn layout(&self) -> LayoutRun<'_> {
+    LayoutRun {
+      line_i: self.line_i,
+      text: self.text,
+      rtl: self.rtl,
+      glyphs: &self.glyphs,
+      decorations: &[],
+      line_y: self.line_y,
+      line_top: self.line_top,
+      line_height: self.line_height,
+      line_w: self.line_w,
+    }
   }
 }

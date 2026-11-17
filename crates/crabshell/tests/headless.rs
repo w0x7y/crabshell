@@ -235,7 +235,7 @@ fn check_fonts(shell: &mut Shell, id: WindowId) {
     };
     text
       .runs()
-      .flat_map(|run| run.glyphs.iter())
+      .flat_map(|run| run.glyphs.into_owned())
       .next()
       .map(|glyph| glyph.font_id)
   })

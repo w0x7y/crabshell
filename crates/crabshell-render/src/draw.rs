@@ -1119,7 +1119,7 @@ impl Painter<'_> {
       {
         continue;
       }
-      for glyph in run.glyphs {
+      for glyph in run.glyphs.iter() {
         let span = text.span(run.line_i, glyph);
         let color = span.and_then(|span| span.color).unwrap_or(text.color());
         if color.a == 0 {
@@ -1148,7 +1148,7 @@ impl Painter<'_> {
       let origin = text.origin().x;
       let own = (text.underline(), text.strikethrough());
       if own != (false, false) {
-        self.decorations(pixmap, origin, run.glyphs, baseline, own, text.color());
+        self.decorations(pixmap, origin, &run.glyphs, baseline, own, text.color());
       }
       // A span's own lines run across its glyphs on the line, each in its
       // color. cosmic-text's decoration spans join two decorated spans

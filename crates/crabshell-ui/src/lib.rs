@@ -117,7 +117,7 @@ pub use style::{
   Border, Color, Font, FontFeature, Gradient, GradientShape, Mask, Padding, Radii, Shadow, Style,
   TextAlign,
 };
-pub use text::{TextMetrics, TextSystem};
+pub use text::{TextMetrics, TextRun, TextSystem};
 pub use text_area::TextArea;
 pub use text_input::{FieldState, Preedit, TextInput};
 pub use timer::{Timer, fire_timers, next_timer};

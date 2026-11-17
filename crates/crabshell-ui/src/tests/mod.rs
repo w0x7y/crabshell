@@ -10,6 +10,7 @@ mod canvas;
 mod displaced;
 mod drop;
 mod edit;
+mod elided;
 mod floating;
 mod flow;
 mod geometry;

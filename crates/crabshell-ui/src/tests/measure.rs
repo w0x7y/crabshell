@@ -47,7 +47,10 @@ fn drawn_from_bundled(window: &Window, text: &TextSystem, path: &[usize]) -> boo
     panic!("a text node has text content");
   };
   let fonts = text.font_system();
-  let mut glyphs = shown.runs().flat_map(|run| run.glyphs.iter()).peekable();
+  let mut glyphs = shown
+    .runs()
+    .flat_map(|run| run.glyphs.into_owned())
+    .peekable();
   glyphs.peek().is_some()
     && glyphs.all(|glyph| {
       fonts
@@ -140,7 +143,8 @@ fn a_bundled_family_needs_no_fontconfig() {
   assert!(!fonts.fontconfig_started());
   let glyphs: Vec<u16> = node
     .runs()
-    .flat_map(|run| run.glyphs.iter().map(|glyph| glyph.glyph_id))
+    .flat_map(|run| run.glyphs.into_owned())
+    .map(|glyph| glyph.glyph_id)
     .collect();
   assert!(glyphs.iter().all(|&id| id != 0), "{glyphs:?}");
   // A character DejaVu Sans lacks still falls back through fontconfig.
@@ -203,7 +207,7 @@ fn glyph_faces(node: &TextNode, fonts: &mut Fonts) -> Vec<(bool, u16)> {
   let db = fonts.font_system().db();
   node
     .runs()
-    .flat_map(|run| run.glyphs.iter())
+    .flat_map(|run| run.glyphs.into_owned())
     .filter_map(|glyph| db.face(glyph.font_id))
     .map(|face| (matches!(face.source, Source::Binary(_)), face.weight.0))
     .collect()
@@ -324,7 +328,7 @@ fn a_bundled_upright_face_leaves_italic_to_fontconfig() {
     let db = fonts.font_system().db();
     let faces: Vec<_> = node
       .runs()
-      .flat_map(|run| run.glyphs.iter())
+      .flat_map(|run| run.glyphs.into_owned())
       .filter_map(|glyph| db.face(glyph.font_id))
       .map(|face| (matches!(face.source, Source::Binary(_)), face.style))
       .collect();

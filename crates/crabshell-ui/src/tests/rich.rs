@@ -48,7 +48,7 @@ fn spans_take_their_own_face_and_otherwise_the_texts() {
   let db = fonts.font_system().db();
   let faces: Vec<_> = node
     .runs()
-    .flat_map(|run| run.glyphs.iter())
+    .flat_map(|run| run.glyphs.into_owned())
     .map(|glyph| {
       let face = db.face(glyph.font_id).expect("a loaded face");
       (
@@ -92,7 +92,8 @@ fn glyphs_carry_their_spans_color_and_index() {
       (3, None)
     ]
   );
-  assert!(run.decorations.is_empty());
+  let raw = node.buffer.layout_runs().next().expect("one line");
+  assert!(raw.decorations.is_empty());
 }
 
 #[test]
@@ -107,7 +108,7 @@ fn a_span_character_the_font_lacks_gets_a_fallback_in_its_weight() {
   let db = fonts.font_system().db();
   let snowman = node
     .runs()
-    .flat_map(|run| run.glyphs.iter())
+    .flat_map(|run| run.glyphs.into_owned())
     .nth(1)
     .expect("two glyphs");
   assert_ne!(snowman.glyph_id, 0);
@@ -187,7 +188,10 @@ fn many_spans_needing_fallbacks_shape_quickly() {
     let start = std::time::Instant::now();
     let node = rich(&mut fonts, spans, FONT);
     let elapsed = start.elapsed();
-    let glyphs: Vec<_> = node.runs().flat_map(|run| run.glyphs.iter()).collect();
+    let glyphs: Vec<_> = node
+      .runs()
+      .flat_map(|run| run.glyphs.into_owned())
+      .collect();
     assert!(
       glyphs.iter().all(|glyph| glyph.glyph_id != 0),
       "a glyph is missing"
