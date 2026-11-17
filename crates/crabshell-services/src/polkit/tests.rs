@@ -924,3 +924,105 @@ fn polkit_cancelling_a_request_whose_users_are_looked_up_answers_it() {
   assert_eq!(agent.request().get_untracked(), None);
   assert!(polkit.runs().is_empty(), "no helper ran");
 }
+
+/// The wakeups in `window` from `from`, after the loop settled for 50 ms.
+fn wakeups(polkit: &mut Polkit, from: Instant, window: Duration) -> usize {
+  polkit
+    .shell
+    .run_until(Instant::now() + Duration::from_millis(50));
+  polkit.shell.run_until(from + window)
+}
+
+#[test]
+fn a_finished_lookup_leaves_nothing_in_the_loop() {
+  // A limit long enough to fall inside the window below, after the answer.
+  let users = slow_users(Duration::ZERO, Duration::from_millis(1000));
+  let mut polkit = Polkit::with(PASSWORD, users);
+  let (agent, name) = polkit.agent();
+  let started = Instant::now();
+  let answer = polkit.begin(&name, "cookie-1", &[0]);
+  polkit.wait_state(&agent, asking);
+  agent.respond("hunter2");
+  assert_eq!(polkit.answered(&answer), Ok(()));
+  polkit.wait_helper_gone();
+  assert!(
+    started.elapsed() < Duration::from_millis(900),
+    "the window covers the limit"
+  );
+  let woke = wakeups(&mut polkit, started, Duration::from_millis(1500));
+  assert_eq!(
+    woke, 1,
+    "only the run's own deadline: the limit's timer went"
+  );
+}
+
+#[test]
+fn a_lookup_polkit_cancelled_leaves_nothing_in_the_loop() {
+  let users = slow_users(Duration::from_millis(500), Duration::from_millis(1000));
+  let mut polkit = Polkit::with(PASSWORD, users);
+  let (_agent, name) = polkit.agent();
+  let started = Instant::now();
+  let answer = polkit.begin(&name, "cookie-1", &[1000]);
+  polkit
+    .shell
+    .run_until(Instant::now() + Duration::from_millis(20));
+  let from = polkit.authority.connection.clone();
+  assert_eq!(polkit.cancel_from(&from, &name, "cookie-1"), Ok(()));
+  assert_eq!(polkit.answered(&answer), Err(CANCELLED.to_owned()));
+  assert!(
+    started.elapsed() < Duration::from_millis(400),
+    "the window covers the lookup"
+  );
+  let woke = wakeups(&mut polkit, started, Duration::from_millis(1500));
+  assert_eq!(
+    woke, 1,
+    "neither the lookup's names nor its limit wake the loop"
+  );
+}
+
+#[test]
+fn lookups_that_never_return_cap_the_threads_left_waiting() {
+  use std::sync::{Arc, Condvar, Mutex};
+
+  // A lookup that hangs, as NSS can on a server that never answers,
+  // until the test lets it go.
+  let gate = Arc::new((Mutex::new(false), Condvar::new()));
+  let held = Arc::clone(&gate);
+  let mut polkit = Polkit::with(PASSWORD, move |config| Config {
+    polkit_users: Arc::new(move |_| {
+      let (open, opened) = &*held;
+      let guard = open.lock().expect("the gate");
+      drop(opened.wait_while(guard, |open| !*open).expect("the gate"));
+      Some(String::from("root"))
+    }),
+    polkit_users_limit: Duration::from_millis(100),
+    ..config
+  });
+  let (agent, name) = polkit.agent();
+  for n in 0..4 {
+    let hung = polkit.begin(&name, &format!("cookie-{n}"), &[0]);
+    assert_eq!(
+      polkit.answered(&hung),
+      Err(FAILED.to_owned()),
+      "past the limit"
+    );
+  }
+  let logs = capture_logs(|| {
+    let refused = polkit.begin(&name, "cookie-4", &[0]);
+    assert_eq!(polkit.answered(&refused), Err(FAILED.to_owned()));
+  });
+  assert!(logs.contains("user lookups still hang"), "{logs}");
+  assert_eq!(polkit.runs().len(), 0);
+
+  let (open, opened) = &*gate;
+  *open.lock().expect("the gate") = true;
+  opened.notify_all();
+  let service = Rc::clone(agent.service.as_ref().expect("the shell's agent"));
+  polkit.wait("the threads to end", move || {
+    service.lookups.load(std::sync::atomic::Ordering::Relaxed) == 0
+  });
+  let answer = polkit.begin(&name, "cookie-5", &[0]);
+  polkit.wait_state(&agent, asking);
+  agent.respond("hunter2");
+  assert_eq!(polkit.answered(&answer), Ok(()));
+}

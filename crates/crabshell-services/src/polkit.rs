@@ -19,6 +19,7 @@ use std::future::poll_fn;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
 
@@ -81,6 +82,10 @@ const MAX_QUEUED: usize = 8;
 /// How long a request waits for its users' names, as NSS may ask a
 /// server that doesn't answer.
 pub(crate) const USERS_LIMIT: Duration = Duration::from_secs(3);
+
+/// The most user lookups' threads alive at once. Past it a request
+/// fails rather than leave another thread stuck in a hung NSS.
+const MAX_LOOKUPS: usize = 4;
 
 /// A name a user lookup's thread found: the identity's place, and its
 /// name, or `None` for no such user.
@@ -208,6 +213,18 @@ pub(crate) struct Service {
   state: RefCell<Option<State>>,
   /// The number the next helper run and request get.
   next: Cell<u64>,
+  /// The user lookups' threads still running, which a hung NSS can hold
+  /// for good, counted by the threads themselves.
+  lookups: Arc<AtomicUsize>,
+}
+
+/// Counts a lookup's thread down when it ends, even by a panic.
+struct Lookup(Arc<AtomicUsize>);
+
+impl Drop for Lookup {
+  fn drop(&mut self) {
+    self.0.fetch_sub(1, Ordering::Relaxed);
+  }
 }
 
 struct State {
@@ -278,6 +295,7 @@ impl Service {
       shared,
       state: RefCell::new(None),
       next: Cell::new(1),
+      lookups: Arc::default(),
     }
   }
 
@@ -421,6 +439,10 @@ impl Service {
       tracing::warn!("{MAX_QUEUED} polkit requests wait already; refused another");
       return self.reply(&begin.call, Some((FAILED, "too many requests wait")));
     }
+    if self.lookups.load(Ordering::Relaxed) >= MAX_LOOKUPS {
+      tracing::warn!("{MAX_LOOKUPS} user lookups still hang in NSS; refused a polkit request");
+      return self.reply(&begin.call, Some((FAILED, "user lookups hang")));
+    }
     let action = &begin.shown.action_id;
     tracing::info!(action, "polkit asks to authenticate");
     self.resolve(begin, uids);
@@ -435,9 +457,12 @@ impl Service {
       let (sender, channel) = calloop::channel::channel::<Found>();
       let lookup = Arc::clone(&self.shared.config.polkit_users);
       let looked = uids.clone();
+      self.lookups.fetch_add(1, Ordering::Relaxed);
+      let lookup_ends = Lookup(Arc::clone(&self.lookups));
       let spawned = std::thread::Builder::new()
         .name(String::from("crabshell-users"))
         .spawn(move || {
+          let _ends = lookup_ends;
           for (at, uid) in looked.into_iter().enumerate() {
             // Refused once the request went on without it.
             if sender.send((at, lookup(uid))).is_err() {
