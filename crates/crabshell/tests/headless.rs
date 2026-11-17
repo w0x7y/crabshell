@@ -1470,7 +1470,12 @@ fn run_as_child() {
       let program = cx.process(|| ["sh", "-c", "echo $$; exec sleep 30"]);
       let _program = program.on_line(|pid| eprintln!("the program is {pid}"));
       let shell = cx.clone();
-      cx.ipc("shell", "exit", move |_| shell.exit(3));
+      cx.ipc("shell", "exit", move |_| {
+        // A launcher that starts a program and ends at once.
+        let started = std::env::var("EXIT_STARTS").expect("where to say it started");
+        shell.exec_detached(["sh", "-c", &format!("echo yes > {started}")]);
+        shell.exit(3)
+      });
       cx.per_output(counter::bar);
     }),
     Ok("programs") => crabshell::run(|cx| {
@@ -3173,6 +3178,8 @@ fn a_signal_ends_the_shell_with_its_programs_and_socket() {
 /// and its IPC socket removed, as a greeter does once its session starts.
 /// glibc's `exit` also drops the services, so the program check holds even
 /// without the explicit stop, which stays because Rust doesn't promise it.
+/// A program started just before, still waiting for its activation token,
+/// starts without it.
 #[test]
 #[ignore = "needs headless Sway"]
 fn cx_exit_ends_the_shell_with_its_status_programs_and_socket() {
@@ -3180,10 +3187,14 @@ fn cx_exit_ends_the_shell_with_its_status_programs_and_socket() {
 
   run_as_child();
   let sway = Sway::start();
+  let started = sway.runtime_dir().join("started");
   let mut shell = ExampleBar::spawn(
     &sway,
     this_as_shell("cx_exit_ends_the_shell_with_its_status_programs_and_socket"),
-    &[(CHILD, "exits")],
+    &[
+      (CHILD, "exits"),
+      ("EXIT_STARTS", &started.display().to_string()),
+    ],
   );
   let line = shell.wait_for("the program is ");
   let pid: u32 = line
@@ -3204,6 +3215,14 @@ fn cx_exit_ends_the_shell_with_its_status_programs_and_socket() {
   let status = shell.exit_status().expect("the shell exits");
   assert_eq!(status.code(), Some(3), "{status}");
   assert!(!socket.exists(), "the shell removed its socket");
+  let deadline = Instant::now() + TIMEOUT;
+  while !started.exists() {
+    assert!(
+      Instant::now() < deadline,
+      "the program started at exit never ran"
+    );
+    std::thread::sleep(Duration::from_millis(50));
+  }
   let deadline = Instant::now() + TIMEOUT;
   while Path::new(&format!("/proc/{pid}")).exists() {
     assert!(Instant::now() < deadline, "its program {pid} still runs");

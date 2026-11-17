@@ -2,11 +2,12 @@
 //! may focus their windows. The shell hands over how to ask for one, so
 //! the services know nothing of Wayland.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::process::Command;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use calloop::RegistrationToken;
 use calloop::timer::TimeoutAction;
 
 use crate::Shared;
@@ -23,13 +24,32 @@ pub(crate) const WAIT: Duration = Duration::from_millis(100);
 pub(crate) type Request = Box<dyn Fn(Option<&str>, Box<dyn FnOnce(String)>)>;
 
 /// What goes on once a token came or the wait ended.
-type Then = Box<dyn FnOnce(Option<String>)>;
+pub(crate) type Then = Box<dyn FnOnce(Option<String>)>;
+
+/// The launches waiting for their token, each under a number of its own,
+/// with the timer that ends its wait.
+#[derive(Default)]
+pub(crate) struct Waiting {
+  next: Cell<u64>,
+  launches: RefCell<Vec<(u64, RegistrationToken, Then)>>,
+}
+
+impl Waiting {
+  /// Takes launch `number` out with its timer, if it still waits.
+  fn take(&self, number: u64) -> Option<(RegistrationToken, Then)> {
+    let mut launches = self.launches.borrow_mut();
+    let index = launches.iter().position(|(ours, ..)| *ours == number)?;
+    let (_, timer, then) = launches.swap_remove(index);
+    Some((timer, then))
+  }
+}
 
 /// Calls `then` with a token for a program with app id `app_id` that is
 /// about to start: once the compositor gives it, or with `None` after
-/// [`WAIT`]. With no way to ask, it calls `then` with `None` at once. A
-/// token that comes after the wait is dropped. The timer is in the loop
-/// only while a token is awaited.
+/// [`WAIT`] or when the shell stops ([`start_waiting`]). With no way to
+/// ask, or no timer to bound the wait, it calls `then` with `None` at
+/// once. A token that comes after the wait is dropped. The timer is in the
+/// loop only while a token is awaited.
 pub(crate) fn with_token(
   shared: &Rc<Shared>,
   app_id: Option<&str>,
@@ -38,32 +58,51 @@ pub(crate) fn with_token(
   let (Some(request), Some(event_loop)) = (shared.activation.get(), shared.event_loop()) else {
     return then(None);
   };
-  let then: Rc<Cell<Option<Then>>> = Rc::new(Cell::new(Some(Box::new(then))));
-  let timer = Rc::new(Cell::new(None));
+  let waiting = &shared.waiting;
+  let number = waiting.next.get();
+  waiting.next.set(number + 1);
   let late = {
-    let then = Rc::clone(&then);
+    let shared = Rc::clone(shared);
     Box::new(move || {
-      if let Some(then) = then.take() {
+      // The timer drops itself.
+      if let Some((_, then)) = shared.waiting.take(number) {
         tracing::debug!("no activation token in time; starting without one");
         then(None);
       }
       TimeoutAction::Drop
     })
   };
-  timer.set(event_loop.insert_timer(Instant::now() + WAIT, late));
+  let Some(timer) = event_loop.insert_timer(Instant::now() + WAIT, late) else {
+    return then(None);
+  };
+  let then: Then = Box::new(then);
+  waiting.launches.borrow_mut().push((number, timer, then));
   let shared = Rc::clone(shared);
   request(
     app_id,
     Box::new(move |token| {
-      let Some(then) = then.take() else {
+      let Some((timer, then)) = shared.waiting.take(number) else {
         return tracing::debug!("an activation token came too late, so it goes unused");
       };
-      if let (Some(timer), Some(event_loop)) = (timer.take(), shared.event_loop()) {
+      if let Some(event_loop) = shared.event_loop() {
         event_loop.remove(timer);
       }
       then(Some(token));
     }),
   );
+}
+
+/// Starts every launch still waiting for its token, without one, as the
+/// shell does before it exits, when no token or timer would come.
+pub(crate) fn start_waiting(shared: &Shared) {
+  let launches = std::mem::take(&mut *shared.waiting.launches.borrow_mut());
+  let event_loop = shared.event_loop();
+  for (_, timer, then) in launches {
+    if let Some(event_loop) = &event_loop {
+      event_loop.remove(timer);
+    }
+    then(None);
+  }
 }
 
 /// Gives `command` the token where programs look for it: Wayland's
@@ -157,6 +196,36 @@ mod tests {
     done(String::from("late"));
     assert_eq!(*got.borrow(), [None]);
     assert_eq!(run(&mut shell, 300), 1, "the timer went");
+  }
+
+  #[test]
+  fn a_launch_waiting_for_its_token_starts_without_it_when_the_shell_stops() {
+    use crate::ServicesExt;
+    let mut shell = Harness::new(offline());
+    let asked: Asked = Asked::default();
+    let into = Rc::clone(&asked);
+    crate::provide_activation_tokens(&shell.cx, move |app_id, done| {
+      into.borrow_mut().push((app_id.map(str::to_owned), done));
+    });
+    let dir = crate::testing::TempDir::new();
+    let out = dir.path().join("started");
+    let script = format!("echo \"x$XDG_ACTIVATION_TOKEN\" >> {}", out.display());
+    shell.cx.exec_detached(["sh", "-c", script.as_str()]);
+    // As `cx.exit` does, before the token comes.
+    crate::stop_programs(&shell.cx);
+    // The loop doesn't run again, as after an exit.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !out.exists() {
+      assert!(Instant::now() < deadline, "the program never started");
+      std::thread::sleep(Duration::from_millis(20));
+    }
+    // Neither the token nor the wait's end starts it again.
+    let (_, done) = asked.borrow_mut().pop().expect("a request");
+    done(String::from("late"));
+    // Its exit may wake the loop once; the timer went.
+    assert!(run(&mut shell, 300) <= 2);
+    assert_eq!(run(&mut shell, 300), 1, "the timer went");
+    assert_eq!(std::fs::read_to_string(&out).expect("its output"), "x\n");
   }
 
   #[test]

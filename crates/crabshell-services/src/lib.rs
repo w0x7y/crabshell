@@ -140,11 +140,16 @@ pub fn provide_activation_tokens(
   }
 }
 
-/// Stops every program a config started with `cx.process`. The shell
-/// calls this before it exits, since `std::process::exit` skips the drops
-/// that would, and each program has a process group of its own.
+/// Stops every program a config started with `cx.process`, and starts
+/// every one still waiting for its activation token, without it. The
+/// shell calls this before it exits, since `std::process::exit` skips the
+/// drops that would stop them, each program has a process group of its
+/// own, and no token or timer comes after the exit.
 #[doc(hidden)]
 pub fn stop_programs(cx: &Cx) {
+  if let Some(processes) = cx.service::<process::Processes>() {
+    activation::start_waiting(&processes.shared);
+  }
   process::stop_all(cx);
 }
 
@@ -498,6 +503,8 @@ struct Shared {
   watcher: watch::Watcher,
   /// How to ask for an activation token, once the shell gives it.
   activation: OnceCell<activation::Request>,
+  /// The programs waiting for their activation token.
+  waiting: activation::Waiting,
   config: Config,
 }
 
@@ -514,6 +521,7 @@ impl Shared {
       executor: OnceCell::new(),
       watcher: watch::Watcher::default(),
       activation: OnceCell::new(),
+      waiting: activation::Waiting::default(),
       config,
     }
   }
