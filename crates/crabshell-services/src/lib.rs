@@ -26,6 +26,7 @@ mod greetd;
 mod http;
 mod hyprland;
 mod lines;
+mod logind;
 mod mpris;
 mod network;
 mod niri;
@@ -72,6 +73,7 @@ pub use file::{FileError, FileErrorKind, FileView};
 pub use greetd::{GreetMessage, GreetState, Greetd};
 pub use http::{Http, HttpError, HttpErrorKind};
 pub use hyprland::{Hyprland, HyprlandEvent, HyprlandMonitor, HyprlandToplevel, HyprlandWorkspace};
+pub use logind::Logind;
 pub use mpris::{LoopStatus, Mpris, PlaybackStatus, Player};
 pub use network::{
   ConnectionFailReason, Connectivity, Network, NetworkDevice, NetworkKind, NetworkState,
@@ -129,6 +131,7 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(greetd::Service::new(Rc::clone(&shared)));
   cx.provide(pam::Service(Rc::clone(&shared)));
   cx.provide(polkit::Service::new(Rc::clone(&shared)));
+  cx.provide(logind::Service::new(Rc::clone(&shared)));
 }
 
 /// Lets the services ask the compositor for activation tokens for the
@@ -422,6 +425,14 @@ pub trait ServicesExt {
   /// A refused registration is logged and no requests arrive. It wakes
   /// the shell only when polkit calls and while a request is answered.
   fn polkit_agent(&self) -> PolkitAgent;
+
+  /// logind on the system bus: when the machine is about to sleep, a
+  /// delay so a config can get ready first, as a lock screen locks, and
+  /// the power actions. Every caller shares one connection, which starts
+  /// on the loop's next turn. It behaves as [`upower`](Self::upower)
+  /// does while logind isn't there, and wakes the shell only for
+  /// `PrepareForSleep`.
+  fn logind(&self) -> Logind;
 }
 
 impl ServicesExt for Cx {
@@ -529,6 +540,10 @@ impl ServicesExt for Cx {
 
   fn polkit_agent(&self) -> PolkitAgent {
     polkit::polkit_agent(self)
+  }
+
+  fn logind(&self) -> Logind {
+    logind::logind(self)
   }
 }
 
