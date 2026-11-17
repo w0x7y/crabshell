@@ -194,9 +194,9 @@ fn many_spans_needing_fallbacks_shape_quickly() {
     );
     elapsed
   };
-  // Noto Sans has no CJK, so every span asks for a fallback, unlike "a".
+  // Noto Sans has no snowman, so every span asks DejaVu Sans, unlike "a".
   let plain = time("<b>a</b>a");
-  let fallback = time("<b>字</b>字");
+  let fallback = time("<b>☃</b>☃");
   // A fallback costs some shaping, about three times the plain body here,
   // but matching each missing character against every span cost seven.
   assert!(fallback < plain * 5, "{fallback:?} against {plain:?}");
