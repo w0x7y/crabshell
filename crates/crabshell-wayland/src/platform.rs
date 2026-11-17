@@ -44,7 +44,7 @@ use crate::pointer::Cursor;
 use crate::scale::Scale;
 use crate::screencopy::Captures;
 use crate::shortcuts_inhibit::ShortcutsInhibit;
-use crate::surface::{self, Role, Surface};
+use crate::surface::{self, FIRST_FRAME_HOLD, Role, Surface};
 use crate::text_input::SeatTextInput;
 use crate::windows::{Entry, WindowId, Windows};
 use crate::windowsets::Windowsets;
@@ -635,6 +635,58 @@ impl Platform {
     }
   }
 
+  /// Gives each window whose first frame is held for pictures a one-shot
+  /// timer that ends the wait at [`FIRST_FRAME_HOLD`], and takes it out
+  /// once the window commits.
+  fn arm_holds(&mut self) {
+    for entry in &mut self.windows.entries {
+      let id = entry.id;
+      let Some(surface) = entry.surface.as_mut() else {
+        continue;
+      };
+      let Some(hold) = &mut surface.held else {
+        continue;
+      };
+      if surface.commits > 0 {
+        if let Some(token) = hold.timer.take() {
+          self.handle.remove(token);
+        }
+        surface.held = None;
+        continue;
+      }
+      if hold.timer.is_some() || hold.ended {
+        continue;
+      }
+      let armed = self.handle.insert_source(
+        Timer::from_deadline(hold.since + FIRST_FRAME_HOLD),
+        move |_, _, platform: &mut Platform| {
+          let surface = platform
+            .windows
+            .entries
+            .iter_mut()
+            .find(|entry| entry.id == id)
+            .and_then(|entry| entry.surface.as_mut());
+          if let Some(surface) = surface {
+            if let Some(hold) = &mut surface.held {
+              hold.timer = None;
+              hold.ended = true;
+            }
+            surface.frames.pacing.redraw();
+          }
+          TimeoutAction::Drop
+        },
+      );
+      match armed {
+        Ok(token) => hold.timer = Some(token),
+        Err(error) => {
+          tracing::warn!(%error, "couldn't time a first frame's wait");
+          hold.ended = true;
+          surface.frames.pacing.redraw();
+        }
+      }
+    }
+  }
+
   /// A frame of the fastest output, or of 60 Hz without one.
   pub(crate) fn frame_interval(&self) -> Duration {
     frame_interval(
@@ -824,6 +876,7 @@ impl Platform {
     self.arm_timers();
     self.arm_images();
     self.arm_decodes();
+    self.arm_holds();
     self.commit_windowsets();
     if let Err(error) = self.connection.flush() {
       tracing::warn!(%error, "couldn't flush the Wayland connection");

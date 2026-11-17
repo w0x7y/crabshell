@@ -129,6 +129,20 @@ impl Frames {
   }
 }
 
+/// How long a window's first frame waits for the pictures its first draw
+/// sends to be decoded, at most.
+pub(crate) const FIRST_FRAME_HOLD: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// A window's first frame held back for the pictures its draw sent to be
+/// decoded.
+pub(crate) struct Hold {
+  pub(crate) since: std::time::Instant,
+  /// The one-shot timer that ends the wait, while it runs.
+  pub(crate) timer: Option<calloop::RegistrationToken>,
+  /// The timer fired: the next draw commits whatever it shows.
+  pub(crate) ended: bool,
+}
+
 /// What a surface is to the compositor.
 pub(crate) enum Role {
   /// A panel's layer surface.
@@ -173,6 +187,8 @@ pub(crate) struct Surface {
   told: Option<((u32, u32), Scale)>,
   /// Frames committed.
   pub(crate) commits: u64,
+  /// The first frame's wait for pictures being decoded, once held.
+  pub(crate) held: Option<Hold>,
   /// What the last frame reported with `damage_buffer`.
   pub(crate) last_damage: Vec<PixelRect>,
   /// The size of the last buffer committed.
@@ -218,6 +234,7 @@ impl Surface {
       size: None,
       told: None,
       commits: 0,
+      held: None,
       last_damage: Vec::new(),
       buffer_size: None,
       namespace: String::new(),
@@ -400,6 +417,8 @@ impl Surface {
       pool,
       buffers,
       frames,
+      held,
+      commits,
       ..
     } = self;
     let slot = buffers.next((buffer_width, buffer_height), || {
@@ -431,6 +450,21 @@ impl Surface {
     let Some(report) = frames.draw(window, renderer, text, canvas, &mut slot.age) else {
       return false;
     };
+    // A first frame without its pictures would flash: a lock surface's
+    // locks the screen, and a wallpaper's shows only its background.
+    if *commits == 0 && renderer.waits_for_pictures() {
+      let hold = held.get_or_insert_with(|| Hold {
+        since: std::time::Instant::now(),
+        timer: None,
+        ended: false,
+      });
+      if !hold.ended && hold.since.elapsed() < FIRST_FRAME_HOLD {
+        // Not shown, so the next draw, when they come in, repaints all.
+        frames.history = DamageHistory::new();
+        frames.pacing.held();
+        return false;
+      }
+    }
     // Not `self.wl_surface()`: `frames` is borrowed from `self`.
     let surface = match &self.role {
       Role::Layer(layer) => layer.wl_surface(),

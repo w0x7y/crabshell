@@ -4984,17 +4984,18 @@ fn threads_named(name: &str) -> usize {
 #[ignore = "needs headless Sway"]
 fn a_picture_decoded_off_the_loop_repaints_its_box_and_then_nothing_wakes() {
   let sway = Sway::start();
-  let still = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-    .join("../crabshell-render/tests/fixtures/stripes.png");
+  let fixtures =
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../crabshell-render/tests/fixtures");
   let runtime = Runtime::current();
   let cx = Cx::new(runtime.new_owner());
+  let name = cx.signal("stripes.png");
   // Blurred, so it is decoded on the worker thread.
   let bar = PanelWindow::new(&Output::new("HEADLESS-1"))
     .anchors(Edge::Top | Edge::Left | Edge::Right)
     .height(30)
     .child(
       Row::new().child(
-        crabshell_ui::Image::new(still)
+        crabshell_ui::Image::new(move || fixtures.join(name.get()))
           .width(40)
           .height(20)
           .blur(2.0),
@@ -5007,16 +5008,73 @@ fn a_picture_decoded_off_the_loop_repaints_its_box_and_then_nothing_wakes() {
       .window_info(id)
       .is_some_and(|info| info.commits > 0)
   });
-  // A frame that repaints the image's box alone.
-  run_until(&mut event_loop, "the picture's frame", |platform| {
+  settle(&mut event_loop);
+  // A new source shows the old picture at once, then the new one when it
+  // comes in: two frames, each repainting the image's box alone.
+  let before = event_loop
+    .platform()
+    .window_info(id)
+    .expect("the bar")
+    .commits;
+  name.set("bands.png");
+  run_until(&mut event_loop, "the new picture's frame", |platform| {
     platform.window_info(id).is_some_and(|info| {
       let damage = info.last_damage;
-      !damage.is_empty() && damage.iter().all(|rect| rect.x + rect.width <= 48)
+      info.commits >= before + 2
+        && !damage.is_empty()
+        && damage.iter().all(|rect| rect.x + rect.width <= 48)
     })
   });
   settle(&mut event_loop);
   sleeps_through(&mut event_loop, Duration::from_secs(2));
   assert_eq!(threads_named("decode"), 0, "the decoding thread ended");
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_windows_first_commit_waits_for_the_pictures_its_first_draw_asked_for() {
+  let sway = Sway::start();
+  let dir = std::env::temp_dir().join(format!("crabshell-first-{}", std::process::id()));
+  std::fs::create_dir_all(&dir).expect("a directory for the picture");
+  let path = dir.join("red.png");
+  let file = std::fs::File::create(&path).expect("create the picture");
+  let mut encoder = png::Encoder::new(file, 64, 64);
+  encoder.set_color(png::ColorType::Rgba);
+  let mut writer = encoder.write_header().expect("a PNG header");
+  writer
+    .write_image_data(&[255, 0, 0, 255].repeat(64 * 64))
+    .expect("the pixels");
+  writer.finish().expect("the PNG");
+  let runtime = Runtime::current();
+  let cx = Cx::new(runtime.new_owner());
+  // Blurred, so it is decoded on the worker thread.
+  let bar = PanelWindow::new(&Output::new("HEADLESS-1"))
+    .anchors(Edge::Top | Edge::Left | Edge::Right)
+    .height(30)
+    .child(
+      Row::new().child(
+        crabshell_ui::Image::new(path)
+          .width(40)
+          .height(30)
+          .blur(1.0),
+      ),
+    );
+  let mut event_loop = sway.connect();
+  let id = event_loop.platform().add_window(Window::new(&cx, bar));
+  run_until(&mut event_loop, "the bar's first frame", |platform| {
+    platform
+      .window_info(id)
+      .is_some_and(|info| info.commits > 0)
+  });
+  // Nothing more is dispatched, so the screen shows the first commit.
+  let shot = sway.screenshot("HEADLESS-1");
+  let at = ((15 * shot.width + 20) * 4) as usize;
+  assert_eq!(
+    &shot.rgba[at..at + 4],
+    &[255, 0, 0, 255],
+    "the first commit shows the picture"
+  );
+  let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

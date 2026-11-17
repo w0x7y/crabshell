@@ -36,6 +36,12 @@ impl Pacing {
     self.redraw = false;
   }
 
+  /// A frame was drawn but held back: until damage or
+  /// [`redraw`](Self::redraw) comes, nothing more is drawn.
+  pub(crate) fn held(&mut self) {
+    self.redraw = false;
+  }
+
   /// The frame callback arrived.
   pub(crate) fn frame_done(&mut self) {
     self.waiting = false;
