@@ -585,11 +585,13 @@ impl Scan<'_> {
     }
   }
 
-  /// Reads the list again on each change in `dir` that `counts`.
+  /// Reads the list again on each change in `dir` that `counts`. A
+  /// write that isn't done never counts: its close comes next.
   fn watch(&mut self, dir: &Path, counts: impl Fn(&Change) -> bool + 'static) {
     let service = self.service.clone();
     let on_change = move |change: &Change| {
-      if let Some(service) = service.upgrade().filter(|_| counts(change)) {
+      let counts = !change.mask.contains(EventMask::MODIFY) && counts(change);
+      if let Some(service) = service.upgrade().filter(|_| counts) {
         service.changed();
       }
     };

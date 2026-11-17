@@ -14,10 +14,12 @@ use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask};
 
 use crate::Shared;
 
-/// What every watch hears: a file written, a file or directory made,
-/// removed or renamed, and the directory itself removed or renamed. One
-/// mask serves all, since the kernel keeps one per directory.
+/// What every watch hears: a file written or closed after writing, a
+/// file or directory made, removed or renamed, and the directory itself
+/// removed or renamed. One mask serves all, since the kernel keeps one
+/// per directory, so a listener passes over what it doesn't want.
 const CHANGES: WatchMask = WatchMask::CLOSE_WRITE
+  .union(WatchMask::MODIFY)
   .union(WatchMask::CREATE)
   .union(WatchMask::DELETE)
   .union(WatchMask::MOVED_FROM)

@@ -10,7 +10,10 @@ use std::io::{ErrorKind, Read, Write};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
+use std::time::{Duration, Instant};
 
+use calloop::RegistrationToken;
+use calloop::timer::TimeoutAction;
 use crabshell_reactive::{ReadSignal, Signal, untrack};
 use crabshell_ui::Cx;
 use inotify::EventMask;
@@ -24,6 +27,12 @@ use crate::watch::{self, Watch};
 /// The largest file read; a larger one reads as missing, and that is
 /// logged.
 pub(crate) const MAX_FILE: u64 = 16 * 1024 * 1024;
+
+/// How long after a write to a file still open it is read, unless its
+/// writer closes it first: a log shows its lines within a frame or
+/// three, and one written in many pieces is read once per wait, not per
+/// piece.
+const WRITING: Duration = Duration::from_millis(50);
 
 /// What `cx.file_view` and `cx.json_file` need from the shell: the loop,
 /// to watch files.
@@ -39,6 +48,8 @@ struct Follow {
   shared: Rc<Shared>,
   path: PathBuf,
   watch: RefCell<Option<Watch>>,
+  /// The timer that reads a file still being written, while one waits.
+  writing: Cell<Option<RegistrationToken>>,
   /// Reads the file again.
   changed: Box<dyn Fn()>,
 }
@@ -51,6 +62,7 @@ impl Follow {
       shared: Rc::clone(shared),
       path,
       watch: RefCell::new(None),
+      writing: Cell::new(None),
       changed: Box::new(changed),
     });
     follow.rewatch();
@@ -88,25 +100,31 @@ impl Follow {
         return;
       };
       let moved = EventMask::DELETE_SELF | EventMask::MOVE_SELF;
+      if change.mask.contains(EventMask::MODIFY) {
+        if own && change.name.as_ref() == Some(&next) {
+          follow.written();
+        }
+        return;
+      }
       match &change.name {
         // The directory itself went, or changes were lost: start over.
         None => {
           if change.mask.intersects(moved) || change.mask.contains(EventMask::Q_OVERFLOW) {
             follow.rewatch();
           }
-          (follow.changed)();
+          follow.read();
         }
         // Not on a create, when a writer hasn't written yet: its close
         // comes next.
         Some(changed) if *changed == next && own => {
           if !change.mask.contains(EventMask::CREATE) {
-            (follow.changed)();
+            follow.read();
           }
         }
         // A directory on the way came or went.
         Some(changed) if *changed == next => {
           follow.rewatch();
-          (follow.changed)();
+          follow.read();
         }
         Some(_) => {}
       }
@@ -120,6 +138,48 @@ impl Follow {
         tracing::info!(%path, %error, "can't watch the file, so changes to it aren't seen");
       }
     }
+  }
+}
+
+impl Follow {
+  /// The file was written and is still open: reads it after [`WRITING`],
+  /// on a timer that exists only while it waits, unless a close or
+  /// another change reads it first.
+  fn written(self: &Rc<Self>) {
+    if self.writing.get().is_some() {
+      return;
+    }
+    let Some(event_loop) = self.shared.event_loop() else {
+      return;
+    };
+    let weak = Rc::downgrade(self);
+    let tick = Box::new(move || {
+      if let Some(follow) = weak.upgrade() {
+        follow.writing.set(None);
+        (follow.changed)();
+      }
+      TimeoutAction::Drop
+    });
+    let token = event_loop.insert_timer(Instant::now() + WRITING, tick);
+    self.writing.set(token);
+  }
+
+  /// Reads the file now, so a read waiting for a writer is dropped.
+  fn read(&self) {
+    self.stop_waiting();
+    (self.changed)();
+  }
+
+  fn stop_waiting(&self) {
+    if let (Some(token), Some(event_loop)) = (self.writing.take(), self.shared.event_loop()) {
+      event_loop.remove(token);
+    }
+  }
+}
+
+impl Drop for Follow {
+  fn drop(&mut self) {
+    self.stop_waiting();
   }
 }
 

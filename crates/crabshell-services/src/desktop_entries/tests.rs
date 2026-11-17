@@ -260,6 +260,30 @@ fn an_idle_list_wakes_nothing() {
 }
 
 #[test]
+fn a_file_written_in_place_beside_the_entries_reads_nothing() {
+  use std::io::Write;
+  let dirs = Dirs::new();
+  write(&dirs.user(), "a.desktop", &app("A", "a", ""));
+  write(&dirs.user(), "mimeapps.list", "");
+  let (mut shell, entries) = shell(dirs.sources());
+  run(&mut shell, 50);
+  assert_eq!(ids(&entries), ["a"]);
+  let service = shell.cx.service::<Service>().expect("provided");
+  let waiting = || {
+    service
+      .state
+      .borrow()
+      .as_ref()
+      .is_some_and(|state| state.waiting)
+  };
+  let path = dirs.user().join("mimeapps.list");
+  let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+  file.write_all(b"[Default Applications]\n").unwrap();
+  run(&mut shell, 20);
+  assert!(!waiting(), "a write that isn't done counts for nothing");
+}
+
+#[test]
 fn caps_leave_out_what_is_too_big_and_log_once() {
   let dirs = Dirs::new();
   let big = format!("{}# {}\n", app("Big", "big", ""), "x".repeat(70 * 1024));

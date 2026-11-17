@@ -377,6 +377,56 @@ fn a_watched_file_wakes_nothing_while_it_stays_the_same_and_its_watch_goes_with_
 }
 
 #[test]
+fn a_file_still_being_written_is_read_once_its_writes_pause() {
+  use std::io::Write;
+  let dir = Dir::new();
+  let path = dir.join("log");
+  std::fs::write(&path, "one").unwrap();
+  let mut shell = Harness::new(offline());
+  let text = shell.cx.file_view(&path).text();
+  let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+  let kept = std::rc::Rc::clone(&seen);
+  shell.cx.effect(move || kept.borrow_mut().push(text.get()));
+  Runtime::current().flush();
+  // A writer that keeps the file open, as a log's does.
+  let mut file = std::fs::OpenOptions::new()
+    .append(true)
+    .open(&path)
+    .unwrap();
+  file.write_all(b" two").unwrap();
+  run(&mut shell, 20);
+  file.write_all(b" three").unwrap();
+  run(&mut shell, 20);
+  assert_eq!(seen.borrow().len(), 1, "not read at each write");
+  assert_eq!(run(&mut shell, 60), 2, "one timer, then the run's deadline");
+  let shown = |text: &str| Some(String::from(text));
+  assert_eq!(*seen.borrow(), [shown("one"), shown("one two three")]);
+  assert_eq!(run(&mut shell, 300), 1, "no timer left");
+
+  // Closed before the wait ends: read at the close, once.
+  file.write_all(b" four").unwrap();
+  drop(file);
+  run(&mut shell, 20);
+  assert_eq!(seen.borrow().last(), Some(&shown("one two three four")));
+  assert_eq!(run(&mut shell, 300), 1, "the timer went at the close");
+  assert_eq!(seen.borrow().len(), 3);
+
+  // A view whose context goes while a read waits takes its timer along.
+  let other = dir.join("other");
+  std::fs::write(&other, "").unwrap();
+  let child = shell.cx.child();
+  let _other = child.file_view(&other).text();
+  let mut file = std::fs::OpenOptions::new()
+    .append(true)
+    .open(&other)
+    .unwrap();
+  file.write_all(b"x").unwrap();
+  run(&mut shell, 20);
+  child.owner().dispose();
+  assert_eq!(run(&mut shell, 300), 1, "the timer went with the view");
+}
+
+#[test]
 fn a_json_file_in_a_directory_not_made_yet_makes_it_and_then_follows_it() {
   let dir = Dir::new();
   let path = dir.join("state/crabshell/settings.json");
