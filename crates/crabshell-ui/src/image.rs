@@ -3,7 +3,7 @@
 //! image: a repaint of one GIF's box when its next frame is due.
 
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -23,6 +23,9 @@ const MAX_DROPPED: usize = 4096;
 thread_local! {
   /// The ids of images dropped since [`dropped_images`] last ran.
   static DROPPED: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+  /// Images whose transition's new source the renderer couldn't load,
+  /// with that source, until the transition's next tick.
+  static FAILED: RefCell<Vec<(u64, PathBuf)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// The ids of images removed, or in windows dropped, since the last call,
@@ -30,6 +33,34 @@ thread_local! {
 /// a transition was leaving.
 pub fn dropped_images() -> Vec<u64> {
   DROPPED.with(|dropped| std::mem::take(&mut *dropped.borrow_mut()))
+}
+
+/// Tells image `id`'s transition that the renderer can't load its new
+/// `source`, so at its next tick it ends at once, leaving the old picture
+/// shown and its box still. The reverse of [`dropped_images`]: a renderer
+/// calls it while drawing. A report for an image with no transition
+/// running, or one to another source, changes nothing.
+pub fn image_source_failed(id: u64, source: &Path) {
+  FAILED.with(|failed| {
+    let mut failed = failed.borrow_mut();
+    if failed.len() < MAX_DROPPED && !failed.iter().any(|(at, path)| *at == id && path == source) {
+      failed.push((id, source.to_owned()));
+    }
+  });
+}
+
+/// Whether the renderer said image `id` can't load `source`, using up
+/// every report about `id`.
+fn source_failed(id: u64, source: Option<&PathBuf>) -> bool {
+  FAILED.with(|failed| {
+    let mut found = false;
+    failed.borrow_mut().retain(|(at, path)| {
+      let mine = *at == id;
+      found |= mine && Some(path) == source;
+      !mine
+    });
+    found
+  })
 }
 
 impl Drop for ImageNode {
@@ -260,9 +291,10 @@ impl Tree {
         };
         let begun = *started.get_or_insert(now);
         let waiting = transition.waiting(begun, now);
-        let (t, ended) = transition.progress(begun, now);
+        let (t, mut ended) = transition.progress(begun, now);
         let mut mine = false;
         tree.update_image(id, |image| {
+          let failed = source_failed(image.id, image.source.as_ref());
           let Some(leaving) = image
             .leaving
             .as_mut()
@@ -271,6 +303,7 @@ impl Tree {
             return Change::None;
           };
           mine = true;
+          ended |= failed;
           if ended {
             image.leaving = None;
           } else if waiting {

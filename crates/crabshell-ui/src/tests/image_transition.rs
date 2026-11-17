@@ -290,3 +290,47 @@ fn a_dropped_image_or_window_is_reported_once_for_the_renderer() {
   drop(window);
   assert_eq!(crate::dropped_images(), vec![kept]);
 }
+
+#[test]
+fn a_source_the_renderer_cant_load_ends_its_transition_at_once() {
+  let mut h = Harness::new();
+  let source = h.cx.signal(path("a.png"));
+  let image = Image::new(move || source.get())
+    .width(40)
+    .height(30)
+    .transition(ImageTransition::crossfade(LINEAR));
+  let window = h.window(h.panel().child(Row::new().child(image)), 100.0, 64.0);
+  let rect = rect_at(&window, &[0, 0]);
+  let id = match node_at(window.view().root(), &[0, 0]).content() {
+    Content::Image(image) => image.id,
+    _ => panic!("no image"),
+  };
+  source.set(path("broken.png"));
+  h.frame(&window);
+  let start = Instant::now();
+  assert!(advance_animations(start));
+  window.take_damage();
+
+  // A report for another image or another source changes nothing.
+  crate::image_source_failed(id + 1, Path::new("broken.png"));
+  crate::image_source_failed(id, Path::new("a.png"));
+  assert!(advance_animations(start + Duration::from_millis(10)));
+  assert!(shown_at(&window, &[0, 0]).1.is_some(), "still running");
+
+  crate::image_source_failed(id, Path::new("broken.png"));
+  crate::image_source_failed(id, Path::new("broken.png"));
+  assert!(
+    !advance_animations(start + Duration::from_millis(20)),
+    "it ends"
+  );
+  assert_eq!(shown_at(&window, &[0, 0]), (path("broken.png"), None));
+  assert_eq!(window.take_damage(), vec![rect], "repainted once");
+  assert!(!animating());
+
+  // The report was used up: the next transition runs its time.
+  source.set(path("c.png"));
+  h.frame(&window);
+  assert!(advance_animations(start + Duration::from_millis(30)));
+  assert!(advance_animations(start + Duration::from_millis(80)));
+  assert!(!advance_animations(start + Duration::from_millis(500)));
+}

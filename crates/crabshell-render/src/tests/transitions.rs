@@ -865,3 +865,28 @@ fn a_picture_a_transition_leaves_that_a_mask_uses_is_decoded_once() {
   scene.full(&window.window, 1.0);
   assert_eq!(scene.renderer.rasterized_icons(), decoded, "a stays cached");
 }
+
+#[test]
+fn a_source_that_cant_load_ends_its_transition_and_its_box_stops_repainting() {
+  let (dir, a, _b) = pair("ends");
+  let missing = dir.join("missing.png");
+  let mut scene = Scene::new();
+  let next = scene.cx.signal(false);
+  let image = switching(next, &a, &missing, ImageTransition::crossfade(LINEAR))
+    .width(20)
+    .height(20);
+  let mut window = Drawing::new(&mut scene, image);
+  next.set(true);
+  scene.frame(&window.window);
+  let start = Instant::now();
+  tick(start, 0);
+  capture_logs(|| window.draw(&mut scene));
+  assert!(
+    !advance_animations(start + Duration::from_millis(10)),
+    "it ends at its next tick"
+  );
+  window.draw(&mut scene);
+  assert_eq!(window.buffer.pixel(20, 10), RED, "the old picture stays");
+  scene.frame(&window.window);
+  assert!(window.window.take_damage().is_empty(), "nothing repaints");
+}

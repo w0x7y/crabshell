@@ -418,7 +418,8 @@ impl Icons {
   /// animated GIF, the frame its playback is on, every frame decoded at
   /// once. While a transition runs, the picture it leaves too, at its
   /// first frame. With a transition other than none, a source that can't
-  /// be loaded draws the last one that could. The picture a transition
+  /// be loaded draws the last one that could, and a transition to it is
+  /// told to end, through [`crabshell_ui::image_source_failed`]. The picture a transition
   /// leaves is held only while a draw uses it, and dropped as soon as the
   /// transition ends. `None` if nothing can be loaded; a failure is
   /// logged once.
@@ -458,7 +459,10 @@ impl Icons {
     shown.used = self.frame;
     shown.window = self.window;
     if count == 0 {
-      // Keeps the old picture, with no transition.
+      // Keeps the old picture, and ends the transition coming in.
+      if image.leaving.is_some() {
+        crabshell_ui::image_source_failed(image.id, image.path);
+      }
       let good = shown.good.clone()?;
       let key = self.load(&good, image, size, scale, true);
       self.show(image.id, &key);
