@@ -404,3 +404,26 @@ fn a_horizontal_grid_made_taller_keeps_its_first_shown_cell_in_view() {
   assert_eq!(offset.get(), 105.0);
   assert_eq!(cell(&window, 50).map(|rect| rect.x), Some(-5.0));
 }
+
+#[test]
+fn a_horizontal_binding_that_panics_is_logged_with_the_grids_path_and_the_rest_runs() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0);
+  let turn = h.cx.signal(false);
+  let logs = super::capture_logs(|| {
+    let window = sideways(&mut h, 50, 100.0, offset, |grid| {
+      grid.horizontal(move || {
+        assert!(!turn.get(), "turn failure");
+        true
+      })
+    });
+    turn.set(true);
+    h.frame(&window);
+    // It keeps the last value and still scrolls sideways.
+    offset.set(40.0);
+    h.frame(&window);
+    assert_eq!(cell(&window, 10).map(|rect| rect.x), Some(0.0));
+  });
+  assert!(logs.contains("PanelWindow[DP-1]/GridView"), "{logs}");
+  assert!(logs.contains("turn failure"), "{logs}");
+}
