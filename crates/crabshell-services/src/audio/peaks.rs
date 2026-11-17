@@ -44,29 +44,18 @@ impl IntoProp<Option<PeakTarget>> for PeakTarget {
 
 impl Audio {
   /// A peak meter, as Quickshell's `PwNodePeakMonitor`: each channel's
-  /// loudest sample over the last 1/25 s, from 0 to 1, in the order of
-  /// the target's `channels`. The loudest of them, Quickshell's `peak`, is
-  /// `peaks.with(|p| p.iter().copied().fold(0.0, f32::max))`. Empty
-  /// before the first reading, while there is no target and once it goes;
-  /// all 0 while a sink plays nothing or a stream is paused.
+  /// loudest sample over the last 1/25 s, from 0 to 1, in the order of the
+  /// target's `channels`. Empty while there is no target; all 0 while
+  /// nothing plays.
   ///
-  /// `target` takes a [`PeakTarget`] or a closure returning an `Option`
-  /// of one: the meter moves when a signal the closure read changes, and
-  /// `None` stops it, as Quickshell's `enabled`. A panic in the closure is
-  /// logged and stops the meter until the next change.
+  /// `target` takes a [`PeakTarget`] or a closure returning an `Option` of
+  /// one; `None` stops the meter. A panic in the closure is logged and stops
+  /// the meter until the next change.
   ///
-  /// This is the one audio reading that wakes the shell while nothing
-  /// changes on screen: while the meter records, libpulse's thread and the
-  /// shell wake 25 times a second. The signal is set only when a peak
-  /// changes, so silence repaints nothing. A sink's or a stream's meter
-  /// records only while something plays, is corked while nothing does,
-  /// and never keeps a device awake; a source's records all the time,
-  /// as any recording of a microphone does. Nothing records until a
-  /// config asks for a meter, and it stops when the context that asked
-  /// goes.
-  ///
-  /// On PipeWire a sink's peaks come before its volume; a source's and a
-  /// stream's come after their own volume, as a recording of them would.
+  /// While it records, the shell wakes 25 times a second, but the signal is
+  /// set only when a peak changes. A sink's or stream's meter records only
+  /// while something plays; a source's records all the time. It stops when
+  /// the context that asked goes.
   #[track_caller]
   pub fn peaks(&self, target: impl IntoProp<Option<PeakTarget>>) -> ReadSignal<Vec<f32>> {
     let at = Location::caller();
