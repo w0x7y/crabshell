@@ -42,8 +42,9 @@ pub(crate) struct Files(pub(crate) Rc<Shared>);
 /// on the way: one not made yet is waited for from the nearest one that
 /// is there, and one removed, renamed or made again is followed anew.
 // shortcut: watches the directory the path names, not a link's target's,
-// so an edit through another name of a linked file isn't seen; follow
-// the link when a config needs that.
+// so a target replaced by a rename in its own directory isn't seen, while
+// writes to it are, through its inode; follow the link when a config
+// needs that.
 struct Follow {
   shared: Rc<Shared>,
   path: PathBuf,
@@ -164,6 +165,9 @@ impl Follow {
       }
     };
     // The new one first, so the same inode keeps its kernel watch.
+    // shortcut: a directory swapped in for the file between the check and
+    // the add would get this mask in place of its own, and dropping ours
+    // wouldn't give it back; watch by descriptor if that ever happens.
     let watched = watch::watch(&self.shared, &self.path, WatchMask::MODIFY, listener);
     if let Err(error) = &watched {
       let path = self.path.display();

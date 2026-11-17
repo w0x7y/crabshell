@@ -619,6 +619,8 @@ impl Scan<'_> {
         let (Some(dir), true) = (prefix.parent(), links <= 40) else {
           return;
         };
+        // shortcut: a directory swapped in for the link since `read_link`
+        // would get this mask in place of its own; nothing gives it back.
         self.watch(&prefix, LINK, |_| true);
         paths.push(dir.join(target).join(components.as_path()));
         break;
@@ -638,7 +640,7 @@ impl Scan<'_> {
     match watch::watch(self.shared, path, mask, on_change) {
       Ok(watch) => self.watches.push(watch),
       Err(error) => {
-        tracing::warn!(%error, path = %path.display(), "can't watch a directory of applications")
+        tracing::warn!(%error, path = %path.display(), "can't watch a directory of applications or a link on the way")
       }
     }
   }
