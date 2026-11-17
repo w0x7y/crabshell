@@ -511,3 +511,20 @@ fn a_panicking_art_url_is_logged_and_shows_nothing() {
   assert!(logs.contains("no player"), "{logs}");
   shell.run_until(Instant::now() + Duration::from_millis(50));
 }
+
+#[test]
+fn no_cap_and_no_timeout_still_fetch() {
+  if !curl_installed() {
+    return;
+  }
+  let server = Server::start();
+  let mut shell = Harness::new(offline());
+  let http = shell
+    .cx
+    .http_get(server.url("/body"))
+    .max_size(u64::MAX)
+    .timeout(Duration::MAX);
+  finish(&mut shell, http);
+  assert_eq!(http.error().get_untracked(), None);
+  assert_eq!(http.body().get_untracked().as_deref(), Some("hello"));
+}

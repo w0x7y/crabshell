@@ -152,10 +152,13 @@ pub(crate) fn fetch(
     "--proto-redir",
     "=http,https",
   ]);
-  // curl reads 0 as no limit.
-  let seconds = timeout.as_secs_f64().max(0.001);
+  // curl reads 0 as no limit, and refuses a number it can't hold.
+  let seconds = timeout.as_secs_f64().clamp(0.001, f64::from(u32::MAX));
   command.arg("--max-time").arg(format!("{seconds:.3}"));
-  command.arg("--max-filesize").arg(cap.to_string());
+  // Past that, the bytes counted here are the only cap.
+  if i64::try_from(cap).is_ok() {
+    command.arg("--max-filesize").arg(cap.to_string());
+  }
   // The status goes last on standard error, after curl's message.
   command.args(["--write-out", "%{stderr}%{response_code}", "--url", url]);
   let spawned = crate::process::spawn_piped(&mut command, false);
