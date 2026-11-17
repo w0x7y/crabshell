@@ -1075,8 +1075,12 @@ fn one_item(shell: &mut Harness, bus: &PrivateBus) -> (FakeItem, String) {
   let name = item_name();
   let app = FakeItem::start(shell, bus, &[name], ITEM_PATH, Some(sample()));
   app.register(shell, name);
-  wait_for(shell, "the item", || !items.get_untracked().is_empty());
-  (app, format!("{name}{ITEM_PATH}"))
+  let id = format!("{name}{ITEM_PATH}");
+  // This item, not any: another may be shown already.
+  wait_for(shell, "the item", || {
+    items.get_untracked().iter().any(|item| item.id == id)
+  });
+  (app, id)
 }
 
 #[test]
