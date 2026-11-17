@@ -123,7 +123,9 @@ Button::new(label).style(CHIP).hover_style(HOVER)</code></pre>
             </tr>
             <tr>
               <td><code>shadow(shadow)</code></td>
-              <td>A shadow behind the box, or behind what it draws.</td>
+              <td>
+                A shadow behind the box, inside it, or behind what it draws.
+              </td>
             </tr>
             <tr>
               <td><code>opacity(0.0..=1.0)</code></td>
@@ -248,11 +250,14 @@ const TAB: Style = Style::new().radii(8.0, 8.0, 0.0, 0.0);   // top-left, top-ri
 const DROP_ZONE: Style = Style::new().border(2.0, ACCENT).border_dash(6.0, 4.0).radius(8.0);
 const DOTTED: Style = DROP_ZONE.border_dash(0.0, 5.0);</code></pre>
         <p>
-          Each corner is clamped to half the box's shorter side, so
+          Corners are fitted as CSS fits them: when two on a side add up to more
+          than its length, all four shrink by the same factor, so
           <code>radius(999.0)</code> makes a pill.
           <code>border_dash(on, off)</code> dashes the border, and an
-          <code>on</code> of 0 draws round dots. The background, a clip, a
-          shadow and the pointer's hit area all follow the corners.
+          <code>on</code> of 0 draws round dots. As in a browser, each run from
+          one square corner to the next gets a whole number of dashes. The
+          background, a clip, a shadow and the pointer's hit area all follow the
+          corners.
         </p>
         <h2 id="gradients">Gradients</h2>
         <pre><code class="rs">Gradient::linear(90.0, from, to)   // along a line: 0 runs bottom to top, 90 left to right
@@ -260,7 +265,9 @@ Gradient::radial(from, to)         // from the middle out to the farthest corner
 Gradient::sweep(0.0, from, to)     // around the middle, clockwise from 12 o'clock</code></pre>
         <p>
           <code>.stop(at, color)</code> adds a color between the two ends, at a
-          place from 0 to 1. A gradient holds at most four colors.
+          place from 0 to 1. A gradient holds at most four colors. Gradients are
+          dithered by less than one color step, so a subtle one across a wide
+          bar shows no bands.
         </p>
         <pre><code class="rs">const BAR: Style = Style::new().gradient(
   Gradient::linear(90.0, Color::rgba(0x1e, 0x1e, 0x2e, 0xd8), Color::rgba(0x31, 0x32, 0x44, 0xd8)),
@@ -288,6 +295,14 @@ const RING: Gradient = Gradient::sweep(0.0, GREEN, PEACH).stop(0.5, YELLOW);</co
               <td>Grows the shadow's shape before it is blurred.</td>
             </tr>
             <tr>
+              <td><code>inset()</code></td>
+              <td>
+                Draws the shadow inside the box, as CSS's
+                <code>box-shadow: inset</code>, over the background and under
+                the border and content.
+              </td>
+            </tr>
+            <tr>
               <td><code>cut_out()</code></td>
               <td>
                 Leaves the shadow out under the box itself, for a translucent
@@ -304,11 +319,14 @@ const RING: Gradient = Gradient::sweep(0.0, GREEN, PEACH).stop(0.5, YELLOW);</co
           </tbody>
         </table>
         <pre><code class="rs">// A title readable over any album art.
-const TITLE: Style = Style::new().shadow(Shadow::new(0.0, 1.0, 4.0, Color::rgba(0, 0, 0, 0xc0)).follow_content());</code></pre>
+const TITLE: Style = Style::new().shadow(Shadow::new(0.0, 1.0, 4.0, Color::rgba(0, 0, 0, 0xc0)).follow_content());
+// A pressed key, sunk into the bar.
+const PRESSED: Style = KEY.shadow(Shadow::new(0.0, 2.0, 4.0, Color::rgba(0, 0, 0, 0x80)).inset());</code></pre>
         <p>
           A shadow draws outside its widget, so leave room for it. A window ends
-          at its edge. A content shadow costs a blur each time the content
-          repaints, and one that would reach more than 64 pixels isn't drawn.
+          at its edge. A style has one shadow; wrap the widget in a box for a
+          second. A content shadow costs a blur each time the content repaints,
+          and one that would reach more than 64 pixels isn't drawn.
         </p>
         <h2 id="masks">Opacity, clips and masks</h2>
         <p>
@@ -349,8 +367,10 @@ const TAB_HOVER: Style = Style::new().background(Color::rgba(0xff, 0xff, 0xff, 0
 Button::new(label).style(TAB).hover_style(TAB_HOVER)</code></pre>
         <p>
           The hover background now fades in over 150 ms and back out.
-          Backgrounds, gradients, shadows, text colors, borders, radii, opacity
-          and transforms fade. Sizes, padding and fonts change at once.
+          <code>transition_out(transition)</code> on the button's own style sets
+          the fade back on its own, so a hover can come in fast and leave
+          slowly. Backgrounds, gradients, shadows, text colors, borders, radii,
+          opacity and transforms fade. Sizes, padding and fonts change at once.
           <a href="motion.html#transitions">Timers and motion</a> lists the
           curves.
         </p>

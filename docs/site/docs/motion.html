@@ -62,14 +62,21 @@ let poll = cx.interval(Duration::from_secs(1), move || samples.update(|all| all.
               <td><code>running()</code></td>
               <td>Whether it will fire. A binding that reads it follows it.</td>
             </tr>
+            <tr>
+              <td><code>stopped()</code></td>
+              <td>
+                Gives the timer back stopped before it ever fires, so it waits
+                for its first <code>restart()</code>.
+              </td>
+            </tr>
           </tbody>
         </table>
         <p>
           <code>restart</code> makes a debounce. This volume display shows while
           its timer runs, and each change starts the count again.
         </p>
-        <pre><code class="rs">let hide = cx.after(Duration::from_millis(1500), || {});
-hide.stop();   // it waits for the first change
+        <pre><code class="rs">// Waits for the first change.
+let hide = cx.after(Duration::from_millis(1500), || {}).stopped();
 cx.effect(move || {
   volume.get();
   hide.restart();
@@ -112,6 +119,15 @@ const LATE: Transition = Transition::new(200).delay(100);</code></pre>
           </tbody>
         </table>
         <p>
+          <code>Style::transition_out(transition)</code> sets how a button's
+          style fades back to its own after a hover, pressed or focus style, so
+          a hover can come in fast and leave slowly. Without it the fade back
+          takes the style's <code>transition</code>.
+        </p>
+        <pre><code class="rs">const TAB: Style = Style::new()
+  .transition(Transition::new(80))
+  .transition_out(Transition::new(400));</code></pre>
+        <p>
           <code>Easing</code> has <code>Linear</code>, and <code>In</code>,
           <code>Out</code> and <code>InOut</code> forms of <code>Quad</code>,
           <code>Cubic</code>, <code>Sine</code>, <code>Quart</code>,
@@ -148,15 +164,32 @@ slide.running();   // a ReadSignal&lt;bool&gt;, true from a new target until it 
           an animation. Here a window takes no clicks once it has slid out.
         </p>
         <pre><code class="rs">.mask(move || (!shown.get() &amp;&amp; !slide.running().get()).then(Region::empty))</code></pre>
+        <p>
+          The transition of <code>cx.animate</code> and
+          <code>cx.animation</code> takes a value or a closure, read as each new
+          target starts, so one animation can take a different curve in and out.
+        </p>
+        <pre><code class="rs">let y = cx.animate(
+  move || if shown.get() { 0.0 } else { 60.0 },
+  move || if shown.get() { POP } else { SLIDE },
+);</code></pre>
         <h2 id="springs">Springs</h2>
         <p>
           <code>cx.spring(target, spring)</code> follows an <code>f32</code> on
           a spring, which keeps its speed when the target moves.
           <code>Spring::new(stiffness, damping)</code> takes how hard it pulls
           and how fast it settles, and <code>Spring::default()</code> is 700 and
-          0.9. A lower damping bounces more.
+          0.9, Material 3's standard spatial spring. A lower damping bounces
+          more.
         </p>
-        <pre><code class="rs">let x = cx.spring(move || target.get(), Spring::new(700.0, 0.9));</code></pre>
+        <pre><code class="rs">let x = cx.spring(move || target.get(), Spring::new(700.0, 0.9));
+x.value();     // the ReadSignal&lt;f32&gt;
+x.running();   // true until the value rests</code></pre>
+        <p>
+          It gives an <code>Animation&lt;f32&gt;</code>, as
+          <code>cx.animation</code> does. A 0.5 config that read the spring
+          straight reads <code>x.value()</code> now.
+        </p>
         <h2 id="cycles">Cycles</h2>
         <p>
           <code>cx.cycle(running, transition)</code> gives progress from 0 to 1
@@ -182,9 +215,13 @@ Row::new().style(move || DOT.translate(0.0, 4.0 * (time.get().as_secs_f32() * 6.
         <h2 id="exit">Children that leave and move</h2>
         <p>
           <code>.exit(duration)</code> after <code>children_keyed</code> keeps a
-          removed child mounted for that long, with
+          removed child mounted at most that long, with
           <code>cx.leaving()</code> true inside it, so the child can animate
-          itself out.
+          itself out. It goes as soon as nothing made inside it moves, so the
+          exit is a limit, not a length to match by hand. Motion stepped by
+          <code>cx.interval</code>, a GIF, or an animation made outside the
+          child doesn't hold it. Inside a nested list, <code>cx.leaving()</code>
+          is also true while an item around it leaves.
         </p>
         <pre><code class="rs">Column::new()
   .gap(8)

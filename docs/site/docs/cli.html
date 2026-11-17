@@ -125,11 +125,13 @@
           </li>
           <li>
             It starts the built program, which reports <code>ready</code> once
-            every panel has drawn a frame.
+            every panel has drawn a frame, or, with no panel to show, once it
+            has started.
           </li>
           <li>
-            It sleeps, using about 5 MiB. It wakes once, a minute in, to keep
-            that build as the last one that worked.
+            It sleeps, using about 5 MiB. It wakes once, a minute after
+            <code>ready</code>, to keep that build as the last one that worked.
+            A shell that never says <code>ready</code> is never kept.
           </li>
         </ol>
         <h3 id="reload">On a save</h3>
@@ -165,8 +167,10 @@
         <p>
           Three crashes within a minute of a new build make it give up on that
           build, start the last build that worked and send a notification. That
-          build is the newest one that ran a full minute without crashing. Your
-          next save builds again.
+          build is the newest one that ran a full minute after saying
+          <code>ready</code>. A config whose every panel panics at startup
+          counts as a crash, since the shell then exits with 1. Your next save
+          builds again.
         </p>
         <p>
           If the very first build fails, <code>run</code> starts the last build
@@ -231,8 +235,8 @@ exec ~/.cargo/bin/crabshell run 2&gt;&gt; ~/.cache/crabshell/log</code></pre>
             <tr>
               <td><code>~/.cache/crabshell/last-good</code></td>
               <td>
-                A copy of the newest build that ran for a minute without
-                crashing.
+                A copy of the newest build that ran for a minute after saying
+                <code>ready</code>.
               </td>
             </tr>
             <tr>
@@ -319,8 +323,10 @@ exec ~/.cargo/bin/crabshell run 2&gt;&gt; ~/.cache/crabshell/log</code></pre>
         </p>
         <p>
           <code>crabshell::run</code> exits with status 1 if the root closure
-          panics, and with 2 if there is no compositor, it lacks layer-shell, or
-          the connection is lost.
+          panics, or if every <code>per_output</code> closure panics for the
+          outputs there at startup and no other window was made, and with 2 if
+          there is no compositor, it lacks layer-shell, or the connection is
+          lost.
         </p>
         <h2 id="cargo-toml">The template's Cargo.toml</h2>
         <pre data-file="Cargo.toml"><code class="toml">[package]

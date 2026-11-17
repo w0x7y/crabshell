@@ -262,7 +262,11 @@ Stack::new().child(Icon::new("mail-unread")).child(Row::new().style(BADGE))</cod
           <code>geometry(signal)</code> on any widget writes its rectangle to a
           <code>Signal&lt;Rect&gt;</code> after each layout that moves it, in
           the window's logical pixels, with scroll offsets applied and
-          transforms left out.
+          transforms left out. <code>mapped_geometry(signal)</code> writes the
+          box where it is drawn, through every transform around it, and is
+          written each frame a transform animates, so pass it only where it is
+          read. Neither says where the window is on its output, since Wayland
+          doesn't tell a client.
         </p>
       </article>
     </main>

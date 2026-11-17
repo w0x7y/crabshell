@@ -114,7 +114,8 @@ Button::new(
           <code>Pointer</code>, <code>Default</code>, <code>Text</code>,
           <code>Grab</code>, <code>Grabbing</code>, <code>Crosshair</code>,
           <code>NotAllowed</code>, <code>EwResize</code> or
-          <code>NsResize</code>.
+          <code>NsResize</code>. While a button drags, the pointing hand and the
+          open hand show as the grabbing hand until the release.
         </p>
         <h2 id="scrolling">Scrolling</h2>
         <pre><code class="rs">Button::new(volume_label).on_scroll(|cx, steps| cx.audio().change_volume(steps * 5))</code></pre>
@@ -221,7 +222,10 @@ Button::new(thumbnail).drag_data(move || Some(window.get().id))</code></pre>
         </p>
         <ul>
           <li>
-            Tab and Shift+Tab move it, in the order the widgets were added.
+            Tab and Shift+Tab move it, in the order the widgets were added. Tab
+            also stops on each link of a <code>Text</code> with an
+            <code>on_link</code>, and Enter or Space opens it. In a
+            <code>TextArea</code> Tab types a tab, so Ctrl+Tab moves on.
           </li>
           <li>A click focuses a text field, but not a button.</li>
           <li>

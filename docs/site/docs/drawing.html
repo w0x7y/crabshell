@@ -89,7 +89,7 @@ let ring = Canvas::new(move |pen| {
         </table>
         <p>
           A paint is a <code>Color</code> or a <code>Gradient</code>, and a
-          gradient is laid over the whole canvas.
+          gradient is laid over the whole canvas and dithered, as a style's is.
         </p>
         <h3 id="paths">Paths</h3>
         <pre><code class="rs">let line = Path::new()
@@ -211,8 +211,10 @@ Icon::new(move || IconSource::Name(entry.get().icon))  // a closure returning an
 Icon::new(icon).size(20)</code></pre>
         <p>
           Names follow the freedesktop icon theme rules, and the default theme
-          is <code>hicolor</code>. Name a full theme once in the root closure.
-          An icon the theme lacks isn't drawn.
+          is the one GTK apps use, or <code>hicolor</code> when GTK names none.
+          <a href="system.html#icon-theme"><code>cx.set_icon_theme</code></a>
+          in the root closure picks another. An icon the theme lacks isn't
+          drawn.
         </p>
         <pre><code class="rs">crabshell::run(|cx| {
   cx.set_icon_theme("Adwaita");
@@ -273,6 +275,14 @@ Icon::new(icon).size(20)</code></pre>
           The limits are 32 MiB per file, 8192 pixels a side and 24 million
           pixels in all. A file that can't be loaded is logged once, and the
           image keeps what it had.
+        </p>
+        <p>
+          Files past 64 KiB, pictures drawn larger than 256 by 256 pixels and
+          blurred ones are decoded on a worker thread, so a wallpaper never
+          stalls the shell. Until the picture comes in, the image shows what it
+          showed before, stretched if its size changed. A window's first frame
+          waits up to 250 ms for its pictures, so a wallpaper or a lock screen
+          never shows its background color alone.
         </p>
         <h3 id="filters">Filters</h3>
         <pre><code class="rs">// The same album art, blurred and darkened, behind the card.
@@ -416,7 +426,8 @@ Image::new(move || wallpaper.get()).transition(ImageTransition::crossfade(FADE))
           <a href="system.html#ipc">IPC handler</a>, and
           <code>crabshell ipc wallpaper set ~/Pictures/lake.jpg</code>
           crossfades to a new one. A crossfade holds two decoded pictures for
-          its length.
+          its length, and waits at its start until the new one is decoded. A
+          source that can't be loaded ends the transition at once.
         </p>
         <h2 id="more">More ways to shape what is drawn</h2>
         <ul>

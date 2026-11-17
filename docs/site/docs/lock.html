@@ -127,7 +127,8 @@ cx.ipc("lock", "on", move |_| {
         <p>
           <code>cx.pam(service)</code> checks a password through PAM. The
           service is the name of a file in <code>/etc/pam.d</code>, such as
-          <code>login</code>.
+          <code>login</code>. <code>start(None)</code> checks the shell's own
+          user, found through NSS, so users from LDAP or systemd-homed work.
         </p>
         <pre><code class="rs">let pam = cx.pam("login");
 let state = pam.state();</code></pre>
@@ -152,7 +153,12 @@ let state = pam.state();</code></pre>
             </tr>
             <tr>
               <td><code>abort()</code></td>
-              <td>Stops the attempt.</td>
+              <td>
+                Stops the attempt. PAM has no cancel, so a module that is still
+                busy, such as a fingerprint reader, finishes first, and a
+                <code>start</code> meanwhile shows <code>Busy</code> until it
+                has.
+              </td>
             </tr>
             <tr>
               <td><code>state()</code></td>
@@ -496,6 +502,14 @@ Column::new()
         <p>
           Only one agent can serve a session. If another is running, polkit
           refuses the registration, the shell logs it, and no requests arrive.
+        </p>
+        <p>
+          Identities are looked up through NSS on a thread of their own, so
+          users from LDAP or systemd-homed are offered and a slow lookup never
+          holds up the shell. The agent talks to polkit's helper socket, or
+          without one runs <code>polkit-agent-helper-1</code> from
+          <code>/usr/lib/polkit-1</code>, <code>/usr/libexec</code> or NixOS's
+          <code>/run/wrappers/bin</code>.
         </p>
       </article>
     </main>

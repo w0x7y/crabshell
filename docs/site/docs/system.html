@@ -99,6 +99,13 @@ let ping = cx.process(move || vec!["ping".to_string(), "-c1".to_string(), host.g
               <td><code>restart()</code></td>
               <td>Stops it and starts the command again.</td>
             </tr>
+            <tr>
+              <td><code>stopped()</code></td>
+              <td>
+                Starts nothing until the first <code>restart()</code>, for a
+                program run on demand. Chain it on the call.
+              </td>
+            </tr>
           </tbody>
         </table>
         <p>
@@ -120,6 +127,12 @@ cx.process(|| ["my-keyboard-watcher"]).on_line(move |line| layout.set(line.to_ow
         <pre><code class="rs">let uptime = cx.process(|| ["uptime", "-p"]);
 let text = uptime.stdout();
 cx.interval(Duration::from_secs(60), move || uptime.restart());</code></pre>
+        <p>
+          A program a button runs is one process, made stopped and restarted on
+          each click.
+        </p>
+        <pre><code class="rs">let screenshot = cx.process(|| ["grim", "-g", "0,0 1920x1080", "/tmp/shot.png"]).stopped();
+Button::new(Text::new("shot")).on_click(move |_cx| screenshot.restart())</code></pre>
         <h2 id="exec-detached">Start a program and let it go</h2>
         <p>
           <code>cx.exec_detached(command)</code> starts a program that runs by
@@ -185,11 +198,18 @@ let shown = cx.memo(move || {
           <code>generic_name</code>, <code>comment</code>, <code>icon</code>,
           <code>exec</code>, <code>terminal</code>, <code>categories</code>,
           <code>keywords</code>, <code>no_display</code>,
-          <code>startup_wm_class</code>, <code>working_dir</code>,
-          <code>actions</code> and the file's <code>path</code>. Entries marked
-          <code>no_display</code> are in the list, so filter them out of a
-          launcher. The directories are watched, so a newly installed
-          application shows up without a restart.
+          <code>dbus_activatable</code>, <code>startup_wm_class</code>,
+          <code>working_dir</code>, <code>actions</code> and the file's
+          <code>path</code>. Entries marked <code>no_display</code> are in the
+          list, so filter them out of a launcher. The directories are watched,
+          links on the way included, so a newly installed application shows up
+          without a restart, and so does a NixOS profile swapped behind a link.
+        </p>
+        <p>
+          An entry with <code>DBusActivatable=true</code> is started over D-Bus,
+          as the spec asks, and its <code>Exec</code> runs only when the app
+          isn't on the bus. An <code>Exec</code> line that breaks the spec's
+          quoting is split as GLib splits it, and logged.
         </p>
         <h2 id="files">Files</h2>
         <p><code>cx.file_view(path)</code> follows a text file.</p>
@@ -208,7 +228,8 @@ Text::new(move || text.get().unwrap_or_default().trim().to_owned())</code></pre>
               <td><code>text()</code></td>
               <td>
                 A signal holding <code>Option&lt;String&gt;</code>: the file's
-                text, read again whenever it changes on disk.
+                text, read again whenever it changes on disk, and 50 ms after a
+                write to a file still open, such as a log.
                 <code>None</code> while it is missing or can't be read.
               </td>
             </tr>
@@ -416,8 +437,12 @@ Row::new().style(move || Style::new().background(accent.get()))</code></pre>
         <h2 id="icon-theme">The icon theme</h2>
         <p>
           <code>cx.set_icon_theme("Adwaita")</code> makes
-          <a href="drawing.html#icons">icon</a> names resolve in that theme
-          instead of <code>hicolor</code>. Call it in the root closure.
+          <a href="drawing.html#icons">icon</a> names resolve in that theme.
+          Call it in the root closure. Without it, the shell uses the theme GTK
+          apps use, <code>gtk-icon-theme-name</code> in
+          <code>~/.config/gtk-3.0/settings.ini</code> or
+          <code>gtk-4.0/settings.ini</code>, and <code>hicolor</code> when
+          neither names one.
         </p>
       </article>
     </main>

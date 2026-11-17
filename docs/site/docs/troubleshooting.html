@@ -130,9 +130,9 @@ Row::new()
           the name. Stop it, and the shell takes over.
         </p>
         <p>
-          <strong>An icon is missing.</strong> The default theme,
-          <code>hicolor</code>, has only what applications install. Call
-          <code>cx.set_icon_theme</code> with a full theme such as
+          <strong>An icon is missing.</strong> The shell uses GTK's icon theme,
+          and without one <code>hicolor</code>, which has only what applications
+          install. Call <code>cx.set_icon_theme</code> with a full theme such as
           <code>"Adwaita"</code>. For a file, pass a <code>Path</code>, since a
           <code>&amp;str</code> is always a name.
         </p>

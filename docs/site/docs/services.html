@@ -68,7 +68,8 @@ Text::new(move || clock.get().strftime("%a %d %b  %H:%M").to_string())</code></p
           <code>ReadSignal&lt;jiff::Zoned&gt;</code>, the time in the system's
           time zone. <code>Precision::Minute</code> changes on each whole minute
           and <code>Precision::Second</code> on each second, which wakes the
-          shell sixty times as often.
+          shell sixty times as often. <code>Precision::Day</code> changes at
+          each local midnight, for a date shown without a clock.
         </p>
         <p>
           The value is a <a href="https://docs.rs/jiff">jiff</a>
@@ -361,6 +362,11 @@ Column::new().gap(8).children_keyed(
           <code>transient</code> and <code>received</code>.
         </p>
         <p>
+          A reload keeps the history and the popups showing, with the time each
+          had left, so apps' ids go on. A notification sent in the moment the
+          shells swap is still lost.
+        </p>
+        <p>
           <code>actions</code> is a list of <code>(key, label)</code> pairs.
           Show the labels as buttons and pass the key to <code>invoke</code>.
           The key <code>default</code> is what a click on the notification
@@ -390,7 +396,8 @@ let playing = cx.memo(move || {
           <code>album</code>, <code>art_url</code> and <code>length</code>, and
           <code>can_play</code>, <code>can_pause</code>,
           <code>can_go_next</code>, <code>can_go_previous</code>,
-          <code>can_seek</code> and <code>can_control</code>.
+          <code>can_seek</code> and <code>can_control</code>. A track that sends
+          no title, as a file without tags in VLC, is named by its file's name.
           <code>volume</code>, <code>shuffle</code> and
           <code>loop_status</code> are <code>None</code> when the player doesn't
           offer them.
@@ -565,6 +572,19 @@ Text::new(move || {
           <code>disconnect(device)</code>, <code>pair(device)</code>,
           <code>set_trusted(device, bool)</code> and
           <code>forget(device)</code>.
+        </p>
+        <p>
+          <code>cx.bluetooth_agent()</code> makes the shell BlueZ's pairing
+          agent. Its <code>request()</code> is a
+          <code>ReadSignal&lt;Option&lt;PairingRequest&gt;&gt;</code> with the
+          device's <code>path</code> and a <code>kind</code> saying what BlueZ
+          wants: a PIN code or passkey to type, one to show, a passkey to
+          confirm, or an authorization. Answer with
+          <code>answer_pin_code(code)</code>, <code>answer_passkey(n)</code>,
+          <code>accept()</code> or <code>reject()</code>. A pairing the shell
+          starts with <code>pair</code> reaches it at once;
+          <code>make_default()</code> makes it the agent for pairings other
+          programs and devices start too.
         </p>
         <pre><code class="rs">Button::new(Text::new(move || device.get().name))
   .on_click(move |cx| {

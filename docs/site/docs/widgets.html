@@ -65,6 +65,13 @@
                 in the window's logical pixels.
               </td>
             </tr>
+            <tr>
+              <td><code>mapped_geometry(signal)</code></td>
+              <td>
+                Writes where the widget is drawn, after its own and its
+                ancestors' transforms, in the window's logical pixels.
+              </td>
+            </tr>
           </tbody>
         </table>
         <p>
@@ -255,7 +262,14 @@ Text::rich(move || parse_markup(&amp;body.get())).on_link(open)</code></pre>
               <td><code>on_link(handler)</code></td>
               <td>
                 Runs with <code>&amp;Cx</code> and the URL when a link span is
-                clicked.
+                clicked, or opened with Enter or Space after Tab reached it.
+              </td>
+            </tr>
+            <tr>
+              <td><code>link_hover_color(color)</code></td>
+              <td>
+                Draws a link under the pointer or the focus underlined, in this
+                color. With <code>None</code>, the default, it keeps its own.
               </td>
             </tr>
           </tbody>
@@ -381,7 +395,8 @@ Icon::new(move || if muted.get() { "audio-volume-muted" } else { "audio-volume-h
           </tbody>
         </table>
         <p>
-          Names are looked up in <code>hicolor</code> unless you call
+          Names are looked up in GTK's icon theme, or
+          <code>hicolor</code> without one, unless you call
           <code>cx.set_icon_theme</code>. See
           <a href="drawing.html#icons">icons</a>.
         </p>
@@ -483,8 +498,13 @@ TextInput::new(query)
           field pastes but never copies. Keys it doesn't use go on to the
           window's <code>on_key</code>. Its window needs a
           <a href="windows.html#keyboard-focus">keyboard focus</a>. Dragging
-          selects, a double click selects a word, and Shift with a click extends
-          the selection.
+          selects, a double click selects a word, a triple click the line, and
+          Shift with a click extends the selection. A drag after a double or
+          triple click goes by whole words or lines.
+        </p>
+        <p>
+          A field takes the alignment, line height and underline its style sets
+          or inherits, as a <code>Text</code> does.
         </p>
         <h2 id="textarea">TextArea</h2>
         <p>
@@ -502,7 +522,9 @@ ScrollView::new(TextArea::new(note).placeholder("jot something down"))
           line, and PageUp and PageDown move by the height of the scroll view
           around it. It wraps at words to its width, 200 pixels by default;
           <code>wrap(false)</code> lets lines run on. Inside a
-          <code>ScrollView</code>, the view scrolls to keep the caret shown.
+          <code>ScrollView</code>, the view scrolls to keep the caret shown. Tab
+          types a tab, four spaces wide, as Qt's <code>TextEdit</code>
+          does, and Shift+Tab and Ctrl+Tab move the focus.
         </p>
         <h2 id="slider">Slider</h2>
         <p>
@@ -596,6 +618,17 @@ Slider::new(volume)
               <td>Scrolls sideways instead.</td>
             </tr>
             <tr>
+              <td><code>both(bool)</code></td>
+              <td>
+                Scrolls down and across, each axis with its own fling and
+                spring. <code>offset</code> is then the vertical offset.
+              </td>
+            </tr>
+            <tr>
+              <td><code>offset_x(signal)</code></td>
+              <td>The horizontal offset of a view that scrolls both ways.</td>
+            </tr>
+            <tr>
               <td><code>kinetic(bool)</code></td>
               <td>Keeps moving after a fling. On by default.</td>
             </tr>
@@ -606,10 +639,19 @@ Slider::new(volume)
               </td>
             </tr>
             <tr>
+              <td><code>mouse_drag(bool)</code></td>
+              <td>
+                Lets the mouse drag the content as a finger does. On by default;
+                off, a mouse press that moves still clicks.
+              </td>
+            </tr>
+            <tr>
               <td><code>scroll_bar(style)</code></td>
               <td>
                 Draws a handle from the style's <code>background</code>,
-                <code>radius</code> and <code>width</code>. None by default.
+                <code>radius</code> and <code>width</code>, one an axis. None by
+                default. A press on the track pages toward it, and held, keeps
+                paging every 50 ms.
               </td>
             </tr>
           </tbody>
@@ -658,8 +700,8 @@ Slider::new(volume)
             <tr>
               <td><code>highlight(style)</code></td>
               <td>
-                A box behind the current row, which slides over the style's
-                <code>transition</code>.
+                A box behind the current row, which slides and resizes over the
+                style's <code>transition</code>.
               </td>
             </tr>
             <tr>
@@ -669,7 +711,8 @@ Slider::new(volume)
             <tr>
               <td>
                 <code>offset</code>, <code>kinetic</code>,
-                <code>overshoot</code>, <code>scroll_bar</code>
+                <code>overshoot</code>, <code>mouse_drag</code>,
+                <code>scroll_bar</code>
               </td>
               <td>As on a scroll view.</td>
             </tr>
@@ -688,7 +731,14 @@ Slider::new(volume)
           It takes <code>cell_size(width, height)</code> and, as a list view
           does, <code>height</code>, <code>current</code>,
           <code>highlight</code>, <code>offset</code>, <code>kinetic</code>,
-          <code>overshoot</code> and <code>scroll_bar</code>.
+          <code>overshoot</code>, <code>mouse_drag</code> and
+          <code>scroll_bar</code>.
+        </p>
+        <p>
+          <code>horizontal(true)</code> fills each column top to bottom, then
+          the next, and scrolls sideways; <code>height</code> then means the
+          grid's width. Cells stay one size; a wrapping <code>Row</code> holds
+          cells of different sizes.
         </p>
         <h2 id="canvas">Canvas</h2>
         <p>
