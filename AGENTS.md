@@ -49,7 +49,7 @@ Treat this file as good defaults. What I say in the conversation overrides it.
 
 1. **Running the installed `sway`.** SwayFX holds `cap_sys_nice` and switches itself to realtime. T3 Code passes its children a realtime CPU limit of 0, so the kernel SIGKILLs `/usr/bin/sway` about 0.1 s in. A plain copy has no file capabilities, so the headless test helper starts a copy, and the suites run straight from your shell.
 2. **Touching the live session.** The desktop Sway runs the maintainer's real session. Send it nothing: no `swaymsg` without your private `SWAYSOCK`. Your shell inherits the desktop's `SWAYSOCK`, so run the headless suites under `env -u SWAYSOCK`; the helper's `Sway::start()` refuses otherwise. Leave the pointer, outputs and other processes alone, and stop only the PIDs you started.
-3. **Blessing goldens to go green.** Setting `CRABSHELL_BLESS` to any value rewrites the golden PNGs in render's and crabshell's `tests/golden`. Bless only for an intended pixel change, and name each file and the reason in your report. A font mismatch is a setup problem: the goldens need Noto Sans as fontconfig's `sans-serif`, Noto Sans Italic and Bold Italic for its italic `sans-serif`, plus DejaVu Sans and DejaVu Sans Bold.
+3. **Blessing goldens to go green.** Setting `CRABSHELL_BLESS` to any value rewrites the golden PNGs in render's and crabshell's `tests/golden`. Bless only for an intended pixel change, and name each file and the reason in your report. A font mismatch is a setup problem: the goldens need Noto Sans as fontconfig's `sans-serif`, Noto Sans Italic and Bold Italic for its italic `sans-serif`, Noto Sans Symbols 2 for symbol fallback, plus DejaVu Sans and DejaVu Sans Bold.
 
 ## Hit every layer
 
