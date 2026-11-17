@@ -41,7 +41,7 @@ use crate::platform::Platform;
 use crate::windows::WindowId;
 
 /// The text types offered, best first.
-const TEXT_TYPES: [&str; 5] = [
+pub(crate) const TEXT_TYPES: [&str; 5] = [
   "text/plain;charset=utf-8",
   "text/plain",
   "UTF8_STRING",
@@ -91,7 +91,7 @@ impl Primary {
 }
 
 /// How a pipe's read ended.
-enum Received {
+pub(crate) enum Received {
   /// All of it, up to the cap.
   Done(Vec<u8>),
   /// More than the cap, so none of it.
@@ -102,8 +102,10 @@ enum Received {
 
 impl Platform {
   /// Gives `seat` a data device and a primary selection device, once the
-  /// compositor offers them.
+  /// compositor offers them, and the data-control device once a config
+  /// follows the clipboard.
   pub(crate) fn add_data_device(&mut self, qh: &QueueHandle<Platform>, seat: &WlSeat) {
+    self.add_control_device(seat);
     if let Some(manager) = &self.primary.manager
       && self.primary.device(seat).is_none()
     {
@@ -137,16 +139,25 @@ impl Platform {
   /// Offers `text` as the clipboard's, for the key press `serial` on
   /// `seat`.
   pub(crate) fn copy(&mut self, seat: &WlSeat, serial: u32, text: String) {
+    self.offer_selection(seat, serial, &TEXT_TYPES, text.into_bytes().into());
+  }
+
+  /// Offers `bytes` as the clipboard's, as each of `types`, for the input
+  /// `serial` on `seat`.
+  pub(crate) fn offer_selection(
+    &mut self,
+    seat: &WlSeat,
+    serial: u32,
+    types: &[&str],
+    bytes: Rc<[u8]>,
+  ) {
     let (Some(manager), Some(device)) = (&self.data_devices_manager, self.data_device(seat)) else {
       tracing::warn!("the compositor offers no clipboard; nothing was copied");
       return;
     };
-    let source = manager.create_copy_paste_source(&self.qh, TEXT_TYPES);
+    let source = manager.create_copy_paste_source(&self.qh, types.iter().copied());
     source.set_selection(device, serial);
-    self.offered = Some(Offered {
-      source,
-      bytes: text.into_bytes().into(),
-    });
+    self.offered = Some(Offered { source, bytes });
   }
 
   /// Offers `text` as the primary selection, for the input `serial` on
@@ -261,7 +272,7 @@ impl Platform {
 
   /// Reads `pipe` to its end, a chunk at a time while the loop says it is
   /// ready, then calls `done`. More than `cap` bytes stops the read.
-  fn read_pipe(
+  pub(crate) fn read_pipe(
     &mut self,
     pipe: OwnedFd,
     cap: usize,
@@ -303,7 +314,7 @@ impl Platform {
   }
 
   /// Writes `bytes` into `pipe` for another program, a chunk at a time.
-  fn send(&mut self, pipe: OwnedFd, bytes: Rc<[u8]>) {
+  pub(crate) fn send(&mut self, pipe: OwnedFd, bytes: Rc<[u8]>) {
     let mut written = 0;
     let source = Generic::new(File::from(pipe), Interest::WRITE, Mode::Level);
     let inserted = self.loop_handle().insert_source(source, move |_, file, _| {
@@ -390,7 +401,30 @@ impl DataDeviceHandler for Platform {
 
   fn motion(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, _: f64, _: f64) {}
 
-  fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+  /// Without data control, a config's clipboard follows this, which the
+  /// compositor tells only while a shell window has the keyboard.
+  fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, device: &WlDataDevice) {
+    if !self.clipboard_without_control() {
+      return;
+    }
+    let found = self
+      .data_devices
+      .iter()
+      .find(|(_, ours)| ours.inner() == device);
+    let offer = found.and_then(|(_, ours)| ours.data().selection_offer());
+    let types = offer
+      .as_ref()
+      .map(|offer| offer.with_mime_types(<[String]>::to_vec));
+    self.read_selection(&types.unwrap_or_default(), |kind| {
+      let offer = offer.ok_or_else(|| std::io::Error::other("no offer"))?;
+      let pipe = offer.receive(kind);
+      Ok(
+        pipe
+          .map_err(|error| std::io::Error::other(error.to_string()))?
+          .into(),
+      )
+    });
+  }
 
   fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
 }

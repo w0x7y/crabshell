@@ -31,6 +31,7 @@ use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 use crate::activation::Activation;
 use crate::blur::Effects;
 use crate::clipboard::{Offered, Primary};
+use crate::data_control::Control;
 use crate::events::{self, Event, Listener};
 use crate::focus_grab::FocusGrabs;
 use crate::foreign_toplevels::Foreign;
@@ -329,6 +330,8 @@ pub struct Platform {
   pub(crate) offered: Option<Offered>,
   /// The primary selection, which a middle click pastes.
   pub(crate) primary: Primary,
+  /// The clipboard as configs follow it, once a watch asks.
+  pub(crate) control: Control,
   /// Present when the compositor relays input methods.
   pub(crate) text_inputs_manager: Option<ZwpTextInputManagerV3>,
   /// The compositor's background effects, such as blur.
@@ -485,6 +488,7 @@ impl Platform {
       data_devices: Vec::new(),
       offered: None,
       primary,
+      control: Control::default(),
       text_inputs: Vec::new(),
       last_button: None,
       button_held: false,

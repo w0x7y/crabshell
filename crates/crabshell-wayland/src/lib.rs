@@ -49,6 +49,7 @@ mod activation;
 mod blur;
 mod buffers;
 mod clipboard;
+mod data_control;
 mod events;
 mod ext_toplevels;
 mod focus_grab;
@@ -79,6 +80,7 @@ mod windowsets;
 mod tests;
 
 pub use calloop::{LoopHandle, LoopSignal};
+pub use data_control::Selection;
 pub use events::Event;
 pub use foreign_toplevels::Toplevel;
 pub use global_shortcuts::ShortcutWatch;

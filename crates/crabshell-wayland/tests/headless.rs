@@ -26,7 +26,7 @@ use crabshell_ui::{
 use crabshell_ui::{CaptureFrame, CaptureSource, FloatingWindow, ScreencopyView, Transition};
 use crabshell_ui::{Layer, Lock, SessionLock};
 use crabshell_wayland::{
-  Event, EventLoop, LockId, OutputInfo, Platform, Toplevel, WindowId, Windowset,
+  Event, EventLoop, LockId, OutputInfo, Platform, Selection, Toplevel, WindowId, Windowset,
   WindowsetProjection,
 };
 use sway::{
@@ -1707,6 +1707,173 @@ fn a_drag_selection_becomes_the_primary_selection_and_a_middle_click_pastes_it()
   });
   let _ = copy.kill();
   let _ = copy.wait();
+}
+
+/// Follows the clipboard, keeping each selection heard.
+fn watch_clipboard(shell: &mut Shell) -> Rc<RefCell<Vec<Selection>>> {
+  let heard = Rc::new(RefCell::new(Vec::new()));
+  let keep = Rc::clone(&heard);
+  let platform = shell.event_loop.platform();
+  platform.watch_clipboard(move |selection| keep.borrow_mut().push(selection.clone()));
+  heard
+}
+
+/// `wl-copy` offering `bytes` as `kind` until killed.
+fn wl_copy(sway: &Sway, kind: &str, bytes: &[u8]) -> std::process::Child {
+  use std::io::Write;
+  let mut child = sway
+    .client("wl-copy")
+    .args(["--foreground", "--type", kind])
+    .stdin(std::process::Stdio::piped())
+    .spawn()
+    .expect("wl-copy runs");
+  let mut stdin = child.stdin.take().expect("its stdin");
+  stdin.write_all(bytes).expect("wl-copy reads its stdin");
+  child
+}
+
+fn stop(mut child: std::process::Child) {
+  let _ = child.kill();
+  let _ = child.wait();
+}
+
+#[test]
+#[ignore = "needs headless Sway and wl-clipboard"]
+fn the_clipboard_watch_follows_wl_copy_without_the_keyboard_and_sets_what_wl_paste_reads() {
+  let sway = Sway::start();
+  let mut shell = Shell::new(&sway);
+  shell.wait_for_bar("HEADLESS-1");
+  let heard = watch_clipboard(&mut shell);
+  let last = move || heard.borrow().last().cloned().unwrap_or_default();
+  let copy = wl_copy(&sway, "text/plain;charset=utf-8", b"first");
+  run_until(&mut shell.event_loop, "the copied text", |_| {
+    last().text.as_deref() == Some("first")
+  });
+  stop(copy);
+
+  shell
+    .event_loop
+    .platform()
+    .set_clipboard_text(String::from("from the shell"));
+  let mut paste = sway.client("wl-paste");
+  paste.arg("--no-newline");
+  assert_eq!(output_of(&mut shell, paste), "from the shell");
+  run_until(&mut shell.event_loop, "its own text heard", |_| {
+    last().text.as_deref() == Some("from the shell")
+  });
+}
+
+#[test]
+#[ignore = "needs headless Sway and wl-clipboard"]
+fn the_clipboard_watch_reads_images_when_asked_and_refuses_what_is_too_large() {
+  let (logs, _logging) = capture_logs();
+  let sway = Sway::start();
+  let mut shell = Shell::new(&sway);
+  shell.wait_for_bar("HEADLESS-1");
+  let heard = watch_clipboard(&mut shell);
+  let last = || heard.borrow().last().cloned().unwrap_or_default();
+  // Each copy takes the clipboard from the one before, so the clipboard
+  // is never empty between them.
+  let mut copies = Vec::new();
+
+  copies.push(wl_copy(&sway, "text/plain", b"before"));
+  run_until(&mut shell.event_loop, "the text", |_| {
+    last().text.as_deref() == Some("before")
+  });
+  let png = b"\x89PNG not really".to_vec();
+  copies.push(wl_copy(&sway, "image/png", &png));
+  run_until(
+    &mut shell.event_loop,
+    "an image while images are off",
+    |_| last() == Selection::default(),
+  );
+
+  shell.event_loop.platform().read_clipboard_images(true);
+  copies.push(wl_copy(&sway, "image/png", &png));
+  run_until(&mut shell.event_loop, "the image", |_| {
+    last().image == Some((String::from("image/png"), png.clone()))
+  });
+
+  copies.push(wl_copy(&sway, "image/png", &vec![7; 8 * 1024 * 1024 + 1]));
+  run_until(&mut shell.event_loop, "an image too large", |_| {
+    logs.text().contains("an image over 8 MiB")
+  });
+  copies.push(wl_copy(
+    &sway,
+    "text/plain",
+    &vec![b'a'; 4 * 1024 * 1024 + 1],
+  ));
+  run_until(&mut shell.event_loop, "text too large", |_| {
+    logs.text().contains("over 4 MiB of text")
+  });
+  let largest = heard.borrow().iter().fold(0, |most, selection| {
+    let text = selection.text.as_ref().map_or(0, String::len);
+    let image = selection.image.as_ref().map_or(0, |(_, bytes)| bytes.len());
+    most.max(text).max(image)
+  });
+  assert_eq!(largest, png.len(), "nothing too large was heard");
+  copies.into_iter().for_each(stop);
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn the_clipboard_watch_hears_a_password_managers_hint() {
+  let sway = Sway::start();
+  let mut shell = Shell::new(&sway);
+  shell.wait_for_bar("HEADLESS-1");
+  let heard = watch_clipboard(&mut shell);
+  // Another client offers a secret, as a password manager does.
+  let mut manager = sway.connect();
+  manager.platform().watch_clipboard(|_| {});
+  manager.platform().set_clipboard(
+    &["text/plain;charset=utf-8", "x-kde-passwordManagerHint"],
+    b"hunter2".to_vec(),
+  );
+  let expected = Selection {
+    text: Some(String::from("hunter2")),
+    image: None,
+    secret: true,
+  };
+  run_until(&mut shell.event_loop, "the secret", |_| {
+    manager
+      .dispatch(Some(Duration::ZERO))
+      .expect("the connection works");
+    heard.borrow().last() == Some(&expected)
+  });
+}
+
+#[test]
+#[ignore = "needs headless Sway and wl-clipboard"]
+fn the_clipboard_wakes_nothing_while_it_doesnt_change_or_while_nothing_follows_it() {
+  let sway = Sway::start();
+  let mut shell = Shell::new(&sway);
+  shell.wait_for_bar("HEADLESS-1");
+  settle(&mut shell.event_loop);
+  // Nothing follows the clipboard, so a copy wakes nothing.
+  let copy = wl_copy(&sway, "text/plain", b"unheard");
+  let asleep = |shell: &mut Shell| {
+    let started = Instant::now();
+    shell
+      .event_loop
+      .dispatch(Some(Duration::from_secs(2)))
+      .expect("the connection works");
+    started.elapsed()
+  };
+  let slept = asleep(&mut shell);
+  assert!(slept >= Duration::from_millis(1900), "woke after {slept:?}");
+  stop(copy);
+
+  let heard = watch_clipboard(&mut shell);
+  let copy = wl_copy(&sway, "text/plain", b"heard");
+  run_until(&mut shell.event_loop, "the copy", |_| {
+    heard.borrow().last().and_then(|last| last.text.as_deref()) == Some("heard")
+  });
+  settle(&mut shell.event_loop);
+  let count = heard.borrow().len();
+  let slept = asleep(&mut shell);
+  assert!(slept >= Duration::from_millis(1900), "woke after {slept:?}");
+  assert_eq!(heard.borrow().len(), count);
+  stop(copy);
 }
 
 /// The `fullscreen_mode` Sway gives the window titled `title`: it comes
