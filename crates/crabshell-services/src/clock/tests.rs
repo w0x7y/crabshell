@@ -11,7 +11,7 @@ use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp, Zoned};
 
 use super::{Clocks, EARLY, Precision, boundaries, current, system_zone};
-use crate::testing::{Harness, PrivateBus, offline};
+use crate::testing::{Harness, PrivateBus, capture_logs, offline};
 use crate::{Config, ServicesExt};
 
 fn at(time: &str) -> Timestamp {
@@ -296,6 +296,31 @@ fn one_system_bus_watcher_serves_every_clock() {
   assert_eq!(Rc::strong_count(&clocks), held + 2);
   shell.cx.clock(Precision::Second);
   assert_eq!(Rc::strong_count(&clocks), held + 3);
+}
+
+#[test]
+fn the_system_bus_is_reached_only_once_the_shell_has_started() {
+  let mut shell = Harness::new(Config {
+    localtime: None,
+    system_bus: Some(
+      "unix:path=/nonexistent/crabshell-test-bus"
+        .parse()
+        .expect("an address"),
+    ),
+    ..offline()
+  });
+  let logs = capture_logs(|| {
+    shell.cx.clock(Precision::Day);
+    shell.run_until(Instant::now() + Duration::from_millis(100));
+  });
+  assert!(
+    !logs.contains("no system bus"),
+    "not before the first frame: {logs}"
+  );
+  let logs = capture_logs(|| {
+    shell.run_until(Instant::now() + Duration::from_millis(300));
+  });
+  assert!(logs.contains("no system bus"), "{logs}");
 }
 
 #[test]

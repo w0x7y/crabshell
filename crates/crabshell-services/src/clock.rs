@@ -36,6 +36,15 @@ pub enum Precision {
   Day,
 }
 
+/// How long after the first clock the system bus is reached, so its
+/// connection stays off a first frame's path: a suspend before then
+/// leaves nothing to resync.
+const WATCH_AFTER: Duration = if cfg!(test) {
+  Duration::from_millis(200)
+} else {
+  Duration::from_secs(1)
+};
+
 /// How early a timer may fire and still count as on its boundary.
 const EARLY: SignedDuration = SignedDuration::from_millis(50);
 
@@ -82,8 +91,19 @@ impl Clocks {
     }
     let first = started.is_empty();
     drop(started);
-    if first && let Some(bus) = self.shared.config.system_bus.clone() {
-      self.shared.spawn(watch(Rc::clone(self), bus));
+    if first
+      && let Some(bus) = self.shared.config.system_bus.clone()
+      && let Some(event_loop) = self.shared.event_loop()
+    {
+      let clocks = Rc::clone(self);
+      let mut bus = Some(bus);
+      let later = Box::new(move || {
+        if let Some(bus) = bus.take() {
+          clocks.shared.spawn(watch(Rc::clone(&clocks), bus));
+        }
+        TimeoutAction::Drop
+      });
+      event_loop.insert_timer(Instant::now() + WATCH_AFTER, later);
     }
     let (shown, deadline) = current(precision, &self.zone());
     let signal = self.shared.root.signal(shown);

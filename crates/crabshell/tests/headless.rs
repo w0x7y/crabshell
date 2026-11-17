@@ -4032,13 +4032,15 @@ fn the_control_centers_day_sleeps_until_midnight_and_goes_with_its_context() {
   })
   .expect("the root closure runs");
   let (child, today, nodes) = held.borrow_mut().take().expect("the root closure ran");
-  // Until the first frame, and the clock's system bus watch, are done.
+  // Until the first frame, and the clock's system bus watch, which
+  // starts a second after the clock, are done.
+  let began = Instant::now();
   let settled = (0..50).any(|_| {
     let started = Instant::now();
     shell
       .dispatch(Some(Duration::from_millis(300)))
       .expect("the connection works");
-    started.elapsed() >= Duration::from_millis(290)
+    began.elapsed() > Duration::from_millis(1500) && started.elapsed() >= Duration::from_millis(290)
   });
   assert!(settled, "the loop never slept");
   assert_eq!(today.get_untracked(), crabshell::jiff::Zoned::now().date());
