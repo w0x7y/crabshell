@@ -73,8 +73,7 @@ impl PamResult {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PamError {
   /// It never began: libpam refused to start the service, a service or
-  /// user name held a NUL, or the shell's own user isn't in
-  /// `/etc/passwd`.
+  /// user name held a NUL, or NSS doesn't know the shell's own user.
   StartFailed,
   /// PAM couldn't try the answers, which isn't the user failing to
   /// authenticate: `pam_authenticate` returned an error but
@@ -390,26 +389,11 @@ impl Inner {
   }
 }
 
-/// The name of the user the shell runs as, found by its uid, since `$USER`
-/// is whatever the shell's parent set.
-// shortcut: reads /etc/passwd only, so a user known only through NSS, as
-// from LDAP or systemd-homed, needs `start(Some(name))`; upgrade when a
-// safe getpwuid is in the dependency tree.
+/// The name of the user the shell runs as, found by its uid through NSS,
+/// since `$USER` is whatever the shell's parent set.
 fn own_user() -> Result<String, String> {
   let uid = rustix::process::getuid().as_raw();
-  let passwd =
-    std::fs::read("/etc/passwd").map_err(|error| format!("can't read /etc/passwd: {error}"))?;
-  user_name(&String::from_utf8_lossy(&passwd), uid)
-    .ok_or_else(|| format!("no user with uid {uid} in /etc/passwd"))
-}
-
-/// The name on the line of `passwd` whose uid, its third field, is `uid`.
-fn user_name(passwd: &str, uid: u32) -> Option<String> {
-  passwd.lines().find_map(|line| {
-    let mut fields = line.split(':');
-    let name = fields.next()?;
-    (fields.nth(1)?.parse::<u32>() == Ok(uid)).then(|| name.to_owned())
-  })
+  crate::user_name(uid).ok_or_else(|| format!("no user with uid {uid}"))
 }
 
 /// The system's libpam.

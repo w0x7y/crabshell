@@ -31,6 +31,9 @@ fontconfig = "=0.11.0"
 jiff = { version = "=0.2.42", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 # Minimal features: what the audio service calls is in every libpulse since 5.0.
 libpulse-binding = { version = "=2.30.1", default-features = false }
+# Users by uid through NSS, for PAM and polkit: safe getpwuid_r. The
+# version calloop uses.
+nix = { version = "=0.31.3", default-features = false, features = ["user"] }
 # PAM's client side, for lock screens. It links the system's libpam and
 # needs no bindgen.
 nonstick = "=0.1.2"

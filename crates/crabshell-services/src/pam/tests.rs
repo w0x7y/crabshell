@@ -8,7 +8,7 @@ use nonstick::{ConversationAdapter, ErrorCode};
 
 use super::{
   Adapter, LibPam, MAX_MESSAGES, Pam, PamError, PamMessage, PamResult, PamState, Secret, Talk,
-  own_user, tried, user_name, wipe,
+  own_user, tried, wipe,
 };
 use crate::ServicesExt;
 use crate::testing::{FakePam, Harness, Step, capture_logs, offline};
@@ -213,16 +213,18 @@ fn a_start_without_a_user_authenticates_the_shells_own() {
   let pam = shell.cx.pam("lock");
   pam.start(None);
   wait(&mut shell, "result", || done(&pam));
-  let user = own_user().expect("the test's user is in /etc/passwd");
+  let user = own_user().expect("NSS knows the test's user");
   assert_eq!(log.lock().unwrap()[0], format!("lock for {user}"));
 }
 
 #[test]
-fn the_own_user_is_found_by_uid() {
-  let passwd = "root:x:0:0:root:/root:/bin/sh\n+::::::\nalice:x:1000:1000::/home/alice:/bin/sh\n";
-  assert_eq!(user_name(passwd, 1000).as_deref(), Some("alice"));
-  assert_eq!(user_name(passwd, 0).as_deref(), Some("root"));
-  assert_eq!(user_name(passwd, 7), None);
+fn users_are_found_by_uid_through_nss() {
+  // id(1) asks NSS too, so a user only LDAP or systemd-homed knows counts.
+  let id = std::process::Command::new("id").arg("-un").output();
+  let named = String::from_utf8(id.expect("id runs").stdout).expect("UTF-8");
+  assert_eq!(own_user().as_deref(), Ok(named.trim()));
+  assert_eq!(crate::user_name(0).as_deref(), Some("root"));
+  assert_eq!(crate::user_name(4_000_000_000), None);
 }
 
 #[test]

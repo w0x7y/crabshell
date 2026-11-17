@@ -10,7 +10,7 @@ use zbus::{Connection, Message, OwnedVariant, Variant};
 
 use super::{
   AGENT_INTERFACE, AGENT_PATH, AUTHORITY, AuthRequest, AuthState, CANCELLED, FAILED, PolkitAgent,
-  subject, user_name,
+  helper_path, subject,
 };
 use crate::testing::{
   FakeService, Harness, PrivateBus, TempDir, capture_logs, capture_logs_from, offline, reply,
@@ -70,7 +70,7 @@ impl Polkit {
     std::fs::set_permissions(&helper, mode).expect("its mode");
     let mut shell = Harness::new(config(Config {
       system_bus: Some(bus.address.parse().expect("dbus-daemon's address")),
-      polkit_helper: helper,
+      polkit_helpers: vec![helper],
       ..offline()
     }));
     let (authority, registrations) = authority(&mut shell, &bus, true);
@@ -470,8 +470,7 @@ fn picking_an_identity_asks_as_that_user() {
   let mut polkit = Polkit::start(PASSWORD);
   let (agent, name) = polkit.agent();
   let ours = rustix::process::getuid().as_raw();
-  let passwd = std::fs::read_to_string("/etc/passwd").expect("the users");
-  let user = user_name(&passwd, ours).expect("this user's name");
+  let user = crate::user_name(ours).expect("this user's name");
   let answer = polkit.begin(&name, "cookie-1", &[0, ours]);
   polkit.wait_state(&agent, asking);
   let identities = || {
@@ -540,7 +539,7 @@ fn the_bus_closing_clears_the_request_and_stops_the_helper() {
 #[test]
 fn a_missing_helper_answers_failed_and_a_crashing_one_shows_failed() {
   let mut polkit = Polkit::with(PASSWORD, |config| Config {
-    polkit_helper: PathBuf::from("/nonexistent/crabshell-polkit-helper"),
+    polkit_helpers: vec![PathBuf::from("/nonexistent/crabshell-polkit-helper")],
     ..config
   });
   let (agent, name) = polkit.agent();
@@ -569,15 +568,16 @@ fn a_missing_helper_answers_failed_and_a_crashing_one_shows_failed() {
 }
 
 #[test]
-fn user_names_come_from_passwd_and_this_user_from_user() {
-  let passwd =
-    "root:x:0:0:root:/root:/bin/bash\n# not a user\nbad\nalice:x:1000:1000::/home/alice:/bin/sh\n";
-  assert_eq!(user_name(passwd, 0).as_deref(), Some("root"));
-  assert_eq!(user_name(passwd, 1000).as_deref(), Some("alice"));
-  let ours = rustix::process::getuid().as_raw();
-  let user = std::env::var("USER").ok().filter(|user| !user.is_empty());
-  assert_eq!(user_name("", ours), user);
-  assert_eq!(user_name(passwd, ours.wrapping_add(4242)), None);
+fn the_first_helper_that_exists_runs() {
+  let dir = TempDir::new();
+  let [usr_lib, libexec, nixos] = ["usr-lib", "libexec", "nixos"].map(|name| dir.path().join(name));
+  let helpers = [usr_lib.clone(), libexec.clone(), nixos.clone()];
+  assert_eq!(helper_path(&helpers), usr_lib, "none: the first is named");
+  std::fs::write(&nixos, "").expect("a helper");
+  assert_eq!(helper_path(&helpers), nixos);
+  std::fs::write(&libexec, "").expect("a helper");
+  assert_eq!(helper_path(&helpers), libexec);
+  assert_eq!(helper_path(&[]), PathBuf::new());
 }
 
 #[test]
@@ -774,7 +774,7 @@ fn the_real_polkit_authorizes_through_its_helper_socket() {
   };
   let mut shell = Harness::new(Config {
     system_bus: Some(zbus::Address::system().expect("the system bus's address")),
-    polkit_helper: PathBuf::from(super::HELPER),
+    polkit_helpers: super::HELPERS.map(PathBuf::from).to_vec(),
     polkit_socket: PathBuf::from(super::HELPER_SOCKET),
     ..offline()
   });

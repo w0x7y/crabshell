@@ -128,6 +128,19 @@ pub fn stop_programs(cx: &Cx) {
   process::stop_all(cx);
 }
 
+/// The name of user `uid` through NSS, so a user from LDAP or
+/// systemd-homed counts as one in `/etc/passwd` does. `None` for no such
+/// user; a lookup that fails is logged.
+pub(crate) fn user_name(uid: u32) -> Option<String> {
+  match nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid)) {
+    Ok(user) => user.map(|user| user.name).filter(|name| !name.is_empty()),
+    Err(error) => {
+      tracing::warn!(%error, uid, "couldn't look the user up");
+      None
+    }
+  }
+}
+
 /// The services a context hands out.
 pub trait ServicesExt {
   /// The time, truncated to `precision`: it changes on each whole second
@@ -666,10 +679,10 @@ struct Config {
   /// What `cx.pam` authenticates with: libpam, and a script in tests, so
   /// no test counts toward locking a real account.
   pam: Arc<dyn pam::Backend>,
-  /// polkit's setuid helper, which checks answers with PAM. Tests give a
-  /// script of their own.
-  polkit_helper: PathBuf,
-  /// polkit's socket for its helper, tried before `polkit_helper`.
+  /// Where polkit's setuid helper, which checks answers with PAM, may be;
+  /// the first that exists runs. Tests give a script of their own.
+  polkit_helpers: Vec<PathBuf>,
+  /// polkit's socket for its helper, tried before `polkit_helpers`.
   polkit_socket: PathBuf,
 }
 
@@ -706,7 +719,7 @@ impl Config {
         .map(PathBuf::from),
       desktop_entries: desktop_entries::Sources::system(),
       pam: Arc::new(pam::LibPam),
-      polkit_helper: PathBuf::from(polkit::HELPER),
+      polkit_helpers: polkit::HELPERS.map(PathBuf::from).to_vec(),
       polkit_socket: PathBuf::from(polkit::HELPER_SOCKET),
     }
   }

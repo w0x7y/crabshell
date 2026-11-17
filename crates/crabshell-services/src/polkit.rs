@@ -16,6 +16,7 @@ mod tests;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::future::poll_fn;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Once;
@@ -38,13 +39,26 @@ const AGENT_INTERFACE: &str = "org.freedesktop.PolicyKit1.AuthenticationAgent";
 /// Where the agent answers polkit: any path of the shell's own.
 const AGENT_PATH: &str = "/org/crabshell/PolkitAgent";
 
-/// Where polkit's helper is on most distributions.
-/// shortcut: one path, so a distribution that keeps it in
-/// `/usr/libexec` gets no dialogs; look in both if one turns up.
-pub(crate) const HELPER: &str = "/usr/lib/polkit-1/polkit-agent-helper-1";
+/// Where distributions keep polkit's helper, in the order tried: most of
+/// them, Fedora's and Debian's, older ones', and NixOS's setuid wrapper.
+pub(crate) const HELPERS: [&str; 4] = [
+  "/usr/lib/polkit-1/polkit-agent-helper-1",
+  "/usr/libexec/polkit-agent-helper-1",
+  "/usr/libexec/polkit-1/polkit-agent-helper-1",
+  "/run/wrappers/bin/polkit-agent-helper-1",
+];
+
+/// The first of `helpers` that exists, else the first, so the error names
+/// where it was looked for.
+fn helper_path(helpers: &[PathBuf]) -> &Path {
+  let found = helpers.iter().find(|path| path.exists());
+  found
+    .or(helpers.first())
+    .map_or(Path::new(""), PathBuf::as_path)
+}
 
 /// Where polkit 127 and later listen for agents, and systemd starts the
-/// helper as root for each connection, so `HELPER` needn't be setuid.
+/// helper as root for each connection, so the helper needn't be setuid.
 pub(crate) const HELPER_SOCKET: &str = "/run/polkit/agent-helper.socket";
 
 const FAILED: &str = "org.freedesktop.PolicyKit1.Error.Failed";
@@ -443,7 +457,8 @@ impl Service {
       shown.errors.clear();
       let config = &self.shared.config;
       let user = &shown.identities[0];
-      let mut helper = Helper::start(&config.polkit_helper, &config.polkit_socket, user, run)?;
+      let program = helper_path(&config.polkit_helpers);
+      let mut helper = Helper::start(program, &config.polkit_socket, user, run)?;
       if let Err(error) = helper.send(current.begin.cookie.as_bytes()) {
         helper.stop(&self.shared, true);
         return Err(error);
@@ -463,7 +478,7 @@ impl Service {
     match started {
       Some(Ok(())) => self.publish(),
       Some(Err(error)) => {
-        let program = self.shared.config.polkit_helper.display();
+        let program = helper_path(&self.shared.config.polkit_helpers).display();
         tracing::warn!(%error, %program, "couldn't start polkit's helper");
         self.finish(Some((FAILED, "polkit's helper couldn't start")));
       }
@@ -683,13 +698,12 @@ fn begin_args(call: &Message, id: u64) -> Result<Begin, (&'static str, &'static 
   if cookie.is_empty() || cookie.len() > MAX_TEXT || cookie.contains('\n') {
     return Err((FAILED, "a bad cookie"));
   }
-  let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
   let mut users: Vec<(u32, String)> = identities
     .iter()
     .take(MAX_IDENTITIES)
     .filter(|(kind, _)| *kind == "unix-user")
     .filter_map(|(_, details)| u32::try_from(details.get("uid")?).ok())
-    .filter_map(|uid| Some((uid, user_name(&passwd, uid)?)))
+    .filter_map(|uid| Some((uid, crate::user_name(uid)?)))
     .collect();
   // The session's user is asked first: polkit may list root first, as for
   // an admin group.
@@ -720,24 +734,6 @@ fn begin_args(call: &Message, id: u64) -> Result<Begin, (&'static str, &'static 
 /// `text`'s first `max` bytes at most, cut at a char boundary.
 fn cut(text: &str, max: usize) -> String {
   text[..text.floor_char_boundary(max)].to_owned()
-}
-
-/// The name of user `uid`, from `passwd`, the text of `/etc/passwd`, or
-/// for this shell's own user from `USER`.
-/// shortcut: reads only `/etc/passwd`, so another user from LDAP or
-/// systemd-homed isn't offered; ask NSS through a crate if that matters.
-fn user_name(passwd: &str, uid: u32) -> Option<String> {
-  let listed = passwd.lines().find_map(|line| {
-    let mut fields = line.split(':');
-    let name = fields.next()?;
-    let uid_field = fields.nth(1)?;
-    (uid_field.parse() == Ok(uid)).then(|| name.to_owned())
-  });
-  let own = || {
-    let ours = rustix::process::getuid().as_raw() == uid;
-    ours.then(|| std::env::var("USER").ok()).flatten()
-  };
-  listed.or_else(own).filter(|name| !name.is_empty())
 }
 
 /// Who the agent answers for: this login session when `session` names

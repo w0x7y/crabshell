@@ -17,6 +17,8 @@ crabshell-ui.workspace = true
 inotify.workspace = true
 jiff.workspace = true
 libpulse-binding.workspace = true
+# Users by uid through NSS, so LDAP and systemd-homed users count.
+nix.workspace = true
 # Authenticating a lock screen's user, through the system's libpam.
 nonstick.workspace = true
 # pidfd_open and kill, to follow, stop and reap the programs a config runs,
