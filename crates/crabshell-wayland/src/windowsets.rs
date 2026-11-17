@@ -136,11 +136,19 @@ struct GroupState {
 }
 
 impl Windowsets {
-  /// Windowset `id`, if the compositor takes the request `can` checks
-  /// for it: the protocol has it ignore the others, so they aren't sent.
-  fn set(&self, id: u64, can: fn(&Windowset) -> bool) -> Option<&ExtWorkspaceHandleV1> {
+  /// Windowset `id`, if the compositor takes request `what`, which `can`
+  /// checks for it: the protocol has it ignore the others, so they aren't
+  /// sent, and that is logged.
+  fn set(&self, id: u64, what: &str, can: fn(&Windowset) -> bool) -> Option<&ExtWorkspaceHandleV1> {
     let set = self.sets.iter().find(|set| set.state.id == id)?;
-    can(&set.state).then_some(&set.proxy)
+    if !can(&set.state) {
+      tracing::debug!(
+        id,
+        "the compositor doesn't take {what} for this windowset, so it isn't sent"
+      );
+      return None;
+    }
+    Some(&set.proxy)
   }
 
   fn group(&self, id: u64) -> Option<&Group> {
@@ -197,7 +205,7 @@ impl Platform {
   /// iteration are committed together, so the compositor takes them at
   /// once.
   pub fn activate_windowset(&mut self, id: u64) {
-    if let Some(set) = self.windowsets.set(id, |set| set.can_activate) {
+    if let Some(set) = self.windowsets.set(id, "activate", |set| set.can_activate) {
       set.activate();
       self.windowsets.uncommitted = true;
     }
@@ -205,7 +213,10 @@ impl Platform {
 
   /// Asks the compositor to stop showing windowset `id`.
   pub fn deactivate_windowset(&mut self, id: u64) {
-    if let Some(set) = self.windowsets.set(id, |set| set.can_deactivate) {
+    if let Some(set) = self
+      .windowsets
+      .set(id, "deactivate", |set| set.can_deactivate)
+    {
       set.deactivate();
       self.windowsets.uncommitted = true;
     }
@@ -213,7 +224,7 @@ impl Platform {
 
   /// Asks the compositor to remove windowset `id`.
   pub fn remove_windowset(&mut self, id: u64) {
-    if let Some(set) = self.windowsets.set(id, |set| set.can_remove) {
+    if let Some(set) = self.windowsets.set(id, "remove", |set| set.can_remove) {
       set.remove();
       self.windowsets.uncommitted = true;
     }
@@ -222,7 +233,7 @@ impl Platform {
   /// Asks the compositor to move windowset `id` to projection
   /// `projection`.
   pub fn assign_windowset(&mut self, id: u64, projection: u64) {
-    let set = self.windowsets.set(id, |set| set.can_assign);
+    let set = self.windowsets.set(id, "assign", |set| set.can_assign);
     if let (Some(set), Some(group)) = (set, self.windowsets.group(projection)) {
       set.assign(&group.proxy);
       self.windowsets.uncommitted = true;
@@ -240,11 +251,17 @@ impl Platform {
         "a windowset's name must be at most {MAX_NAME_OUT} bytes and hold no NUL; none is created"
       );
     }
-    let group = self.windowsets.group(projection);
-    if let Some(group) = group.filter(|group| group.state.can_create) {
-      group.proxy.create_workspace(name);
-      self.windowsets.uncommitted = true;
+    let Some(group) = self.windowsets.group(projection) else {
+      return;
+    };
+    if !group.state.can_create {
+      return tracing::debug!(
+        projection,
+        "the compositor doesn't take create_windowset for this projection, so it isn't sent"
+      );
     }
+    group.proxy.create_workspace(name);
+    self.windowsets.uncommitted = true;
   }
 
   /// Sends the requests made since the last call with one `commit`.

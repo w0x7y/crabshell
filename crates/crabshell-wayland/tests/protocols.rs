@@ -5,7 +5,9 @@
 mod fake;
 
 use std::cell::RefCell;
+use std::io;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crabshell_reactive::Runtime;
@@ -227,14 +229,51 @@ fn deactivate_and_remove_go_out_with_a_commit_only_where_the_compositor_takes_th
   });
   assert_eq!(fake.log(), ["deactivate one", "remove one", "commit"]);
 
-  // Neither request goes out for a windowset that refuses both.
+  // Neither request goes out for a windowset that refuses both, and
+  // each is logged.
   fake.clear();
+  let logs = Logs::default();
+  let writer = logs.clone();
+  let subscriber = tracing_subscriber::fmt()
+    .with_max_level(tracing::Level::DEBUG)
+    .with_writer(move || writer.clone())
+    .finish();
+  let guard = tracing::subscriber::set_default(subscriber);
   let platform = event_loop.platform();
   platform.deactivate_windowset(two);
   platform.remove_windowset(two);
+  drop(guard);
+  let logged = logs.text();
+  for what in ["deactivate", "remove"] {
+    let line =
+      format!("the compositor doesn't take {what} for this windowset, so it isn't sent id={two}");
+    assert!(logged.contains(&line), "{logged}");
+  }
+  let platform = event_loop.platform();
   platform.activate_windowset(two);
   wait(&mut event_loop, "the activation", |_| {
     fake.log().last().map(String::as_str) == Some("commit")
   });
   assert_eq!(fake.log(), ["activate two", "commit"]);
+}
+
+/// What a test logs, as text.
+#[derive(Clone, Default)]
+struct Logs(Arc<Mutex<Vec<u8>>>);
+
+impl Logs {
+  fn text(&self) -> String {
+    String::from_utf8_lossy(&self.0.lock().expect("the logs")).into_owned()
+  }
+}
+
+impl io::Write for Logs {
+  fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+    self.0.lock().expect("the logs").extend_from_slice(bytes);
+    Ok(bytes.len())
+  }
+
+  fn flush(&mut self) -> io::Result<()> {
+    Ok(())
+  }
 }
