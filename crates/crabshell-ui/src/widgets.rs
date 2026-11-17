@@ -1303,6 +1303,8 @@ impl Button {
   }
 
   /// Sets the cursor shown over the button, instead of the pointing hand.
+  /// While the button drags, the pointing hand and the open hand show as
+  /// the grabbing hand until the release; any other shape stays.
   pub fn cursor(mut self, cursor: impl IntoProp<CursorShape>) -> Button {
     self.button.cursor = Some(cursor.into_prop());
     self

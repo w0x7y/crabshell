@@ -7,7 +7,7 @@ use std::rc::Rc;
 use crabshell_reactive::Signal;
 
 use super::{Harness, capture_logs};
-use crate::{Align, Button, Drag, DragPhase, Icon, Point, PointerButton, Row, Window};
+use crate::{Align, Button, CursorShape, Drag, DragPhase, Icon, Point, PointerButton, Row, Window};
 
 fn square() -> Icon {
   Icon::new("x").size(20)
@@ -460,4 +460,46 @@ fn a_button_whose_drag_data_holds_none_clicks_and_drags_once_it_holds_a_value() 
   window.pointer_button(PointerButton::Left, false);
   assert_eq!(*drops.borrow(), [7]);
   assert_eq!(clicks.get_untracked(), 1, "and the drag doesn't click");
+}
+
+#[test]
+fn a_drag_shows_the_grabbing_hand_until_the_release() {
+  let mut h = Harness::new();
+  let drops = Drops::default();
+  let hovered = h.cx.signal(false);
+  let (window, _) = window(&mut h, target(&drops, hovered));
+  assert_eq!(
+    window.pointer_motion(Point::new(5.0, 5.0)),
+    CursorShape::Pointer
+  );
+  window.pointer_button(PointerButton::Left, true);
+  assert_eq!(
+    window.pointer_motion(Point::new(25.0, 5.0)),
+    CursorShape::Grabbing
+  );
+  // Over a target that takes it: a `Drag` carries no copy or move, so it
+  // stays the grabbing hand.
+  assert_eq!(
+    window.pointer_motion(Point::new(45.0, 5.0)),
+    CursorShape::Grabbing
+  );
+  assert!(hovered.get_untracked());
+  window.pointer_button(PointerButton::Left, false);
+  assert_eq!(window.cursor(), CursorShape::Pointer, "the target's own");
+}
+
+#[test]
+fn a_button_with_a_cursor_of_its_own_keeps_it_while_it_drags() {
+  let mut h = Harness::new();
+  let handle = Button::new(square())
+    .cursor(CursorShape::ColResize)
+    .on_drag(|_, _| {});
+  let row = Row::new().align(Align::Start).child(handle);
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+  window.pointer_motion(Point::new(5.0, 5.0));
+  window.pointer_button(PointerButton::Left, true);
+  assert_eq!(
+    window.pointer_motion(Point::new(60.0, 5.0)),
+    CursorShape::ColResize
+  );
 }

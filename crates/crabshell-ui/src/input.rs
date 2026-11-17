@@ -723,6 +723,22 @@ impl Tree {
   }
 
   fn cursor(&self) -> CursorShape {
+    // A button dragging shows the grabbing hand, unless it set a shape of
+    // its own, such as a resize arrow.
+    let dragged = self
+      .pointer
+      .pressed
+      .filter(|press| press.dragging)
+      .and_then(|press| match self.node(press.id).map(|node| &node.kind) {
+        Some(NodeKind::Button(button)) => Some(button.cursor),
+        _ => None,
+      });
+    if let Some(shape) = dragged {
+      return match shape {
+        CursorShape::Pointer | CursorShape::Grab => CursorShape::Grabbing,
+        shape => shape,
+      };
+    }
     match self
       .pointer
       .hovered

@@ -260,10 +260,11 @@ fn a_held_button_drags_past_the_threshold_and_ends_on_release() {
       dropped: false,
     }
   );
-  // Out of the button and the window, it still moves and stays hovered.
+  // Out of the button and the window, it still moves and stays hovered,
+  // and its open hand closes.
   assert_eq!(
     window.pointer_motion(Point::new(300.0, -40.0)),
-    CursorShape::Grab
+    CursorShape::Grabbing
   );
   assert_eq!(background(&window, &[0, 1]), HOVER.background);
   assert_eq!(
