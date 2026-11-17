@@ -63,6 +63,7 @@
 
 mod colors;
 mod control;
+mod icon_theme;
 mod ipc;
 mod per_output;
 mod persist;

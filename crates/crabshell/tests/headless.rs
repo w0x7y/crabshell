@@ -400,11 +400,21 @@ impl ExampleBar {
   /// is the private Sway's, never this process's. Its `PULSE_SERVER` is
   /// a socket that doesn't exist, unless `extra` names a private server:
   /// unset, libpulse could find the desktop's through HOME's client.conf.
-  /// Its `PATH` is this process's, unless `extra` gives one.
+  /// Its `PATH` is this process's, unless `extra` gives one. Its
+  /// `XDG_CONFIG_HOME` holds only a link to the user's fontconfig, unless
+  /// `extra` gives one, so the goldens' fonts stay and the user's GTK
+  /// icon theme stays out.
   fn spawn(sway: &Sway, mut command: Command, extra: &[(&str, &str)]) -> ExampleBar {
     command.env_clear();
     let nowhere = sway.runtime_dir().join("no-pulse-server");
     command.env("PULSE_SERVER", format!("unix:{}", nowhere.display()));
+    let config = sway.runtime_dir().join("xdg-config");
+    if let Some(fontconfig) = user_config().map(|dir| dir.join("fontconfig"))
+      && std::fs::create_dir_all(&config).is_ok()
+    {
+      let _ = std::os::unix::fs::symlink(fontconfig, config.join("fontconfig"));
+    }
+    command.env("XDG_CONFIG_HOME", &config);
     command.env("PATH", std::env::var_os("PATH").unwrap_or_default());
     for (name, value) in extra {
       command.env(name, value);
@@ -1513,6 +1523,20 @@ fn run_as_child() {
       dashboard::shell(cx, feeds);
       cx.set_icon_theme(FIXTURE_ICONS);
     }),
+    // A red icon from the fixtures' theme, on a bar that names no theme.
+    Ok("themed icon") => crabshell::run(|cx| {
+      cx.per_output(|_, output| {
+        PanelWindow::new(output)
+          .anchors(Edge::Top | Edge::Left | Edge::Right)
+          .height(32)
+          .style(Style::new().background(Color::rgb(0, 0, 0)))
+          .child(
+            Icon::new("computer-symbolic")
+              .size(32)
+              .tint(Color::rgb(255, 0, 0)),
+          )
+      });
+    }),
     Ok("ipc") => crabshell::run(|cx| {
       let count = cx.signal(0_i64);
       cx.effect(move || eprintln!("the count is {}", count.get()));
@@ -2613,6 +2637,13 @@ impl Desktop {
   fn notify_with(&self, summary: &str, body: &str, timeout_ms: i32) -> String {
     notify_on(&self.session.address, summary, body, timeout_ms)
   }
+}
+
+/// The user's XDG config directory, where fontconfig reads its settings.
+fn user_config() -> Option<PathBuf> {
+  let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
+  let home = || std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config"));
+  xdg.filter(|dir| dir.is_absolute()).or_else(home)
 }
 
 /// Sends a notification on the bus at `address`, as an app would, and
@@ -4592,6 +4623,61 @@ fn the_dashboard_matches_its_goldens() {
     let shot = steady_shot(&sway, "HEADLESS-1");
     check_golden(&format!("dashboard@{scale}x"), &shot, shot.height);
   }
+}
+
+/// A config that names no icon theme gets GTK's, and one that names its
+/// own keeps it over GTK's.
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_config_without_an_icon_theme_gets_gtks_and_its_own_wins_over_it() {
+  const TEST: &str = "a_config_without_an_icon_theme_gets_gtks_and_its_own_wins_over_it";
+  run_as_child();
+  let files = DashboardFiles::new();
+  // With the user's fontconfig, as the goldens' fonts need.
+  let config = files.dir.join("config");
+  std::fs::create_dir_all(&config).expect("a config directory");
+  if let Some(user) = user_config() {
+    let _ = std::os::unix::fs::symlink(user.join("fontconfig"), config.join("fontconfig"));
+  }
+  let gtk_names = |theme: &str| {
+    std::fs::create_dir_all(config.join("gtk-3.0")).expect("GTK's directory");
+    let settings = format!("[Settings]\ngtk-icon-theme-name={theme}\n");
+    std::fs::write(config.join("gtk-3.0/settings.ini"), settings).expect("GTK's settings");
+  };
+  let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+  let red_pixels = |shot: &Image| {
+    let rows = shot.rgba[..shot.width as usize * 32 * 4].chunks(4);
+    rows.filter(|pixel| pixel[0] > 200 && pixel[1] < 50).count()
+  };
+  for (theme, drawn) in [("hicolor", false), (FIXTURE_ICONS, true)] {
+    gtk_names(theme);
+    let env = [
+      (CHILD, "themed icon"),
+      ("XDG_DATA_DIRS", fixtures.to_str().expect("UTF-8")),
+      ("XDG_CONFIG_HOME", config.to_str().expect("UTF-8")),
+    ];
+    let sway = Sway::start();
+    let shell = ExampleBar::spawn(&sway, this_as_shell(TEST), &env);
+    shell.wait_for(FIRST_FRAME);
+    let shot = steady_shot(&sway, "HEADLESS-1");
+    assert_eq!(red_pixels(&shot) > 100, drawn, "GTK names {theme}");
+  }
+
+  // The dashboard names its own, which GTK's doesn't replace.
+  gtk_names("hicolor");
+  let mut env = files.env();
+  env.push(("XDG_CONFIG_HOME", config.display().to_string()));
+  let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", DASHBOARD_MODE, "scale", "1"]);
+  let shell = ExampleBar::spawn(&sway, this_as_shell(TEST), &env);
+  shell.wait_for(FIRST_FRAME);
+  wait_for_shot(&sway, "HEADLESS-1", "the album art", |shot| {
+    let [r, g, b] = rgb(shot, 70, 200);
+    r.abs_diff(0xf3) <= 6 && g.abs_diff(0x8b) <= 6 && b.abs_diff(0xa8) <= 6
+  });
+  let shot = steady_shot(&sway, "HEADLESS-1");
+  check_golden("dashboard@1x", &shot, shot.height);
 }
 
 #[test]

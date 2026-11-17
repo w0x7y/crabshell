@@ -3,6 +3,7 @@
 
 mod colors;
 mod control;
+mod icon_theme;
 mod ipc;
 mod logging;
 mod per_output;

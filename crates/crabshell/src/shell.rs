@@ -23,6 +23,7 @@ use tracing::level_filters::LevelFilter;
 
 use crate::colors::{self, Handle};
 use crate::control;
+use crate::icon_theme;
 use crate::ipc::Ipc;
 use crate::per_output::{self, Host, IntoPanels, PerOutput};
 use crate::persist::{self, Persisted};
@@ -64,13 +65,21 @@ pub const EXIT_NO_COMPOSITOR: i32 = 2;
 pub fn run(root: impl FnOnce(&Cx)) -> ! {
   let started = Instant::now();
   init_logging();
-  let event_loop = match EventLoop::connect() {
+  let mut event_loop = match EventLoop::connect() {
     Ok(event_loop) => event_loop,
     Err(error) => {
       tracing::error!(%error, "the shell couldn't start");
       std::process::exit(EXIT_NO_COMPOSITOR);
     }
   };
+  // Before root, whose own `set_icon_theme` lands later and wins.
+  let config = icon_theme::config_home(
+    std::env::var_os("XDG_CONFIG_HOME"),
+    std::env::var_os("HOME"),
+  );
+  if let Some(theme) = config.as_deref().and_then(icon_theme::gtk_icon_theme) {
+    event_loop.platform().set_icon_theme(theme);
+  }
   let file = persist::state_file();
   let saved = file.as_deref().map(persist::load).unwrap_or_default();
   let ipc = crate::ipc::socket_path(
@@ -891,7 +900,9 @@ pub trait ShellExt {
   /// again. A greeter calls it once its session starts.
   fn exit(&self, code: i32) -> !;
 
-  /// Looks icon names up in `theme`, such as `"Adwaita"`, instead of
+  /// Looks icon names up in `theme`, such as `"Adwaita"`. Without it, a
+  /// shell from [`run`] uses GTK's `gtk-icon-theme-name` from
+  /// `$XDG_CONFIG_HOME/gtk-3.0/settings.ini`, else `gtk-4.0`'s, else
   /// `hicolor`. Every window is repainted.
   fn set_icon_theme(&self, theme: impl Into<String>);
 
