@@ -32,11 +32,9 @@ Nothing from Quickshell carries over. Users write their shell as a Rust crate th
 
 ### Worse than Quickshell
 
-- **Reload is slower.** Quickshell reloads QML in well under a second. Here every edit costs a 2-10 s rebuild plus a restart. Startup gets faster, but this design misses your "faster reload" goal.
+- **Reload is slower.** Quickshell reloads QML in well under a second. Here every edit costs a rebuild plus a restart, measured at 0.7 to 0.9 s for a one-line edit (see Performance targets).
 - **Configs need Rust.** That is a higher bar than QML for users, and for you while you learn.
 - **No ecosystem.** There are no existing configs to copy from.
-
-**Timeline.** My guess is 4 to 6 months of focused work to reach v0.1, longer if part time. The Phases section breaks that down. The phases after v0.1, which bring the rest of Quickshell, aren't estimated yet. Treat it all as a guess, not a plan.
 
 ## At a glance
 
@@ -489,15 +487,15 @@ Semantics:
 - User closures run with no runtime borrow held. A panic in one disables that node and leaves the runtime usable.
 - The core has no async. Services deliver updates on the main thread and call `set()` like any other code.
 
-Required tests:
+Required tests, all passing in `crates/crabshell-reactive/src/tests.rs`:
 
-- [ ] Diamond. Signal `a` feeds memos `b` and `c`, and one effect reads both. One `set` on `a` runs the effect exactly once.
-- [ ] A memo that recomputes to an equal value doesn't rerun its dependents.
-- [ ] After a branch switch, setting the signal the old branch read doesn't rerun the effect.
-- [ ] Disposing an owner frees every arena slot it created. Count slots before and after.
-- [ ] A self-feeding effect stops after 100 rounds, and the other effects in the same flush still run.
-- [ ] A panicking effect is disabled, the next `set` and `flush` work, and no `RefCell` is left borrowed.
-- [ ] `try_get()` on a disposed handle returns `None`.
+- [x] Diamond. Signal `a` feeds memos `b` and `c`, and one effect reads both. One `set` on `a` runs the effect exactly once.
+- [x] A memo that recomputes to an equal value doesn't rerun its dependents.
+- [x] After a branch switch, setting the signal the old branch read doesn't rerun the effect.
+- [x] Disposing an owner frees every arena slot it created. Count slots before and after.
+- [x] A self-feeding effect stops after 100 rounds, and the other effects in the same flush still run.
+- [x] A panicking effect is disabled, the next `set` and `flush` work, and no `RefCell` is left borrowed.
+- [x] `try_get()` on a disposed handle returns `None`.
 
 Added after the Phase 1 review on 2026-11-10:
 
@@ -513,10 +511,10 @@ Added after the Phase 1 review on 2026-11-10:
 
 More required tests:
 
-- [ ] An effect whose captured value panics when dropped is disabled, and later flushes still run every other effect.
-- [ ] Exiting with an owner still alive, by returning from `main` or calling `process::exit(0)`, gives exit status 0.
-- [ ] Rebuilding children 10 times with `effect_scoped` leaves the arena's slot count where it was after the first run.
-- [ ] Disposing 50 child owners that read one long-lived signal returns that signal's subscriber count to where it started.
+- [x] An effect whose captured value panics when dropped is disabled, and later flushes still run every other effect.
+- [x] Exiting with an owner still alive, by returning from `main` or calling `process::exit(0)`, gives exit status 0.
+- [x] Rebuilding children 10 times with `effect_scoped` leaves the arena's slot count where it was after the first run.
+- [x] Disposing 50 child owners that read one long-lived signal returns that signal's subscriber count to where it started.
 
 ## Widgets, layout and styles
 
@@ -1074,7 +1072,7 @@ v0.1 had four services in `crabshell-services`, and Phase 9 added six; the phase
 - Write the IPC framing in-house. Each message is a 14-byte header (`i3-ipc`, a length, a type) plus JSON, about 150 lines of code, and owning it avoids pulling in another async runtime.
 - On start, send `SUBSCRIBE` to `workspace` events, then `GET_WORKSPACES`, so no change between the two goes unseen. On every event, send `GET_WORKSPACES` again and replace the whole list. That is simpler than applying each event's changes and costs one small JSON reply.
 - If the socket closes, set the list to empty and reconnect every 2 s. A first connect that fails, as with a stale `SWAYSOCK` under another compositor, logs once and never retries, so it never wakes the bar.
-- Other wlroots compositors don't speak Sway IPC. Before Phase 3, check which of your target compositors implement `ext-workspace-v1`. If none do, v0.1 shows workspaces on Sway only, and other compositors get the bar without them. Checked on 2026-11-11: labwc has it since 0.8.3, Sway and Wayfire only on their `master` branches, and river not at all. So v0.1 shows workspaces on Sway only, and an `ext-workspace-v1` backend waits until after v0.1.
+- Other wlroots compositors don't speak Sway IPC. Phase 12 added `ext-workspace-v1` through `cx.window_manager()`, and Hyprland's own IPC.
 
 ### Tray
 
@@ -1701,18 +1699,18 @@ Read the Overview and the section for your crate before writing code. If this do
 
 ## Risks and open questions
 
-The biggest risk is the reload loop. A 2-10 s rebuild per edit is the price of compiled configs, and it is the one goal this design doesn't meet. The second is the size of the goal: Quickshell exposes about 240 QML types, so full parity is many phases past v0.1.
+The biggest risk is the reload loop. A rebuild per edit, 0.7 to 0.9 s for a one-line change, is the price of compiled configs, still slower than Quickshell's QML reload. The second is the size of the goal: Quickshell exposes about 240 QML types, so full parity is many phases past v0.1.
 
-| Risk                                      | Why it matters                                                              | Mitigation                                                                                                                           |
-| ----------------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Reload misses the goal                    | 2-10 s per edit, against Quickshell's sub-second reload                     | Fast dev profile, a small config crate, build time measured in Phase 5. Try Dioxus's experimental subsecond hot-patching after v0.1. |
-| You review Rust you can't fully judge yet | Bugs in the reactive core or event loop hide well                           | Small changes, required tests, headless Sway screenshots, and plain-language explanations from agents                                |
-| Tray apps bend the spec                   | Electron, Qt and Ayatana apps each implement StatusNotifierItem differently | Phase 4 gets 4-6 weeks and tests real apps                                                                                           |
-| Text looks worse than Qt's                | v0.1 has grayscale antialiasing only                                        | Compare screenshots side by side in Phase 0                                                                                          |
-| Font loading slows startup                | Scanning every system font can blow the 100 ms target                       | Load only the files fontconfig matches                                                                                               |
-| Sway-first shrinks the audience           | Most Quickshell users run Hyprland or niri                                  | Keep compositor IPC inside `crabshell-services`, so adding Hyprland later touches one module                                         |
-| Configs need a Rust toolchain             | A higher entry bar and a slow first build                                   | Template and README, with the full first run timed in Phase 6                                                                        |
-| No accessibility in v0.1                  | Screen readers can't read the shell                                         | Add AccessKit (AT-SPI) in Phase 19                                                                                                   |
+| Risk                                      | Why it matters                                                              | Mitigation                                                                                            |
+| ----------------------------------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Reload misses the goal                    | A rebuild per edit, against Quickshell's QML reload                         | Fast dev profile, a small config crate, build time measured in Phase 5. Phase 19 removes the blink.   |
+| You review Rust you can't fully judge yet | Bugs in the reactive core or event loop hide well                           | Small changes, required tests, headless Sway screenshots, and plain-language explanations from agents |
+| Tray apps bend the spec                   | Electron, Qt and Ayatana apps each implement StatusNotifierItem differently | Phase 4 gets 4-6 weeks and tests real apps                                                            |
+| Text looks worse than Qt's                | v0.1 has grayscale antialiasing only                                        | Compared side by side in Phase 0                                                                      |
+| Font loading slows startup                | Scanning every system font can blow the 100 ms target                       | Load only the files fontconfig matches                                                                |
+| Sway-first shrinks the audience           | Most Quickshell users run Hyprland or niri                                  | Hyprland came in Phase 12, niri's IPC is planned for Phase 18                                         |
+| Configs need a Rust toolchain             | A higher entry bar and a slow first build                                   | Template and README, with the full first run timed in Phase 6                                         |
+| No accessibility in v0.1                  | Screen readers can't read the shell                                         | Add AccessKit (AT-SPI) in Phase 19                                                                    |
 
 Open questions:
 
@@ -1728,4 +1726,4 @@ Open questions:
 
 - [Quickshell source](https://github.com/quickshell-mirror/quickshell) at commit `9b0f339` from 2026-10-21, counted locally. About 62k lines of C++ exposing 241 QML types, licensed LGPL-3.0.
 - [Quickshell 0.3.2's type list](https://quickshell.org/docs/v0.3.2/types), from its public docs, read on 2026-11-13 for "Beyond v0.1".
-- Everything else comes from memory and wasn't checked against current docs: crate names and APIs, protocol versions, Sway commands and toolchain behavior. Phase 0 checked the stack's crates against their source and found four changes: sctk 0.21 uses delegate_dispatch2! and has no fractional-scale helper, cosmic-text 0.19 changed set_text, and zbus 6 replaced async-io with zruntime. Pinned versions are in the repo's Cargo.toml.
+- Everything else comes from memory and wasn't checked against current docs: crate names and APIs, protocol versions, Sway commands and toolchain behavior. Pinned versions are in the repo's Cargo.toml.
