@@ -72,21 +72,25 @@ impl Ramp {
 }
 
 impl Painter<'_> {
-  /// `gradient` across `area`, a box in this pixmap's pixels, over the
-  /// part of it inside a `width` by `height` pixmap. Each pixel's color is
-  /// worked out in buffer pixels and dithered by less than a step, by its
-  /// place in the buffer, so every tile works out the same color for it.
+  /// `gradient` laid across `area`, a box in this pixmap's pixels, worked
+  /// out over the part of `within` inside a `width` by `height` pixmap.
+  /// Each pixel's color is worked out in buffer pixels and dithered by
+  /// less than a step, by its place in the buffer, so every tile, and a
+  /// ramp over any part of the box, works out the same color for it.
   pub(super) fn ramp(
     &self,
     gradient: &Gradient,
     area: tiny_skia::Rect,
+    within: tiny_skia::Rect,
     (width, height): (u32, u32),
   ) -> Option<Ramp> {
-    let x0 = area.left().floor().max(0.0) as u32;
-    let y0 = area.top().floor().max(0.0) as u32;
-    let x1 = (area.right().ceil().max(0.0) as u32).min(width);
-    let y1 = (area.bottom().ceil().max(0.0) as u32).min(height);
+    let x0 = within.left().floor().max(0.0) as u32;
+    let y0 = within.top().floor().max(0.0) as u32;
+    let x1 = (within.right().ceil().max(0.0) as u32).min(width);
+    let y1 = (within.bottom().ceil().max(0.0) as u32).min(height);
     let mut pixels = Pixmap::new(x1.checked_sub(x0)?, y1.checked_sub(y0)?)?;
+    let worked = &self.work.gradient_pixels;
+    worked.set(worked.get() + u64::from(pixels.width()) * u64::from(pixels.height()));
     let laid = self.lay_out(gradient.shape, area);
     let stops = even(gradient);
     // The buffer pixel the ramp starts at; tiles start on whole pixels.

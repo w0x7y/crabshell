@@ -33,16 +33,32 @@ impl Painter<'_> {
         CanvasOp::Fill(path, paint)
         | CanvasOp::Stroke(path, crabshell_ui::Stroke { paint, .. }) => (path, paint),
       };
+      let Some(path) = build(path) else {
+        continue;
+      };
       let ramp = match paint {
         Paint::Color(_) => None,
         Paint::Gradient(gradient) => {
-          let Some(ramp) = self.ramp(gradient, area, (pixmap.width(), pixmap.height())) else {
+          // Worked out only where the path can paint, not the whole box.
+          let reach = match op {
+            CanvasOp::Fill(..) => 0.0,
+            // A miter reaches at most twice the width past the line.
+            CanvasOp::Stroke(_, stroke) => 2.0 * stroke.width.abs(),
+          };
+          let within = path
+            .bounds()
+            .outset(reach, reach)
+            .and_then(|bounds| bounds.transform(at))
+            .and_then(|bounds| bounds.outset(1.0, 1.0))
+            .and_then(|bounds| bounds.intersect(&area));
+          let size = (pixmap.width(), pixmap.height());
+          let Some(ramp) = within.and_then(|within| self.ramp(gradient, area, within, size)) else {
             continue;
           };
           Some(ramp)
         }
       };
-      let (Some(path), Some(paint)) = (build(path), tiny_paint(paint, ramp.as_ref(), at)) else {
+      let Some(paint) = tiny_paint(paint, ramp.as_ref(), at) else {
         continue;
       };
       match op {

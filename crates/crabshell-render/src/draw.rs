@@ -86,7 +86,7 @@ pub struct Renderer {
 
 /// What drawing has cost so far, for tests to check that a draw stays
 /// small.
-#[derive(Clone, Copy, Default)]
+#[derive(Default)]
 #[cfg_attr(not(test), allow(dead_code, reason = "only tests read it"))]
 struct Work {
   /// Pixels of opacity, clip and transform layers allocated.
@@ -95,6 +95,9 @@ struct Work {
   nodes: u64,
   /// Pixels of alpha content shadows were blurred over.
   blurred: u64,
+  /// Pixels gradients were worked out for. A `Cell`, since a ramp is
+  /// worked out while painting reads the rest.
+  gradient_pixels: std::cell::Cell<u64>,
 }
 
 impl Renderer {
@@ -120,6 +123,12 @@ impl Renderer {
   #[cfg(test)]
   pub(crate) fn work(&self) -> (u64, u64, u64) {
     (self.work.layer_pixels, self.work.nodes, self.work.blurred)
+  }
+
+  /// The pixels gradients were worked out for so far, for tests.
+  #[cfg(test)]
+  pub(crate) fn gradient_pixels(&self) -> u64 {
+    self.work.gradient_pixels.get()
   }
 
   /// A renderer that looks icon names up in `bases` instead of the
@@ -728,7 +737,7 @@ impl Painter<'_> {
       let mut path = PathBuilder::new();
       rounded_rect(&mut path, area, corners);
       let size = (pixmap.width(), pixmap.height());
-      if let (Some(path), Some(ramp)) = (path.finish(), self.ramp(&gradient, area, size)) {
+      if let (Some(path), Some(ramp)) = (path.finish(), self.ramp(&gradient, area, area, size)) {
         ramp.fill(pixmap, &path);
       }
     }

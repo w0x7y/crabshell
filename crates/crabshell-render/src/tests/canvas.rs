@@ -206,3 +206,60 @@ fn a_canvas_draws_only_inside_its_box() {
     }
   }
 }
+
+/// A 400 by 140 canvas of 300 small circles, each filled with a sweep
+/// gradient, and stroked with one every other.
+fn dots() -> Canvas {
+  Canvas::new(|pen| {
+    for index in 0..300 {
+      let middle = Point::new(
+        8.0 + (index % 30) as f32 * 13.0,
+        8.0 + (index / 30) as f32 * 13.0,
+      );
+      let sweep = Gradient::sweep(index as f32, BLUE, PEACH);
+      let circle = Path::circle(middle, 5.0);
+      pen.fill(&circle, sweep);
+      if index % 2 == 0 {
+        pen.stroke(&circle, &Stroke::new(1.5, sweep));
+      }
+    }
+  })
+  .style(Style::new().width(400.0).height(140.0))
+}
+
+#[test]
+fn a_canvas_gradient_is_worked_out_only_around_its_path() {
+  let mut scene = Scene::new();
+  let panel = scene.panel().child(Row::new().padding(4, 4).child(dots()));
+  let window = scene.window(panel, 408.0, 148.0);
+  let before = scene.renderer.gradient_pixels();
+  scene.full(&window, 2.0);
+  let worked = scene.renderer.gradient_pixels() - before;
+  // Each circle is 20 pixels across at scale 2, its stroke a little
+  // more: 450 paths of at most 32 by 32 pixels with the margins, where
+  // the whole canvas's box in each tile would be thousands of times more.
+  assert!(worked > 0 && worked <= 450 * 32 * 32, "{worked} pixels");
+}
+
+/// How long a full draw of [`dots`] takes at scale 2, at best. Run it in
+/// a release build:
+/// `cargo test --release -p crabshell-render --lib time_a_canvas_of_gradient_dots -- --ignored --nocapture`.
+#[test]
+#[ignore = "a measurement, not a check"]
+fn time_a_canvas_of_gradient_dots() {
+  let mut scene = Scene::new();
+  let panel = scene.panel().child(Row::new().padding(4, 4).child(dots()));
+  let window = scene.window(panel, 408.0, 148.0);
+  let fastest = (0..10)
+    .map(|_| {
+      let start = std::time::Instant::now();
+      scene.full(&window, 2.0);
+      start.elapsed()
+    })
+    .min()
+    .expect("a draw");
+  println!(
+    "{:.1} ms a full draw at scale 2",
+    fastest.as_secs_f64() * 1000.0
+  );
+}
