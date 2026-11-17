@@ -12,6 +12,7 @@ use std::time::Duration;
 use crabshell_reactive::{Memo, Signal};
 
 use crate::cx::Cx;
+use crate::dnd::DragContent;
 use crate::geometry::{Point, Rect, Size};
 use crate::image::ImageTransition;
 use crate::input::{
@@ -1275,8 +1276,10 @@ impl Button {
   /// still runs, so it can follow the pointer with a translate; its `End`
   /// says whether it was dropped. While it holds `None`, the button acts as
   /// if it had no data: it clicks, and drags only with its own `on_drag`,
-  /// so `editing.get().then_some(id)` drags only in an edit mode. A drag
-  /// carries data only within its window.
+  /// so `editing.get().then_some(id)` drags only in an edit mode. Once
+  /// the pointer leaves the window, the drag reaches buttons in the
+  /// shell's other windows too, and other programs see one they can't
+  /// take.
   pub fn drag_data<T: Clone + 'static>(mut self, data: impl IntoProp<Option<T>>) -> Button {
     let data = data
       .into_prop()
@@ -1299,7 +1302,28 @@ impl Button {
     self.button.handlers.drop = Some(DropTarget {
       accepts: std::any::TypeId::of::<T>(),
       handler: Rc::new(Handler::new(take)),
+      name: "on_drop",
     });
+    self
+  }
+
+  /// Makes a drag of this button carry `content`, as
+  /// [`drag_data`](Self::drag_data) does, to buttons in any of the
+  /// shell's windows and, once the pointer leaves the window, to other
+  /// programs, as text or a URI list. It replaces any `drag_data`.
+  pub fn drag_content(self, content: impl IntoProp<Option<DragContent>>) -> Button {
+    self.drag_data(content)
+  }
+
+  /// Runs `handler` with what a drag from another program, or a
+  /// [`drag_content`](Self::drag_content) of the shell's, carries when it
+  /// is released over this button: URIs when the program offers them,
+  /// else text. It replaces any [`on_drop`](Self::on_drop).
+  pub fn on_drop_content(mut self, handler: impl Fn(&Cx, DragContent) + 'static) -> Button {
+    self = self.on_drop(handler);
+    if let Some(target) = &mut self.button.handlers.drop {
+      target.name = "on_drop_content";
+    }
     self
   }
 

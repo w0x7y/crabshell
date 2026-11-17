@@ -8,6 +8,7 @@
 mod animation;
 mod canvas;
 mod displaced;
+mod dnd;
 mod drop;
 mod edit;
 mod elided;
