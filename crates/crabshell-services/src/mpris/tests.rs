@@ -8,7 +8,7 @@ use crabshell_ui::Cx;
 use zbus::fdo::RequestNameFlags;
 use zbus::{ObjectPath, OwnedObjectPath, OwnedVariant, Variant};
 
-use super::{LoopStatus, PATH, PLAYER, PLAYERCTLD, PlaybackStatus, Player, ROOT};
+use super::{LoopStatus, PATH, PLAYER, PLAYERCTLD, PlaybackStatus, Player, ROOT, title_from_url};
 use crate::dbus::{BUS, BUS_PATH, PROPERTIES};
 use crate::testing::{FakeService, Harness, PrivateBus, capture_logs, offline, reply};
 use crate::{Config, ServicesExt};
@@ -115,6 +115,70 @@ fn a_player_shows_with_its_track() {
   assert_eq!(player.rate, 1.0);
   assert_eq!(player.position, Duration::from_secs(10));
   assert!(player.position_known_at >= asked);
+}
+
+#[test]
+fn a_track_without_a_title_is_named_by_its_files_last_part() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let vlc = FakeService::start(&mut shell, &bus, VLC);
+  vlc.add(PATH, ROOT, &[]);
+  // As VLC sends a file without tags: no title, or an empty one.
+  let untitled = |title: Option<&str>| {
+    let mut track = HashMap::from([(
+      "xesam:url",
+      Variant::from("file:///home/me/Music/Nina%20Simone%20-%20Sinnerman.flac"),
+    )]);
+    if let Some(title) = title {
+      track.insert("xesam:title", Variant::from(title.to_owned()));
+    }
+    vec![("Metadata", Variant::from(track))]
+  };
+  vlc.add(PATH, PLAYER, &untitled(None));
+  vlc.own(&mut shell);
+  let players = shell.cx.mpris().players();
+  let title = || {
+    players
+      .get_untracked()
+      .first()
+      .map(|player| player.title.clone())
+  };
+  let named = "Nina Simone - Sinnerman.flac";
+  wait_for(&mut shell, "the player", || {
+    title().as_deref() == Some(named)
+  });
+  vlc.set(&mut shell, PATH, PLAYER, &untitled(Some("Sinnerman")));
+  wait_for(&mut shell, "its title", || {
+    title().as_deref() == Some("Sinnerman")
+  });
+  vlc.set(&mut shell, PATH, PLAYER, &untitled(Some(" ")));
+  wait_for(&mut shell, "an empty title", || {
+    title().as_deref() == Some(named)
+  });
+}
+
+#[test]
+fn a_title_from_a_url_is_its_last_part_decoded() {
+  assert_eq!(title_from_url("file:///music/a%20b%C3%A9.ogg"), "a bé.ogg");
+  assert_eq!(
+    title_from_url("https://radio.example/live/stream.mp3?token=1#x"),
+    "stream.mp3"
+  );
+  assert_eq!(title_from_url("HTTP://radio.example/jazz"), "jazz");
+  assert_eq!(title_from_url("https://radio.example"), "radio.example");
+  // An escaped slash or question mark is part of the name.
+  assert_eq!(title_from_url("file:///m/AC%2FDC%3F.mp3"), "AC/DC?.mp3");
+  // A stray or short escape stays as written, and bad UTF-8 is replaced.
+  assert_eq!(title_from_url("file:///m/100%.mp3%4"), "100%.mp3%4");
+  assert_eq!(title_from_url("file:///m/a%+1.mp3"), "a%+1.mp3");
+  assert_eq!(title_from_url("file:///m/%FF.mp3"), "\u{fffd}.mp3");
+  // A folder, another scheme or no URL names nothing.
+  assert_eq!(title_from_url("https://radio.example/live/"), "");
+  assert_eq!(title_from_url("spotify:track:4uLU6hMCjMI75M1A2tKUQC"), "");
+  assert_eq!(title_from_url("smb://nas/music/a.mp3"), "");
+  assert_eq!(title_from_url(""), "");
+  let long = format!("file:///a{}", "é".repeat(3000));
+  assert_eq!(title_from_url(&long).len(), 4095, "cut at a character");
 }
 
 #[test]

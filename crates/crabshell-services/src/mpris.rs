@@ -105,7 +105,8 @@ pub struct Player {
   pub desktop_entry: String,
   /// Whether it plays.
   pub status: PlaybackStatus,
-  /// The track's title, or `""`.
+  /// The track's title. Without one, the last part of its `file://` or
+  /// `http(s)://` URL, such as `Sinnerman.flac`, or `""`.
   pub title: String,
   /// The track's artists, at most 32.
   pub artists: Vec<String>,
@@ -174,7 +175,11 @@ impl Player {
         Some("Paused") => PlaybackStatus::Paused,
         _ => PlaybackStatus::Stopped,
       },
-      title: text(&metadata, "xesam:title"),
+      title: Some(text(&metadata, "xesam:title"))
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| {
+          title_from_url(dbus::get::<&str>(&metadata, "xesam:url").unwrap_or_default())
+        }),
       artists: dbus::get::<&Array>(&metadata, "xesam:artist").map_or(Vec::new(), |artists| {
         let names = artists
           .inner()
@@ -225,6 +230,41 @@ fn metadata(props: &Props) -> Props {
 /// The text `name`, cut to [`MAX_TEXT`], or `""`.
 fn text(props: &Props, name: &str) -> String {
   cut(dbus::get::<&str>(props, name).unwrap_or_default())
+}
+
+/// A title for a track that has none, as VLC sends a file without tags:
+/// the last part of its `file://` or `http(s)://` URL, decoded, with its
+/// extension, as file managers show a file's name. `""` for another URL
+/// or one that ends in `/`.
+fn title_from_url(url: &str) -> String {
+  let scheme = url
+    .split_once("://")
+    .map(|(scheme, _)| scheme.to_ascii_lowercase());
+  if !matches!(scheme.as_deref(), Some("file" | "http" | "https")) {
+    return String::new();
+  }
+  let path = url.split(['?', '#']).next().unwrap_or_default();
+  let name = path.rsplit('/').next().unwrap_or_default();
+  let mut bytes = Vec::with_capacity(name.len());
+  let mut rest = name.as_bytes();
+  while let Some((&byte, after)) = rest.split_first() {
+    let hex = after
+      .get(..2)
+      .filter(|hex| hex.iter().all(u8::is_ascii_hexdigit));
+    let decoded = hex.and_then(|hex| u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok());
+    match decoded {
+      Some(decoded) if byte == b'%' => {
+        bytes.push(decoded);
+        rest = &after[2..];
+      }
+      // A stray `%` stays as written.
+      _ => {
+        bytes.push(byte);
+        rest = after;
+      }
+    }
+  }
+  cut(&String::from_utf8_lossy(&bytes))
 }
 
 /// `text` cut to [`MAX_TEXT`] bytes, at a char boundary.
