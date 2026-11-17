@@ -17,7 +17,7 @@ use crabshell_reactive::{Signal, untrack};
 
 use crate::cx::Cx;
 use crate::geometry::{Point, Rect, Size};
-use crate::keyboard::KeyHandler;
+use crate::keyboard::{Clipboard, KeyHandler};
 use crate::prop::{Prop, PropKind};
 use crate::scrolling::{BarDrag, Flick};
 use crate::select::{TextClick, text_selection};
@@ -517,6 +517,15 @@ impl Window {
     run_all(calls);
   }
 
+  /// What the platform should do with the primary selection after a
+  /// pointer button or key: offer a selection just made with the pointer
+  /// or the keyboard, or paste the primary selection with
+  /// [`paste`](Self::paste) where a middle click put the caret in a
+  /// field. Taking it clears it.
+  pub fn take_primary(&self) -> Option<Clipboard> {
+    borrow(&self.tree).primary.take()
+  }
+
   /// The cursor to show.
   pub fn cursor(&self) -> CursorShape {
     self.tree.borrow().cursor()
@@ -914,6 +923,9 @@ impl Tree {
       dragging: false,
       long_pressed: false,
     }));
+    if button == PointerButton::Middle && self.press_middle(id, at) {
+      self.primary = Some(Clipboard::Paste);
+    }
     if button != PointerButton::Left {
       return Vec::new();
     }
@@ -947,6 +959,10 @@ impl Tree {
       calls.extend(self.call(press.id, Action::Release));
       let link = self.pointer.link.take();
       calls.extend(link.and_then(|link| self.link_click(press, link)));
+      // A selection made with the pointer becomes the primary selection.
+      if let Some(text) = self.selected_text(press.id) {
+        self.primary = Some(Clipboard::Copy(text));
+      }
     }
     // Set by the drop once its `on_drop` returns, before the `End` reads it.
     let landed = Rc::new(Cell::new(false));

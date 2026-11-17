@@ -141,6 +141,36 @@ impl Tree {
     self.select(id, how, upstream);
   }
 
+  /// What node `id` has selected, which becomes the primary selection: a
+  /// field's selection, never a password's, or a selectable text's.
+  pub(crate) fn selected_text(&self, id: NodeId) -> Option<String> {
+    match &self.node(id)?.kind {
+      NodeKind::Input(input) if !input.password => {
+        Some(input.edit.text.get(input.edit.selection()?)?.to_owned())
+      }
+      NodeKind::Text(text) => Some(text.content.get(text_selection(text)?)?.to_owned()),
+      _ => None,
+    }
+  }
+
+  /// A middle press at `at` on `id`: a field takes the focus and the
+  /// caret goes there, with nothing selected, for the primary selection
+  /// to paste at. Returns whether `id` is a field.
+  pub(crate) fn press_middle(&mut self, id: NodeId, at: Point) -> bool {
+    if !matches!(
+      self.node(id).map(|node| &node.kind),
+      Some(NodeKind::Input(_))
+    ) {
+      return false;
+    }
+    let Some((index, upstream)) = self.text_index(id, at) else {
+      return false;
+    };
+    self.focus(Some(id));
+    self.select(id, Select::Place(index), upstream);
+    true
+  }
+
   /// The left button held on `id` moved to `at`: the selection runs to
   /// the pointer, by whole words or lines after a double or triple click.
   pub(crate) fn drag_text(&mut self, id: NodeId, at: Point) {

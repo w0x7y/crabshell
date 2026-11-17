@@ -303,12 +303,19 @@ impl Tree {
       true => input.line_key(event, page),
       false => None,
     };
+    let was = input.edit.selection();
     let keyed = keyed.unwrap_or_else(|| {
       // Any other move forgets the line's end and the place across.
       input.upstream = None;
       input.goal = None;
       input.edit.key(event, !input.password)
     });
+    // A selection made with the keys becomes the primary selection.
+    let selected = input
+      .edit
+      .selection()
+      .filter(|now| keyed == Keyed::Moved && Some(now) != was.as_ref() && !input.password);
+    let primary = selected.and_then(|range| input.edit.text.get(range).map(str::to_owned));
     let accept = keyed == Keyed::Accept;
     let typed = match keyed {
       Keyed::Unused => return None,
@@ -338,6 +345,9 @@ impl Tree {
       self.update_input(id, |input| {
         input.refresh();
       });
+    }
+    if let Some(text) = primary {
+      self.primary = Some(Clipboard::Copy(text));
     }
     Some(typed)
   }

@@ -33,6 +33,7 @@ mod menu;
 mod placement;
 mod pointer;
 mod popup;
+mod primary;
 mod region;
 mod rich;
 mod screencopy;

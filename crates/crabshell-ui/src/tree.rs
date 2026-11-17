@@ -24,7 +24,7 @@ use crate::floating::FloatingState;
 use crate::geometry::{Affine, Point, Rect, Size};
 use crate::image::{ImageTransition, Leaving};
 use crate::input::{CursorShape, DragValue, Handlers, Pointer};
-use crate::keyboard::Keyboard;
+use crate::keyboard::{Clipboard, Keyboard};
 use crate::keyed::KeyedSlot;
 use crate::prop::{IntoProp, Prop, PropKind};
 use crate::region::Region;
@@ -90,6 +90,9 @@ pub(crate) struct Tree {
   /// Widgets shown again since the last layout, which gives the focus to
   /// a field in them that asks for it.
   pub(crate) shown_since_layout: Vec<NodeId>,
+  /// What the platform should do with the primary selection, from the
+  /// last pointer button or key.
+  pub(crate) primary: Option<Clipboard>,
 }
 
 /// What only a popup's tree has.
@@ -606,6 +609,7 @@ impl Tree {
       reveal: None,
       offsets: Vec::new(),
       shown_since_layout: Vec::new(),
+      primary: None,
     }
   }
 
