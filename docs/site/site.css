@@ -2,23 +2,36 @@
    orange) for what matters, verdigris for marks and for the crab, and the
    rime theme for code. Square corners. */
 
+/* Departure Mono, on a pixel grid like the crab, for headlines and buttons;
+   Atkinson Hyperlegible Next for reading and its Mono for code. */
 @font-face {
-  font-family: Archivo;
-  src: url(fonts/archivo.woff2) format("woff2");
-  font-weight: 100 900;
-  font-stretch: 62% 125%;
+  font-family: "Departure Mono";
+  src: url(fonts/departure-mono.woff2) format("woff2");
   font-display: swap;
 }
 @font-face {
-  font-family: "Chivo Mono";
-  src: url(fonts/chivo-mono.woff2) format("woff2");
-  font-weight: 100 900;
+  font-family: "Atkinson Hyperlegible Next";
+  src: url(fonts/atkinson-next.woff2) format("woff2");
+  font-weight: 200 800;
   font-display: swap;
 }
 @font-face {
-  font-family: "Chivo Mono";
-  src: url(fonts/chivo-mono-italic.woff2) format("woff2");
-  font-weight: 100 900;
+  font-family: "Atkinson Hyperlegible Next";
+  src: url(fonts/atkinson-next-italic.woff2) format("woff2");
+  font-weight: 200 800;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Atkinson Hyperlegible Mono";
+  src: url(fonts/atkinson-mono.woff2) format("woff2");
+  font-weight: 200 800;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Atkinson Hyperlegible Mono";
+  src: url(fonts/atkinson-mono-italic.woff2) format("woff2");
+  font-weight: 200 800;
   font-style: italic;
   font-display: swap;
 }
@@ -60,8 +73,10 @@
   --glass-edge: light-dark(rgb(19 33 44 / 0.16), rgb(219 229 236 / 0.14));
   --bar-fg: light-dark(#13212c, #dbe5ec);
   --bar-h: 34px;
-  --sans: Archivo, system-ui, sans-serif;
-  --mono: "Chivo Mono", ui-monospace, "DejaVu Sans Mono", monospace;
+  --sans: "Atkinson Hyperlegible Next", system-ui, sans-serif;
+  --mono:
+    "Atkinson Hyperlegible Mono", ui-monospace, "DejaVu Sans Mono", monospace;
+  --display: "Departure Mono", var(--mono);
   --gutter: clamp(16px, 4vw, 40px);
 }
 /* The switch's choice. Every color above follows the scheme set here. */
@@ -261,7 +276,6 @@ kbd {
 .bar .brand {
   padding-left: 2px;
   font-weight: 700;
-  font-stretch: 88%;
   font-size: 15px;
   letter-spacing: 0.01em;
 }
@@ -388,10 +402,10 @@ body.docs .toc {
 
 /* Article text. */
 article h1 {
-  font-size: clamp(34px, 5vw, 46px);
-  font-weight: 800;
-  font-stretch: 76%;
-  letter-spacing: -0.005em;
+  font-family: var(--display);
+  font-size: clamp(30px, 4.4vw, 42px);
+  font-weight: 400;
+  letter-spacing: -0.02em;
   margin-bottom: 14px;
 }
 article .lede {
@@ -405,17 +419,18 @@ article .lede + h2 {
   margin-top: 1.4em;
 }
 article h2 {
-  font-size: 27px;
-  font-weight: 750;
-  font-stretch: 84%;
+  font-family: var(--display);
+  font-size: 26px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
   margin: 2.2em 0 0.6em;
   padding-top: 0.9em;
   border-top: 1px solid var(--line);
 }
 article h3 {
+  font-family: var(--display);
   font-size: 18.5px;
-  font-weight: 700;
-  font-stretch: 92%;
+  font-weight: 400;
   margin: 1.9em 0 0.5em;
 }
 article h4 {
@@ -434,7 +449,6 @@ article .anchor:focus-visible {
   opacity: 1;
 }
 article :is(p, ul, ol) {
-  /* Archivo's 0 is wide: 58ch comes to about 76 letters a line. */
   max-width: 58ch;
 }
 article li {
@@ -700,7 +714,7 @@ td:first-child code {
   border: 1px solid var(--rust);
   background: var(--rust);
   color: var(--steel);
-  font: 650 15.5px/1.2 var(--sans);
+  font: 400 15.5px/1.2 var(--display);
   text-decoration: none;
   cursor: pointer;
 }
@@ -755,12 +769,11 @@ td:first-child code {
   }
 }
 .hero h1 {
-  font-size: clamp(46px, 7vw, 92px);
-  font-weight: 800;
-  font-stretch: 66%;
-  line-height: 0.94;
-  letter-spacing: -0.01em;
-  word-spacing: 0.08em;
+  font-family: var(--display);
+  font-size: clamp(32px, 4.4vw, 56px);
+  font-weight: 400;
+  line-height: 1.02;
+  letter-spacing: -0.02em;
   margin-bottom: 24px;
 }
 .hero h1 span {
@@ -1025,9 +1038,10 @@ td:first-child code {
   border-top: 1px solid var(--line);
 }
 .band h2 {
-  font-size: clamp(28px, 4vw, 42px);
-  font-weight: 800;
-  font-stretch: 74%;
+  font-family: var(--display);
+  font-size: clamp(26px, 3.4vw, 38px);
+  font-weight: 400;
+  letter-spacing: -0.02em;
   margin-bottom: 14px;
 }
 .band .intro {
@@ -1047,7 +1061,6 @@ td:first-child code {
   margin: 26px 0 8px;
   font-size: 18.5px;
   font-weight: 700;
-  font-stretch: 92%;
 }
 .mem dd {
   display: flex;
@@ -1064,9 +1077,10 @@ td:first-child code {
   background: var(--other);
 }
 .mem b {
-  font-size: 60px;
-  font-weight: 800;
-  font-stretch: 70%;
+  font-family: var(--display);
+  font-size: 48px;
+  font-weight: 400;
+  letter-spacing: -0.04em;
   line-height: 52px;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
@@ -1086,9 +1100,9 @@ figure.shot figcaption {
 
 .band h3 {
   margin-bottom: 20px;
+  font-family: var(--display);
   font-size: 18.5px;
-  font-weight: 700;
-  font-stretch: 92%;
+  font-weight: 400;
 }
 /* What you get beside what it asks: nine pictures against two. */
 .trade {
@@ -1128,7 +1142,6 @@ figure.shot figcaption {
 .glyphs strong {
   display: block;
   font-size: 18.5px;
-  font-stretch: 92%;
   line-height: 1.25;
 }
 .glyphs span {
@@ -1164,9 +1177,9 @@ figure.shot img {
 .steps li::before {
   content: counter(step);
   display: block;
+  font-family: var(--display);
   font-size: 40px;
-  font-weight: 800;
-  font-stretch: 70%;
+  font-weight: 400;
   line-height: 1;
   color: var(--rust);
   margin-bottom: 8px;
@@ -1298,7 +1311,7 @@ figure.shot img {
     --tip: 150px;
   }
   .mem b {
-    font-size: 40px;
+    font-size: 34px;
   }
   .glyphs {
     grid-template-columns: repeat(2, minmax(0, 1fr));
