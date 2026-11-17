@@ -779,7 +779,16 @@ fn taffy_style(node: &Node, parent: Parent, size: crate::Size) -> taffy::Style {
     NodeKind::Stack => style.display = Display::Grid,
     NodeKind::Scroll(scroll) => {
       // As in CSS, a scroll container isn't held to its content's size.
-      if scroll.horizontal {
+      if scroll.both {
+        // The child takes its own width along the row and, not
+        // stretched, its own height.
+        style.flex_direction = FlexDirection::Row;
+        style.align_items = AlignItems::START;
+        style.overflow = taffy::Point {
+          x: Overflow::Scroll,
+          y: Overflow::Scroll,
+        };
+      } else if scroll.horizontal {
         style.flex_direction = FlexDirection::Row;
         style.overflow = taffy::Point {
           x: Overflow::Scroll,

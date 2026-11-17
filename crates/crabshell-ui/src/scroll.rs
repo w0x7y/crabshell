@@ -28,7 +28,9 @@ pub(crate) const BAR_MIN_LENGTH: f32 = 16.0;
 
 pub(crate) struct ScrollProps {
   pub(crate) offset: Option<Signal<f32>>,
+  pub(crate) offset_x: Option<Signal<f32>>,
   pub(crate) horizontal: Option<Prop<bool>>,
+  pub(crate) both: Option<Prop<bool>>,
   pub(crate) kinetic: Option<Prop<bool>>,
   pub(crate) overshoot: Option<Prop<bool>>,
   pub(crate) scroll_bar: Option<Prop<Option<Style>>>,
@@ -63,7 +65,9 @@ impl ScrollView {
     ScrollView {
       scroll: ScrollProps {
         offset: None,
+        offset_x: None,
         horizontal: None,
+        both: None,
         kinetic: None,
         overshoot: None,
         scroll_bar: None,
@@ -86,9 +90,31 @@ impl ScrollView {
 
   /// Scrolls sideways instead: the child is laid out at its full width
   /// rather than its full height, and the wheel, tilted or turned, and the
-  /// touchpad's sideways motion scroll it. Both at once isn't offered.
+  /// touchpad's sideways motion scroll it. [`both`](Self::both) wins over
+  /// it.
   pub fn horizontal(mut self, horizontal: impl IntoProp<bool>) -> ScrollView {
     self.scroll.horizontal = Some(horizontal.into_prop());
+    self
+  }
+
+  /// Scrolls down and across: the child is laid out at its full width and
+  /// height, and the wheel, the touchpad, a drag and a fling move it along
+  /// both, each axis going past its ends and coming to rest on its own.
+  /// [`offset`](Self::offset) is then the vertical offset and
+  /// [`offset_x`](Self::offset_x) the horizontal one, and a scroll bar
+  /// shows along each axis the child is longer on. Off by default.
+  pub fn both(mut self, both: impl IntoProp<bool>) -> ScrollView {
+    self.scroll.both = Some(both.into_prop());
+    self
+  }
+
+  /// Shares the horizontal offset of a view that scrolls
+  /// [`both`](Self::both) ways: how many logical pixels of the child are
+  /// scrolled out of view to the left. It works as
+  /// [`offset`](Self::offset) does, and stays as it is while the view
+  /// scrolls one way only.
+  pub fn offset_x(mut self, offset: Signal<f32>) -> ScrollView {
+    self.scroll.offset_x = Some(offset);
     self
   }
 

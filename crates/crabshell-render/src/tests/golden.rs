@@ -798,6 +798,45 @@ fn scroll_bar() {
   });
 }
 
+/// A rounded view scrolled partway down and across, with a bar along each
+/// axis that leaves the other the corner.
+#[test]
+fn scroll_bars_both() {
+  check("scroll_bars_both", 70.0, 60.0, |scene| {
+    let checks = (0..8).fold(Column::new(), |list, row| {
+      list.child((0..8).fold(Row::new(), |cells, column| {
+        let shade = if (row + column) % 2 == 0 {
+          "#45475a"
+        } else {
+          "#585b70"
+        };
+        cells.child(
+          Row::new().style(
+            Style::new()
+              .width(12.0)
+              .height(12.0)
+              .background(Color::hex(shade)),
+          ),
+        )
+      }))
+    });
+    let bar = Style::new()
+      .width(5.0)
+      .radius(2.5)
+      .background(Color::hex("#f9e2af"));
+    scene.panel().style(BAR).child(
+      Row::new().padding(5, 5).align(Align::Start).child(
+        crabshell_ui::ScrollView::new(checks)
+          .both(true)
+          .offset(scene.cx.signal(20.0))
+          .offset_x(scene.cx.signal(30.0))
+          .scroll_bar(bar)
+          .style(Style::new().width(60.0).height(50.0).radius(8.0)),
+      ),
+    )
+  });
+}
+
 /// The stripes picture in 30 by 30 boxes: filled, contained and covered.
 #[test]
 fn images() {

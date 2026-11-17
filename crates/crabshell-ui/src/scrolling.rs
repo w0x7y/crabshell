@@ -650,9 +650,17 @@ impl Tree {
       .collect();
     let can =
       |id: NodeId, test: &dyn Fn(&ScrollNode) -> bool| self.scroll_node(id).is_some_and(test);
+    // Only the way the drag mostly goes picks the view.
+    let mostly = |delta: Point| {
+      if sideways {
+        Point::new(delta.x, 0.0)
+      } else {
+        Point::new(0.0, delta.y)
+      }
+    };
     let picked = along
       .iter()
-      .find(|&&(id, delta)| can(id, &|scroll| scroll.can_move(delta)))
+      .find(|&&(id, delta)| can(id, &|scroll| scroll.can_move(mostly(delta))))
       .or_else(|| {
         along
           .iter()

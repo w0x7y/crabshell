@@ -829,9 +829,14 @@ impl Tree {
       ))),
       ElementKind::Scroll(props) => {
         let main = props.offset.unwrap_or_else(|| cx.signal(0.0));
+        // Without `both`, the sideways axis never scrolls, so it needs no
+        // signal of its own.
+        let cross = props
+          .offset_x
+          .or_else(|| props.both.is_some().then(|| cx.signal(0.0)))
+          .unwrap_or(main);
         NodeKind::Scroll(Box::new(ScrollNode {
-          // The sideways axis has no signal of its own until `both` gives one.
-          axes: [Axis::new(main, false), Axis::new(main, true)],
+          axes: [Axis::new(main, false), Axis::new(cross, true)],
           horizontal: false,
           both: false,
           bar: None,
@@ -1011,24 +1016,32 @@ impl Tree {
             _ => Change::Place,
           });
         });
+        self.bind_opt(id, props.both, "both", |tree, id, value| {
+          tree.update_scroll(id, |scroll| {
+            if replace(&mut scroll.both, value) == Change::None {
+              return Change::None;
+            }
+            scroll.orient();
+            scroll.stop_overshoot();
+            Change::Layout
+          });
+        });
         if let Some(NodeKind::Scroll(scroll)) = self.node(id).map(|node| &node.kind) {
-          let signal = scroll.axes[0].signal;
+          let [main, cross] = [scroll.axes[0].signal, scroll.axes[1].signal];
           self.bind(
             id,
-            (move || signal.get()).into_prop(),
+            (move || main.get()).into_prop(),
             "offset",
-            |tree, id, value| {
-              // The child keeps its layout; only where it is drawn moves.
-              let change = tree.update(id, |node| match &mut node.kind {
-                NodeKind::Scroll(scroll) if scroll.axes[0].offset != value => {
-                  scroll.axes[0].offset = value;
-                  Change::Place
-                }
-                _ => Change::None,
-              });
-              tree.scrolled |= change == Change::Place;
-            },
+            set_offset::<0>,
           );
+          if cross != main {
+            self.bind(
+              id,
+              (move || cross.get()).into_prop(),
+              "offset_x",
+              set_offset::<1>,
+            );
+          }
         }
       }
       ElementKind::Image(props) => self.bind_image(id, props),
@@ -1533,6 +1546,19 @@ impl Surface {
       self.changed = true;
     }
   }
+}
+
+/// Sets scroll view `id`'s offset along its axis number `AXIS`. The child
+/// keeps its layout; only where it is drawn moves.
+fn set_offset<const AXIS: usize>(tree: &mut Tree, id: NodeId, value: f32) {
+  let change = tree.update(id, |node| match &mut node.kind {
+    NodeKind::Scroll(scroll) if scroll.axes[AXIS].offset != value => {
+      scroll.axes[AXIS].offset = value;
+      Change::Place
+    }
+    _ => Change::None,
+  });
+  tree.scrolled |= change == Change::Place;
 }
 
 fn set_style(tree: &mut Tree, id: NodeId, style: Style) {
