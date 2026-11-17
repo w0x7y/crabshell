@@ -293,3 +293,41 @@ fn an_inhibitor_that_arrives_once_sleep_is_near_goes_as_ready_says() {
   logind.fake.release(&mut shell);
   shell.retry_until("the late one let go", || !logind.held(1), |_| {});
 }
+
+#[test]
+fn an_inhibitor_from_a_logind_that_restarted_is_dropped_and_the_new_one_asked() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let logind = FakeLogind::start(&mut shell, &bus);
+  let handle = shell.cx.logind();
+  // Reached once a call goes through.
+  shell.retry_until(
+    "logind reached",
+    || !logind.asked.borrow().is_empty(),
+    |_| handle.suspend(),
+  );
+  run(&mut shell, 100);
+  let asked = logind.asked.borrow().len();
+  // The first Inhibit is answered only once logind has left and come
+  // back, as from a logind that restarted mid-call.
+  logind.fake.hold();
+  handle.delay_sleep_until(false);
+  shell.retry_until(
+    "an Inhibit",
+    || logind.asked.borrow().len() == asked + 1,
+    |_| {},
+  );
+  let connection = logind.fake.connection.clone();
+  shell
+    .block_on(async move {
+      connection.release_name(LOGIND).await?;
+      connection.request_name(LOGIND).await
+    })
+    .expect("logind left and came back");
+  run(&mut shell, 200);
+  logind.fake.release(&mut shell);
+  shell.retry_until("a second inhibitor", || logind.inhibitors() == 2, |_| {});
+  run(&mut shell, 100);
+  assert!(!logind.held(0), "the old logind's inhibitor kept");
+  assert!(logind.held(1));
+}

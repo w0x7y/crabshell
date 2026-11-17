@@ -47,7 +47,9 @@ impl Logind {
   /// shell holds a logind delay inhibitor. When the machine is about to
   /// sleep, it lets go as soon as `ready` reads `true`, and takes a new
   /// one after the resume. logind's `InhibitDelayMaxSec`, 5 s by
-  /// default, bounds the wait. Each call holds its own.
+  /// default, bounds the wait. Each call holds its own. An inhibitor
+  /// logind refuses is logged and asked for again only after the next
+  /// resume or when logind starts again.
   ///
   /// `ready` is read only while the machine is about to sleep. If it
   /// panics, that is logged and the inhibitor goes.
@@ -68,7 +70,7 @@ impl Logind {
     let ready = ready.into_prop().shared();
     let hold = Rc::new(Hold {
       fd: RefCell::new(None),
-      asking: Cell::new(false),
+      asking: Cell::new(None),
       arrived: self.owner.signal(0),
     });
     let service = Rc::clone(service);
@@ -93,7 +95,9 @@ impl Logind {
   }
 
   /// Turns the machine off, as logind's `PowerOff`. polkit may ask the
-  /// user first. A refusal is logged.
+  /// user first. A refusal is logged, and so is a call made before
+  /// logind is reached, which is dropped; the same holds for the other
+  /// power actions.
   pub fn power_off(&self) {
     self.manager("PowerOff");
   }
@@ -125,37 +129,47 @@ impl Logind {
 struct Hold {
   /// The descriptor logind watches: closing it lets go.
   fd: RefCell<Option<OwnedFd>>,
-  /// Whether an `Inhibit` call is under way.
-  asking: Cell<bool>,
+  /// The generation of logind an `Inhibit` call under way went to.
+  asking: Cell<Option<u64>>,
   /// Bumped when an inhibitor arrives, so one that arrives while the
   /// machine is about to sleep is let go as `ready` says.
   arrived: Signal<u32>,
 }
 
 impl Hold {
-  /// Asks logind for an inhibitor, unless one is held or asked for.
+  /// Asks logind for an inhibitor, unless one is held or asked of the
+  /// logind running now.
   fn take(self: &Rc<Self>, service: &Rc<Service>) {
-    if self.fd.borrow().is_some() || self.asking.get() {
-      return;
-    }
-    let Some(connection) = service.connection() else {
+    let Some((connection, generation)) = service.connection() else {
       return;
     };
-    self.asking.set(true);
-    let (hold, shared) = (Rc::downgrade(self), Rc::clone(&service.shared));
-    service.shared.spawn(async move {
+    if self.fd.borrow().is_some() || self.asking.get() == Some(generation) {
+      return;
+    }
+    self.asking.set(Some(generation));
+    let (hold, service) = (Rc::downgrade(self), Rc::clone(service));
+    let shared = Rc::clone(&service.shared);
+    shared.spawn(async move {
       let why = "The shell gets ready for sleep";
       let body = ("sleep", "crabshell", why, "delay");
       let call = connection.call_method(Some(LOGIND), PATH, Some(MANAGER), "Inhibit", &body);
-      let fd = shared
+      let fd = service
+        .shared
         .timeout(CALL_TIMEOUT, call)
         .await
         .and_then(|reply| reply.body().deserialize::<zbus::OwnedFd>());
-      // Gone with its context: the descriptor closes here.
+      // Gone with its context, asked again of a logind that restarted,
+      // or from one that went: the descriptor closes here.
       let Some(hold) = hold.upgrade() else {
         return;
       };
-      hold.asking.set(false);
+      if hold.asking.get() != Some(generation) {
+        return;
+      }
+      hold.asking.set(None);
+      if service.connection().map(|(_, now)| now) != Some(generation) {
+        return;
+      }
       match fd {
         Ok(fd) => {
           hold.fd.replace(Some(fd.into()));
@@ -248,8 +262,11 @@ impl Service {
       .map(|state| (state.sleeping, state.connected))
   }
 
-  fn connection(&self) -> Option<Connection> {
-    self.state.borrow().as_ref()?.connection.clone()
+  /// The bus while logind runs, with the generation it runs in.
+  fn connection(&self) -> Option<(Connection, u64)> {
+    let state = self.state.borrow();
+    let state = state.as_ref()?;
+    Some((state.connection.clone()?, state.generation))
   }
 
   /// Calls logind's `method` on `interface` at `path` with `body`, and
@@ -258,7 +275,7 @@ impl Service {
   where
     B: serde::Serialize + zbus::DynamicType + 'static,
   {
-    let Some(connection) = self.connection() else {
+    let Some((connection, _)) = self.connection() else {
       return tracing::info!(method, "logind isn't running, so nothing was asked of it");
     };
     let (shared, method) = (Rc::clone(&self.shared), method.to_owned());
