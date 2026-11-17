@@ -809,3 +809,37 @@ fn a_list_lays_out_only_when_the_rows_it_builds_change() {
   assert_eq!(offset.get(), 60.0);
   assert!((1..12).contains(&layouts), "{layouts} layouts");
 }
+
+#[test]
+fn a_current_change_while_the_bar_is_dragged_scrolls_nothing_until_it_lets_go() {
+  let mut h = Harness::new();
+  let items = h.cx.signal((0..100).collect());
+  let offset = h.cx.signal(0.0);
+  let current = h.cx.signal(None);
+  let window = list(
+    &mut h,
+    items,
+    |_| 20,
+    offset,
+    |list| list.current(move || current.get()).scroll_bar(Style::new()),
+  );
+  // 2000 pixels in 100: a 16-pixel handle in 84 pixels of room.
+  window.pointer_motion(Point::new(97.0, 8.0));
+  window.pointer_button_at(crate::PointerButton::Left, true, 0);
+  window.pointer_motion(Point::new(97.0, 50.0));
+  h.frame(&window);
+  let dragged = 42.0 * 1900.0 / 84.0;
+  assert!((offset.get() - dragged).abs() < 0.01, "{}", offset.get());
+  current.set(Some(0));
+  h.frame(&window);
+  assert!((offset.get() - dragged).abs() < 0.01, "the drag keeps it");
+  window.pointer_button_at(crate::PointerButton::Left, false, 100);
+  h.frame(&window);
+  assert!(
+    (offset.get() - dragged).abs() < 0.01,
+    "and so does letting go"
+  );
+  current.set(Some(1));
+  h.frame(&window);
+  assert_eq!(offset.get(), 20.0, "at rest, a change scrolls again");
+}

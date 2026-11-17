@@ -8,7 +8,7 @@ use crabshell_reactive::Signal;
 use super::{Counter, Harness, capture_logs, lift, pixels, rect_at, wheel};
 use crate::{
   Align, Button, Column, Icon, Point, PointerButton, Rect, Row, ScrollSource, ScrollView, Style,
-  Wheel, WheelAxis, Window, advance_animations, animating, next_timer,
+  Wheel, WheelAxis, Window, advance_animations, animating, fire_timers, next_timer,
 };
 
 /// A 20 by 50 view of 30 icons of 20 pixels: 600 pixels, scrolling 550.
@@ -740,4 +740,66 @@ fn a_list_or_a_grid_without_mouse_drag_clicks_a_row_the_mouse_moved_along() {
     window.pointer_button_at(PointerButton::Left, false, time + 200);
   }
   assert_eq!((a.get(), b.get(), clicks.get()), (0.0, 0.0, 2));
+}
+
+#[test]
+fn a_held_track_pages_again_after_300_ms_then_every_50_until_the_handle_reaches_the_pointer() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0);
+  let (window, _) = view(&mut h, offset, |view| view.scroll_bar(Style::new()));
+  // The 16-pixel handle starts at 34 × offset / 550: below it, at 45, it
+  // reaches the pointer once the offset passes 469.
+  window.pointer_motion(Point::new(17.0, 45.0));
+  let pressed = Instant::now();
+  window.pointer_button_at(PointerButton::Left, true, 0);
+  h.frame(&window);
+  assert_eq!(offset.get(), 50.0, "the press pages at once");
+  let first = next_timer().expect("it waits to page again");
+  assert!(first >= pressed + Duration::from_millis(300));
+  assert!(first <= Instant::now() + Duration::from_millis(300));
+  fire_timers(first);
+  h.frame(&window);
+  assert_eq!(offset.get(), 100.0);
+  let mut pages = Vec::new();
+  let mut last: Option<Instant> = None;
+  while let Some(due) = next_timer() {
+    assert!(pages.len() < 20, "{pages:?}");
+    if let Some(last) = last {
+      assert_eq!(due - last, Duration::from_millis(50));
+    }
+    last = Some(due);
+    fire_timers(due);
+    h.frame(&window);
+    pages.push(offset.get());
+  }
+  let paged: Vec<f32> = (3..=10).map(|n| n as f32 * 50.0).collect();
+  assert_eq!(pages[..pages.len() - 1], paged[..], "{pages:?}");
+  assert_eq!(pages.last(), Some(&500.0), "and stopped where it reached");
+  window.pointer_button_at(PointerButton::Left, false, 1000);
+
+  // Released before it repeats, it wakes nothing.
+  window.pointer_motion(Point::new(17.0, 2.0));
+  window.pointer_button_at(PointerButton::Left, true, 2000);
+  h.frame(&window);
+  assert_eq!(offset.get(), 450.0);
+  assert!(next_timer().is_some());
+  window.pointer_button_at(PointerButton::Left, false, 2100);
+  h.frame(&window);
+  assert!(next_timer().is_none() && !animating() && !window.needs_layout());
+  fire_timers(Instant::now() + Duration::from_secs(1));
+  assert_eq!(offset.get(), 450.0);
+}
+
+#[test]
+fn leaving_mid_repeat_stops_it() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0);
+  let (window, _) = view(&mut h, offset, |view| view.scroll_bar(Style::new()));
+  window.pointer_motion(Point::new(17.0, 45.0));
+  window.pointer_button_at(PointerButton::Left, true, 0);
+  fire_timers(next_timer().expect("it waits to page again"));
+  h.frame(&window);
+  assert_eq!(offset.get(), 100.0);
+  window.pointer_leave();
+  assert!(next_timer().is_none());
 }

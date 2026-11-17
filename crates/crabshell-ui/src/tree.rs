@@ -246,6 +246,9 @@ pub(crate) struct ScrollNode {
   pub(crate) shifts: Option<Rc<Cell<f32>>>,
   /// Told whether the view is moving.
   pub(crate) moving: Option<Rc<Cell<bool>>>,
+  /// The timers that page again while the bar's track is held: the
+  /// first wait, then the repeat.
+  pub(crate) repeat: Option<(Timer, Timer)>,
 }
 
 /// One way a scroll view scrolls.
@@ -847,6 +850,7 @@ impl Tree {
           mouse_drag: true,
           shifts: props.shifts.take(),
           moving: props.moving.take(),
+          repeat: None,
         }))
       }
       ElementKind::Image(_) => NodeKind::Image(ImageNode::new()),

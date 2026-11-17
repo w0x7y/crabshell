@@ -2,8 +2,9 @@
 //! and touchpad along its axis, dragging the child, flings and overshoot
 //! on the animation clock, and the scroll bar's handle and track.
 
-use std::rc::Rc;
-use std::time::Instant;
+use std::cell::RefCell;
+use std::rc::{Rc, Weak};
+use std::time::{Duration, Instant};
 
 use crabshell_reactive::{Signal, untrack};
 
@@ -11,7 +12,7 @@ use crate::animation::{self, Spring};
 use crate::geometry::{Point, Rect};
 use crate::input::{DRAG_THRESHOLD, Pointer, ScrollSource, Wheel, WheelAxis, local};
 use crate::scroll::PIXELS_PER_NOTCH;
-use crate::tree::{Axis, Change, NodeId, NodeKind, ScrollNode, Tree};
+use crate::tree::{Axis, Change, Node, NodeId, NodeKind, ScrollNode, Tree};
 
 /// How fast a fling slows, in logical pixels a second each second: Qt's
 /// `flickDeceleration`.
@@ -40,6 +41,11 @@ const SPRING_BACK: Spring = Spring::new(150.0, 1.0);
 /// A spring-back nearer than this many pixels to the end and slower than
 /// this many a second is at rest.
 const REST: (f32, f32) = (0.5, 10.0);
+
+/// How long a press on a scroll bar's track waits before it pages again,
+/// and how often it then pages until the handle reaches the pointer.
+const REPEAT_DELAY: Duration = Duration::from_millis(300);
+const REPEAT_INTERVAL: Duration = Duration::from_millis(50);
 
 /// The most time one tick moves a motion, in seconds, so a stall doesn't
 /// throw the child far.
@@ -214,6 +220,22 @@ impl Axis {
     // The first move happened before the span began.
     let distance: f32 = recent[1..].iter().map(|&(_, delta)| delta).sum();
     (distance * 1000.0 / span as f32).clamp(-MAX_SPEED, MAX_SPEED)
+  }
+
+  /// The offset a press at `point` beside the bar's `handle` pages to: a
+  /// box's length toward it, within the content. `None` level with the
+  /// handle.
+  fn page_toward(&self, handle: Rect, rect: Rect, point: Point, offset: f32) -> Option<f32> {
+    let (start, length) = self.span(handle);
+    let (at, page) = (self.part(point), self.span(rect).1);
+    let to = if at < start {
+      offset - page
+    } else if at > start + length {
+      offset + page
+    } else {
+      return None;
+    };
+    Some(to.clamp(0.0, self.most))
   }
 
   /// Whether `delta` can still move the offset, rather than only push
@@ -735,21 +757,25 @@ impl Tree {
       };
       let from = axis.part(point);
       let on_handle = handle.contains(point);
-      let (start, _) = axis.span(handle);
-      let (_, page) = axis.span(rect);
       let to = if on_handle {
         offset
-      } else if from < start {
-        offset - page
       } else {
-        offset + page
+        axis
+          .page_toward(handle, rect, point, offset)
+          .unwrap_or(offset)
       };
-      let (to, signal) = (to.clamp(0.0, axis.most), axis.signal);
-      // It stops at once, as under any press, until the bar lets go.
+      let signal = axis.signal;
+      // It stops at once, as under any press, until the bar lets go. A
+      // held handle counts as moving, so a list's `current` doesn't
+      // scroll it meanwhile.
       self.update_scroll(id, |scroll| {
         scroll.halt();
+        scroll.set_moving(on_handle);
         Change::None
       });
+      if !on_handle {
+        self.arm_repeat(id);
+      }
       self.pointer.bar = Some(BarDrag {
         view: id,
         axis: n,
@@ -763,6 +789,86 @@ impl Tree {
       return true;
     }
     false
+  }
+
+  /// Pages view `id` again toward the pointer 300 ms from now, then every
+  /// 50 ms, while its track stays held. Each view makes its two timers at
+  /// its first track press and keeps them, stopped, until it goes.
+  fn arm_repeat(&mut self, id: NodeId) {
+    let tree = self.this.clone();
+    let Some(Node {
+      cx,
+      kind: NodeKind::Scroll(scroll),
+      ..
+    }) = self.node_mut(id)
+    else {
+      return;
+    };
+    let (delay, _) = *scroll.repeat.get_or_insert_with(|| {
+      let again = tree.clone();
+      let every = cx
+        .interval(REPEAT_INTERVAL, move || {
+          page_again(&again, id);
+        })
+        .stopped();
+      let delay = cx
+        .after(REPEAT_DELAY, move || {
+          if page_again(&tree, id) {
+            every.restart();
+          }
+        })
+        .stopped();
+      (delay, every)
+    });
+    delay.restart();
+  }
+
+  /// Lets go of the scroll bar held, if any: its repeat stops, and a
+  /// handle held past an end springs back.
+  pub(crate) fn release_bar(&mut self) {
+    let Some(bar) = self.pointer.bar.take() else {
+      return;
+    };
+    self.stop_repeat(bar.view);
+    self.release_view(bar.view, None);
+  }
+
+  fn stop_repeat(&self, id: NodeId) {
+    if let Some((delay, every)) = self.scroll_node(id).and_then(|scroll| scroll.repeat) {
+      delay.stop();
+      every.stop();
+    }
+  }
+
+  /// Pages view `id` once toward the pointer while its track is held,
+  /// until its handle reaches the pointer or an end. Returns whether it
+  /// paged.
+  fn page_toward_pointer(&mut self, id: NodeId) -> bool {
+    let Some(bar) = self.pointer.bar.filter(|bar| bar.view == id && !bar.handle) else {
+      return false;
+    };
+    let point = self
+      .pointer
+      .position
+      .and_then(|at| self.local_point(id, at));
+    let (Some(point), Some(scroll), Some(rect)) = (
+      point,
+      self.scroll_node(id),
+      self.node(id).and_then(|node| node.rect),
+    ) else {
+      return false;
+    };
+    let axis = &scroll.axes[bar.axis];
+    let (Some((_, handle)), Some(offset)) = (axis.handle, axis.current()) else {
+      return false;
+    };
+    match axis.page_toward(handle, rect, point, offset) {
+      Some(to) if to != offset => {
+        axis.signal.try_set(to);
+        true
+      }
+      _ => false,
+    }
   }
 
   /// Whether a press may go to scroll view `id`: nothing is hovered, or
@@ -802,6 +908,23 @@ impl Tree {
       axis.signal.try_set(to);
     }
   }
+}
+
+/// Pages view `id` of `tree` again toward the pointer, or stops its
+/// repeat. Returns whether it paged.
+fn page_again(tree: &Weak<RefCell<Tree>>, id: NodeId) -> bool {
+  let Some(tree) = tree.upgrade() else {
+    return false;
+  };
+  // Timers fire from the loop, never while a tree is borrowed.
+  let Ok(mut tree) = tree.try_borrow_mut() else {
+    return false;
+  };
+  let paged = tree.page_toward_pointer(id);
+  if !paged {
+    tree.stop_repeat(id);
+  }
+  paged
 }
 
 /// What one tick of a motion moves: view `id` along `axis`, in its motion
