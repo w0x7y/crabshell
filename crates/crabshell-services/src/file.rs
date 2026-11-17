@@ -45,7 +45,7 @@ pub(crate) struct Files(pub(crate) Rc<Shared>);
 // so a target replaced by a rename in its own directory isn't seen, while
 // writes to it are, through its inode; follow the link when a config
 // needs that.
-struct Follow {
+pub(crate) struct Follow {
   shared: Rc<Shared>,
   path: PathBuf,
   watch: RefCell<Option<Watch>>,
@@ -61,7 +61,11 @@ struct Follow {
 impl Follow {
   /// Calls `changed` when the file at `path` may have changed: written,
   /// replaced or removed.
-  fn new(shared: &Rc<Shared>, path: PathBuf, changed: impl Fn() + 'static) -> Rc<Follow> {
+  pub(crate) fn new(
+    shared: &Rc<Shared>,
+    path: PathBuf,
+    changed: impl Fn() + 'static,
+  ) -> Rc<Follow> {
     let follow = Rc::new(Follow {
       shared: Rc::clone(shared),
       path,
@@ -114,12 +118,12 @@ impl Follow {
           }
           follow.read();
         }
-        // Not on a create, when a writer hasn't written yet: its
+        // Not on a file's create, when a writer hasn't written yet: its
         // writes or its close come next. One that wrote before the
         // watch on the new file was in is read after [`WRITING`].
         Some(changed) if *changed == next && own => {
           follow.watch_file();
-          if !change.mask.contains(EventMask::CREATE) {
+          if !change.mask.contains(EventMask::CREATE) || change.mask.contains(EventMask::ISDIR) {
             follow.read();
           } else if follow.path.metadata().is_ok_and(|meta| meta.len() > 0) {
             follow.written();
@@ -220,7 +224,7 @@ impl Drop for Follow {
 }
 
 /// Keeps a file's watch for as long as the opening context's owner.
-struct Keep<T>(#[allow(dead_code, reason = "held for its drop")] Rc<T>);
+pub(crate) struct Keep<T>(#[allow(dead_code, reason = "held for its drop")] pub(crate) Rc<T>);
 
 /// A text file, from `cx.file_view(path)`. Its text is read at once and
 /// again when it changes on disk. A clone is cheap and shares it.
@@ -255,7 +259,7 @@ pub enum FileErrorKind {
 }
 
 impl FileError {
-  fn new(kind: FileErrorKind, message: &str) -> FileError {
+  pub(crate) fn new(kind: FileErrorKind, message: &str) -> FileError {
     let message = message.to_owned();
     FileError { kind, message }
   }
@@ -501,7 +505,7 @@ fn read_text(path: &Path) -> Result<String, FileError> {
 
 /// `path` opened to read, if it is a regular file. The open doesn't wait,
 /// as it would for a writer on a pipe put there since a check.
-fn open_file(path: &Path) -> Result<std::fs::File, FileError> {
+pub(crate) fn open_file(path: &Path) -> Result<std::fs::File, FileError> {
   use rustix::fs::{Mode, OFlags};
 
   let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC;
@@ -565,7 +569,7 @@ fn write_whole(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 /// Sets `signal` unless it holds `value` or is gone. The read is
 /// untracked, so an effect that opens a file doesn't run again for it.
-fn set<T: PartialEq + 'static>(signal: Signal<T>, value: T) {
+pub(crate) fn set<T: PartialEq + 'static>(signal: Signal<T>, value: T) {
   if untrack(|| signal.try_with(|old| *old != value)) == Some(true) {
     signal.try_set(value);
   }

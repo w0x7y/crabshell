@@ -23,6 +23,7 @@ mod clock;
 mod dbus;
 mod desktop_entries;
 mod file;
+mod folder;
 mod greetd;
 mod http;
 mod hyprland;
@@ -72,6 +73,7 @@ pub use brightness::{Backlight, Brightness};
 pub use clock::Precision;
 pub use desktop_entries::{DesktopAction, DesktopEntries, DesktopEntry};
 pub use file::{FileError, FileErrorKind, FileView};
+pub use folder::{FolderEntry, FolderView};
 pub use greetd::{GreetMessage, GreetState, Greetd};
 pub use http::{Http, HttpError, HttpErrorKind};
 pub use hyprland::{Hyprland, HyprlandEvent, HyprlandMonitor, HyprlandToplevel, HyprlandWorkspace};
@@ -368,6 +370,17 @@ pub trait ServicesExt {
   /// slow disk delays the frame.
   fn file_view(&self, path: impl Into<PathBuf>) -> FileView;
 
+  /// The folder at `path`, as Quickshell's `FolderListModel`: its
+  /// entries, read at the next flush and again once the loop has
+  /// dispatched a burst of changes in it, and followed as `file_view`
+  /// follows a file when the folder is made later, removed or replaced.
+  /// `path` takes a value or a closure; a new path follows the new
+  /// folder, and a panic in the closure is logged and empties the view
+  /// until the next change. Each call reads its own, which goes with
+  /// this context. It is read on the main thread, and wakes the shell
+  /// only when the folder changes.
+  fn folder_view(&self, path: impl IntoProp<PathBuf>) -> FolderView;
+
   /// greetd, for a greeter: makes a session for a user, answers its
   /// questions and starts it, over the socket `GREETD_SOCK` names. One
   /// connection per shell, made at the first request; it wakes the shell
@@ -517,6 +530,11 @@ impl ServicesExt for Cx {
 
   fn file_view(&self, path: impl Into<PathBuf>) -> FileView {
     file::file_view(self, path.into())
+  }
+
+  #[track_caller]
+  fn folder_view(&self, path: impl IntoProp<PathBuf>) -> FolderView {
+    folder::folder_view(self, path, std::panic::Location::caller())
   }
 
   fn greetd(&self) -> Greetd {
@@ -705,6 +723,10 @@ trait EventLoop {
   /// Removes a source. One that is already gone is ignored.
   fn remove(&self, token: RegistrationToken);
 
+  /// Calls `idle` once the loop has dispatched what is ready, before it
+  /// sleeps again.
+  fn insert_idle(&self, idle: Box<dyn FnOnce()>);
+
   /// Adds the services' executor. `false`, logged, if the loop refused it.
   fn insert_executor(&self, executor: Executor<()>) -> bool;
 
@@ -763,6 +785,10 @@ impl<D: 'static> EventLoop for LoopHandle<'static, D> {
 
   fn remove(&self, token: RegistrationToken) {
     LoopHandle::remove(self, token);
+  }
+
+  fn insert_idle(&self, idle: Box<dyn FnOnce()>) {
+    LoopHandle::insert_idle(self, move |_| idle());
   }
 
   fn insert_executor(&self, executor: Executor<()>) -> bool {
