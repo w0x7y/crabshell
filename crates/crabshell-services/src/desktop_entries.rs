@@ -264,9 +264,18 @@ fn launch(service: &Rc<Service>, app: &DesktopEntry, action: Option<&str>) {
   let shared = Rc::clone(&service.shared);
   shared.spawn(async move {
     let activated = activate(&service.shared, address, &app.id, path, action.as_deref()).await;
-    if let Err(error) = activated {
-      tracing::warn!(id = app.id, %error, "couldn't start the application over D-Bus");
-      run(&service, &app, &exec);
+    match activated {
+      Ok(()) => {}
+      Err((error, true)) => {
+        tracing::warn!(id = app.id, %error, "couldn't start the application over D-Bus");
+        run(&service, &app, &exec);
+      }
+      // It may have started all the same, and a second would open twice.
+      Err((error, false)) => tracing::warn!(
+        id = app.id,
+        %error,
+        "the application didn't answer its start over D-Bus; not running its Exec"
+      ),
     }
   });
 }
@@ -282,15 +291,18 @@ fn object_path(id: &str) -> Option<OwnedObjectPath> {
 
 /// Calls `Activate`, or `ActivateAction` for `action`, on the
 /// application `id` at `path` on the session bus, which starts it first
-/// if it isn't running.
+/// if it isn't running. An error comes with whether the call surely
+/// never reached the app: no bus, or a refusal from the bus or from an
+/// app without that object or method.
 async fn activate(
   shared: &Shared,
   address: zbus::Address,
   id: &str,
   path: OwnedObjectPath,
   action: Option<&str>,
-) -> zbus::Result<()> {
-  let connection = zbus::connection::Builder::address(address).build().await?;
+) -> Result<(), (zbus::Error, bool)> {
+  let built = zbus::connection::Builder::address(address).build().await;
+  let connection = built.map_err(|error| (error, true))?;
   // No startup notification or activation token: the shell has neither.
   let platform_data = HashMap::<&str, zbus::Variant<'_>>::new();
   let (destination, interface) = (Some(id), Some(APPLICATION));
@@ -306,7 +318,32 @@ async fn activate(
       shared.timeout(CALL_TIMEOUT, call).await
     }
   };
-  reply.map(drop)
+  reply.map(drop).map_err(|error| {
+    let refused = refused(&error);
+    (error, refused)
+  })
+}
+
+/// Whether `error` says the call reached no app: no one owns the name,
+/// and the bus can't start one, or the app has no such object or method.
+fn refused(error: &zbus::Error) -> bool {
+  const REFUSALS: [&str; 4] = [
+    "org.freedesktop.DBus.Error.ServiceUnknown",
+    "org.freedesktop.DBus.Error.NameHasNoOwner",
+    "org.freedesktop.DBus.Error.UnknownObject",
+    "org.freedesktop.DBus.Error.UnknownMethod",
+  ];
+  match error {
+    zbus::Error::MethodError(name, _, _) => REFUSALS.contains(&name.as_str()),
+    zbus::Error::FDO(error) => matches!(
+      **error,
+      zbus::fdo::Error::ServiceUnknown(_)
+        | zbus::fdo::Error::NameHasNoOwner(_)
+        | zbus::fdo::Error::UnknownObject(_)
+        | zbus::fdo::Error::UnknownMethod(_)
+    ),
+    _ => false,
+  }
 }
 
 /// Runs `exec`, `app`'s or one of its actions', apart from the shell.

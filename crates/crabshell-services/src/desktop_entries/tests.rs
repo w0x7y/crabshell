@@ -484,6 +484,20 @@ fn a_d_bus_application_is_activated_and_falls_back_to_its_exec() {
   run(&mut shell, 100);
   assert!(!out.exists(), "Exec didn't run");
 
+  // An app that got the call and failed may have started anyway, so
+  // Exec doesn't run, as after a timeout.
+  fake.on("Activate", |call| {
+    use zbus::DBusError;
+    Some(zbus::fdo::Error::Failed("busy".into()).create_reply(&call.header()))
+  });
+  let logs = capture_logs(|| {
+    entries.launch("org.example.Notes");
+    shell.retry_until("the failure", || fake.calls.borrow().len() == 3, |_| {});
+    run(&mut shell, 200);
+  });
+  assert!(logs.contains("not running its Exec"), "{logs}");
+  assert!(!out.exists(), "Exec didn't run");
+
   // Nobody owns the name now, and the bus starts nothing.
   fake.leave(&mut shell);
   let logs = capture_logs(|| {
