@@ -12,7 +12,7 @@
 //! services. `CONTROL_TODAY=2026-11-16` pins the calendar's date, as the
 //! tests do.
 
-use crabshell::jiff::{Zoned, civil::Date};
+use crabshell::jiff::civil::Date;
 use crabshell::prelude::*;
 
 const TEXT: Color = Color::rgb(0xcd, 0xd6, 0xf4);
@@ -93,41 +93,19 @@ pub fn setup(cx: &Cx) {
   cx.per_output(move |cx, output| panel(cx, output, sink, today, notifications));
 }
 
-/// Today's date, or `CONTROL_TODAY`'s. It moves on at midnight, on a
-/// timer that wakes the shell once a day, never every minute as a clock
-/// would.
-pub fn today(cx: &Cx) -> ReadSignal<Date> {
-  if let Some(date) = std::env::var("CONTROL_TODAY")
+/// Today's date, or `CONTROL_TODAY`'s. It moves on at midnight, from a
+/// day clock that wakes the shell once a day, never every minute as a
+/// minute clock would, and is right again as soon as the machine wakes
+/// from a suspend over midnight.
+pub fn today(cx: &Cx) -> Memo<Date> {
+  let pinned: Option<Date> = std::env::var("CONTROL_TODAY")
     .ok()
-    .and_then(|date| date.parse().ok())
-  {
-    return cx.signal(date).read_only();
+    .and_then(|date| date.parse().ok());
+  if let Some(date) = pinned {
+    return cx.memo(move || date);
   }
-  let today = cx.signal(Zoned::now().date());
-  let parent = cx.clone();
-  // The day's timer lives in a context of its own, freed at the next.
-  let mut day: Option<Cx> = None;
-  cx.effect(move || {
-    today.get();
-    if let Some(old) = day.take() {
-      old.owner().dispose();
-    }
-    let Some(wait) = until_midnight(&Zoned::now()) else {
-      return;
-    };
-    let child = parent.child();
-    child.after(wait, move || today.set(Zoned::now().date()));
-    day = Some(child);
-  });
-  today.read_only()
-}
-
-/// How long from `now` until the next day starts in its time zone: 23 or
-/// 25 hours from one midnight to the next on a day the clocks change.
-/// `None` past the last date jiff knows.
-pub fn until_midnight(now: &Zoned) -> Option<Duration> {
-  let midnight = now.tomorrow().ok()?.start_of_day().ok()?;
-  Duration::try_from(now.duration_until(&midnight)).ok()
+  let day = cx.clock(Precision::Day);
+  cx.memo(move || day.get().date())
 }
 
 /// The control center on `output`, for `sink`, `today` and the
@@ -136,7 +114,7 @@ pub fn panel(
   cx: &Cx,
   output: &Output,
   sink: ReadSignal<Option<Sink>>,
-  today: ReadSignal<Date>,
+  today: Memo<Date>,
   notifications: ReadSignal<Vec<Notification>>,
 ) -> PanelWindow {
   PanelWindow::new(output)
@@ -240,7 +218,7 @@ fn chips(cx: &Cx) -> Row {
 }
 
 /// `today`'s month, Monday first, with today marked.
-fn calendar(today: ReadSignal<Date>) -> Column {
+fn calendar(today: Memo<Date>) -> Column {
   let cell = |text: String, style: Style| {
     Row::new()
       .style(style)

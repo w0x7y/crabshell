@@ -4012,18 +4012,19 @@ fn wait_for_volume(server: &PrivateServer, percent: u32) {
   }
 }
 
-/// The control example's calendar, unpinned, shows today, and the timer
-/// that moves it on at midnight wakes nothing before then and goes with
-/// its context.
+/// The control center's day comes from a day clock, which wakes nothing
+/// before midnight, and the date read from it goes with its context.
 #[test]
 #[ignore = "needs headless Sway"]
 fn the_control_centers_day_sleeps_until_midnight_and_goes_with_its_context() {
-  type Held = (Cx, ReadSignal<crabshell::jiff::civil::Date>, usize);
+  type Held = (Cx, Memo<crabshell::jiff::civil::Date>, usize);
   let sway = Sway::start();
   let runtime = Runtime::current();
   let held: Rc<std::cell::RefCell<Option<Held>>> = Rc::default();
   let into = Rc::clone(&held);
   let mut shell = Shell::new(sway.connect(), move |cx| {
+    // The day clock is the root's, shared by every caller.
+    cx.clock(Precision::Day);
     let nodes = Runtime::current().node_count();
     let child = cx.child();
     let today = control::today(&child);
@@ -4031,17 +4032,16 @@ fn the_control_centers_day_sleeps_until_midnight_and_goes_with_its_context() {
   })
   .expect("the root closure runs");
   let (child, today, nodes) = held.borrow_mut().take().expect("the root closure ran");
-  shell
-    .dispatch(Some(Duration::from_millis(20)))
-    .expect("the connection works");
+  // Until the first frame, and the clock's system bus watch, are done.
+  let settled = (0..50).any(|_| {
+    let started = Instant::now();
+    shell
+      .dispatch(Some(Duration::from_millis(300)))
+      .expect("the connection works");
+    started.elapsed() >= Duration::from_millis(290)
+  });
+  assert!(settled, "the loop never slept");
   assert_eq!(today.get_untracked(), crabshell::jiff::Zoned::now().date());
-  // Armed, and due at midnight.
-  let due = crabshell_ui::next_timer().expect("the day's timer is armed");
-  let midnight = control::until_midnight(&crabshell::jiff::Zoned::now()).expect("a midnight");
-  let off = due
-    .saturating_duration_since(Instant::now())
-    .abs_diff(midnight);
-  assert!(off < Duration::from_secs(1), "due {off:?} from midnight");
   let before = shell.platform().stats().iterations;
   let started = Instant::now();
   shell
@@ -4052,33 +4052,7 @@ fn the_control_centers_day_sleeps_until_midnight_and_goes_with_its_context() {
   assert_eq!(shell.platform().stats().iterations, before + 1);
   child.owner().dispose();
   runtime.flush();
-  assert_eq!(runtime.node_count(), nodes, "the day's timer was freed");
-}
-
-/// The wait until the next midnight in the time zone of `at`, from the
-/// control example.
-fn until_midnight_from(at: &str) -> Duration {
-  let now: crabshell::jiff::Zoned = at.parse().expect("a zoned time");
-  control::until_midnight(&now).expect("a midnight")
-}
-
-#[test]
-fn the_control_center_waits_until_midnight_however_long_the_day() {
-  assert_eq!(
-    until_midnight_from("2026-11-16T23:59:30+00:00[UTC]"),
-    Duration::from_secs(30)
-  );
-  // New York's clocks go forward an hour on 2026-03-08 and back on
-  // 2026-11-01, so those days last 23 and 25 hours.
-  let hours = |h: u64| Duration::from_secs(h * 3600);
-  assert_eq!(
-    until_midnight_from("2026-03-08T00:00:00-05:00[America/New_York]"),
-    hours(23)
-  );
-  assert_eq!(
-    until_midnight_from("2026-11-01T00:00:00-04:00[America/New_York]"),
-    hours(25)
-  );
+  assert_eq!(runtime.node_count(), nodes, "the date was freed");
 }
 
 /// The control example's highlight and panel colors, from
@@ -4173,14 +4147,15 @@ fn the_control_centers_highlight_follows_the_pointer_and_its_fling_rests() {
   let mut pointer = VirtualPointer::new(&sway);
   let mut shell = Shell::new(sway.connect(), move |cx| {
     let sink = cx.signal(Some(sink_at(50)));
-    let today = cx.signal(CONTROL_TODAY.parse().expect("a date"));
+    let date = CONTROL_TODAY.parse().expect("a date");
+    let today = cx.memo(move || date);
     let notifications = cx.signal(twelve_notifications());
     cx.per_output(move |cx, output| {
       control::panel(
         cx,
         output,
         sink.read_only(),
-        today.read_only(),
+        today,
         notifications.read_only(),
       )
     });
