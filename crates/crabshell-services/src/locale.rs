@@ -21,11 +21,19 @@ mod tests;
 /// The most `locale` may print. glibc's `LC_TIME` is about 2 KiB.
 const MAX_OUTPUT: u64 = 64 * 1024;
 
+/// The most of `locale`'s warnings kept; the rest is read and dropped.
+const MAX_WARNINGS: u64 = 4096;
+
 /// The names dates are written with in a locale.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Locale {
-  /// January first, as `%B` writes them.
+  /// January first, as `%B` writes them: the form used inside a date,
+  /// genitive in Polish, Russian, Ukrainian, Czech and others, so a
+  /// calendar's header uses [`months_standalone`](Self::months_standalone).
   pub months: [String; 12],
+  /// January first, as a month is named on its own, from glibc's
+  /// `alt_mon`; the same as `months` in a locale without it.
+  pub months_standalone: [String; 12],
   /// January first, as `%b` writes them.
   pub months_short: [String; 12],
   /// Monday first, as `%A` writes them.
@@ -43,10 +51,12 @@ impl Default for Locale {
   /// English, as the C locale writes it.
   fn default() -> Locale {
     let names = |list: &str| list.split(';').map(str::to_owned).collect::<Vec<_>>();
+    let months: [String; 12] = array(names(
+      "January;February;March;April;May;June;July;August;September;October;November;December",
+    ));
     Locale {
-      months: array(names(
-        "January;February;March;April;May;June;July;August;September;October;November;December",
-      )),
+      months_standalone: months.clone(),
+      months,
       months_short: array(names("Jan;Feb;Mar;Apr;May;Jun;Jul;Aug;Sep;Oct;Nov;Dec")),
       weekdays: array(names(
         "Monday;Tuesday;Wednesday;Thursday;Friday;Saturday;Sunday",
@@ -60,8 +70,10 @@ impl Default for Locale {
 
 impl Locale {
   /// `time` written as `format` says, as jiff's `strftime` does, with
-  /// `%a`, `%A`, `%b`, `%h`, `%B` and `%p` in this locale. A format jiff
-  /// can't write is logged and gives an empty string.
+  /// `%a`, `%A`, `%b`, `%h`, `%B` and `%p` in this locale. Before those,
+  /// `^` uppercases the name, `#` changes its case as glibc's does, and
+  /// other flags and a width are ignored. A format jiff can't write is
+  /// logged and gives an empty string.
   pub fn strftime(&self, time: &Zoned, format: &str) -> String {
     let mut filled = String::with_capacity(format.len());
     let mut chars = format.chars();
@@ -70,9 +82,17 @@ impl Locale {
         filled.push(c);
         continue;
       }
+      // jiff's flags and a width may come first.
+      let mut spec = String::new();
+      let conversion = loop {
+        match chars.next() {
+          Some(flag @ ('-' | '_' | '^' | '#' | '0'..='9')) => spec.push(flag),
+          other => break other,
+        }
+      };
       let weekday = time.weekday().to_monday_zero_offset() as usize;
       let month = (time.month() - 1) as usize;
-      let name = match chars.next() {
+      let name = match conversion {
         Some('a') => &self.weekdays_short[weekday],
         Some('A') => &self.weekdays[weekday],
         Some('b' | 'h') => &self.months_short[month],
@@ -80,9 +100,19 @@ impl Locale {
         Some('p') => &self.am_pm[usize::from(time.hour() >= 12)],
         other => {
           filled.push('%');
+          filled.push_str(&spec);
           filled.extend(other);
           continue;
         }
+      };
+      // `^` uppercases a name, and `#` does too, but lowercases `%p`, as
+      // glibc's do; padding is dropped.
+      let name = if spec.contains('#') && conversion == Some('p') {
+        name.to_lowercase()
+      } else if spec.contains(['^', '#']) {
+        name.to_uppercase()
+      } else {
+        name.clone()
       };
       // Names go to jiff as literal text.
       filled.push_str(&name.replace('%', "%%"));
@@ -98,6 +128,7 @@ impl Locale {
   pub(crate) fn parse(output: &str) -> Locale {
     let mut locale = Locale::default();
     let (mut start, mut first) = (Weekday::Sunday, 1_i64);
+    let mut standalone = None;
     for line in output.lines() {
       let Some((key, value)) = line.split_once('=') else {
         continue;
@@ -107,6 +138,7 @@ impl Locale {
       let sunday_first = |names: Vec<String>| (names.len() == 7).then(|| monday_first(names));
       match key {
         "mon" => locale.months = array_or(names(), locale.months),
+        "alt_mon" => standalone = names().try_into().ok(),
         "abmon" => locale.months_short = array_or(names(), locale.months_short),
         "day" => locale.weekdays = sunday_first(names()).unwrap_or(locale.weekdays),
         "abday" => locale.weekdays_short = sunday_first(names()).unwrap_or(locale.weekdays_short),
@@ -128,6 +160,7 @@ impl Locale {
       }
     }
     locale.first_weekday = start.wrapping_add(first - 1);
+    locale.months_standalone = standalone.unwrap_or_else(|| locale.months.clone());
     locale
   }
 }
@@ -233,6 +266,16 @@ fn run_locale(name: &str) -> Result<String, String> {
     .stderr(Stdio::piped())
     .spawn()
     .map_err(|error| format!("locale didn't start: {error}"))?;
+  // Read on a thread of its own, so a full pipe of either never stops
+  // the other. glibc warns there when the locale isn't installed, and
+  // prints C's.
+  let mut stderr = child.stderr.take().expect("stderr is piped");
+  let warnings = std::thread::spawn(move || {
+    let mut kept = Vec::new();
+    let _ = (&mut stderr).take(MAX_WARNINGS).read_to_end(&mut kept);
+    let _ = std::io::copy(&mut stderr, &mut std::io::sink());
+    String::from_utf8_lossy(&kept).into_owned()
+  });
   let mut output = String::new();
   let read = child
     .stdout
@@ -243,11 +286,7 @@ fn run_locale(name: &str) -> Result<String, String> {
   if read.is_err() || output.len() as u64 > MAX_OUTPUT {
     let _ = child.kill();
   }
-  // glibc warns here when the locale isn't installed, and prints C's.
-  let mut warning = String::new();
-  if let Some(stderr) = child.stderr.take() {
-    let _ = stderr.take(4096).read_to_string(&mut warning);
-  }
+  let warning = warnings.join().unwrap_or_default();
   let status = child.wait().map_err(|error| error.to_string())?;
   if let Some(line) = warning.lines().next() {
     return Err(line.to_owned());

@@ -28,6 +28,13 @@ week-ndays=7
 week-1stday=19971130
 week-1stweek=4
 first_weekday=2
+alt_mon="Januar;Februar;März;April;Mai;Juni;Juli;August;September;Oktober;November;Dezember"
+"#;
+
+/// What glibc 2.43's `locale -k LC_TIME` prints for `pl_PL.UTF-8`, in
+/// part: a month inside a date is genitive.
+const POLISH: &str = r#"mon="stycznia;lutego;marca;kwietnia;maja;czerwca;lipca;sierpnia;września;października;listopada;grudnia"
+alt_mon="styczeń;luty;marzec;kwiecień;maj;czerwiec;lipiec;sierpień;wrzesień;październik;listopad;grudzień"
 "#;
 
 #[test]
@@ -51,6 +58,30 @@ fn german_has_its_own_names_and_starts_on_monday() {
   assert_eq!(locale.weekdays_short[2], "Mi");
   assert_eq!(locale.am_pm, [String::new(), String::new()]);
   assert_eq!(locale.first_weekday, Weekday::Monday);
+}
+
+#[test]
+fn standalone_months_come_from_alt_mon_or_else_mon() {
+  let polish = Locale::parse(POLISH);
+  assert_eq!(polish.months[2], "marca");
+  assert_eq!(polish.months_standalone[2], "marzec");
+  let without = Locale::parse("mon=\"a;b;c;d;e;f;g;h;i;j;k;l\"");
+  assert_eq!(without.months_standalone, without.months);
+  assert_eq!(Locale::default().months_standalone[0], "January");
+}
+
+#[test]
+fn flags_and_a_width_before_a_name_keep_the_locale() {
+  let time = monday_afternoon();
+  let german = Locale::parse(GERMAN);
+  assert_eq!(
+    german.strftime(&time, "%^a %-B %10A %_b %^B"),
+    "MO März Montag Mär MÄRZ"
+  );
+  let english = Locale::default();
+  assert_eq!(english.strftime(&time, "%#p %^p %#A"), "pm PM MONDAY");
+  // Other conversions keep their flags for jiff.
+  assert_eq!(english.strftime(&time, "%-d %^a %5Y"), "2 MON 02026");
 }
 
 #[test]
