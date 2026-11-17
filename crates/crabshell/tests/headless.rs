@@ -4744,24 +4744,7 @@ fn the_dashboard_matches_its_goldens() {
       let [r, g, b] = rgb(shot, (70.0 * factor) as u32, (200.0 * factor) as u32);
       r.abs_diff(0xf3) <= 6 && g.abs_diff(0x8b) <= 6 && b.abs_diff(0xa8) <= 6
     });
-    // The wallpaper and the blurred art behind the player are decoded off
-    // the loop, and come in on their own: past the dashboard, in the
-    // output's pixels, and in the player's card.
-    let golden =
-      Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/golden/dashboard@{scale}x.png"));
-    if let Ok(bytes) = std::fs::read(&golden) {
-      let golden = Image::decode(&bytes);
-      for at in [
-        (1200, 780),
-        ((520.0 * factor) as u32, (280.0 * factor) as u32),
-      ] {
-        let wanted = rgb(&golden, at.0, at.1);
-        wait_for_shot(&sway, "HEADLESS-1", "a decoded picture", |shot| {
-          let shown = rgb(shot, at.0, at.1);
-          shown.iter().zip(wanted).all(|(a, b)| a.abs_diff(b) <= 6)
-        });
-      }
-    }
+    wait_for_decoded_pictures(&sway, scale);
     let shot = steady_shot(&sway, "HEADLESS-1");
     check_golden(&format!("dashboard@{scale}x"), &shot, shot.height);
   }
@@ -4818,8 +4801,32 @@ fn a_config_without_an_icon_theme_gets_gtks_and_its_own_wins_over_it() {
     let [r, g, b] = rgb(shot, 70, 200);
     r.abs_diff(0xf3) <= 6 && g.abs_diff(0x8b) <= 6 && b.abs_diff(0xa8) <= 6
   });
+  wait_for_decoded_pictures(&sway, "1");
   let shot = steady_shot(&sway, "HEADLESS-1");
   check_golden("dashboard@1x", &shot, shot.height);
+}
+
+/// Waits for the dashboard's wallpaper and the blurred art behind its
+/// player, decoded off the loop, to match its golden at `scale`: past the
+/// dashboard, in the output's pixels, and in the player's card.
+fn wait_for_decoded_pictures(sway: &Sway, scale: &str) {
+  let golden =
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/golden/dashboard@{scale}x.png"));
+  let Ok(bytes) = std::fs::read(&golden) else {
+    return;
+  };
+  let golden = Image::decode(&bytes);
+  let factor: f32 = scale.parse().expect("a scale");
+  for at in [
+    (1200, 780),
+    ((520.0 * factor) as u32, (280.0 * factor) as u32),
+  ] {
+    let wanted = rgb(&golden, at.0, at.1);
+    wait_for_shot(sway, "HEADLESS-1", "a decoded picture", |shot| {
+      let shown = rgb(shot, at.0, at.1);
+      shown.iter().zip(wanted).all(|(a, b)| a.abs_diff(b) <= 6)
+    });
+  }
 }
 
 #[test]
