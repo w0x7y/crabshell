@@ -3,16 +3,17 @@
 //! `ext-output-image-capture-source-v1`, and windows, with
 //! `ext-foreign-toplevel-image-capture-source-v1`.
 //!
-//! Each view a shown window holds gets one session for its source, and a
-//! shared-memory buffer of the size the session asks for. A frame copies
-//! the source into the buffer; on `ready` the pixels go to the view, and
-//! a live view asks for the next frame, which the compositor answers only
-//! once the source changes.
+//! The views of one source and cursor mode in the shown windows share
+//! one session, with a shared-memory buffer of the size the session asks
+//! for. A frame copies the source into the buffer; on `ready` the pixels
+//! are cut once for the largest view and go to each, and while one of
+//! them is live the session asks for the next frame, which the
+//! compositor answers only once the source changes.
 
 use std::time::Instant;
 
 use crabshell_render::{PixelFormat, Turn};
-use crabshell_ui::{CaptureRequest, CaptureSource};
+use crabshell_ui::{CaptureFrame, CaptureRequest, CaptureSource};
 use smithay_client_toolkit::reexports::client::protocol::wl_output::WlOutput;
 use smithay_client_toolkit::reexports::client::protocol::wl_shm;
 use smithay_client_toolkit::reexports::client::{
@@ -53,8 +54,8 @@ const READABLE: [wl_shm::Format; 4] = [
   wl_shm::Format::Xrgb8888,
 ];
 
-/// The views shown, and the protocols they need, bound when the first
-/// one shows.
+/// The views shown, the sessions they share, and the protocols they
+/// need, bound when the first view shows.
 #[derive(Default)]
 pub(crate) struct Captures {
   /// Whether a view showed, so the managers are bound once at most.
@@ -64,22 +65,34 @@ pub(crate) struct Captures {
   /// Windows to capture, once a view of one asks.
   pub(crate) toplevels: ExtToplevels,
   views: Vec<View>,
+  /// One for each source and cursor mode a view still captures.
+  sessions: Vec<Session>,
 }
 
-/// A view a shown window holds, and its capture.
+/// A view a shown window holds.
 struct View {
   window: WindowId,
   request: CaptureRequest,
   /// What the source is now; `None` while it isn't there.
   target: Option<Target>,
-  /// `None` while waiting for the target, and once a capture ended: a
-  /// one-shot view's frame came, or the source stopped.
-  session: Option<Session>,
-  /// The box the last frame was cut for, in buffer pixels, and whether
-  /// that frame was the source's whole size, which a larger box can't
-  /// improve on.
+  /// Whether its capture ended: a one-shot view's frame came, or the
+  /// source stopped. It takes no session again until its source changes
+  /// or its box outgrows its frame.
+  ended: bool,
+  /// The box the last frame it got was cut for, in buffer pixels, and
+  /// whether that frame was the source's whole size, which a larger box
+  /// can't improve on.
   cover: (u32, u32),
   whole: bool,
+}
+
+impl View {
+  /// Whether `session` captures for this view.
+  fn takes(&self, session: &Session) -> bool {
+    !self.ended
+      && self.target.as_ref() == Some(&session.target)
+      && self.request.paint_cursors == session.cursors
+  }
 }
 
 /// A source the compositor knows.
@@ -91,6 +104,8 @@ enum Target {
 
 /// A capture session and its buffer, destroyed when dropped.
 struct Session {
+  target: Target,
+  cursors: bool,
   proxy: ExtImageCopyCaptureSessionV1,
   /// The constraints announced since the last `done`.
   size: Option<(u32, u32)>,
@@ -100,11 +115,15 @@ struct Session {
   frame: Option<(ExtImageCopyCaptureFrameV1, Instant)>,
   /// How the compositor turned the frame being captured.
   turn: Turn,
-  /// A live view's next frame waits for its window to draw this one, so
-  /// frames come no faster than the window shows them.
-  wanted: bool,
+  /// The windows that showed the last frame. A live session's next frame
+  /// waits for one of them to draw it, so frames come no faster than they
+  /// show. Empty while none waits.
+  waiting: Vec<WindowId>,
   /// Whether a failure was tried again since the last frame.
   retried: bool,
+  /// The last frame, the box it was cut for and whether it was whole, for
+  /// a view that joins later.
+  last: Option<(CaptureFrame, (u32, u32), bool)>,
 }
 
 impl Drop for Session {
@@ -127,13 +146,18 @@ struct CaptureBuffer {
 }
 
 impl Captures {
-  fn view(&mut self, proxy: &ExtImageCopyCaptureSessionV1) -> Option<&mut View> {
-    self.views.iter_mut().find(|view| {
-      view
-        .session
-        .as_ref()
-        .is_some_and(|ours| ours.proxy == *proxy)
-    })
+  fn session(&self, proxy: &ExtImageCopyCaptureSessionV1) -> Option<usize> {
+    self.sessions.iter().position(|ours| ours.proxy == *proxy)
+  }
+
+  /// Ends session `index`, and the capture of each view it took.
+  fn end(&mut self, index: usize) {
+    let session = self.sessions.remove(index);
+    for view in &mut self.views {
+      if view.takes(&session) {
+        view.ended = true;
+      }
+    }
   }
 
   /// A session for `target`, or `None` without the protocols.
@@ -155,14 +179,17 @@ impl Captures {
     // The session keeps what it captures.
     source.destroy();
     Some(Session {
+      target: target.clone(),
+      cursors,
       proxy,
       size: None,
       formats: Vec::new(),
       buffer: None,
       frame: None,
       turn: Turn::default(),
-      wanted: false,
+      waiting: Vec::new(),
       retried: false,
+      last: None,
     })
   }
 }
@@ -173,7 +200,7 @@ impl Session {
     let Some(buffer) = &self.buffer else {
       return;
     };
-    self.wanted = false;
+    self.waiting.clear();
     self.turn = Turn::default();
     let frame = self.proxy.create_frame(qh, ());
     frame.attach_buffer(buffer.buffer.wl_buffer());
@@ -257,17 +284,18 @@ fn allocate(shm: &Shm, width: u32, height: u32, format: wl_shm::Format) -> Optio
 }
 
 impl Platform {
-  /// How many captures run, one for each view shown whose source is
-  /// there, until a one-shot view's frame comes or the source stops.
+  /// How many capture sessions run: one for each source and cursor mode
+  /// that a view shown still captures, shared by every view of it, until
+  /// the one-shot views' frame comes or the source stops.
   pub fn capture_sessions(&self) -> usize {
-    let views = self.captures.views.iter();
-    views.filter(|view| view.session.is_some()).count()
+    self.captures.sessions.len()
   }
 
-  /// Gives each view in a shown window a session for its source, and
-  /// ends the sessions of views gone, moved to another source, or whose
-  /// source went. The first view binds the protocols.
-  pub(crate) fn sync_captures(&mut self) {
+  /// Gives each view in a shown window a session for its source, shared
+  /// with the other views of it, or the frame a session it joins already
+  /// has, and ends the sessions no view takes any more. The first view
+  /// binds the protocols. Returns whether a window shows a frame for it.
+  pub(crate) fn sync_captures(&mut self) -> bool {
     let mut wanted = Vec::new();
     for entry in &self.windows.entries {
       let shown = entry.surface.as_ref();
@@ -277,7 +305,7 @@ impl Platform {
       }
     }
     if wanted.is_empty() && self.captures.views.is_empty() {
-      return;
+      return false;
     }
     if !std::mem::replace(&mut self.captures.asked, true) {
       self.bind_captures();
@@ -300,6 +328,8 @@ impl Platform {
     if !gone.is_empty() {
       self.renderer.forget_captures(&gone);
     }
+    // Sessions to start again, for a view whose box outgrew their frame.
+    let mut again: Vec<(Target, bool)> = Vec::new();
     for ((window, request), target) in wanted.into_iter().zip(targets) {
       let index = captures
         .views
@@ -321,18 +351,22 @@ impl Platform {
         // Not before a first frame, whose box is none yet.
         let delivered = view.cover != (0, 0);
         let grew = cover.0 > view.cover.0 || cover.1 > view.cover.1;
-        if !(delivered && grew && !view.whole && view.target.is_some()) {
-          continue;
+        if delivered
+          && grew
+          && !view.whole
+          && let Some(target) = &view.target
+        {
+          // Asked once: it counts as having no frame until the next.
+          (view.ended, view.cover) = (false, (0, 0));
+          again.push((target.clone(), view.request.paint_cursors));
         }
+        continue;
       }
-      let session = target
-        .as_ref()
-        .and_then(|target| captures.start(target, request.paint_cursors, &self.qh));
       let view = View {
         window,
         request,
         target,
-        session,
+        ended: false,
         cover: (0, 0),
         whole: false,
       };
@@ -341,6 +375,59 @@ impl Platform {
         None => captures.views.push(view),
       }
     }
+    // A view new to a session that has a frame shows it now, if it is
+    // large enough, since a live session of a still source sends no
+    // other; one too small starts the session again.
+    let mut shown = false;
+    for view in &mut captures.views {
+      if view.cover != (0, 0) {
+        continue;
+      }
+      let Some(session) = captures.sessions.iter().find(|session| view.takes(session)) else {
+        continue;
+      };
+      let Some((frame, cut, whole)) = &session.last else {
+        continue;
+      };
+      let own = cover(view.request.size, scale);
+      if !*whole && (own.0 > cut.0 || own.1 > cut.1) {
+        again.push((session.target.clone(), session.cursors));
+        continue;
+      }
+      if let Some(entry) = self.windows.get(view.window) {
+        shown |= entry.window.show_capture(view.request.id, frame.clone());
+      }
+      (view.cover, view.whole) = (*cut, *whole);
+      view.ended = !view.request.live;
+    }
+    let views = &captures.views;
+    captures.sessions.retain_mut(|session| {
+      let key = (session.target.clone(), session.cursors);
+      let kept = !again.contains(&key) && views.iter().any(|view| view.takes(session));
+      // A window the next frame waited for went: it waits no more.
+      let waited = !session.waiting.is_empty();
+      session
+        .waiting
+        .retain(|window| views.iter().any(|view| view.window == *window));
+      if kept && waited && session.waiting.is_empty() {
+        session.capture(&self.qh);
+      }
+      kept
+    });
+    for index in 0..captures.views.len() {
+      let view = &captures.views[index];
+      let taken = captures.sessions.iter().any(|session| view.takes(session));
+      if view.ended || taken {
+        continue;
+      }
+      let Some(target) = &view.target else {
+        continue;
+      };
+      if let Some(session) = captures.start(target, view.request.paint_cursors, &self.qh) {
+        captures.sessions.push(session);
+      }
+    }
+    shown
   }
 
   /// What `source` is now, if it is there.
@@ -373,36 +460,35 @@ impl Platform {
     scales.max().unwrap_or(1).max(1) as f32
   }
 
-  /// Asks for the next frame of each live view in `drawn`, a window that
-  /// just drew the last one.
+  /// Asks for the next frame of each live session whose frame a window
+  /// in `drawn` just drew.
   pub(crate) fn paced_captures(&mut self, drawn: &[WindowId]) {
-    for view in &mut self.captures.views {
-      if let Some(session) = view.session.as_mut()
-        && session.wanted
-        && drawn.contains(&view.window)
-      {
+    for session in &mut self.captures.sessions {
+      if session.waiting.iter().any(|window| drawn.contains(window)) {
         session.capture(&self.qh);
       }
     }
   }
 
-  /// Hands the frame in `view`'s buffer to its window, scaled down to
-  /// what the view needs at the largest output scale. Returns whether
-  /// the window repaints for it.
-  fn deliver(&mut self, index: usize) -> bool {
+  /// Hands the frame in session `index`'s buffer to each view it takes,
+  /// cut once to what the largest of them needs at the largest output
+  /// scale, and keeps it for views that join later. Returns the windows
+  /// that repaint for it.
+  fn deliver(&mut self, index: usize) -> Vec<WindowId> {
     let scale = self.largest_scale();
-    let view = &mut self.captures.views[index];
-    let Some(session) = view.session.as_mut() else {
-      return false;
-    };
+    let Captures {
+      views, sessions, ..
+    } = &mut self.captures;
+    let session = &mut sessions[index];
+    let cover = views
+      .iter()
+      .filter(|view| view.takes(session))
+      .map(|view| cover(view.request.size, scale))
+      .fold((0, 0), |most, own| (most.0.max(own.0), most.1.max(own.1)));
     let turn = session.turn;
     let Some(buffer) = session.buffer.as_mut() else {
-      return false;
+      return Vec::new();
     };
-    let Some(entry) = self.windows.get(view.window) else {
-      return false;
-    };
-    let cover = cover(view.request.size, scale);
     let (width, height) = (buffer.width, buffer.height);
     let order = match buffer.format {
       wl_shm::Format::Argb8888 | wl_shm::Format::Xrgb8888 => PixelFormat::Argb8888,
@@ -412,18 +498,31 @@ impl Platform {
       buffer.format,
       wl_shm::Format::Xrgb8888 | wl_shm::Format::Xbgr8888
     );
+    if cover == (0, 0) {
+      return Vec::new();
+    }
     let Some(pixels) = buffer.buffer.canvas(&mut buffer.pool) else {
-      return false;
+      return Vec::new();
     };
     let frame = crabshell_render::capture_frame(pixels, width, height, order, opaque, turn, cover);
     let Some(frame) = frame else {
       tracing::warn!(width, height, "a captured frame doesn't fit its buffer");
-      return false;
+      return Vec::new();
     };
-    view.cover = cover;
     let (kept, whole) = ((frame.width, frame.height), (width, height));
-    view.whole = kept == whole || kept == (whole.1, whole.0);
-    entry.window.show_capture(view.request.id, frame)
+    let whole = kept == whole || kept == (whole.1, whole.0);
+    let mut shown = Vec::new();
+    for view in views.iter_mut().filter(|view| view.takes(session)) {
+      (view.cover, view.whole) = (cover, whole);
+      let window = self.windows.get(view.window);
+      if window.is_some_and(|entry| entry.window.show_capture(view.request.id, frame.clone()))
+        && !shown.contains(&view.window)
+      {
+        shown.push(view.window);
+      }
+    }
+    session.last = Some((frame, cover, whole));
+    shown
   }
 }
 
@@ -450,12 +549,11 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for Platform {
     qh: &QueueHandle<Platform>,
   ) {
     use ext_image_copy_capture_session_v1::Event;
-    let Some(view) = platform.captures.view(proxy) else {
+    let captures = &mut platform.captures;
+    let Some(index) = captures.session(proxy) else {
       return;
     };
-    let Some(session) = view.session.as_mut() else {
-      return;
-    };
+    let session = &mut captures.sessions[index];
     match event {
       Event::BufferSize { width, height } => session.size = Some((width, height)),
       Event::ShmFormat {
@@ -463,12 +561,12 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for Platform {
       } => session.formats.push(format),
       Event::Done => {
         if !session.constrained(&platform.shm, qh) {
-          view.session = None;
+          captures.end(index);
         }
       }
       Event::Stopped => {
-        tracing::debug!(source = ?view.request.source, "a capture's source stopped");
-        view.session = None;
+        tracing::debug!("a capture's source stopped");
+        captures.end(index);
       }
       _ => {}
     }
@@ -486,21 +584,13 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, ()> for Platform {
   ) {
     use ext_image_copy_capture_frame_v1::Event;
     let captures = &mut platform.captures;
-    let Some(index) = captures.views.iter().position(|view| {
-      let session = view.session.as_ref();
-      session.is_some_and(|session| {
-        session
-          .frame
-          .as_ref()
-          .is_some_and(|(ours, _)| ours == proxy)
-      })
+    let Some(index) = captures.sessions.iter().position(|session| {
+      let frame = session.frame.as_ref();
+      frame.is_some_and(|(ours, _)| ours == proxy)
     }) else {
       return;
     };
-    let view = &mut captures.views[index];
-    let Some(session) = view.session.as_mut() else {
-      return;
-    };
+    let session = &mut captures.sessions[index];
     match event {
       Event::Transform {
         transform: WEnum::Value(transform),
@@ -512,14 +602,27 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, ()> for Platform {
         }
         session.retried = false;
         let shown = platform.deliver(index);
-        let view = &mut platform.captures.views[index];
-        match &mut view.session {
-          // The next frame once the window drew this one; one the same
-          // as before draws nothing, so it asks at once, which the
-          // compositor answers only when the source changes.
-          Some(session) if view.request.live && shown => session.wanted = true,
-          Some(session) if view.request.live => session.capture(qh),
-          _ => view.session = None,
+        let Captures {
+          views, sessions, ..
+        } = &mut platform.captures;
+        let session = &mut sessions[index];
+        let live = views
+          .iter()
+          .any(|view| view.takes(session) && view.request.live);
+        // A one-shot view had its frame.
+        for view in views.iter_mut() {
+          if view.takes(session) && !view.request.live {
+            view.ended = true;
+          }
+        }
+        if !live {
+          sessions.remove(index);
+        } else if shown.is_empty() {
+          // One the same as before draws nothing, so it asks at once,
+          // which the compositor answers only when the source changes.
+          session.capture(qh);
+        } else {
+          session.waiting = shown;
         }
       }
       Event::Failed { reason } => {
@@ -527,7 +630,6 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, ()> for Platform {
           frame.destroy();
         }
         let retried = std::mem::replace(&mut session.retried, true);
-        view.session = None;
         let again = match reason {
           // The session's buffers changed: a new session asks again.
           WEnum::Value(FailureReason::BufferConstraints) => true,
@@ -539,18 +641,21 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, ()> for Platform {
             true
           }
           reason => {
-            tracing::warn!(?reason, "a capture failed again, so its view shows no more");
+            tracing::warn!(?reason, "a capture failed again, so its views show no more");
             false
           }
         };
-        if again {
-          let restart = view.target.clone();
-          let cursors = view.request.paint_cursors;
-          let session = restart.and_then(|target| captures.start(&target, cursors, qh));
-          captures.views[index].session = session.map(|mut session| {
+        let (target, cursors) = (session.target.clone(), session.cursors);
+        let restarted = again
+          .then(|| captures.start(&target, cursors, qh))
+          .flatten();
+        match restarted {
+          Some(mut session) => {
             session.retried = retried || reason != WEnum::Value(FailureReason::BufferConstraints);
-            session
-          });
+            session.last = captures.sessions[index].last.take();
+            captures.sessions[index] = session;
+          }
+          None => captures.end(index),
         }
       }
       _ => {}

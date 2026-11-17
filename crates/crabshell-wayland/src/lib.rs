@@ -58,10 +58,11 @@
 //!   event's serial, so a click outside makes the compositor dismiss it.
 //!   Only one chain of popups is open at a time, and they are destroyed
 //!   topmost first, as xdg-shell requires.
-//! - Each screencopy view in a shown window gets a capture session for its
-//!   source through `ext-image-copy-capture-v1`, bound when the first one
-//!   shows. A live view asks for each next frame, which the compositor
-//!   sends only once the source changes.
+//! - The screencopy views of one source in the shown windows share a
+//!   capture session through `ext-image-copy-capture-v1`, bound when the
+//!   first one shows. While one is live, it asks for each next frame,
+//!   which the compositor sends only once the source changes; a live view
+//!   out of sight takes no frames.
 //! - A session lock from [`Platform::add_session_lock`] locks through
 //!   `ext-session-lock-v1` while its `locked` says to, with a lock surface
 //!   on every output, drawn like any other window.

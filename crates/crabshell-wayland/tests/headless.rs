@@ -3631,6 +3631,113 @@ fn a_one_shot_view_that_grows_captures_again_at_its_new_size() {
   );
 }
 
+/// Every frame the views in `window` show, in the order they are drawn.
+fn frames_in(platform: &Platform, window: WindowId) -> Vec<CaptureFrame> {
+  fn walk(node: crabshell_ui::NodeView<'_>, out: &mut Vec<CaptureFrame>) {
+    if let Content::Capture(capture) = node.content() {
+      out.push(capture.frame.clone());
+    }
+    node.children().for_each(|child| walk(child, out));
+  }
+  let mut frames = Vec::new();
+  if let Some((_, found)) = platform.windows().find(|(id, _)| *id == window) {
+    walk(found.view().root(), &mut frames);
+  }
+  frames
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn views_of_one_output_share_a_session_and_one_scrolled_away_sleeps() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1280x720", "scale", "1"]);
+  sway.msg(&["create_output"]);
+  sway.msg(&["output", "HEADLESS-2", "mode", "640x360", "scale", "1"]);
+  let cx = Cx::new(Runtime::current().new_owner());
+  let mut event_loop = sway.connect();
+  let color = cx.signal(RED);
+  let fill = PanelWindow::new(&Output::new("HEADLESS-2"))
+    .anchors(Edge::Top | Edge::Bottom | Edge::Left | Edge::Right)
+    .style(move || Style::new().background(color.get()));
+  event_loop.platform().add_window(Window::new(&cx, fill));
+  wait_for_color(&sway, &mut event_loop, "HEADLESS-2", (0, 0, 640, 360), RED);
+  let both = cx.signal(true);
+  let offset = cx.signal(0.0_f32);
+  let view = || {
+    ScreencopyView::new(CaptureSource::Output(String::from("HEADLESS-2")))
+      .live(true)
+      .style(Style::new().width(160.0).height(90.0))
+  };
+  // The second view sits at the top of a scroll view as tall as it, over
+  // a spacer it scrolls to.
+  let scrolled = ScrollView::new(
+    Column::new()
+      .child(view())
+      .child(Spacer::new().style(Style::new().height(90.0))),
+  )
+  .offset(offset)
+  .style(Style::new().width(160.0).height(90.0));
+  let viewer = PanelWindow::new(&Output::new("HEADLESS-1"))
+    .anchors(Edge::Top | Edge::Left)
+    .width(320)
+    .height(90)
+    .child(
+      Row::new()
+        .children_keyed(
+          move || if both.get() { vec![0] } else { vec![] },
+          |key| *key,
+          move |_, _| view(),
+        )
+        .child(scrolled),
+    );
+  let viewer = event_loop.platform().add_window(Window::new(&cx, viewer));
+  run_until(&mut event_loop, "both views' frames", |platform| {
+    frames_in(platform, viewer).len() == 2
+  });
+  assert_eq!(event_loop.platform().capture_sessions(), 1, "one shared");
+  let frames = frames_in(event_loop.platform(), viewer);
+  assert!(Rc::ptr_eq(&frames[0].rgba, &frames[1].rgba), "one frame");
+  assert!(all_of(&frames[0].rgba, RED));
+  assert_eq!((frames[0].width, frames[0].height), (160, 90));
+
+  both.set(false);
+  run_until(&mut event_loop, "the first view gone", |platform| {
+    frames_in(platform, viewer).len() == 1
+  });
+  assert_eq!(event_loop.platform().capture_sessions(), 1, "still shown");
+  offset.set(90.0);
+  run_until(&mut event_loop, "the session to end", |platform| {
+    platform.capture_sessions() == 0
+  });
+  // Out of sight, a change to its source wakes nothing.
+  color.set(BLUE);
+  wait_for_color(&sway, &mut event_loop, "HEADLESS-2", (0, 0, 640, 360), BLUE);
+  settle(&mut event_loop);
+  let iterations = event_loop.platform().stats().iterations;
+  event_loop
+    .dispatch(Some(Duration::from_secs(2)))
+    .expect("the connection works");
+  assert_eq!(event_loop.platform().stats().iterations, iterations + 1);
+  assert!(all_of(
+    &frames_in(event_loop.platform(), viewer)[0].rgba,
+    RED
+  ));
+
+  offset.set(0.0);
+  run_until(&mut event_loop, "a frame of the new color", |platform| {
+    let frames = frames_in(platform, viewer);
+    platform.capture_sessions() == 1 && all_of(&frames[0].rgba, BLUE)
+  });
+  // A view that joins a session of a still source gets its last frame.
+  settle(&mut event_loop);
+  both.set(true);
+  run_until(&mut event_loop, "the joining view's frame", |platform| {
+    let frames = frames_in(platform, viewer);
+    frames.len() == 2 && Rc::ptr_eq(&frames[0].rgba, &frames[1].rgba)
+  });
+  assert_eq!(event_loop.platform().capture_sessions(), 1);
+}
+
 /// The lock screen's background.
 const MAGENTA: Color = Color::rgb(0xff, 0x00, 0xff);
 

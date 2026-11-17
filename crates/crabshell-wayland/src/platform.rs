@@ -767,7 +767,10 @@ impl Platform {
       self.lay_out_and_draw(&mut drawn);
     }
     self.update_focus_grabs();
-    self.sync_captures();
+    // A view that joined a session shows its last frame now.
+    if self.sync_captures() {
+      self.lay_out_and_draw(&mut drawn);
+    }
     self.paced_captures(&drawn);
     self.sync_text_inputs();
     self.tick_animations();
