@@ -961,3 +961,17 @@ fn a_translucent_picture_blends_over_the_background() {
     );
   }
 }
+
+/// A picture the memo of this draw names but the cache no longer holds is
+/// looked up again rather than drawn as nothing.
+#[test]
+fn a_memo_whose_picture_left_the_cache_looks_it_up_again() {
+  let (_dir, a, _) = pair("memo-missing");
+  let mut icons = icons();
+  assert!(icons.picture(&view(&a, None), (4, 4), 1.0).is_some());
+  icons.clear_cache();
+  assert!(
+    icons.picture(&view(&a, None), (4, 4), 1.0).is_some(),
+    "decoded again"
+  );
+}

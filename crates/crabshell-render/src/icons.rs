@@ -510,6 +510,12 @@ impl Icons {
       .sum()
   }
 
+  /// Drops every cached picture and nothing else, for tests.
+  #[cfg(test)]
+  pub(crate) fn clear_cache(&mut self) {
+    self.cache.clear();
+  }
+
   /// How many times an image's file was looked up, for tests.
   #[cfg(test)]
   pub(crate) fn lookups(&self) -> usize {
@@ -597,11 +603,11 @@ impl Icons {
     scale: f32,
   ) -> Option<Drawn<'_>> {
     let at = (self.frame, image.id, size, scale.to_bits());
-    if self
-      .memo
-      .as_ref()
-      .is_some_and(|memo| memo.matches(at, image, scale))
-    {
+    // A picture gone from the cache is looked up and decoded again below.
+    let hit = self.memo.as_ref().is_some_and(|memo| {
+      memo.matches(at, image, scale) && frame(&self.cache, &memo.to, 0).is_some()
+    });
+    if hit {
       let memo = self.memo.as_ref()?;
       let to = frame(&self.cache, &memo.to, 0)?;
       return Some(match (&memo.from, image.leaving) {
