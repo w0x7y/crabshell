@@ -243,6 +243,7 @@ fn blur_the_compositor_turns_on_late_is_sent_then() {
 fn tapped() -> (Fake, EventLoop, crabshell_reactive::Signal<u32>, Cx) {
   let (fake, mut event_loop) = connect(Globals {
     touch: true,
+    pointer: true,
     activation: true,
     ..Globals::default()
   });
@@ -329,6 +330,27 @@ fn an_activation_token_names_the_last_tap_and_its_window() {
     fake.log()[1..],
     [
       format!("token none serial {serial} on panel"),
+      String::from("token destroyed")
+    ]
+  );
+  cx.owner().dispose();
+}
+
+#[test]
+fn an_activation_token_names_the_last_clicks_press_and_its_window() {
+  let (fake, mut event_loop, clicks, cx) = tapped();
+  fake.run(|state| state.click((10.0, 10.0)));
+  wait(&mut event_loop, "the click", |_| clicks.get() == 1);
+  assert_eq!(token(&mut event_loop, Some("org.example.App")), "token-1");
+  wait(&mut event_loop, "the token's end", |_| {
+    fake.log().len() == 3
+  });
+  let press = fake.log()[0].clone();
+  let serial = press.strip_prefix("press ").expect("the press's serial");
+  assert_eq!(
+    fake.log()[1..],
+    [
+      format!("token org.example.App serial {serial} on panel"),
       String::from("token destroyed")
     ]
   );

@@ -5,7 +5,8 @@
 //! It offers `wl_compositor` 4, `wl_shm`, `xdg_wm_base`, layer-shell and
 //! one output, `FAKE-1`, at the scale it is started with, and each extra
 //! global a test asks for: a second output described a read later, a seat
-//! with touch, the background effect manager, workspaces, or activation
+//! with touch or a pointer, the background effect manager, workspaces,
+//! or activation
 //! tokens. Each layer surface is configured at its first
 //! commit, at the size it asked for or the output's, and each frame
 //! callback is answered at the next commit, so windows draw freely. The
@@ -42,6 +43,7 @@ use wayland_server::protocol::{
   wl_callback::WlCallback,
   wl_compositor::{self, WlCompositor},
   wl_output::{self, WlOutput},
+  wl_pointer::{self, WlPointer},
   wl_region::{self, WlRegion},
   wl_seat::{self, WlSeat},
   wl_shm::{self, WlShm},
@@ -66,6 +68,8 @@ pub struct Globals {
   pub late_output: bool,
   /// A seat with a touchscreen.
   pub touch: bool,
+  /// A seat with a pointer.
+  pub pointer: bool,
   /// `ext_background_effect_manager_v1`, and whether it says it can blur
   /// as soon as it is bound.
   pub effects: Option<bool>,
@@ -102,6 +106,7 @@ impl Fake {
       late: Vec::new(),
       surfaces: Vec::new(),
       touches: Vec::new(),
+      pointers: Vec::new(),
       effects: Vec::new(),
       serial: 0,
       copying: false,
@@ -157,7 +162,7 @@ fn serve(stream: UnixStream, mut state: State, commands: Receiver<Command>) {
   if state.globals.late_output {
     handle.create_global::<State, WlOutput, (i32, bool)>(4, (scale, true));
   }
-  if state.globals.touch {
+  if state.globals.touch || state.globals.pointer {
     handle.create_global::<State, WlSeat, ()>(7, ());
   }
   if let Some(now) = state.globals.effects {
@@ -212,6 +217,7 @@ pub struct State {
   /// Every surface, in the order made.
   surfaces: Vec<WlSurface>,
   touches: Vec<WlTouch>,
+  pointers: Vec<WlPointer>,
   effects: Vec<ExtBackgroundEffectManagerV1>,
   serial: u32,
   /// Whether a buffer is released as soon as it is committed, as a
@@ -256,6 +262,24 @@ impl State {
   pub fn blur_on(&mut self) {
     for manager in &self.effects {
       manager.capabilities(Capability::Blur);
+    }
+  }
+
+  /// A left click at `x`, `y` on the panel, its press's serial logged
+  /// as `press <serial>`.
+  pub fn click(&mut self, (x, y): (f64, f64)) {
+    // Linux's BTN_LEFT.
+    const LEFT: u32 = 0x110;
+    let surface = self.panel();
+    let (enter, press, release) = (self.serial(), self.serial(), self.serial());
+    self.log(format!("press {press}"));
+    for pointer in &self.pointers {
+      pointer.enter(enter, &surface, x, y);
+      pointer.frame();
+      pointer.button(press, 1, LEFT, wl_pointer::ButtonState::Pressed);
+      pointer.frame();
+      pointer.button(release, 2, LEFT, wl_pointer::ButtonState::Released);
+      pointer.frame();
     }
   }
 
@@ -314,6 +338,7 @@ ignore!(
   XdgWmBase: (),
   WlOutput: (),
   WlTouch: (),
+  WlPointer: (),
   ExtWorkspaceGroupHandleV1: (),
 );
 
@@ -562,7 +587,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, Mutex<(u32, u32)>> for State {
 
 impl GlobalDispatch<WlSeat, ()> for State {
   fn bind(
-    _: &mut State,
+    state: &mut State,
     _: &DisplayHandle,
     _: &Client,
     resource: New<WlSeat>,
@@ -570,7 +595,14 @@ impl GlobalDispatch<WlSeat, ()> for State {
     init: &mut DataInit<'_, State>,
   ) {
     let seat = init.init(resource, ());
-    seat.capabilities(wl_seat::Capability::Touch);
+    let mut can = wl_seat::Capability::empty();
+    if state.globals.touch {
+      can |= wl_seat::Capability::Touch;
+    }
+    if state.globals.pointer {
+      can |= wl_seat::Capability::Pointer;
+    }
+    seat.capabilities(can);
     seat.name(String::from("seat0"));
   }
 }
@@ -585,8 +617,10 @@ impl Dispatch<WlSeat, ()> for State {
     _: &DisplayHandle,
     init: &mut DataInit<'_, State>,
   ) {
-    if let wl_seat::Request::GetTouch { id } = request {
-      state.touches.push(init.init(id, ()));
+    match request {
+      wl_seat::Request::GetTouch { id } => state.touches.push(init.init(id, ())),
+      wl_seat::Request::GetPointer { id } => state.pointers.push(init.init(id, ())),
+      _ => {}
     }
   }
 }
