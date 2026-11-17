@@ -4971,6 +4971,54 @@ fn a_shown_gif_wakes_only_at_its_frames_and_a_still_paused_or_hidden_one_wakes_n
   let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The threads of this process named `name`.
+fn threads_named(name: &str) -> usize {
+  std::fs::read_dir("/proc/self/task")
+    .expect("this process's threads")
+    .filter_map(|task| std::fs::read_to_string(task.ok()?.path().join("comm")).ok())
+    .filter(|comm| comm.trim_end() == name)
+    .count()
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_picture_decoded_off_the_loop_repaints_its_box_and_then_nothing_wakes() {
+  let sway = Sway::start();
+  let still = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    .join("../crabshell-render/tests/fixtures/stripes.png");
+  let runtime = Runtime::current();
+  let cx = Cx::new(runtime.new_owner());
+  // Blurred, so it is decoded on the worker thread.
+  let bar = PanelWindow::new(&Output::new("HEADLESS-1"))
+    .anchors(Edge::Top | Edge::Left | Edge::Right)
+    .height(30)
+    .child(
+      Row::new().child(
+        crabshell_ui::Image::new(still)
+          .width(40)
+          .height(20)
+          .blur(2.0),
+      ),
+    );
+  let mut event_loop = sway.connect();
+  let id = event_loop.platform().add_window(Window::new(&cx, bar));
+  run_until(&mut event_loop, "the bar's first frame", |platform| {
+    platform
+      .window_info(id)
+      .is_some_and(|info| info.commits > 0)
+  });
+  // A frame that repaints the image's box alone.
+  run_until(&mut event_loop, "the picture's frame", |platform| {
+    platform.window_info(id).is_some_and(|info| {
+      let damage = info.last_damage;
+      !damage.is_empty() && damage.iter().all(|rect| rect.x + rect.width <= 48)
+    })
+  });
+  settle(&mut event_loop);
+  sleeps_through(&mut event_loop, Duration::from_secs(2));
+  assert_eq!(threads_named("decode"), 0, "the decoding thread ended");
+}
+
 #[test]
 #[ignore = "needs headless Sway"]
 fn an_image_transition_draws_while_it_runs_and_then_nothing_wakes() {

@@ -363,6 +363,9 @@ pub struct Platform {
   /// The calloop timer for the next frame of the GIFs drawn and the time
   /// it is armed at, in the loop only while one plays.
   images: Option<(RegistrationToken, Instant)>,
+  /// The ping the renderer's decoding thread wakes the loop with, in the
+  /// loop only while pictures are being decoded.
+  decodes: Option<RegistrationToken>,
   pub(crate) renderer: Renderer,
   /// The icon theme set, for snapshots' renderers.
   icon_theme: Option<String>,
@@ -477,6 +480,7 @@ impl Platform {
       ticking: false,
       timers: None,
       images: None,
+      decodes: None,
       renderer: Renderer::new(),
       icon_theme: None,
       text: TextSystem::new(),
@@ -484,6 +488,7 @@ impl Platform {
       syncs_sent: 0,
       syncs_done: 0,
     };
+    platform.renderer.decode_off_thread();
     // sctk tells `new_seat` only about seats that come later.
     for seat in platform.seats.seats() {
       let qh = platform.qh.clone();
@@ -591,6 +596,42 @@ impl Platform {
     match armed {
       Ok(token) => self.images = Some((token, due)),
       Err(error) => tracing::warn!(%error, "couldn't start the GIF timer"),
+    }
+  }
+
+  /// Puts a ping in the loop while the renderer decodes pictures, for its
+  /// decoding thread to wake the loop with once one is ready. Then the
+  /// images waiting for them repaint in every window, and the ping leaves
+  /// the loop until a draw sends more work.
+  fn arm_decodes(&mut self) {
+    if self.decodes.is_some() || !self.renderer.decoding() {
+      return;
+    }
+    let (ping, source) = match calloop::ping::make_ping() {
+      Ok(made) => made,
+      Err(error) => {
+        tracing::warn!(%error, "couldn't wait for decoded pictures");
+        return;
+      }
+    };
+    let inserted = self
+      .handle
+      .insert_source(source, |(), &mut (), platform: &mut Platform| {
+        if let Some(token) = platform.decodes.take() {
+          platform.handle.remove(token);
+        }
+        for id in platform.renderer.take_decoded() {
+          for entry in &platform.windows.entries {
+            entry.window.repaint_image(id);
+          }
+        }
+      });
+    match inserted {
+      Ok(token) => {
+        self.decodes = Some(token);
+        self.renderer.wake_when_decoded(move || ping.ping());
+      }
+      Err(error) => tracing::warn!(%error, "couldn't wait for decoded pictures"),
     }
   }
 
@@ -782,6 +823,7 @@ impl Platform {
     self.tick_animations();
     self.arm_timers();
     self.arm_images();
+    self.arm_decodes();
     self.commit_windowsets();
     if let Err(error) = self.connection.flush() {
       tracing::warn!(%error, "couldn't flush the Wayland connection");
