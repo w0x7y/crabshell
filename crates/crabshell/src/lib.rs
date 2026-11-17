@@ -76,6 +76,10 @@ pub use crabshell_wayland::Mode;
 /// so a config can name `jiff::Zoned` without its own copy.
 pub use jiff;
 pub use per_output::IntoPanels;
+/// The JSON library behind [`Niri::action`](crabshell_services::Niri::action)
+/// and `on_event`, so a config can write `serde_json::json!` without its
+/// own copy.
+pub use serde_json;
 pub use shell::{
   EXIT_NO_COMPOSITOR, EXIT_ROOT_PANICKED, Error, Shell, ShellExt, Toplevels, WindowManager, run,
 };
