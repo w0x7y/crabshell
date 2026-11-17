@@ -523,6 +523,54 @@ fn a_linked_directory_added_or_removed_shows() {
 }
 
 #[test]
+fn a_link_on_the_way_to_a_root_swapped_for_another_reads_again() {
+  // As NixOS links a user's profile: a link to a link to the store, with
+  // the middle one swapped for a new generation.
+  let dirs = Dirs::new();
+  let base = dirs.0.path();
+  write(
+    &base.join("store/one"),
+    "applications/x.desktop",
+    &app("X", "x", ""),
+  );
+  write(
+    &base.join("store/two"),
+    "applications/y.desktop",
+    &app("Y", "y", ""),
+  );
+  std::fs::create_dir(base.join("profiles")).expect("a directory");
+  let profile = base.join("profiles/profile");
+  std::os::unix::fs::symlink(base.join("store/one"), &profile).expect("a link");
+  std::os::unix::fs::symlink("profiles/profile", base.join("home-profile")).expect("a link");
+  // A link to itself ends the walk rather than the shell.
+  std::os::unix::fs::symlink("loop", base.join("loop")).expect("a link");
+  let sources = Sources {
+    dirs: vec![
+      base.join("loop/applications"),
+      base.join("home-profile/applications"),
+    ],
+    ..Sources::default()
+  };
+  let (mut shell, entries) = shell(sources);
+  run(&mut shell, 50);
+  assert_eq!(ids(&entries), ["x"]);
+
+  let swap = |target: &str| {
+    let new = base.join("profiles/profile.new");
+    std::os::unix::fs::symlink(base.join(target), &new).expect("a link");
+    std::fs::rename(&new, &profile).expect("swapped");
+  };
+  swap("store/two");
+  run(&mut shell, 300);
+  assert_eq!(ids(&entries), ["y"]);
+  swap("store/one");
+  run(&mut shell, 300);
+  assert_eq!(ids(&entries), ["x"]);
+  // Asleep again once read.
+  assert!(run(&mut shell, 500) <= 1);
+}
+
+#[test]
 fn a_fifo_named_like_an_entry_is_skipped() {
   let dirs = Dirs::new();
   write(&dirs.user(), "a.desktop", &app("A", "a", ""));

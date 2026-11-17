@@ -539,6 +539,7 @@ struct Scan<'a> {
 
 impl Scan<'_> {
   fn root(&mut self, root: &Path) {
+    self.links(root);
     if root.is_dir() {
       return self.dir(root, root);
     }
@@ -551,6 +552,36 @@ impl Scan<'_> {
       self.watch(parent, move |change| {
         change.name.as_ref().is_none_or(|changed| *changed == name)
       });
+    }
+  }
+
+  /// Watches the directory that holds each link on the way to `root`,
+  /// and on the way to what each names, so a link swapped for another,
+  /// as a NixOS profile is, reads the list again.
+  fn links(&mut self, root: &Path) {
+    let mut paths = vec![root.to_owned()];
+    // As many as the kernel follows before it calls it a loop.
+    let mut links = 0;
+    while let Some(path) = paths.pop() {
+      let mut prefix = PathBuf::new();
+      let mut components = path.components();
+      while let Some(component) = components.next() {
+        prefix.push(component);
+        let Ok(target) = std::fs::read_link(&prefix) else {
+          continue;
+        };
+        links += 1;
+        let (Some(dir), Some(name), true) = (prefix.parent(), prefix.file_name(), links <= 40)
+        else {
+          return;
+        };
+        let name = name.to_owned();
+        self.watch(dir, move |change| {
+          change.name.as_ref().is_none_or(|changed| *changed == name)
+        });
+        paths.push(dir.join(target).join(components.as_path()));
+        break;
+      }
     }
   }
 
