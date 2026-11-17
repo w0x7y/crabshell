@@ -1335,7 +1335,7 @@ fn some_text<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<String
 
 /// A non-blocking connection to the Unix socket at `path`, made without
 /// waiting: a listen backlog that is full is `WouldBlock`.
-fn open(path: &Path) -> std::io::Result<UnixStream> {
+pub(crate) fn open(path: &Path) -> std::io::Result<UnixStream> {
   use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
   let flags = SocketFlags::NONBLOCK | SocketFlags::CLOEXEC;
   let fd = rustix::net::socket_with(AddressFamily::UNIX, SocketType::STREAM, flags, None)?;
@@ -1349,7 +1349,7 @@ fn open(path: &Path) -> std::io::Result<UnixStream> {
 }
 
 /// `text` cut to [`MAX_TEXT`] bytes at a character.
-fn cut(mut text: String) -> String {
+pub(crate) fn cut(mut text: String) -> String {
   if text.len() > MAX_TEXT {
     text.truncate(text.floor_char_boundary(MAX_TEXT));
   }

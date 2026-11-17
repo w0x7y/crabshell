@@ -27,6 +27,7 @@ mod hyprland;
 mod lines;
 mod mpris;
 mod network;
+mod niri;
 mod notifications;
 mod pam;
 mod polkit;
@@ -74,6 +75,7 @@ pub use network::{
   ConnectionFailReason, Connectivity, Network, NetworkDevice, NetworkKind, NetworkState,
   SavedConnection, WifiMode, WifiNetwork, WifiSecurity,
 };
+pub use niri::{Niri, NiriKeyboardLayouts, NiriWindow, NiriWorkspace};
 pub use notifications::{CloseReason, Notification, Notifications, Timeout, Urgency};
 pub use pam::{Pam, PamError, PamMessage, PamResult, PamState};
 pub use polkit::{AuthRequest, AuthState, PolkitAgent};
@@ -107,6 +109,7 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(clock::Clocks::new(Rc::clone(&shared)));
   cx.provide(sway::Service::new(Rc::clone(&shared)));
   cx.provide(hyprland::Service::new(Rc::clone(&shared)));
+  cx.provide(niri::Service::new(Rc::clone(&shared)));
   cx.provide(audio::AudioService::new(Rc::clone(&shared)));
   cx.provide(tray::Service::new(Rc::clone(&shared)));
   cx.provide(power::UPowerService::new(Rc::clone(&shared)));
@@ -223,6 +226,18 @@ pub trait ServicesExt {
   /// While connected, it wakes the shell only when Hyprland sends
   /// something.
   fn hyprland(&self) -> Hyprland;
+
+  /// niri's workspaces, windows, keyboard layouts and overview, from its
+  /// event stream on the IPC socket at `$NIRI_SOCKET`. Every caller
+  /// shares one connection, made on the first call.
+  ///
+  /// The lists are empty while niri isn't there: when `NIRI_SOCKET` is
+  /// unset or the socket is missing, they stay empty, which is logged
+  /// once, and the service never wakes the shell. When niri closes the
+  /// stream while its socket is still there, the shell connects once
+  /// again; otherwise the lists empty and nothing reconnects. While
+  /// connected, it wakes the shell only when niri sends something.
+  fn niri(&self) -> Niri;
 
   /// The audio server's default sink, with its volume and mute. Every
   /// caller shares one connection, which starts on the loop's next turn
@@ -402,6 +417,10 @@ impl ServicesExt for Cx {
 
   fn hyprland(&self) -> Hyprland {
     hyprland::hyprland(self)
+  }
+
+  fn niri(&self) -> Niri {
+    niri::niri(self)
   }
 
   fn audio(&self) -> Audio {
@@ -753,6 +772,8 @@ struct Config {
   /// `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE`. `None` when
   /// either is unset.
   hyprland: Option<PathBuf>,
+  /// niri's IPC socket, from `NIRI_SOCKET`. `None` when that is unset.
+  niri: Option<PathBuf>,
   /// The audio server. `None` for none, so a test never reaches the
   /// user's.
   audio: Option<audio::Server>,
@@ -801,6 +822,9 @@ impl Config {
         .filter(|dir| !dir.is_empty())
         .zip(std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").filter(|sig| !sig.is_empty()))
         .map(|(dir, signature)| PathBuf::from(dir).join("hypr").join(signature)),
+      niri: std::env::var_os("NIRI_SOCKET")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from),
       audio: Some(audio::Server {
         address: None,
         retry: audio::RETRY,
