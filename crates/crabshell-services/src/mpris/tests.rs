@@ -165,7 +165,10 @@ fn a_title_from_a_url_is_its_last_part_decoded() {
     "stream.mp3"
   );
   assert_eq!(title_from_url("HTTP://radio.example/jazz"), "jazz");
-  assert_eq!(title_from_url("https://radio.example"), "radio.example");
+  // A host with no path names no track.
+  assert_eq!(title_from_url("https://radio.example"), "");
+  assert_eq!(title_from_url("https://radio.example?live=1"), "");
+  assert_eq!(title_from_url("file://"), "");
   // An escaped slash or question mark is part of the name.
   assert_eq!(title_from_url("file:///m/AC%2FDC%3F.mp3"), "AC/DC?.mp3");
   // A stray or short escape stays as written, and bad UTF-8 is replaced.

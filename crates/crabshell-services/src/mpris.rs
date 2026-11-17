@@ -234,16 +234,22 @@ fn text(props: &Props, name: &str) -> String {
 
 /// A title for a track that has none, as VLC sends a file without tags:
 /// the last part of its `file://` or `http(s)://` URL, decoded, with its
-/// extension, as file managers show a file's name. `""` for another URL
-/// or one that ends in `/`.
+/// extension, as file managers show a file's name. `""` for another URL,
+/// one with no path after its host, or one that ends in `/`.
 fn title_from_url(url: &str) -> String {
-  let scheme = url
-    .split_once("://")
-    .map(|(scheme, _)| scheme.to_ascii_lowercase());
-  if !matches!(scheme.as_deref(), Some("file" | "http" | "https")) {
+  let Some((scheme, rest)) = url.split_once("://") else {
+    return String::new();
+  };
+  if !matches!(
+    scheme.to_ascii_lowercase().as_str(),
+    "file" | "http" | "https"
+  ) {
     return String::new();
   }
-  let path = url.split(['?', '#']).next().unwrap_or_default();
+  let rest = rest.split(['?', '#']).next().unwrap_or_default();
+  let Some((_host, path)) = rest.split_once('/') else {
+    return String::new();
+  };
   let name = path.rsplit('/').next().unwrap_or_default();
   let mut bytes = Vec::with_capacity(name.len());
   let mut rest = name.as_bytes();
