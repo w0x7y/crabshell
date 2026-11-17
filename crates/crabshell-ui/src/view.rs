@@ -121,6 +121,13 @@ impl<'a> NodeView<'a> {
     self.node.clips()
   }
 
+  /// A scroll view's first scroll bar handle and the style to draw it
+  /// with, over its children, while it shows one. See
+  /// [`scroll_bars`](Self::scroll_bars) for a view that scrolls both ways.
+  pub fn scroll_bar(&self) -> Option<(Rect, Style)> {
+    self.scroll_bars().next()
+  }
+
   /// A scroll view's scroll bar handles, one an axis it shows a bar
   /// along, and the style to draw them with, over its children.
   pub fn scroll_bars(&self) -> impl Iterator<Item = (Rect, Style)> + 'a {

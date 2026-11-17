@@ -172,7 +172,7 @@ fn a_list_passes_its_scroll_bar_on() {
   .scroll_bar(Style::new());
   let window = h.window(h.panel().child(list), 100.0, 200.0);
   // The list's scroll view: 100 of 1000 pixels shown.
-  let bar = node_at(window.view().root(), &[0, 0]).scroll_bars().next();
+  let bar = node_at(window.view().root(), &[0, 0]).scroll_bar();
   assert_eq!(
     bar.map(|(rect, _)| rect),
     Some(Rect::new(94.0, 0.0, 6.0, 16.0))
@@ -457,8 +457,7 @@ fn barred(h: &mut Harness, offset: crabshell_reactive::Signal<f32>) -> (Window, 
 
 fn bar(window: &Window) -> Option<Rect> {
   node_at(window.view().root(), &[0, 0])
-    .scroll_bars()
-    .next()
+    .scroll_bar()
     .map(|(rect, _)| rect)
 }
 
@@ -479,14 +478,8 @@ fn a_scroll_bar_is_as_long_as_the_part_shown_and_placed_by_the_offset() {
   let plain = ScrollView::new(Icon::new("x").size(200)).style(Style::new().height(50.0));
   let row = Row::new().align(Align::Start).child(fits).child(plain);
   let other = h.window(h.panel().child(row), 100.0, 100.0);
-  assert_eq!(
-    node_at(other.view().root(), &[0, 0]).scroll_bars().next(),
-    None
-  );
-  assert_eq!(
-    node_at(other.view().root(), &[0, 1]).scroll_bars().next(),
-    None
-  );
+  assert_eq!(node_at(other.view().root(), &[0, 0]).scroll_bar(), None);
+  assert_eq!(node_at(other.view().root(), &[0, 1]).scroll_bar(), None);
 }
 
 #[test]

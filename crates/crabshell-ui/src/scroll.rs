@@ -82,9 +82,11 @@ impl ScrollView {
   }
 
   /// Shares the offset: how many logical pixels of the child are
-  /// scrolled out of view above, or to the left in a horizontal view.
-  /// Scrolling writes it, and setting it scrolls, stopping a fling. Values
-  /// past either end show that end.
+  /// scrolled out of view above, or to the left in a horizontal view. In
+  /// a view that scrolls [`both`](Self::both) ways it is always the
+  /// vertical offset. Scrolling writes it, and setting it scrolls,
+  /// stopping a fling along that axis. Values past either end show that
+  /// end.
   pub fn offset(mut self, offset: Signal<f32>) -> ScrollView {
     self.scroll.offset = Some(offset);
     self
@@ -151,10 +153,15 @@ impl ScrollView {
   /// Draws a scroll bar while the child is longer than the box: a handle
   /// along the right edge, or the bottom of a horizontal view, inside the
   /// border, as long as the part shown and placed by the offset, over
-  /// the child. Its style's `background` and `radius` draw the handle,
-  /// and its `width`, 6 by default, is its thickness. Dragging the handle
-  /// scrolls, and a press beside it pages toward the press. `None`, the
-  /// default, draws none.
+  /// the child. A view that scrolls [`both`](Self::both) ways draws one
+  /// along each axis the child is longer on, and each leaves the other
+  /// the corner they would share. Its style's `background` and `radius`
+  /// draw the handle, and its `width`, 6 by default, is its thickness.
+  /// Dragging the handle scrolls, and counts as moving, so a list's
+  /// `current` doesn't scroll it until the button comes up. A press beside
+  /// the handle pages toward the press, and held, pages again after
+  /// 300 ms and then every 50 ms until the handle reaches the pointer.
+  /// `None`, the default, draws none.
   pub fn scroll_bar(mut self, style: impl IntoProp<Option<Style>>) -> ScrollView {
     self.scroll.scroll_bar = Some(style.into_prop());
     self
