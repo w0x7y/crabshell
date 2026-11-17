@@ -93,16 +93,16 @@ pub mod prelude {
   pub use crabshell_reactive::{Effect, Memo, ReadSignal, Signal, untrack};
   pub use crabshell_services::{
     AudioChannel, AudioNode, AudioStream, AuthRequest, AuthState, BatteryState, Bluetooth,
-    BluetoothAdapter, BluetoothAdapterState, BluetoothDevice, BluetoothDeviceState, CloseReason,
-    ConnectionFailReason, Connectivity, DesktopAction, DesktopEntries, DesktopEntry, DeviceKind,
-    FileError, FileErrorKind, FileView, GreetMessage, GreetState, Greetd, Hyprland, HyprlandEvent,
-    HyprlandMonitor, HyprlandToplevel, HyprlandWorkspace, IntoCommand, LoopStatus, Mpris, Network,
-    NetworkDevice, NetworkKind, NetworkState, Notification, Notifications, Pam, PamError,
-    PamMessage, PamResult, PamState, PeakTarget, PerformanceDegradation, PlaybackStatus, Player,
-    PolkitAgent, PowerDevice, PowerProfile, PowerProfiles, Precision, Process, SavedConnection,
-    ServicesExt, Sink, Socket, SocketServer, Sway, SwayEvent, SwayEventKind, SwayOutput, Timeout,
-    Tray, TrayCategory, TrayHost, TrayItem, TrayMenu, TrayStatus, UPower, Urgency, WifiMode,
-    WifiNetwork, WifiSecurity, Workspace,
+    BluetoothAdapter, BluetoothAdapterState, BluetoothAgent, BluetoothDevice, BluetoothDeviceState,
+    CloseReason, ConnectionFailReason, Connectivity, DesktopAction, DesktopEntries, DesktopEntry,
+    DeviceKind, FileError, FileErrorKind, FileView, GreetMessage, GreetState, Greetd, Hyprland,
+    HyprlandEvent, HyprlandMonitor, HyprlandToplevel, HyprlandWorkspace, IntoCommand, LoopStatus,
+    Mpris, Network, NetworkDevice, NetworkKind, NetworkState, Notification, Notifications,
+    PairingKind, PairingRequest, Pam, PamError, PamMessage, PamResult, PamState, PeakTarget,
+    PerformanceDegradation, PlaybackStatus, Player, PolkitAgent, PowerDevice, PowerProfile,
+    PowerProfiles, Precision, Process, SavedConnection, ServicesExt, Sink, Socket, SocketServer,
+    Sway, SwayEvent, SwayEventKind, SwayOutput, Timeout, Tray, TrayCategory, TrayHost, TrayItem,
+    TrayMenu, TrayStatus, UPower, Urgency, WifiMode, WifiNetwork, WifiSecurity, Workspace,
   };
   pub use crabshell_ui::{
     Adjust, Align, Anchors, Animate, Animation, Border, Button, Canvas, Cap, CaptureSource, Color,
