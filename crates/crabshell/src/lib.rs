@@ -42,21 +42,12 @@
 //!
 //! # How it works
 //!
-//! - [`run`] connects to the compositor, gives the root closure a context
-//!   that carries the shell's services, and runs the event loop. It never
-//!   returns: a fatal error is logged and the process exits with
-//!   [`EXIT_ROOT_PANICKED`] (1) if the root closure panics, or with
-//!   [`EXIT_NO_COMPOSITOR`] (2) if there is no compositor, it lacks a
-//!   protocol the shell needs, or the connection is lost.
-//! - Each service starts the first time a config asks for it, so a bar
-//!   that shows no workspaces never connects to Sway, and one with no
-//!   volume never connects to the audio server.
-//! - `per_output` runs its closure for each output under a child owner of
-//!   the context it was called with. The owner is disposed when the output
-//!   goes, or when the compositor closes one of its windows.
-//! - Logs go to stderr through `tracing`, including the time from [`run`]
-//!   to the first committed frame, and from each of Sway's workspace
-//!   events to the first commit after it, from any window.
+//! [`run`] gives the root closure a context that carries the shell's
+//! services, and each service starts the first time a config asks for it,
+//! so a bar with no volume never connects to the audio server.
+//! `per_output` runs its closure under a child owner per output, disposed
+//! when the output goes or the compositor closes one of its windows. See
+//! [`run`] for exit codes and logging.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

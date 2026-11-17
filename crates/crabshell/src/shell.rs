@@ -39,43 +39,26 @@ pub const EXIT_ROOT_PANICKED: i32 = 1;
 pub const EXIT_NO_COMPOSITOR: i32 = 2;
 
 /// Starts the shell: connects to the compositor, calls `root` with the
-/// root context, and runs the event loop. It never returns.
-///
-/// Started without the supervisor on glibc, `run` first starts the
-/// program again, with `GLIBC_TUNABLES` fixing malloc's `mmap` threshold,
-/// unless it sets one already, as the supervisor does: otherwise the
-/// memory of a freed wallpaper stays in use. So code in `main` before
-/// `run` runs twice; keep `main` to the `run` call. In secure mode, as a
-/// setuid program, or when it can't start again, it logs why and runs on
-/// as it is.
-///
-/// `root` sets the shell up, usually with [`ShellExt::per_output`]. Errors
-/// are logged, and the process exits with:
+/// root context, usually to call [`ShellExt::per_output`], and runs the
+/// event loop. It never returns. The process exits with:
 ///
 /// - [`EXIT_ROOT_PANICKED`] (1) if `root` panics, or if every
 ///   [`per_output`](ShellExt::per_output) closure panics for the outputs
-///   there at startup and no other window was made: the config is broken;
-/// - [`EXIT_NO_COMPOSITOR`] (2) if there is no compositor to connect to,
-///   it lacks a protocol the shell needs, or the connection is lost later,
-///   as at logout.
+///   there at startup and no other window was made;
+/// - [`EXIT_NO_COMPOSITOR`] (2) if there is no compositor, it lacks a
+///   protocol the shell needs, or the connection is lost later.
 ///
-/// Logs go to stderr through `tracing`, at the level `CRABSHELL_LOG` names
-/// (`error`, `warn`, `info`, `debug` or `trace`; `info` if unset or empty;
-/// any other value is warned about). The time from this call to the first
-/// committed frame, in the program's first start if `run` started it
-/// again, is logged at `info`, and so is the time from each of
-/// Sway's workspace events to the commit that shows it.
+/// Started without the supervisor on glibc, `run` first starts the program
+/// again with `GLIBC_TUNABLES` set, so code in `main` before `run` runs
+/// twice. Keep `main` to the `run` call.
 ///
-/// Under the supervisor, `CRABSHELL_CONTROL` names its socket. The shell
-/// says `ready` there once each window has drawn, or, with no window to
-/// draw, once it has started with something to run, and on `save` writes its
-/// [`persist`](ShellExt::persist)ed values to
-/// `$XDG_RUNTIME_DIR/crabshell/state.json` and exits with 0. It starts from
-/// that file, if there is one, and removes it.
-///
-/// [`ipc`](ShellExt::ipc) handlers are served at
-/// `$XDG_RUNTIME_DIR/crabshell/ipc-<display>.sock`, named for
-/// `WAYLAND_DISPLAY`.
+/// Logs go to stderr at the level `CRABSHELL_LOG` names (`info` if unset).
+/// Under the supervisor, `CRABSHELL_CONTROL` names its control socket, used
+/// for `ready` and for saving [`persist`](ShellExt::persist)ed values on a
+/// reload. [`ipc`](ShellExt::ipc) handlers are served at
+/// `$XDG_RUNTIME_DIR/crabshell/ipc-<display>.sock`. The design doc's
+/// [Writing a config](https://github.com/w0x7y/crabshell/blob/main/docs/design.md#writing-a-config)
+/// section has the details.
 pub fn run(root: impl FnOnce(&Cx)) -> ! {
   let started = Instant::now();
   #[cfg(target_env = "gnu")]
@@ -879,17 +862,15 @@ pub trait ShellExt {
   fn idle_monitor(&self, timeout: Duration) -> ReadSignal<bool>;
 
   /// Whether the user holds the compositor's binding for `app_id`'s
-  /// global shortcut `name`: `true` from its press to its release, and a
-  /// press shows for at least one flush however quick. On Hyprland a
-  /// line such as `bind = SUPER, D, global, crabshell:launcher` binds it,
-  /// and `hyprctl globalshortcuts` lists it with `description`. Calls
-  /// with the same app id and name share one registration, with the
-  /// first one's description. The watch ends when this context's owner
-  /// goes. Without Hyprland's `hyprland-global-shortcuts-v1` it stays
-  /// `false`, and that is logged once; so it does, logged, if a string
-  /// holds a NUL byte or the three pass 4000 bytes. If another program
-  /// registers the same app id and name, Hyprland ends the connection of
-  /// whichever comes second, so pick an app id of the config's own.
+  /// global shortcut `name`: `true` from press to release, and a press
+  /// shows for at least one flush. On Hyprland,
+  /// `bind = SUPER, D, global, crabshell:launcher` binds it. Calls with the
+  /// same app id and name share one registration, with the first one's
+  /// description. If another program registers the same pair, Hyprland ends
+  /// the connection of whichever comes second, so pick an app id of the
+  /// config's own. The watch ends with this context's owner. Without
+  /// `hyprland-global-shortcuts-v1`, or with a NUL byte or more than 4000
+  /// bytes in the strings, it stays `false` and that is logged.
   ///
   /// ```no_run
   /// use crabshell::prelude::*;
@@ -911,24 +892,17 @@ pub trait ShellExt {
   /// ```
   fn global_shortcut(&self, app_id: &str, name: &str, description: &str) -> ReadSignal<bool>;
 
-  /// Locks the session while `lock`'s `locked` is true, as a lock screen
-  /// does, and gives `true` while the compositor says it is locked. Every
-  /// output, and each one added while locked, gets a surface covering it,
-  /// built by `lock`'s `surface` under a path such as
-  /// `SessionLock[DP-1]`; the compositor gives them the keyboard. Turning
-  /// `locked` false unlocks. If the compositor refuses, as when another
-  /// program holds the lock, that is logged, the signal stays `false`, and
-  /// it asks again the next time `locked` turns true. Without
-  /// `ext-session-lock-v1` it never locks, and that is logged once.
+  /// Locks the session while `lock`'s `locked` is true, and gives `true`
+  /// while the compositor says it is locked. Every output gets a surface
+  /// built by `lock`'s `surface`. A refusal, as when another program holds
+  /// the lock, is logged and retried the next time `locked` turns true.
+  /// Without `ext-session-lock-v1` it never locks, and that is logged once.
   ///
-  /// The signal turns false once the compositor has the unlock, so a
-  /// config may exit then. The lock lives as long as this context. If the
-  /// context goes, or the shell exits or crashes, while the session is
-  /// locked, it stays locked, as the protocol wants. So keep `locked` in
-  /// a file under `$XDG_RUNTIME_DIR` with
-  /// [`json_file`](crabshell_services::ServicesExt::json_file): the shell
-  /// after a reload or a crash then locks again, and a reboot starts
-  /// unlocked. [`persist`](Self::persist) covers a reload only.
+  /// If this context goes, or the shell exits or crashes, while locked, the
+  /// session stays locked, as the protocol wants. So keep `locked` in a file
+  /// under `$XDG_RUNTIME_DIR` with
+  /// [`json_file`](crabshell_services::ServicesExt::json_file), and the next
+  /// shell locks again. [`persist`](Self::persist) covers a reload only.
   ///
   /// ```no_run
   /// use crabshell::prelude::*;
