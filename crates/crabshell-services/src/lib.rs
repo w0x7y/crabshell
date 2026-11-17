@@ -1,6 +1,6 @@
 //! The services a Crabshell bar reads: the clock, Sway's and Hyprland's
 //! workspaces, audio, the tray, power, notifications, the installed
-//! applications, PAM, greetd and a polkit agent.
+//! applications, PAM, greetd, a polkit agent and HTTP GET.
 //!
 //! The shell calls [`provide`] once, with its root context and event loop.
 //! After that, any context hands out services through [`ServicesExt`],
@@ -23,6 +23,7 @@ mod dbus;
 mod desktop_entries;
 mod file;
 mod greetd;
+mod http;
 mod hyprland;
 mod lines;
 mod mpris;
@@ -58,7 +59,7 @@ use calloop::generic::Generic;
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{Interest, LoopHandle, Mode, PostAction, RegistrationToken};
 use crabshell_reactive::{Owner, ReadSignal, Signal};
-use crabshell_ui::Cx;
+use crabshell_ui::{Cx, IntoProp};
 
 pub use audio::{Audio, AudioChannel, AudioNode, AudioStream, PeakTarget, Sink};
 pub use bluetooth::{
@@ -69,6 +70,7 @@ pub use clock::Precision;
 pub use desktop_entries::{DesktopAction, DesktopEntries, DesktopEntry};
 pub use file::{FileError, FileErrorKind, FileView};
 pub use greetd::{GreetMessage, GreetState, Greetd};
+pub use http::{Http, HttpError, HttpErrorKind};
 pub use hyprland::{Hyprland, HyprlandEvent, HyprlandMonitor, HyprlandToplevel, HyprlandWorkspace};
 pub use mpris::{LoopStatus, Mpris, PlaybackStatus, Player};
 pub use network::{
@@ -123,6 +125,7 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(process::Processes::new(Rc::clone(&shared)));
   cx.provide(desktop_entries::Service::new(Rc::clone(&shared)));
   cx.provide(file::Files(Rc::clone(&shared)));
+  cx.provide(http::Service(Rc::clone(&shared)));
   cx.provide(greetd::Service::new(Rc::clone(&shared)));
   cx.provide(pam::Service(Rc::clone(&shared)));
   cx.provide(polkit::Service::new(Rc::clone(&shared)));
@@ -373,6 +376,12 @@ pub trait ServicesExt {
   where
     T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + 'static;
 
+  /// Fetches `url` with an HTTP GET through `curl`, in a process of its
+  /// own, so nothing waits on the network. A closure fetches again when a
+  /// signal it read changes the URL. It stops when this context goes, and
+  /// wakes the shell only while curl runs.
+  fn http_get(&self, url: impl IntoProp<String>) -> Http;
+
   /// The installed applications, from the desktop entries in the XDG
   /// data directories: what a launcher lists and starts, and where a
   /// window's app id finds its icon. Every caller shares one list, read
@@ -489,6 +498,11 @@ impl ServicesExt for Cx {
     T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + 'static,
   {
     file::json_file(self, path.into(), default)
+  }
+
+  #[track_caller]
+  fn http_get(&self, url: impl IntoProp<String>) -> Http {
+    http::http_get(self, url)
   }
 
   fn desktop_entries(&self) -> DesktopEntries {
@@ -798,6 +812,8 @@ struct Config {
   /// How long a request waits for its identities' names before it goes on
   /// with those found.
   polkit_users_limit: Duration,
+  /// The `curl` that `cx.http_get` runs.
+  curl: PathBuf,
 }
 
 impl Config {
@@ -840,6 +856,7 @@ impl Config {
       polkit_socket: PathBuf::from(polkit::HELPER_SOCKET),
       polkit_users: Arc::new(user_name),
       polkit_users_limit: polkit::USERS_LIMIT,
+      curl: PathBuf::from("curl"),
     }
   }
 }

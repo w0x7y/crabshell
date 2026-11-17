@@ -849,7 +849,7 @@ impl Inner {
   clippy::type_complexity,
   reason = "the four parts of one spawn, used once"
 )]
-fn spawn_piped(
+pub(crate) fn spawn_piped(
   command: &mut Command,
   keep_stdin: bool,
 ) -> std::io::Result<(Child, PipeReader, PipeReader, Option<PipeWriter>)> {

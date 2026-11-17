@@ -122,6 +122,7 @@ pub(crate) fn offline() -> Config {
     polkit_users: Arc::new(crate::user_name),
     polkit_users_limit: crate::polkit::USERS_LIMIT,
     pam: Arc::new(FakePam::default()),
+    curl: PathBuf::from("curl"),
   }
 }
 
