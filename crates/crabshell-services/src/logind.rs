@@ -255,6 +255,11 @@ impl Service {
     sleeping.read_only()
   }
 
+  /// Whether logind is reached, for what waits to call it.
+  pub(crate) fn connected(&self) -> Option<Signal<bool>> {
+    Some(self.signals()?.1)
+  }
+
   fn signals(&self) -> Option<(Signal<bool>, Signal<bool>)> {
     let state = self.state.borrow();
     state
@@ -263,7 +268,7 @@ impl Service {
   }
 
   /// The bus while logind runs, with the generation it runs in.
-  fn connection(&self) -> Option<(Connection, u64)> {
+  pub(crate) fn connection(&self) -> Option<(Connection, u64)> {
     let state = self.state.borrow();
     let state = state.as_ref()?;
     Some((state.connection.clone()?, state.generation))

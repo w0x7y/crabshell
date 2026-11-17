@@ -4,8 +4,8 @@
 #[cfg(test)]
 mod tests;
 
-use std::cell::RefCell;
-use std::collections::HashSet;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, HashSet};
 use std::io::Read;
 use std::path::Path;
 use std::rc::{Rc, Weak};
@@ -53,7 +53,10 @@ impl Brightness {
 
   /// Asks logind to set the backlight `name` to `value`, held to its
   /// `max_brightness`. It shows in [`devices`](Self::devices) once the
-  /// kernel has it. An unknown name or a refusal is logged.
+  /// kernel has it. Before logind is reached, as from the root closure,
+  /// the latest value for each backlight waits and is sent once it is.
+  /// An unknown name or a refusal is logged, and so, once, is a value
+  /// waiting for a logind that isn't there.
   pub fn set(&self, name: &str, value: u32) {
     let Some(service) = &self.service else {
       return;
@@ -65,7 +68,7 @@ impl Brightness {
       })
     });
     match max.flatten() {
-      Some(max) => service.logind.set_brightness(name, value.min(max)),
+      Some(max) => service.set(name, value.min(max)),
       None => tracing::warn!(name, "no such backlight, so its brightness wasn't set"),
     }
   }
@@ -94,6 +97,10 @@ pub(crate) struct Service {
   shared: Rc<Shared>,
   logind: Rc<logind::Service>,
   state: RefCell<Option<State>>,
+  /// The latest value asked for each backlight before logind is reached.
+  pending: RefCell<BTreeMap<String, u32>>,
+  /// Whether a value that couldn't go yet was logged.
+  logged: Cell<bool>,
 }
 
 struct State {
@@ -111,6 +118,26 @@ impl Service {
       shared,
       logind,
       state: RefCell::new(None),
+      pending: RefCell::default(),
+      logged: Cell::new(false),
+    }
+  }
+
+  /// Sends `value` for the backlight `name`, or keeps it until logind is
+  /// reached.
+  fn set(&self, name: &str, value: u32) {
+    if self.logind.connection().is_some() {
+      return self.logind.set_brightness(name, value);
+    }
+    if self.shared.config.system_bus.is_none() {
+      if !self.logged.replace(true) {
+        tracing::info!("no system bus, so logind can't set a brightness");
+      }
+      return;
+    }
+    self.pending.borrow_mut().insert(name.to_owned(), value);
+    if !self.logged.replace(true) {
+      tracing::info!("logind isn't reached yet, so the brightness is set once it is");
     }
   }
 
@@ -120,6 +147,18 @@ impl Service {
     }
     // For `set`, so logind is reached before a config asks.
     self.logind.start();
+    if let Some(connected) = self.logind.connected() {
+      let service = Rc::downgrade(self);
+      self.shared.root.effect(move || {
+        if connected.get()
+          && let Some(service) = Weak::upgrade(&service)
+        {
+          for (name, value) in service.pending.take() {
+            service.logind.set_brightness(&name, value);
+          }
+        }
+      });
+    }
     let root = &self.shared.config.backlight;
     let names = names(root);
     let watches = names

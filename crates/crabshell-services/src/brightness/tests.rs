@@ -139,16 +139,9 @@ fn a_machine_without_backlights_lists_none() {
   assert!(logs.contains("no backlights"), "{logs}");
 }
 
-#[test]
-fn set_asks_logind_for_a_value_held_to_the_max() {
-  let sysfs = TempDir::new();
-  backlight(sysfs.path(), "intel_backlight", "400\n", "1000\n");
-  let bus = PrivateBus::start();
-  let mut shell = Harness::new(Config {
-    system_bus: Some(bus.address.parse().expect("dbus-daemon's address")),
-    ..with_sysfs(&sysfs)
-  });
-  let logind = FakeService::start(&mut shell, &bus, super::logind::LOGIND);
+/// A fake logind on `bus` that records each `SetBrightness`.
+fn fake_logind(shell: &mut Harness, bus: &PrivateBus) -> (FakeService, Rc<RefCell<Vec<String>>>) {
+  let logind = FakeService::start(shell, bus, super::logind::LOGIND);
   let asked: Rc<RefCell<Vec<String>>> = Rc::default();
   let log = Rc::clone(&asked);
   logind.on("SetBrightness", move |call| {
@@ -160,26 +153,80 @@ fn set_asks_logind_for_a_value_held_to_the_max() {
       .push(format!("{path} {interface} {subsystem} {name} {value}"));
     reply(call, &())
   });
-  logind.own(&mut shell);
+  logind.own(shell);
+  (logind, asked)
+}
+
+#[test]
+fn set_asks_logind_for_a_value_held_to_the_max() {
+  let sysfs = TempDir::new();
+  backlight(sysfs.path(), "intel_backlight", "400\n", "1000\n");
+  backlight(sysfs.path(), "acpi_video0", "7\n", "15\n");
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(Config {
+    system_bus: Some(bus.address.parse().expect("dbus-daemon's address")),
+    ..with_sysfs(&sysfs)
+  });
+  let (_logind, asked) = fake_logind(&mut shell, &bus);
+  // Set from the root closure, before logind is reached: the latest
+  // value for each backlight goes once it is.
   let brightness = shell.cx.brightness();
-  // Logind is reached a moment after the first call.
+  brightness.set("intel_backlight", 5000);
+  brightness.set("acpi_video0", 3);
+  brightness.set("intel_backlight", 300);
   shell.retry_until(
-    "a SetBrightness",
-    || !asked.borrow().is_empty(),
-    |_| brightness.set("intel_backlight", 5000),
+    "the SetBrightness calls",
+    || asked.borrow().len() == 2,
+    |_| {},
   );
-  for asked in asked.borrow().iter() {
-    assert_eq!(
-      asked,
-      "/org/freedesktop/login1/session/auto org.freedesktop.login1.Session backlight \
-       intel_backlight 1000"
-    );
-  }
+  run(&mut shell, 200);
+  let session = "/org/freedesktop/login1/session/auto org.freedesktop.login1.Session backlight";
+  assert_eq!(
+    *asked.borrow(),
+    [
+      format!("{session} acpi_video0 3"),
+      format!("{session} intel_backlight 300")
+    ]
+  );
+
+  // Once reached, a set goes at once, held to the max.
   asked.borrow_mut().clear();
-  brightness.set("intel_backlight", 200);
-  shell.retry_until("the second", || !asked.borrow().is_empty(), |_| {});
-  assert!(asked.borrow()[0].ends_with("intel_backlight 200"));
+  brightness.set("intel_backlight", 5000);
+  shell.retry_until("the third", || !asked.borrow().is_empty(), |_| {});
+  assert_eq!(asked.borrow()[0], format!("{session} intel_backlight 1000"));
 
   let logs = capture_logs(|| brightness.set("nothing", 3));
   assert!(logs.contains("no such backlight"), "{logs}");
+}
+
+#[test]
+fn a_set_waits_for_a_logind_that_starts_late_and_without_a_bus_logs_once() {
+  let sysfs = TempDir::new();
+  backlight(sysfs.path(), "intel_backlight", "400\n", "1000\n");
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(Config {
+    system_bus: Some(bus.address.parse().expect("dbus-daemon's address")),
+    ..with_sysfs(&sysfs)
+  });
+  let brightness = shell.cx.brightness();
+  let logs = capture_logs(|| {
+    brightness.set("intel_backlight", 10);
+    run(&mut shell, 300);
+    brightness.set("intel_backlight", 20);
+  });
+  assert_eq!(logs.matches("isn't reached yet").count(), 1, "{logs}");
+  let (_logind, asked) = fake_logind(&mut shell, &bus);
+  shell.retry_until("the late set", || !asked.borrow().is_empty(), |_| {});
+  run(&mut shell, 200);
+  assert_eq!(asked.borrow().len(), 1);
+  assert!(asked.borrow()[0].ends_with("intel_backlight 20"));
+
+  let mut shell = Harness::new(with_sysfs(&sysfs));
+  let logs = capture_logs(|| {
+    let brightness = shell.cx.brightness();
+    brightness.set("intel_backlight", 10);
+    brightness.set("intel_backlight", 20);
+    run(&mut shell, 100);
+  });
+  assert_eq!(logs.matches("can't set a brightness").count(), 1, "{logs}");
 }
