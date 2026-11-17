@@ -1520,7 +1520,7 @@ Measured on 2026-11-17 in release builds by the step that changed each, against 
 | The same crossfade in render alone                          | 3.5 ms         | 2.6 ms      |
 | Shell run alone, RSS after a second 1080p wallpaper         | 50.9 MiB       | 36.7 MiB    |
 
-Dithering costs the gradient about a third more, the price of no steps across a wide bar. Before the gaps run a bar whose every `per_output` closure panicked never fell back to `last-good`.
+Dithering costs the gradient about a third more, the price of no steps across a wide bar. Before the gaps run a bar whose every `per_output` closure panicked never fell back to `last-good`. Measured twice against 061eacf after the run, the examples use 0.1 to 0.6 MiB more, their logged first frames come 3 to 8 ms later, about 3 ms of it the restart that is now counted, and idle wakeups are as before: none, and the bar's two on the minute.
 
 ## Phases
 
@@ -1543,6 +1543,7 @@ Seven phases to v0.1, totaling 16 to 26 weeks of focused work, all guesses, then
 7. **Phase 6, the v0.1 release (1-2 weeks).** Template, README, API docs on docs.rs, published crates, and measured numbers in the performance table.
    - Exit: on a clean user account, you go from `cargo install crabshell-cli` to a running bar in under 15 minutes by following the README.
    - Marked done on 2026-11-13 without the clean-account run, which the maintainer skipped for now. On 2026-11-14 the maintainer ran the bar on Hyprland, where it worked, and signed the exit check off. All seven crates are on crates.io at 0.1.0, tagged `v0.1.0`, and docs.rs built every library's docs. With an empty cargo cache, `cargo install --locked crabshell-cli`, `crabshell init`, `crabshell check` and the first build of the template bar took 2 min 54 s on 12 cores. Commits 0ebf76e to b862f0f.
+   - On 2026-11-17 the README's commands ran under a fresh `HOME` with an empty cargo cache and the machine's Rust toolchain: `cargo install --locked crabshell-cli` took 28 s, `crabshell init` and `crabshell check` were done 80 s in, the template's first build 3 min 19 s in on 12 cores, and the bar drew its first frame in 13.7 ms on a private headless Sway. A new user account that installs Rust through rustup first is still untried.
 
 ### Beyond v0.1
 
