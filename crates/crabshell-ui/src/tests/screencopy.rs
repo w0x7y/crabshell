@@ -188,3 +188,28 @@ fn a_live_view_out_of_sight_isnt_captured_until_it_comes_back() {
     "no longer clipped"
   );
 }
+
+#[test]
+fn a_view_scaled_up_asks_for_a_frame_as_large_as_it_is_drawn() {
+  let mut h = Harness::new();
+  let outer = h.cx.signal(1.0_f32);
+  let view = ScreencopyView::new(output("DP-2")).style(BOX.scale(1.5));
+  let row = Row::new()
+    .style(move || Style::new().scale(outer.get()).rotate(30.0))
+    .child(view);
+  let window = h.window(h.panel().child(row), 400.0, 300.0);
+  let size = |window: &crate::Window| window.captures()[0].size;
+  // 1.5, turned, draws its layer at 1.5.
+  assert_eq!(size(&window), Size::new(150.0, 75.0));
+  // 1.5 times 2 is 3; a scale-down draws at its own size, and anything
+  // else rounds up to a quarter.
+  for (scale, zoom) in [(2.0, 3.0), (0.5, 1.0), (0.6, 1.0), (0.8, 1.25), (9.0, 4.0)] {
+    outer.set(scale);
+    h.frame(&window);
+    assert_eq!(
+      size(&window),
+      Size::new(100.0 * zoom, 50.0 * zoom),
+      "outer scale {scale}"
+    );
+  }
+}

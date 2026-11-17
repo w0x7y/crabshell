@@ -308,6 +308,15 @@ impl Renderer {
       let mut painter = Painter {
         grid: Grid {
           scale,
+          zoom: 1.0,
+          linear: Affine {
+            sx: 1.0,
+            ky: 0.0,
+            kx: 0.0,
+            sy: 1.0,
+            tx: 0.0,
+            ty: 0.0,
+          },
           window: view.size(),
           width,
           height,
@@ -392,7 +401,14 @@ fn copy(scratch: &[u8], area: PixelRect, pixels: &mut [u8], width: u32, format: 
 /// Turns logical coordinates into pixels of the area being drawn.
 #[derive(Clone, Copy)]
 struct Grid {
+  /// Pixels a logical pixel: the output's scale times `zoom`.
   scale: f32,
+  /// How many times its own resolution a transformed layer is drawn at,
+  /// from [`Affine::layer_zoom`]; 1 outside one.
+  zoom: f32,
+  /// The transforms around what is drawn, from its coordinates to the
+  /// window's, without their moves.
+  linear: Affine,
   /// The window's logical size.
   window: Size,
   /// The buffer's size in pixels.
@@ -558,8 +574,9 @@ impl Painter<'_> {
   /// Draws `node` and everything inside it into a layer in its own
   /// coordinates, then blends that in through its `transform`, filtered
   /// bilinearly, at `opacity`: one layer for both. The layer covers only
-  /// what lands in this pixmap, in the node's own buffer pixels, so a
-  /// pixel is always drawn the same way in the same tile.
+  /// what lands in this pixmap, in the node's own buffer pixels times the
+  /// zoom of every transform around it, so what they scale up stays
+  /// sharp, and a pixel is always drawn the same way in the same tile.
   fn transformed(
     &mut self,
     pixmap: &mut PixmapMut<'_>,
@@ -579,10 +596,23 @@ impl Painter<'_> {
     let Grid {
       scale, left, top, ..
     } = self.grid;
-    // From the node's own buffer pixels to its parent's.
+    let outer = self.grid.linear;
+    let linear = Transform::from_row(outer.sx, outer.ky, outer.kx, outer.sy, 0.0, 0.0)
+      .pre_concat(Transform::from_row(sx, ky, kx, sy, 0.0, 0.0));
+    let linear = Affine {
+      sx: linear.sx,
+      ky: linear.ky,
+      kx: linear.kx,
+      sy: linear.sy,
+      tx: 0.0,
+      ty: 0.0,
+    };
+    let zoom = linear.layer_zoom();
+    let layer_scale = scale / self.grid.zoom * zoom;
+    // From the node's own pixels, zoomed, to its parent's.
     let device = Transform::from_scale(scale, scale)
       .pre_concat(Transform::from_row(sx, ky, kx, sy, tx, ty))
-      .pre_scale(1.0 / scale, 1.0 / scale);
+      .pre_scale(1.0 / layer_scale, 1.0 / layer_scale);
     let to_pixmap = device.post_translate(-left, -top);
     let Some(back) = to_pixmap.invert() else {
       return;
@@ -591,10 +621,10 @@ impl Painter<'_> {
     let shown = tiny_skia::Rect::from_xywh(0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32)
       .and_then(|rect| rect.transform(back));
     let drawn = tiny_skia::Rect::from_xywh(
-      inner.x * scale,
-      inner.y * scale,
-      inner.width * scale,
-      inner.height * scale,
+      inner.x * layer_scale,
+      inner.y * layer_scale,
+      inner.width * layer_scale,
+      inner.height * layer_scale,
     );
     let Some(area) = shown
       .zip(drawn)
@@ -617,7 +647,22 @@ impl Painter<'_> {
     };
     self.work.layer_pixels += pixels;
     let (x, y) = (area.x() as f32, area.y() as f32);
+    let (width, height) = if zoom == self.grid.zoom {
+      (self.grid.width, self.grid.height)
+    } else {
+      // `as` saturates; the window's edge is past any layer drawn.
+      let window = self.grid.window;
+      (
+        (window.width * layer_scale).round() as u32,
+        (window.height * layer_scale).round() as u32,
+      )
+    };
     let mut inner = self.on(Grid {
+      scale: layer_scale,
+      zoom,
+      linear,
+      width,
+      height,
       left: x,
       top: y,
       ..self.grid

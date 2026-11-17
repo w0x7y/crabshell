@@ -5,7 +5,7 @@
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::geometry::Size;
+use crate::geometry::{Affine, Size};
 use crate::prop::{IntoProp, Prop};
 use crate::style::Style;
 use crate::tree::{Change, NodeId, NodeKind, Tree, borrow, replace};
@@ -133,8 +133,9 @@ pub struct CaptureRequest {
   pub live: bool,
   /// Whether the pointer is drawn into the frames.
   pub paint_cursors: bool,
-  /// The view's content box at the last layout, in logical pixels: a
-  /// frame needn't be larger.
+  /// The view's content box at the last layout, in logical pixels, times
+  /// the zoom the renderer draws it at inside transforms that scale it
+  /// up, from [`Affine::layer_zoom`]: a frame needn't be larger.
   pub size: Size,
 }
 
@@ -227,6 +228,24 @@ impl Tree {
     !seen.is_empty()
   }
 
+  /// How many times its own resolution node `id` is drawn at, through
+  /// its transform and every one around it, as the renderer draws a
+  /// transformed layer: [`Affine::layer_zoom`] of them all.
+  fn zoom(&self, id: NodeId) -> f32 {
+    let mut linear: Option<Affine> = None;
+    let mut at = Some(id);
+    while let Some(node) = at {
+      if let Some(transform) = self.node(node).and_then(|node| node.transform) {
+        linear = Some(match linear {
+          Some(inner) => transform.after(&inner),
+          None => transform,
+        });
+      }
+      at = self.taffy.parent(node);
+    }
+    linear.map_or(1.0, |linear| linear.layer_zoom())
+  }
+
   fn update_capture(&mut self, id: NodeId, f: impl FnOnce(&mut CaptureNode) -> Change) {
     self.update(id, |node| match &mut node.kind {
       NodeKind::Capture(capture) => f(capture),
@@ -255,12 +274,13 @@ impl Window {
         if node.rect.is_none() || content.is_empty() || capture.live && !tree.in_sight(id) {
           return None;
         }
+        let zoom = tree.zoom(id);
         Some(CaptureRequest {
           id: capture.id,
           source: capture.source.clone()?,
           live: capture.live,
           paint_cursors: capture.paint_cursors,
-          size: Size::new(content.width, content.height),
+          size: Size::new(content.width * zoom, content.height * zoom),
         })
       })
       .collect()

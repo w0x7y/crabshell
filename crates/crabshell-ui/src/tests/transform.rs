@@ -511,3 +511,35 @@ fn a_moved_field_tells_the_input_method_where_its_caret_is_drawn() {
     Rect::new(plain.x + 100.0, plain.y, plain.width, plain.height)
   );
 }
+
+#[test]
+fn a_transform_after_another_maps_as_both_in_turn() {
+  use crate::{Affine, Point};
+  let turn = Affine {
+    sx: 0.0,
+    ky: 1.0,
+    kx: -1.0,
+    sy: 0.0,
+    tx: 10.0,
+    ty: 0.0,
+  };
+  let stretch = Affine {
+    sx: 2.0,
+    ky: 0.0,
+    kx: 0.5,
+    sy: 3.0,
+    tx: 1.0,
+    ty: -2.0,
+  };
+  let point = Point::new(3.0, 4.0);
+  assert_eq!(
+    turn.after(&stretch).map(point),
+    turn.map(stretch.map(point))
+  );
+  assert_eq!(
+    stretch.after(&turn).map(point),
+    stretch.map(turn.map(point))
+  );
+  // A skew stretches some lengths past its own scales.
+  assert_eq!(stretch.layer_zoom(), 3.25);
+}

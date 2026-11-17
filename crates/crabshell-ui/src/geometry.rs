@@ -184,6 +184,49 @@ impl Affine {
     }
   }
 
+  /// `inner`, then this transform.
+  pub(crate) fn after(&self, inner: &Affine) -> Affine {
+    let at = self.map(Point::new(inner.tx, inner.ty));
+    Affine {
+      sx: self.sx * inner.sx + self.kx * inner.ky,
+      ky: self.ky * inner.sx + self.sy * inner.ky,
+      kx: self.sx * inner.kx + self.kx * inner.sy,
+      sy: self.ky * inner.kx + self.sy * inner.sy,
+      tx: at.x,
+      ty: at.y,
+    }
+  }
+
+  /// How many times its own resolution a layer drawn through this
+  /// transform, from the window down, is drawn at, so what it scales up
+  /// stays sharp: the most it stretches a length, rounded up to a quarter
+  /// and kept from 1 to 4. A scale-down draws at its own size, and an
+  /// animated scale-up changes it only every quarter.
+  ///
+  /// ```
+  /// use crabshell_ui::Affine;
+  ///
+  /// let scale = |s: f32| Affine { sx: s, ky: 0.0, kx: 0.0, sy: s, tx: 0.0, ty: 0.0 };
+  /// assert_eq!(scale(3.0).layer_zoom(), 3.0);
+  /// assert_eq!(scale(1.1).layer_zoom(), 1.25);
+  /// assert_eq!(scale(0.5).layer_zoom(), 1.0);
+  /// assert_eq!(scale(9.0).layer_zoom(), 4.0);
+  /// ```
+  pub fn layer_zoom(&self) -> f32 {
+    let (a, b, c, d) = (self.sx, self.kx, self.ky, self.sy);
+    // The larger singular value of the 2 by 2 part.
+    let sum = a * a + b * b + c * c + d * d;
+    let det = a * d - b * c;
+    let stretch = ((sum + (sum * sum - 4.0 * det * det).max(0.0).sqrt()) / 2.0).sqrt();
+    // A turn's rounding leaves a hair past 1, which shouldn't count.
+    let quarters = (stretch * 4.0 - 1e-3).ceil() / 4.0;
+    if quarters.is_nan() {
+      1.0
+    } else {
+      quarters.clamp(1.0, 4.0)
+    }
+  }
+
   /// The transform that undoes this one, or `None` when it squashes the
   /// plane flat, as a scale of 0 does.
   pub(crate) fn invert(&self) -> Option<Affine> {

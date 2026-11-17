@@ -189,3 +189,46 @@ fn time_a_turning_card() {
     drawing.as_secs_f64() * 1000.0 / f64::from(frames)
   );
 }
+
+/// A 300 by 90 window with "Sharp" in `font` at its corner, scaled by
+/// `scale` from there.
+fn sharp_text(scene: &mut Scene, size: f32, scale: f32) -> Window {
+  let text = Stack::new()
+    .style(Style::new().scale(scale).origin(0.0, 0.0))
+    .child(
+      Text::new("Sharp").style(
+        Style::new()
+          .font(crabshell_ui::Font::new("sans-serif", size))
+          .color(Color::rgb(0, 0, 0)),
+      ),
+    );
+  let row = Row::new().align(Align::Start).child(text);
+  scene.window(scene.panel().child(row), 300.0, 90.0)
+}
+
+#[test]
+fn text_scaled_up_draws_as_sharp_as_text_that_size() {
+  for scale in [1.0, 2.0] {
+    let mut scene = Scene::new();
+    let scaled = sharp_text(&mut scene, 13.0, 3.0);
+    let scaled = scene.full(&scaled, scale);
+    let large = sharp_text(&mut scene, 39.0, 1.0);
+    let large = scene.full(&large, scale);
+    // Edges a blurry upscale would smear: pixels between clear and
+    // solid. Glyphs placed at three times the size differ by a little.
+    let soft = |buffer: &Buffer| {
+      buffer
+        .pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|pixel| (24..232).contains(&pixel[3]))
+        .count() as f32
+    };
+    let (soft_scaled, soft_large) = (soft(&scaled), soft(&large));
+    assert!(
+      soft_scaled < soft_large * 1.25,
+      "at scale {scale}: {soft_scaled} soft pixels, {soft_large} drawn at that size"
+    );
+  }
+}
