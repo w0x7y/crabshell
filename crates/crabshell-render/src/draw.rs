@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use cosmic_text::{FontSystem, LayoutGlyph, SwashCache, SwashContent, SwashImage};
 use crabshell_ui::{
   Affine, CaptureView, Color, Content, IconView, ImageView, InputView, NodeView, Radii, Rect,
-  Shadow, Size, Style, TextSystem, TextView, WindowView,
+  Shadow, Size, Span, Style, TextSystem, TextView, WindowView,
 };
 use tiny_skia::{
   FillRule, FilterQuality, LineCap, LineJoin, Mask, Paint, PathBuilder, PathSegment, Pixmap,
@@ -1119,9 +1119,14 @@ impl Painter<'_> {
       {
         continue;
       }
+      // A lit link takes the hover color, if the text has one.
+      let span_color = |span: &Span| match text.link_lit(span) {
+        true => text.link_hover_color().or(span.color),
+        false => span.color,
+      };
       for glyph in run.glyphs.iter() {
         let span = text.span(run.line_i, glyph);
-        let color = span.and_then(|span| span.color).unwrap_or(text.color());
+        let color = span.and_then(span_color).unwrap_or(text.color());
         if color.a == 0 {
           continue;
         }
@@ -1164,9 +1169,9 @@ impl Painter<'_> {
         let Some(span) = text.span(run.line_i, &glyphs[0]) else {
           continue;
         };
-        let lines = (span.underline, span.strikethrough);
+        let lines = (span.underline || text.link_lit(span), span.strikethrough);
         if lines != (false, false) {
-          let color = span.color.unwrap_or(text.color());
+          let color = span_color(span).unwrap_or(text.color());
           self.decorations(pixmap, origin, glyphs, baseline, lines, color);
         }
       }

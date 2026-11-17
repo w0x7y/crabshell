@@ -109,6 +109,8 @@ pub(crate) struct Keyboard {
   pub(crate) entered: bool,
   /// The focused button or field, kept while the keyboard is elsewhere.
   pub(crate) focused: Option<NodeId>,
+  /// The link span of the focused text that Tab stopped on.
+  pub(crate) link: Option<usize>,
   /// The window's own `on_key`.
   pub(crate) handler: Option<KeyHandler>,
   /// The modifiers held as the platform last said, which a press reads.
@@ -120,6 +122,7 @@ impl Keyboard {
   pub(crate) fn forget(&mut self, removed: &[NodeId]) {
     if self.focused.is_some_and(|id| removed.contains(&id)) {
       self.focused = None;
+      self.link = None;
     }
   }
 }
@@ -206,6 +209,12 @@ impl Tree {
     let Some(id) = id else {
       return;
     };
+    // A focused link draws lit; text fields show no ring either.
+    if let Some(NodeKind::Text(_)) = self.node(id).map(|node| &node.kind) {
+      let link = self.keyboard.link.filter(|_| shown);
+      self.light_link(id, true, link);
+      return;
+    }
     if matches!(
       self.node(id).map(|node| &node.kind),
       Some(NodeKind::Input(_))
@@ -225,30 +234,42 @@ impl Tree {
   /// Moves the focus to `id`. It shows once the window has the keyboard.
   /// A hidden node, or one inside a hidden widget, is refused.
   pub(crate) fn focus(&mut self, id: Option<NodeId>) {
+    self.focus_link(id, None);
+  }
+
+  /// Moves the focus to `id`, on its link span `link` if it is a text.
+  fn focus_link(&mut self, id: Option<NodeId>, link: Option<usize>) {
     if id.is_some_and(|id| !self.shown(id)) {
       return;
     }
+    if self.keyboard.focused == id {
+      if self.keyboard.link != link {
+        self.keyboard.link = link;
+        let entered = self.keyboard.entered;
+        self.show_focus(id, entered);
+      }
+      return;
+    }
     let old = std::mem::replace(&mut self.keyboard.focused, id);
-    if old != id {
-      // What an input method was composing there is dropped with it.
-      if let Some(old) = old
-        && matches!(self.node(old).map(|node| &node.kind), Some(NodeKind::Input(input)) if input.preedit.is_some())
-      {
-        self.update_input(old, |input| {
-          input.preedit = None;
-          input.refresh();
-        });
-      }
-      if let Some(old) = old {
-        self.drop_selection(old);
-      }
-      self.show_focus(old, false);
-      let entered = self.keyboard.entered;
-      self.show_focus(id, entered);
-      // The next layout scrolls a newly focused field's caret into view.
-      if let Some(id) = id {
-        self.update_input(id, |_| {});
-      }
+    // What an input method was composing there is dropped with it.
+    if let Some(old) = old
+      && matches!(self.node(old).map(|node| &node.kind), Some(NodeKind::Input(input)) if input.preedit.is_some())
+    {
+      self.update_input(old, |input| {
+        input.preedit = None;
+        input.refresh();
+      });
+    }
+    if let Some(old) = old {
+      self.drop_selection(old);
+    }
+    self.show_focus(old, false);
+    self.keyboard.link = link;
+    let entered = self.keyboard.entered;
+    self.show_focus(id, entered);
+    // The next layout scrolls a newly focused field's caret into view.
+    if let Some(id) = id {
+      self.update_input(id, |_| {});
     }
   }
 
@@ -323,9 +344,10 @@ impl Tree {
       })
   }
 
-  /// The enabled buttons and the fields in the order they are laid out:
-  /// depth first, in child order.
-  fn focusable(&self) -> Vec<NodeId> {
+  /// The enabled buttons, the fields and the links of texts with an
+  /// `on_link`, in the order they are laid out: depth first, in child
+  /// order, a text's links in text order.
+  fn focusable(&self) -> Vec<(NodeId, Option<usize>)> {
     let mut found = Vec::new();
     let mut pending = vec![self.root];
     while let Some(id) = pending.pop() {
@@ -333,14 +355,13 @@ impl Tree {
       if self.node(id).is_some_and(|node| !node.visible) {
         continue;
       }
-      if let Some(node) = self.node(id)
-        && match &node.kind {
-          NodeKind::Button(button) => button.enabled,
-          NodeKind::Input(_) => true,
-          _ => false,
+      match self.node(id).map(|node| &node.kind) {
+        Some(NodeKind::Button(button)) if button.enabled => found.push((id, None)),
+        Some(NodeKind::Input(_)) => found.push((id, None)),
+        Some(NodeKind::Text(text)) => {
+          found.extend(text.link_stops().into_iter().map(|link| (id, Some(link))));
         }
-      {
-        found.push(id);
+        _ => {}
       }
       let mut children = self.taffy.children(id).unwrap_or_default();
       children.reverse();
@@ -379,10 +400,10 @@ impl Tree {
     match event.key {
       Key::Tab => {
         let buttons = self.focusable();
-        let at = self
-          .keyboard
-          .focused
-          .and_then(|id| buttons.iter().position(|button| *button == id));
+        let at = self.keyboard.focused.and_then(|id| {
+          let link = self.keyboard.link;
+          buttons.iter().position(|&stop| stop == (id, link))
+        });
         let count = buttons.len();
         let next = match (at, event.modifiers.shift) {
           _ if count == 0 => None,
@@ -391,10 +412,19 @@ impl Tree {
           (Some(at), false) => Some((at + 1) % count),
           (Some(at), true) => Some((at + count - 1) % count),
         };
-        self.focus(next.map(|next| buttons[next]));
+        let (id, link) = next.map_or((None, None), |next| {
+          (Some(buttons[next].0), buttons[next].1)
+        });
+        self.focus_link(id, link);
         None
       }
-      Key::Enter | Key::Character(' ') => self.click(self.keyboard.focused?),
+      Key::Enter | Key::Character(' ') => {
+        let id = self.keyboard.focused?;
+        match self.keyboard.link {
+          Some(link) => self.link_call(id, link),
+          None => self.click(id),
+        }
+      }
       _ => None,
     }
   }

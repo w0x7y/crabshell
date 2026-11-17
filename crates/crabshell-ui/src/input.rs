@@ -21,7 +21,7 @@ use crate::keyboard::KeyHandler;
 use crate::prop::{Prop, PropKind};
 use crate::scrolling::{BarDrag, Flick};
 use crate::select::{TextClick, text_selection};
-use crate::tree::{ButtonNode, Change, Node, NodeId, NodeKind, Tree, borrow};
+use crate::tree::{ButtonNode, Change, Node, NodeId, NodeKind, Tree, add_damage, borrow};
 use crate::window::Window;
 
 /// Logical pixels of touchpad scrolling per scroll step.
@@ -315,6 +315,8 @@ pub(crate) struct Pointer {
   /// The text, span index and URL of the link the left button went down
   /// on, until it comes up.
   link: Option<(NodeId, usize, String)>,
+  /// The text and link span the pointer is over, drawn lit.
+  link_hover: Option<(NodeId, usize)>,
   /// A scroll bar's handle held, until the left button comes up.
   pub(crate) bar: Option<BarDrag>,
   /// The scroll views under the left button, one maybe dragged, until it
@@ -606,6 +608,52 @@ impl Tree {
     self.set_hovered(hit, &path);
     self.set_positions(&path, Some(point));
     self.update_drop();
+    self.hover_link();
+  }
+
+  /// Lights the link under the pointer and puts out the one it left.
+  fn hover_link(&mut self) {
+    let now = self.pointer.hovered.zip(self.link_under_pointer());
+    let old = std::mem::replace(&mut self.pointer.link_hover, now);
+    if old == now {
+      return;
+    }
+    if let Some((id, _)) = old {
+      self.light_link(id, false, None);
+    }
+    if let Some((id, index)) = now {
+      self.light_link(id, false, Some(index));
+    }
+  }
+
+  /// Sets the link of text `id` that the pointer, or with `focus` the
+  /// keyboard focus, lights, and repaints only the links whose look
+  /// changed.
+  pub(crate) fn light_link(&mut self, id: NodeId, focus: bool, index: Option<usize>) {
+    let Some(node) = self.node_mut(id) else {
+      return;
+    };
+    let laid_out = node.rect.is_some();
+    let NodeKind::Text(text) = &mut node.kind else {
+      return;
+    };
+    let slot = match focus {
+      true => &mut text.focused_link,
+      false => &mut text.hovered_link,
+    };
+    let old = std::mem::replace(slot, index);
+    if old == index || !laid_out {
+      return;
+    }
+    let areas: Vec<Rect> = old
+      .into_iter()
+      .chain(index)
+      .flat_map(|index| text.link_areas(index))
+      .collect();
+    for area in areas {
+      let area = self.window_rect(id, area);
+      add_damage(&mut self.damage, area);
+    }
   }
 
   /// The type of what button `id` carries when dragged, if anything.
@@ -941,9 +989,22 @@ impl Tree {
       return None;
     }
     let released = self.link_under(press.id, self.pointer.position?)?;
-    let handler = text.on_link.clone()?;
-    let url = released.2.clone();
-    (pressed == released).then(|| Call {
+    if pressed != released {
+      return None;
+    }
+    self.link_call(press.id, released.1)
+  }
+
+  /// Text `id`'s `on_link` with the URL of link span `index`, unless the
+  /// handler panicked before.
+  pub(crate) fn link_call(&self, id: NodeId, index: usize) -> Option<Call> {
+    let node = self.node(id)?;
+    let NodeKind::Text(text) = &node.kind else {
+      return None;
+    };
+    let handler = text.on_link.clone().filter(|handler| !handler.disabled())?;
+    let url = text.spans.get(index)?.link.clone()?;
+    Some(Call {
       cx: node.cx.clone(),
       path: Rc::clone(&node.path),
       handlers: None,
@@ -1114,6 +1175,7 @@ impl Tree {
     let calls = self.end_press(None).into_iter().collect();
     self.set_hovered(None, &[]);
     self.set_positions(&[], None);
+    self.hover_link();
     calls
   }
 

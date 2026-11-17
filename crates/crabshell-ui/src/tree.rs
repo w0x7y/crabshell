@@ -950,6 +950,16 @@ impl Tree {
           tree.update_text(id, |text| text.set_spans(value))
         });
         self.bind_opt(id, props.selectable, "selectable", Tree::set_selectable);
+        let hover = props.link_hover_color;
+        self.bind_opt(id, hover, "link_hover_color", |tree, id, color| {
+          tree.update(id, |node| match &mut node.kind {
+            NodeKind::Text(text) if text.link_hover_color != color => {
+              text.link_hover_color = color;
+              Change::Paint
+            }
+            _ => Change::None,
+          });
+        });
         self.bind_opt(id, props.elide, "elide", |tree, id, value| {
           tree.update_text(id, |text| text.set_elide(value))
         });

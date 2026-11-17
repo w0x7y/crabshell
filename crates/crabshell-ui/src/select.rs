@@ -97,7 +97,7 @@ impl Tree {
     if let Some(NodeKind::Text(text)) = self.node_mut(id).map(|node| &mut node.kind) {
       text.selectable = selectable;
     }
-    if !selectable && self.keyboard.focused == Some(id) {
+    if !selectable && self.keyboard.focused == Some(id) && self.keyboard.link.is_none() {
       self.focus(None);
     }
   }

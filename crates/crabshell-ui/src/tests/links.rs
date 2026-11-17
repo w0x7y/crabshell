@@ -286,3 +286,170 @@ fn a_link_whose_on_link_panicked_lets_the_button_around_it_click() {
   click(&window, link, 1000);
   assert_eq!(clicks.get(), 1);
 }
+
+/// Whether span `span` of the text at `path` shows the hovered look.
+fn lit(window: &Window, path: &[usize], span: usize) -> bool {
+  let view = window.view();
+  let Content::Text(text) = node_at(view.root(), path).content() else {
+    panic!("not a text");
+  };
+  let found = text.runs().find_map(|run| {
+    let glyph = run.glyphs.iter().find(|glyph| glyph.metadata == span + 1)?;
+    text.span(run.line_i, glyph)
+  });
+  text.link_lit(found.expect("the span is shown"))
+}
+
+fn key(key: crate::Key, shift: bool) -> crate::KeyEvent {
+  crate::KeyEvent {
+    key,
+    text: None,
+    modifiers: crate::Modifiers {
+      shift,
+      ..crate::Modifiers::default()
+    },
+    repeat: false,
+  }
+}
+
+#[test]
+fn a_hovered_link_lights_up_and_repaints_only_itself() {
+  let mut h = Harness::new();
+  let (text, _) = linked(vec![
+    Span::new("plain words first, "),
+    Span::new("site").link("https://e.org"),
+  ]);
+  let window = window(&mut h, text.link_hover_color(crate::Color::rgb(255, 0, 0)));
+  let link = span_point(&window, &[0, 0], 1, 0);
+  let plain = span_point(&window, &[0, 0], 0, 0);
+  h.frame(&window);
+  window.take_damage();
+
+  window.pointer_motion(plain);
+  assert!(!lit(&window, &[0, 0], 1));
+  assert!(window.take_damage().is_empty(), "nothing lit or unlit");
+
+  window.pointer_motion(link);
+  assert!(lit(&window, &[0, 0], 1));
+  assert!(!lit(&window, &[0, 0], 0));
+  let damage = window.take_damage();
+  assert!(!damage.is_empty());
+  // The link's area, not the plain words before it.
+  for rect in &damage {
+    assert!(rect.x > plain.x, "{rect:?} reaches the plain words");
+    assert!(
+      rect.x <= link.x && rect.x + rect.width >= link.x,
+      "{rect:?}"
+    );
+  }
+  // Moving over the same link changes nothing.
+  window.pointer_motion(Point::new(link.x + 1.0, link.y));
+  assert!(window.take_damage().is_empty());
+
+  window.pointer_leave();
+  assert!(!lit(&window, &[0, 0], 1));
+  assert_eq!(window.take_damage(), damage, "unlit where it was lit");
+}
+
+#[test]
+fn tab_stops_on_each_link_in_text_order() {
+  use crate::Key;
+  let mut h = Harness::new();
+  let (text, opened) = linked(vec![
+    Span::new("one").link("https://one.org"),
+    Span::new(" and "),
+    Span::new("two").link("https://two.org"),
+  ]);
+  let clicks = Counter::default();
+  let count = clicks.clone();
+  let row = Row::new()
+    .align(Align::Start)
+    .child(Button::new(Text::new("before")).on_click(|_| {}))
+    .child(text)
+    .child(Button::new(Text::new("after")).on_click(move |_| count.hit()));
+  let window = h.window(h.panel().child(row), 300.0, 30.0);
+  window.keyboard_enter();
+  let text = "PanelWindow[DP-1]/Row/Text[1]";
+
+  window.key(&key(Key::Tab, false));
+  assert_eq!(
+    window.focused().as_deref(),
+    Some("PanelWindow[DP-1]/Row/Button[0]")
+  );
+  window.key(&key(Key::Tab, false));
+  assert_eq!(window.focused().as_deref(), Some(text));
+  assert!(lit(&window, &[0, 1], 0) && !lit(&window, &[0, 1], 2));
+  window.key(&key(Key::Tab, false));
+  assert_eq!(window.focused().as_deref(), Some(text));
+  assert!(!lit(&window, &[0, 1], 0) && lit(&window, &[0, 1], 2));
+
+  window.key(&key(Key::Enter, false));
+  window.key(&key(Key::Character(' '), false));
+  assert_eq!(*opened.borrow(), ["https://two.org", "https://two.org"]);
+
+  window.key(&key(Key::Tab, false));
+  assert_eq!(
+    window.focused().as_deref(),
+    Some("PanelWindow[DP-1]/Row/Button[2]")
+  );
+  assert!(!lit(&window, &[0, 1], 2), "the look goes with the focus");
+  window.key(&key(Key::Enter, false));
+  assert_eq!(clicks.get(), 1);
+
+  window.key(&key(Key::Tab, true));
+  assert!(lit(&window, &[0, 1], 2));
+  window.key(&key(Key::Tab, true));
+  assert!(lit(&window, &[0, 1], 0));
+  window.key(&key(Key::Enter, false));
+  assert_eq!(
+    opened.borrow().last().map(String::as_str),
+    Some("https://one.org")
+  );
+}
+
+#[test]
+fn a_text_without_on_link_has_no_tab_stops() {
+  let mut h = Harness::new();
+  let row = Row::new()
+    .align(Align::Start)
+    .child(Text::rich(spans()))
+    .child(Button::new(Text::new("after")).on_click(|_| {}));
+  let window = h.window(h.panel().child(row), 300.0, 30.0);
+  window.keyboard_enter();
+  window.key(&key(crate::Key::Tab, false));
+  assert_eq!(
+    window.focused().as_deref(),
+    Some("PanelWindow[DP-1]/Row/Button[1]")
+  );
+}
+
+#[test]
+fn a_panicking_on_link_from_the_keyboard_is_logged_and_its_stops_go() {
+  let mut h = Harness::new();
+  let text = Text::rich(spans()).on_link(|_, _| panic!("no browser"));
+  let row = Row::new()
+    .align(Align::Start)
+    .child(text)
+    .child(Button::new(Text::new("after")).on_click(|_| {}));
+  let window = h.window(h.panel().child(row), 300.0, 30.0);
+  window.keyboard_enter();
+  window.key(&key(crate::Key::Tab, false));
+  assert_eq!(
+    window.focused().as_deref(),
+    Some("PanelWindow[DP-1]/Row/Text[0]")
+  );
+  let logs = capture_logs(|| {
+    window.key(&key(crate::Key::Enter, false));
+  });
+  assert!(
+    logs.contains("handler PanelWindow[DP-1]/Row/Text[0].on_link panicked and is disabled"),
+    "{logs}"
+  );
+  assert!(!lit(&window, &[0, 0], 1), "a disabled link is plain text");
+  window.key(&key(crate::Key::Tab, false));
+  window.key(&key(crate::Key::Tab, false));
+  assert_eq!(
+    window.focused().as_deref(),
+    Some("PanelWindow[DP-1]/Row/Button[1]")
+  );
+}

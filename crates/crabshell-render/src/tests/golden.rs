@@ -620,6 +620,63 @@ fn fallback_decorations() {
   });
 }
 
+/// Two texts with links: the pointer over the first's, drawn underlined
+/// in its hover color, and the keyboard focus on the second's, which has
+/// no hover color, so it keeps its own and gains only the underline.
+#[test]
+fn lit_links() {
+  check_fonts();
+  let spans = || {
+    vec![
+      Span::new("see "),
+      Span::new("the log")
+        .color(Color::hex("#89b4fa"))
+        .link("https://e.org"),
+    ]
+  };
+  for (scale, suffix) in SCALES {
+    let mut scene = Scene::new();
+    let panel = scene.panel().style(BAR).child(
+      Row::new()
+        .padding(4, 6)
+        .gap(16)
+        .child(
+          Text::rich(spans())
+            .on_link(|_, _| {})
+            .link_hover_color(Color::hex("#f9e2af")),
+        )
+        .child(Text::rich(spans()).on_link(|_, _| {})),
+    );
+    let window = scene.window(panel, 200.0, 28.0);
+    let at = {
+      let view = window.view();
+      let Content::Text(text) = super::node_at(view.root(), &[0, 0]).content() else {
+        panic!("a text node has text content");
+      };
+      let run = text.runs().next().expect("one line");
+      let glyph = run.glyphs.last().expect("glyphs");
+      let origin = text.origin();
+      crabshell_ui::Point::new(origin.x + glyph.x, origin.y + run.line_y - 3.0)
+    };
+    window.pointer_motion(at);
+    window.keyboard_enter();
+    window.key(&crabshell_ui::KeyEvent {
+      key: crabshell_ui::Key::Tab,
+      text: None,
+      modifiers: crabshell_ui::Modifiers::default(),
+      repeat: false,
+    });
+    window.key(&crabshell_ui::KeyEvent {
+      key: crabshell_ui::Key::Tab,
+      text: None,
+      modifiers: crabshell_ui::Modifiers::default(),
+      repeat: false,
+    });
+    let buffer = scene.full(&window, scale);
+    assert_golden(&format!("lit_links@{suffix}"), &buffer);
+  }
+}
+
 #[test]
 fn rich_text() {
   check_fonts();

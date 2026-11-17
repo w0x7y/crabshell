@@ -152,6 +152,7 @@ pub(crate) struct TextProps {
   pub(crate) max_lines: Option<Prop<u32>>,
   pub(crate) selectable: Option<Prop<bool>>,
   pub(crate) on_link: Option<LinkHandler>,
+  pub(crate) link_hover_color: Option<Prop<Option<Color>>>,
 }
 
 pub(crate) struct IconProps {
@@ -752,6 +753,7 @@ impl Text {
         max_lines: None,
         selectable: None,
         on_link: None,
+        link_hover_color: None,
       },
       common: Common::default(),
     }
@@ -769,6 +771,7 @@ impl Text {
         max_lines: None,
         selectable: None,
         on_link: None,
+        link_hover_color: None,
       },
       common: Common::default(),
     }
@@ -783,6 +786,15 @@ impl Text {
   /// that panics is logged and disabled, and its links are plain text.
   pub fn on_link(mut self, handler: impl Fn(&Cx, &str) + 'static) -> Text {
     self.text.on_link = Some(Rc::new(Handler::new(handler)));
+    self
+  }
+
+  /// The color a link is drawn in while the pointer is over it or the
+  /// keyboard focus is on it: a color, `None`, or a closure returning
+  /// either. Either way the link is underlined; with `None`, the default,
+  /// it keeps its own color.
+  pub fn link_hover_color(mut self, color: impl IntoProp<Option<Color>>) -> Text {
+    self.text.link_hover_color = Some(color.into_prop());
     self
   }
 

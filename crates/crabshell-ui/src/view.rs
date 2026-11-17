@@ -331,6 +331,22 @@ impl<'a> TextView<'a> {
     self.text.spans.get(index)
   }
 
+  /// Whether `span` is a link drawn lit, because the pointer is over it
+  /// or the keyboard focus is on it: underlined, and in
+  /// [`link_hover_color`](Self::link_hover_color) if the text has one.
+  pub fn link_lit(&self, span: &Span) -> bool {
+    let text = self.text;
+    (text.hovered_link.is_some() || text.focused_link.is_some())
+      && (text.spans.iter())
+        .position(|other| std::ptr::eq(other, span))
+        .is_some_and(|index| text.lit(index))
+  }
+
+  /// The color a lit link is drawn in; without one it keeps its own.
+  pub fn link_hover_color(&self) -> Option<Color> {
+    self.text.link_hover_color
+  }
+
   /// Whether to draw a line under the glyphs, in the text's color.
   pub fn underline(&self) -> bool {
     self.underline

@@ -30,7 +30,7 @@ use taffy::AvailableSpace;
 use crate::geometry::{Point, Rect};
 use crate::input::LinkHandler;
 use crate::rich::Span;
-use crate::style::{Font, Style, TextAlign};
+use crate::style::{Color, Font, Style, TextAlign};
 use crate::widgets::Elide;
 
 /// The fonts every window measures and draws text with.
@@ -590,6 +590,12 @@ pub(crate) struct TextNode {
   pub(crate) anchor: Option<usize>,
   /// What a click on a link span runs, from `Text::on_link`.
   pub(crate) on_link: Option<LinkHandler>,
+  /// The link span the pointer is over, and the one the keyboard focus
+  /// is on while the window has the keyboard. Both draw lit.
+  pub(crate) hovered_link: Option<usize>,
+  pub(crate) focused_link: Option<usize>,
+  /// The color a lit link is drawn in, from `Text::link_hover_color`.
+  pub(crate) link_hover_color: Option<Color>,
 }
 
 impl TextNode {
@@ -616,6 +622,9 @@ impl TextNode {
       cursor: 0,
       anchor: None,
       on_link: None,
+      hovered_link: None,
+      focused_link: None,
+      link_hover_color: None,
     }
   }
 
@@ -908,10 +917,9 @@ impl TextNode {
   /// panicked. A panicked one leaves its links plain text, as a drop
   /// target whose `on_drop` panicked takes nothing more.
   pub(crate) fn link_at(&self, point: Point) -> Option<usize> {
-    self
-      .on_link
-      .as_ref()
-      .filter(|handler| !handler.disabled())?;
+    if !self.links_on() {
+      return None;
+    }
     let (x, y) = (point.x - self.origin.x, point.y - self.origin.y);
     let run = self
       .runs()
@@ -923,6 +931,67 @@ impl TextNode {
     let index = self.glyph_span(run.line_i, glyph)?;
     self.spans[index].link.as_ref()?;
     Some(index)
+  }
+
+  /// Whether the text has an `on_link` that hasn't panicked, so its
+  /// links are more than plain text.
+  fn links_on(&self) -> bool {
+    self
+      .on_link
+      .as_ref()
+      .is_some_and(|handler| !handler.disabled())
+  }
+
+  /// Whether link span `index` draws lit: under the pointer or holding
+  /// the focus.
+  pub(crate) fn lit(&self, index: usize) -> bool {
+    self.links_on() && (self.hovered_link == Some(index) || self.focused_link == Some(index))
+  }
+
+  /// The link spans Tab stops on, in text order: each with a glyph
+  /// shown, while the text has an `on_link` that hasn't panicked.
+  pub(crate) fn link_stops(&self) -> Vec<usize> {
+    if !self.links_on() {
+      return Vec::new();
+    }
+    let mut stops: Vec<usize> = self
+      .runs()
+      .flat_map(|run| {
+        let spans = run.glyphs.iter();
+        let spans = spans.filter_map(|glyph| self.glyph_span(run.line_i, glyph));
+        spans.collect::<Vec<_>>()
+      })
+      .filter(|&index| self.spans[index].link.is_some())
+      .collect();
+    stops.sort_unstable();
+    stops.dedup();
+    stops
+  }
+
+  /// Where link span `index` may paint, a box for each line it is on, in
+  /// the coordinates `origin` is in: its glyphs' boxes grown for ink as
+  /// [`ink_box`](Self::ink_box) grows the lines.
+  pub(crate) fn link_areas(&self, index: usize) -> Vec<Rect> {
+    let em = self.buffer.metrics().font_size;
+    self
+      .runs()
+      .filter_map(|run| {
+        let mine = run
+          .glyphs
+          .iter()
+          .filter(|glyph| self.glyph_span(run.line_i, glyph) == Some(index));
+        let (start, end) = mine.fold(None, |span: Option<(f32, f32)>, glyph| {
+          let (start, end) = span.unwrap_or((glyph.x, glyph.x + glyph.w));
+          Some((start.min(glyph.x), end.max(glyph.x + glyph.w)))
+        })?;
+        Some(Rect::new(
+          self.origin.x + start - em,
+          self.origin.y + run.line_top - em / 2.0,
+          end - start + 2.0 * em,
+          run.line_height + em,
+        ))
+      })
+      .collect()
   }
 
   /// Where an empty line sits across the width the text was laid out
