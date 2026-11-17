@@ -26,6 +26,7 @@ use calloop::RegistrationToken;
 use calloop::timer::TimeoutAction;
 use crabshell_reactive::{Owner, ReadSignal, Signal, untrack};
 use crabshell_ui::{Cx, IconSource};
+use serde::{Deserialize, Serialize};
 use zbus::export::futures_core::Stream;
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::message::Type as Kind;
@@ -75,7 +76,7 @@ impl CloseReason {
 }
 
 /// How urgent a notification is, from its `urgency` hint.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Urgency {
   /// It can wait, such as a finished download.
   Low,
@@ -88,7 +89,7 @@ pub enum Urgency {
 }
 
 /// How long a notification's popup shows, as its app asks.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Timeout {
   /// As long as the server likes: 5 s.
   #[default]
@@ -284,6 +285,96 @@ pub(crate) struct Service {
   state: RefCell<Option<State>>,
   /// Whether bodies are kept as markup, from `set_body_markup`.
   body_markup: Cell<bool>,
+  /// What the shell before a reload kept, until the server starts.
+  saved: RefCell<Option<Saved>>,
+}
+
+/// What a reload keeps of the server: the history, the popups showing and
+/// the next id, so apps' ids go on.
+#[derive(Serialize, Deserialize)]
+struct Saved {
+  next_id: u32,
+  history: Vec<Kept>,
+  /// The ids showing as popups, newest first, each with the milliseconds
+  /// left until it expires, `None` for never.
+  showing: Vec<(u32, Option<u64>)>,
+}
+
+/// A notification as a reload keeps it: all but pixels, which fall back
+/// to the app's icon.
+#[derive(Serialize, Deserialize)]
+struct Kept {
+  id: u32,
+  app_name: String,
+  app_icon: String,
+  summary: String,
+  body: String,
+  actions: Vec<(String, String)>,
+  urgency: Urgency,
+  timeout: Timeout,
+  image: Option<Image>,
+  desktop_entry: String,
+  category: String,
+  resident: bool,
+  transient: bool,
+  received: SystemTime,
+}
+
+/// A picture a reload keeps.
+#[derive(Serialize, Deserialize)]
+enum Image {
+  Name(String),
+  File(std::path::PathBuf),
+}
+
+impl Kept {
+  fn new(notification: &Notification) -> Kept {
+    let image = match &notification.image {
+      Some(IconSource::Name(name)) => Some(Image::Name(name.clone())),
+      Some(IconSource::File(path)) => Some(Image::File(path.clone())),
+      Some(IconSource::Pixels(_)) | None => None,
+    };
+    Kept {
+      id: notification.id,
+      app_name: notification.app_name.clone(),
+      app_icon: notification.app_icon.clone(),
+      summary: notification.summary.clone(),
+      body: notification.body.clone(),
+      actions: notification.actions.clone(),
+      urgency: notification.urgency,
+      timeout: notification.timeout,
+      image,
+      desktop_entry: notification.desktop_entry.clone(),
+      category: notification.category.clone(),
+      resident: notification.resident,
+      transient: notification.transient,
+      received: notification.received,
+    }
+  }
+
+  fn notification(self) -> Notification {
+    let image = match self.image {
+      Some(Image::Name(name)) => Some(IconSource::Name(name)),
+      Some(Image::File(path)) => Some(IconSource::File(path)),
+      None => server::icon(&self.app_icon),
+    };
+    Notification {
+      id: self.id,
+      app_name: self.app_name,
+      app_icon: self.app_icon,
+      summary: self.summary,
+      body: self.body,
+      actions: self.actions,
+      urgency: self.urgency,
+      timeout: self.timeout,
+      image,
+      desktop_entry: self.desktop_entry,
+      category: self.category,
+      resident: self.resident,
+      transient: self.transient,
+      received: self.received,
+    }
+  }
 }
 
 struct State {
@@ -295,9 +386,8 @@ struct State {
   serving: bool,
   /// Every notification kept, oldest first.
   history: Vec<Notification>,
-  /// The ids showing as popups, newest first, each with when it expires,
-  /// `None` for never.
-  showing: Vec<(u32, Option<Instant>)>,
+  /// The ids showing as popups.
+  showing: Showing,
   /// The id the next notification gets, unless one kept has it.
   next_id: u32,
   /// The expiry timer, while a popup waits to expire.
@@ -322,6 +412,10 @@ impl State {
   }
 }
 
+/// The ids showing as popups, newest first, each with when it expires,
+/// `None` for never.
+type Showing = Vec<(u32, Option<Instant>)>;
+
 /// A signal for the apps, sent in order.
 enum Event {
   /// `NotificationClosed`: the id and why.
@@ -336,6 +430,38 @@ impl Service {
       shared,
       state: RefCell::new(None),
       body_markup: Cell::new(false),
+      saved: RefCell::new(None),
+    }
+  }
+
+  /// What a reload keeps, or `None` when the server never started.
+  pub(crate) fn save(&self) -> Option<serde_json::Value> {
+    let state = self.state.borrow();
+    let state = state.as_ref()?;
+    let now = Instant::now();
+    let showing = state.showing.iter().map(|(id, expires)| {
+      let left = expires.map(|at| at.saturating_duration_since(now).as_millis());
+      (
+        *id,
+        left.map(|left| u64::try_from(left).unwrap_or(u64::MAX)),
+      )
+    });
+    let saved = Saved {
+      next_id: state.next_id,
+      history: state.history.iter().map(Kept::new).collect(),
+      showing: showing.collect(),
+    };
+    serde_json::to_value(saved)
+      .inspect_err(|error| tracing::warn!(%error, "the notifications couldn't be kept"))
+      .ok()
+  }
+
+  /// Starts from what the shell before a reload kept, once a config asks
+  /// for the notifications. One that doesn't fit is logged and dropped.
+  pub(crate) fn restore(&self, saved: serde_json::Value) {
+    match serde_json::from_value::<Saved>(saved) {
+      Ok(saved) => *self.saved.borrow_mut() = Some(saved),
+      Err(error) => tracing::warn!(%error, "the notifications kept don't fit; starting empty"),
     }
   }
 
@@ -345,20 +471,31 @@ impl Service {
     if let Some(state) = &*self.state.borrow() {
       return (state.list.read_only(), state.popups.read_only());
     }
-    let list = self.shared.root.signal(Vec::new());
-    let popups = self.shared.root.signal(Vec::new());
+    let (history, showing, next_id) = self.saved.take().map_or_else(
+      || (Vec::new(), Vec::new(), 1),
+      |saved| restored(saved, Instant::now()),
+    );
+    let popups_shown = showing.iter().filter_map(|(id, _)| {
+      history
+        .iter()
+        .find(|kept: &&Notification| kept.id == *id)
+        .cloned()
+    });
+    let list = self.shared.root.signal(history.clone());
+    let popups = self.shared.root.signal(popups_shown.collect());
     *self.state.borrow_mut() = Some(State {
       list,
       popups,
       connection: None,
       serving: false,
-      history: Vec::new(),
-      showing: Vec::new(),
-      next_id: 1,
+      history,
+      showing,
+      next_id,
       timer: None,
       listeners: Vec::new(),
       next_listener: 0,
     });
+    self.schedule();
     match self.shared.config.session_bus.clone() {
       Some(address) => self.shared.spawn(run(Rc::clone(self), address)),
       None => tracing::info!("no session bus, so no notifications arrive"),
@@ -717,6 +854,28 @@ async fn run(service: Rc<Service>, address: zbus::Address) {
     state.serving = false;
     state.connection = None;
   }
+}
+
+/// The history, popups and next id `saved` holds, as of `now`, within the
+/// caps: ids unique and never 0, and popups only of those kept.
+fn restored(saved: Saved, now: Instant) -> (Vec<Notification>, Showing, u32) {
+  let mut history: Vec<Notification> = Vec::new();
+  for kept in saved.history {
+    if kept.id != 0 && !history.iter().any(|seen| seen.id == kept.id) {
+      history.push(kept.notification());
+    }
+  }
+  let excess = history.len().saturating_sub(MAX_KEPT);
+  history.drain(..excess);
+  let mut showing = Showing::new();
+  for (id, left) in saved.showing {
+    let known = history.iter().any(|kept| kept.id == id);
+    if known && !showing.iter().any(|(shown, _)| *shown == id) {
+      let left = left.map(Duration::from_millis);
+      showing.push((id, left.map(|left| now.checked_add(left).unwrap_or(now))));
+    }
+  }
+  (history, showing, saved.next_id.max(1))
 }
 
 /// Drops the pixels of the oldest notifications past `budget` bytes in

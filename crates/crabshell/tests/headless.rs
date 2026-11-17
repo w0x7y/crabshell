@@ -1816,6 +1816,71 @@ fn a_reload_saves_the_count_and_the_next_shell_starts_from_it() {
   assert_eq!(saved_count(), 1, "it started from the saved count");
 }
 
+/// A reload keeps the notifications: the shell saves them with its
+/// persisted values, the next one shows them again, and their ids go on.
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_reload_keeps_the_notifications_and_their_ids_go_on() {
+  use std::io::Write;
+
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let socket = sway.runtime_dir().join("control.sock");
+  let listener = std::os::unix::net::UnixListener::bind(&socket).expect("the control socket");
+  let state = sway.runtime_dir().join("crabshell").join("state.json");
+  let saved = || -> Vec<(u64, String)> {
+    let text = std::fs::read_to_string(&state).expect("the saved values");
+    let values: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+    let history = values["crabshell::services"]["notifications"]["history"]
+      .as_array()
+      .expect("the notifications kept")
+      .clone();
+    let kept = history.iter().map(|kept| {
+      let id = kept["id"].as_u64().expect("an id");
+      (id, kept["summary"].as_str().expect("a summary").to_owned())
+    });
+    kept.collect()
+  };
+  let desktop = Desktop::new("reload-notifications");
+  let mut env: Vec<(&str, &str)> = desktop.env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+  env.push(("CRABSHELL_CONTROL", socket.to_str().expect("a UTF-8 path")));
+  // The next shell takes the notifications name a moment after its bar
+  // draws, so this tries again until it answers.
+  let notify = |summary: &str| -> String {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+      let output = Command::new("gdbus")
+        .args(["call", "--address", &desktop.session.address])
+        .args(["--dest", "org.freedesktop.Notifications"])
+        .args(["--object-path", "/org/freedesktop/Notifications"])
+        .args(["--method", "org.freedesktop.Notifications.Notify"])
+        .args(["reload", "0", "", summary, "", "[]", "{}", "0"])
+        .output()
+        .expect("gdbus runs");
+      if output.status.success() {
+        return String::from_utf8_lossy(&output.stdout).trim().to_owned();
+      }
+      assert!(Instant::now() < deadline, "gdbus: {output:?}");
+      std::thread::sleep(Duration::from_millis(100));
+    }
+  };
+
+  let mut first = ExampleBar::start(&sway, "desktop", true, &env);
+  let mut supervisor = accept_ready(&listener);
+  assert_eq!(notify("kept"), "(uint32 1,)");
+  supervisor.write_all(b"save\n").expect("told to save");
+  assert_eq!(first.exit_status().and_then(|s| s.code()), Some(0));
+  assert_eq!(saved(), [(1, String::from("kept"))]);
+
+  let mut second = ExampleBar::start(&sway, "desktop", true, &env);
+  let mut supervisor = accept_ready(&listener);
+  assert_eq!(notify("next"), "(uint32 2,)", "the ids go on");
+  supervisor.write_all(b"save\n").expect("told to save");
+  assert_eq!(second.exit_status().and_then(|s| s.code()), Some(0));
+  let both = [(1, String::from("kept")), (2, String::from("next"))];
+  assert_eq!(saved(), both, "the next shell kept the first one's");
+}
+
 /// `cx.ipc` in a shell `run` started: it serves at the socket named for
 /// `WAYLAND_DISPLAY`, the handler's signal reaches its effect on the
 /// loop's flush, and the socket goes when the shell exits for a reload.

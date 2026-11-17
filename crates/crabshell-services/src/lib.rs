@@ -130,6 +130,28 @@ pub fn stop_programs(cx: &Cx) {
   process::stop_all(cx);
 }
 
+/// What the services keep across a reload, for the shell to save: the
+/// notifications kept. `None` when no service has anything to keep.
+#[doc(hidden)]
+pub fn save_state(cx: &Cx) -> Option<serde_json::Value> {
+  let notifications = cx.service::<notifications::Service>()?.save()?;
+  Some(serde_json::json!({ "notifications": notifications }))
+}
+
+/// Hands the services what [`save_state`] gave the shell before a reload.
+/// The shell calls it before the root closure runs.
+#[doc(hidden)]
+pub fn restore_state(cx: &Cx, state: serde_json::Value) {
+  let Some(service) = cx.service::<notifications::Service>() else {
+    return;
+  };
+  if let serde_json::Value::Object(mut state) = state
+    && let Some(notifications) = state.remove("notifications")
+  {
+    service.restore(notifications);
+  }
+}
+
 /// The name of user `uid` through NSS, so a user from LDAP or
 /// systemd-homed counts as one in `/etc/passwd` does. `None` for no such
 /// user; a lookup that fails is logged.

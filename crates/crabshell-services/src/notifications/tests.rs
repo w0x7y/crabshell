@@ -1009,3 +1009,75 @@ fn a_markup_body_cut_at_its_cap_never_ends_in_half_a_tag_or_entity() {
   // A short body is kept whole.
   assert_eq!(cut_markup("<b>hi", 4096), "<b>hi");
 }
+
+#[test]
+fn a_reload_keeps_the_notifications_and_their_ids_go_on() {
+  let bus = PrivateBus::start();
+  let (saved, before) = {
+    let (mut shell, notifications, app) = serve(&bus, online(&bus));
+    let mut pixels = note("pixels");
+    pixels.app_icon = "mail-unread";
+    pixels.actions = vec!["default", "Open"];
+    pixels.hints = vec![
+      ("image-data", picture(1, 1, 4, 4, vec![1, 2, 3, 4])),
+      ("urgency", Variant::from(2u8)),
+      ("category", Variant::from("email.arrived")),
+    ];
+    let mut transient = note("transient");
+    transient.hints = vec![("transient", Variant::from(true))];
+    transient.timeout = 600;
+    let mut expired = note("expired");
+    expired.timeout = 50;
+    for note in [pixels, transient, expired] {
+      notify(&mut shell, &app, note).expect("an id");
+    }
+    let popups = notifications.popups();
+    wait_for(&mut shell, "the short one to expire", || {
+      ids(popups) == [2, 1]
+    });
+    let saved = crate::save_state(&shell.cx).expect("something to keep");
+    // The text it goes through between shells.
+    let saved: serde_json::Value = serde_json::from_str(&saved.to_string()).expect("JSON");
+    let before = notifications.list().get_untracked();
+    shell.cx.owner().dispose();
+    (saved, before)
+  };
+
+  let mut shell = Harness::new(online(&bus));
+  crate::restore_state(&shell.cx, saved);
+  let notifications = shell.cx.notifications();
+  let (list, popups) = (notifications.list(), notifications.popups());
+  let mut kept = before.clone();
+  // Pixels aren't kept, so the app's icon shows.
+  kept[0].image = Some(IconSource::Name("mail-unread".into()));
+  assert_eq!(list.get_untracked(), kept, "shown before the bus answers");
+  assert_eq!(ids(popups), [2, 1]);
+  let server = service(&notifications);
+  wait_for(&mut shell, "the server", || server.serving());
+  wait_for(&mut shell, "the transient one to expire", || {
+    ids(popups) == [1]
+  });
+  assert_eq!(ids(list), [1, 3], "a transient one goes");
+  let app = shell.block_on(bus.connect(&[]));
+  assert_eq!(notify(&mut shell, &app, note("next")).expect("an id"), 4);
+  assert!(call(&mut shell, &app, "CloseNotification", 3_u32).is_ok());
+  assert_eq!(ids(list), [1, 4], "the app's own ids still work");
+}
+
+#[test]
+fn a_saved_state_that_doesnt_fit_is_logged_and_starts_empty() {
+  let mut shell = Harness::new(offline());
+  let logs = capture_logs(|| {
+    crate::restore_state(&shell.cx, serde_json::json!({ "notifications": [1, 2] }))
+  });
+  assert!(logs.contains("the notifications kept"), "{logs}");
+  let notifications = shell.cx.notifications();
+  assert_eq!(notifications.list().get_untracked(), []);
+  shell.run_until(Instant::now() + Duration::from_millis(50));
+  assert_eq!(
+    crate::save_state(&shell.cx),
+    Some(serde_json::json!({
+      "notifications": { "next_id": 1, "history": [], "showing": [] }
+    }))
+  );
+}

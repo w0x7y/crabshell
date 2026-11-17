@@ -14,6 +14,10 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
+/// The key the services' own state is saved under, beside the config's
+/// values, such as the notifications kept.
+pub(crate) const SERVICES_KEY: &str = "crabshell::services";
+
 /// A saved value of one key, as JSON.
 type Saver = Rc<dyn Fn() -> Option<Value>>;
 

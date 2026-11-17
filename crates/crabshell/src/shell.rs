@@ -181,7 +181,7 @@ impl Shell {
   /// and `cx.ipc` handlers served at `ipc`.
   pub(crate) fn build(
     mut event_loop: EventLoop,
-    saved: serde_json::Map<String, serde_json::Value>,
+    mut saved: serde_json::Map<String, serde_json::Value>,
     ipc: Option<std::path::PathBuf>,
     root: impl FnOnce(&Cx),
   ) -> Result<Shell, Error> {
@@ -189,6 +189,9 @@ impl Shell {
     let cx = Cx::new(runtime.new_owner().named("root"));
     // Nothing starts here: each service connects when root first asks.
     crabshell_services::provide(&cx, &event_loop.handle());
+    if let Some(state) = saved.remove(persist::SERVICES_KEY) {
+      crabshell_services::restore_state(&cx, state);
+    }
     // `cx.measure_text` and `cx.add_font` use the fonts windows lay out with.
     cx.provide(event_loop.platform().text_system().clone());
     let state = Rc::new(RefCell::new(PerOutput::new()));
@@ -291,7 +294,13 @@ impl Shell {
       }
       // The next shell starts its own; these would run on beside them.
       crabshell_services::stop_programs(&cx);
-      let values = persisted.as_ref().map(|persisted| persisted.save());
+      let values = persisted.as_ref().map(|persisted| {
+        let mut values = persisted.save();
+        if let Some(state) = crabshell_services::save_state(&cx) {
+          values.insert(persist::SERVICES_KEY.to_owned(), state);
+        }
+        values
+      });
       if let (Some(values), Some(file)) = (values, &file)
         && let Err(error) = persist::write(file, &values)
       {
