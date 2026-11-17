@@ -782,8 +782,11 @@ impl Text {
   /// the click goes to nothing else, not even a button around the text;
   /// elsewhere the text lets the pointer through as before. In a
   /// [`selectable`](Self::selectable) text, a press and release on one
-  /// link that selected nothing opens it, and a drag selects. A handler
-  /// that panics is logged and disabled, and its links are plain text.
+  /// link that selected nothing opens it, and a drag selects. Tab stops
+  /// on each link shown, in text order, and Enter or Space opens the one
+  /// focused. A link under the pointer or the focus draws underlined, in
+  /// [`link_hover_color`](Self::link_hover_color) if set. A handler that
+  /// panics is logged and disabled, and its links are plain text.
   pub fn on_link(mut self, handler: impl Fn(&Cx, &str) + 'static) -> Text {
     self.text.on_link = Some(Rc::new(Handler::new(handler)));
     self

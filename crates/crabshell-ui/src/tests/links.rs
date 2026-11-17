@@ -453,3 +453,19 @@ fn a_panicking_on_link_from_the_keyboard_is_logged_and_its_stops_go() {
     Some("PanelWindow[DP-1]/Row/Button[1]")
   );
 }
+
+#[test]
+fn a_panicking_link_hover_color_is_logged_and_the_link_still_works() {
+  let mut h = Harness::new();
+  let (text, opened) = linked(spans());
+  let text = text.link_hover_color(|| -> Option<crate::Color> { panic!("no theme") });
+  let logs = capture_logs(|| {
+    let window = window(&mut h, text);
+    click(&window, span_point(&window, &[0, 0], 1, 0), 0);
+  });
+  assert!(
+    logs.contains("effect PanelWindow[DP-1]/Row/Text[0].link_hover_color panicked and is disabled"),
+    "{logs}"
+  );
+  assert_eq!(*opened.borrow(), ["https://e.org"]);
+}
