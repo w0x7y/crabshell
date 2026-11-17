@@ -140,3 +140,51 @@ fn a_panicking_source_is_logged_with_its_path_and_the_rest_goes_on() {
     .collect();
   assert_eq!(sources, [output("DP-2"), output("DP-3")]);
 }
+
+#[test]
+fn a_live_view_out_of_sight_isnt_captured_until_it_comes_back() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0_f32);
+  let cut = h.cx.signal(true);
+  let column = crate::Column::new()
+    .child(ScreencopyView::new(output("DP-2")).live(true).style(BOX))
+    .child(ScreencopyView::new(output("DP-3")).style(BOX));
+  let scrolled = crate::ScrollView::new(column)
+    .offset(offset)
+    .style(Style::new().width(100.0).height(50.0));
+  // A clipping box 10 pixels wide, whose live view lies past its edge.
+  let clipped = Row::new()
+    .style(move || Style::new().width(10.0).height(50.0).clip(cut.get()))
+    .child(Row::new().style(Style::new().width(20.0).shrink(0.0)))
+    .child(
+      ScreencopyView::new(output("DP-4"))
+        .live(true)
+        .style(BOX.shrink(0.0)),
+    );
+  let row = Row::new().child(scrolled).child(clipped);
+  let window = h.window(h.panel().child(row), 300.0, 50.0);
+  let sources = |window: &crate::Window| -> Vec<CaptureSource> {
+    window
+      .captures()
+      .into_iter()
+      .map(|request| request.source)
+      .collect()
+  };
+  // DP-3 is below the scroll view's box, but one-shot; DP-4 is clipped.
+  assert_eq!(sources(&window), [output("DP-2"), output("DP-3")]);
+
+  offset.set(50.0);
+  h.frame(&window);
+  assert_eq!(sources(&window), [output("DP-3")], "scrolled out of sight");
+  offset.set(10.0);
+  h.frame(&window);
+  assert_eq!(sources(&window), [output("DP-2"), output("DP-3")]);
+
+  cut.set(false);
+  h.frame(&window);
+  assert_eq!(
+    sources(&window),
+    [output("DP-2"), output("DP-3"), output("DP-4")],
+    "no longer clipped"
+  );
+}

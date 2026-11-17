@@ -204,6 +204,29 @@ impl Tree {
     });
   }
 
+  /// Whether any of what node `id` paints shows inside the window and
+  /// every clipping ancestor, such as a scroll view, at the last layout.
+  /// An ancestor's painted area stands for its clip, so a shadow around
+  /// it counts as inside.
+  fn in_sight(&self, id: NodeId) -> bool {
+    let Some(node) = self.node(id) else {
+      return false;
+    };
+    let mut seen = node.window_painted;
+    let mut at = id;
+    while !seen.is_empty()
+      && let Some(parent) = self.taffy.parent(at)
+    {
+      if let Some(above) = self.node(parent)
+        && (above.clips || parent == self.root)
+      {
+        seen = seen.intersect(above.window_painted);
+      }
+      at = parent;
+    }
+    !seen.is_empty()
+  }
+
   fn update_capture(&mut self, id: NodeId, f: impl FnOnce(&mut CaptureNode) -> Change) {
     self.update(id, |node| match &mut node.kind {
       NodeKind::Capture(capture) => f(capture),
@@ -214,7 +237,10 @@ impl Tree {
 
 impl Window {
   /// The views to capture for, in the order they were built: those with
-  /// a source and a box that isn't empty at the last layout.
+  /// a source and a box that isn't empty at the last layout. A live view
+  /// wholly outside the window or a clipping ancestor, such as one
+  /// scrolled out of its scroll view's box, is left out until it shows
+  /// again; a one-shot view is kept, so its frame is there when it does.
   pub fn captures(&self) -> Vec<CaptureRequest> {
     let tree = self.tree.borrow();
     tree
@@ -226,7 +252,7 @@ impl Window {
           return None;
         };
         let content = node.content;
-        if node.rect.is_none() || content.is_empty() {
+        if node.rect.is_none() || content.is_empty() || capture.live && !tree.in_sight(id) {
           return None;
         }
         Some(CaptureRequest {
