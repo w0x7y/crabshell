@@ -382,6 +382,13 @@ pub trait ServicesExt {
   /// wakes the shell only while curl runs.
   fn http_get(&self, url: impl IntoProp<String>) -> Http;
 
+  /// The local file for the cover art at `url`, for an `Image`: a
+  /// `file://` URL's file, or an `http:` or `https:` URL's picture
+  /// downloaded through `curl` into `$XDG_CACHE_HOME/crabshell/art`.
+  /// `None` while it downloads, and for anything else or a failure, which
+  /// is logged once per URL.
+  fn cover_art(&self, url: impl IntoProp<String>) -> ReadSignal<Option<PathBuf>>;
+
   /// The installed applications, from the desktop entries in the XDG
   /// data directories: what a launcher lists and starts, and where a
   /// window's app id finds its icon. Every caller shares one list, read
@@ -503,6 +510,11 @@ impl ServicesExt for Cx {
   #[track_caller]
   fn http_get(&self, url: impl IntoProp<String>) -> Http {
     http::http_get(self, url)
+  }
+
+  #[track_caller]
+  fn cover_art(&self, url: impl IntoProp<String>) -> ReadSignal<Option<PathBuf>> {
+    http::art::cover_art(self, url)
   }
 
   fn desktop_entries(&self) -> DesktopEntries {
@@ -812,8 +824,10 @@ struct Config {
   /// How long a request waits for its identities' names before it goes on
   /// with those found.
   polkit_users_limit: Duration,
-  /// The `curl` that `cx.http_get` runs.
+  /// The `curl` that `cx.http_get` and `cx.cover_art` run.
   curl: PathBuf,
+  /// Where `cx.cover_art` keeps what it downloads. `None` for no cache.
+  art_cache: Option<PathBuf>,
 }
 
 impl Config {
@@ -857,6 +871,7 @@ impl Config {
       polkit_users: Arc::new(user_name),
       polkit_users_limit: polkit::USERS_LIMIT,
       curl: PathBuf::from("curl"),
+      art_cache: http::art::cache_dir(),
     }
   }
 }

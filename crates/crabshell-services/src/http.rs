@@ -1,11 +1,14 @@
 //! HTTP GET through `curl`, as the configs Quickshell's users write fetch
-//! the weather.
+//! the weather, and remote cover art fetched into a cache file.
 
 #[cfg(test)]
 mod tests;
 
+pub(crate) mod art;
+
 use std::cell::RefCell;
-use std::io::{ErrorKind, PipeReader, Read};
+use std::fs::File;
+use std::io::{ErrorKind, PipeReader, Read, Write};
 use std::os::fd::AsFd;
 use std::panic::{self, AssertUnwindSafe, Location};
 use std::process::{Child, Command, ExitStatus};
@@ -26,7 +29,7 @@ use crate::{Shared, spawn};
 pub(crate) const MAX_BODY: u64 = 4 * 1024 * 1024;
 
 /// How long a whole request may take unless [`Http::timeout`] says
-/// otherwise.
+/// otherwise, and how long a cover art download may.
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The most of curl's standard error read, for its message.
@@ -84,6 +87,7 @@ fn allowed(url: &str) -> bool {
 /// Where a running request puts its body.
 pub(crate) enum Sink {
   Memory(Vec<u8>),
+  File(File),
 }
 
 type Done = Box<dyn FnOnce(Result<Sink, HttpError>)>;
@@ -285,6 +289,12 @@ impl Run {
     }
     match self.sink.as_mut() {
       Some(Sink::Memory(body)) => body.extend_from_slice(&chunk[..read]),
+      Some(Sink::File(file)) => {
+        if let Err(error) = file.write_all(&chunk[..read]) {
+          let message = format!("couldn't write the download: {error}");
+          return Chunk::Failed(HttpError::new(HttpErrorKind::Network, message));
+        }
+      }
       None => {}
     }
     Chunk::More
@@ -566,6 +576,7 @@ impl Inner {
     let text = result.and_then(|sink| match sink {
       Sink::Memory(body) => String::from_utf8(body)
         .map_err(|_| HttpError::new(HttpErrorKind::NotUtf8, "the body isn't UTF-8")),
+      Sink::File(_) => Err(HttpError::new(HttpErrorKind::Network, "no body")),
     });
     match text {
       Ok(text) => {

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -337,5 +337,177 @@ fn a_panicking_url_is_logged_and_fetches_nothing() {
   assert!(logs.contains("cx.http_get (called at"), "{logs}");
   assert!(logs.contains("http/tests.rs"), "{logs}");
   assert!(logs.contains("no city"), "{logs}");
+  shell.run_until(Instant::now() + Duration::from_millis(50));
+}
+
+/// A shell whose art cache is in `dir`.
+fn art_shell(dir: &TempDir) -> Harness {
+  Harness::new(Config {
+    art_cache: Some(dir.path().join("cache/art")),
+    ..offline()
+  })
+}
+
+fn art_files(dir: &Path) -> Vec<String> {
+  let mut names: Vec<String> = std::fs::read_dir(dir)
+    .map(|entries| {
+      entries
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect()
+    })
+    .unwrap_or_default();
+  names.sort();
+  names
+}
+
+#[test]
+fn remote_art_is_downloaded_once_and_reused() {
+  use std::os::unix::fs::PermissionsExt;
+  if !curl_installed() {
+    return;
+  }
+  let server = Server::start();
+  let dir = TempDir::new();
+  let mut shell = art_shell(&dir);
+  let art = shell.cx.cover_art(server.url("/art.png"));
+  Runtime::current().flush();
+  assert_eq!(art.get_untracked(), None, "nothing while it downloads");
+  run_until(&mut shell, "art", move || art.get_untracked().is_some());
+  let path = art.get_untracked().unwrap();
+  let cache = dir.path().join("cache/art");
+  assert_eq!(path.parent(), Some(cache.as_path()));
+  assert_eq!(path.extension().unwrap(), "png");
+  assert_eq!(std::fs::read(&path).unwrap(), PNG);
+  let mode = std::fs::metadata(&cache).unwrap().permissions().mode();
+  assert_eq!(mode & 0o777, 0o700);
+  assert_eq!(art_files(&cache).len(), 1, "no part left");
+
+  let again = shell.cx.cover_art(server.url("/art.png"));
+  Runtime::current().flush();
+  assert_eq!(again.get_untracked(), Some(path));
+  assert_eq!(server.hits("/art.png"), 1);
+}
+
+#[test]
+fn art_that_isnt_a_picture_is_refused_and_not_kept() {
+  if !curl_installed() {
+    return;
+  }
+  let server = Server::start();
+  let dir = TempDir::new();
+  let mut shell = art_shell(&dir);
+  let url = server.url("/text-art");
+  let logs = capture_logs(|| {
+    shell.cx.cover_art(url.as_str());
+    run_until(&mut shell, "the download", || server.hits("/text-art") == 1);
+    shell.run_until(Instant::now() + Duration::from_millis(300));
+  });
+  assert!(logs.contains("not a PNG"), "{logs}");
+  assert!(art_files(&dir.path().join("cache/art")).is_empty());
+}
+
+#[test]
+fn a_new_url_stops_the_download_before() {
+  if !curl_installed() {
+    return;
+  }
+  let server = Server::start();
+  let dir = TempDir::new();
+  let mut shell = art_shell(&dir);
+  let path = shell.cx.signal("/slow.png");
+  let base = server.url("");
+  let art = shell.cx.cover_art(move || format!("{base}{}", path.get()));
+  let cache = dir.path().join("cache/art");
+  run_until(&mut shell, "the slow download", || {
+    server.hits("/slow.png") == 1
+  });
+  assert_eq!(art_files(&cache).len(), 1, "its part");
+  path.set("/other.png");
+  run_until(&mut shell, "art", move || art.get_untracked().is_some());
+  let names = art_files(&cache);
+  assert_eq!(names.len(), 1, "{names:?}");
+  assert!(names[0].ends_with(".png") && !names[0].starts_with('.'));
+}
+
+#[test]
+fn a_file_url_gives_its_decoded_path() {
+  let dir = TempDir::new();
+  let file = dir.path().join("cover art.png");
+  std::fs::write(&file, PNG).unwrap();
+  let shell = art_shell(&dir);
+  let url = format!("file://{}", dir.path().join("cover%20art.png").display());
+  let art = shell.cx.cover_art(url);
+  let missing = shell.cx.cover_art("file:///nonexistent/crabshell.png");
+  let other = shell.cx.cover_art("ftp://example.com/x.png");
+  let empty = shell.cx.cover_art("");
+  Runtime::current().flush();
+  assert_eq!(art.get_untracked(), Some(file));
+  for none in [missing, other, empty] {
+    assert_eq!(none.get_untracked(), None);
+  }
+
+  use super::art::file_path;
+  assert_eq!(
+    file_path("file:///home/me/Music/Cover%20Art%2Fx.png"),
+    Some(PathBuf::from("/home/me/Music/Cover Art/x.png"))
+  );
+  // A stray or short escape stays as it is.
+  assert_eq!(
+    file_path("file:///tmp/100%.png%4"),
+    Some(PathBuf::from("/tmp/100%.png%4"))
+  );
+  assert_eq!(file_path("file://relative.png"), None);
+  assert_eq!(file_path("https://example.com/a.png"), None);
+}
+
+#[test]
+fn a_trim_keeps_the_newest_under_both_caps() {
+  use super::art::{CACHE_BYTES, CACHE_FILES, trim};
+  use std::time::SystemTime;
+  let dir = TempDir::new();
+  let at = |age: u64| SystemTime::now() - Duration::from_secs(age);
+  let file = |name: &str, len: u64, age: u64| {
+    let file = std::fs::File::create(dir.path().join(name)).unwrap();
+    // Sparse, so the test writes nothing.
+    file.set_len(len).unwrap();
+    file.set_modified(at(age)).unwrap();
+  };
+  for n in 0..CACHE_FILES as u64 + 5 {
+    file(&format!("{n:04}.png"), 1, n + 100);
+  }
+  trim(dir.path());
+  let names = art_files(dir.path());
+  assert_eq!(names.len(), CACHE_FILES);
+  assert_eq!(
+    names.last().unwrap(),
+    &format!("{:04}.png", CACHE_FILES - 1)
+  );
+
+  for name in names {
+    std::fs::remove_file(dir.path().join(name)).unwrap();
+  }
+  let third = CACHE_BYTES / 3;
+  file("new.png", third, 1);
+  file("mid.png", third, 2);
+  file("old.png", third + 2, 3);
+  file(".old.part", 1, 3600);
+  file(".new.part", 1, 1);
+  trim(dir.path());
+  assert_eq!(art_files(dir.path()), [".new.part", "mid.png", "new.png"]);
+}
+
+#[test]
+fn a_panicking_art_url_is_logged_and_shows_nothing() {
+  let dir = TempDir::new();
+  let mut shell = art_shell(&dir);
+  let logs = capture_logs(|| {
+    let art = shell.cx.cover_art(|| -> String { panic!("no player") });
+    Runtime::current().flush();
+    assert_eq!(art.get_untracked(), None);
+  });
+  assert!(logs.contains("cx.cover_art (called at"), "{logs}");
+  assert!(logs.contains("http/tests.rs"), "{logs}");
+  assert!(logs.contains("no player"), "{logs}");
   shell.run_until(Instant::now() + Duration::from_millis(50));
 }

@@ -4860,22 +4860,6 @@ fn wait_for_decoded_pictures(sway: &Sway, scale: &str) {
 }
 
 #[test]
-fn the_dashboard_reads_album_art_from_file_urls_only() {
-  assert_eq!(
-    dashboard::art_path("file:///home/me/Music/Cover%20Art%2Fx.png"),
-    Some(PathBuf::from("/home/me/Music/Cover Art/x.png"))
-  );
-  // A stray or short escape stays as it is.
-  assert_eq!(
-    dashboard::art_path("file:///tmp/100%.png%4"),
-    Some(PathBuf::from("/tmp/100%.png%4"))
-  );
-  assert_eq!(dashboard::art_path("https://example.com/art.png"), None);
-  assert_eq!(dashboard::art_path("file://relative.png"), None);
-  assert_eq!(dashboard::art_path(""), None);
-}
-
-#[test]
 fn the_dashboard_reads_the_cpus_use_from_proc_stat() {
   let stat = "cpu  100 5 50 800 45 0 0 0 0 0\ncpu0 50 2 25 400 20 0 0 0 0 0\n";
   assert_eq!(dashboard::cpu_times(stat), Some((155, 1000)));

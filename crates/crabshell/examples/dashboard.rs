@@ -436,8 +436,11 @@ fn media(cx: &Cx, players: ReadSignal<Vec<Player>>) -> Stack {
         .cloned()
     })
   });
-  let art =
-    cx.memo(move || player.with(|player| player.as_ref().and_then(|p| art_path(&p.art_url))));
+  let art = cx.cover_art(move || {
+    player
+      .with(|p| p.as_ref().map(|p| p.art_url.clone()))
+      .unwrap_or_default()
+  });
   let has_art = move || art.with(Option::is_some);
   let picture = move || art.get().unwrap_or_default();
   let id = move || player.with_untracked(|player| player.as_ref().map(|p| p.id.clone()));
@@ -543,36 +546,6 @@ fn control(
   .style(move || if enabled() { CONTROL } else { CONTROL_OFF })
   .hover_style(CONTROL_HOVER)
   .enabled(enabled)
-}
-
-/// The file an MPRIS `artUrl` names, when it is a `file://` URL. Remote
-/// art isn't fetched here.
-pub fn art_path(url: &str) -> Option<PathBuf> {
-  use std::os::unix::ffi::OsStringExt;
-
-  let path = url.strip_prefix("file://")?.as_bytes();
-  let mut bytes = Vec::with_capacity(path.len());
-  let mut rest = path;
-  while let Some((&byte, after)) = rest.split_first() {
-    let hex = |at: usize| {
-      after
-        .get(at)
-        .and_then(|digit| (*digit as char).to_digit(16))
-    };
-    match (byte, hex(0), hex(1)) {
-      (b'%', Some(high), Some(low)) => {
-        bytes.push((high * 16 + low) as u8);
-        rest = &after[2..];
-      }
-      _ => {
-        bytes.push(byte);
-        rest = after;
-      }
-    }
-  }
-  bytes
-    .starts_with(b"/")
-    .then(|| PathBuf::from(std::ffi::OsString::from_vec(bytes)))
 }
 
 /// Samples the CPU's use once a second while `cx` lives, keeping the
