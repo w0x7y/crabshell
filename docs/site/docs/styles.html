@@ -77,7 +77,28 @@ Button::new(label).style(CHIP).hover_style(HOVER)</code></pre>
             </tr>
             <tr>
               <td><code>font(font)</code></td>
-              <td>The family, size and weight. Inherited by text inside.</td>
+              <td>
+                The family, size, weight, italic, letter spacing and OpenType
+                features. Inherited by text inside.
+              </td>
+            </tr>
+            <tr>
+              <td><code>text_align(TextAlign)</code></td>
+              <td>
+                Where lines sit in the text's box: <code>Start</code>,
+                <code>Center</code>, <code>End</code> or <code>Justify</code>.
+                Inherited.
+              </td>
+            </tr>
+            <tr>
+              <td><code>line_height(n)</code></td>
+              <td>The line height, a multiple of the font size. Inherited.</td>
+            </tr>
+            <tr>
+              <td>
+                <code>underline(bool)</code>, <code>strikethrough(bool)</code>
+              </td>
+              <td>Lines under or through the text. Inherited.</td>
             </tr>
             <tr>
               <td>
@@ -166,8 +187,10 @@ Button::new(label).style(CHIP).hover_style(HOVER)</code></pre>
           </tbody>
         </table>
         <p>
-          Only <code>color</code> and <code>font</code> are inherited. A
-          <code>Text</code> uses the nearest ones set above it.
+          Only <code>color</code>, <code>font</code>, <code>text_align</code>,
+          <code>line_height</code>, <code>underline</code> and
+          <code>strikethrough</code> are inherited. A <code>Text</code> uses the
+          nearest ones set above it.
         </p>
         <h2 id="colors">Colors</h2>
         <pre><code class="rs">Color::rgb(0x1e, 0x1e, 0x2e)
@@ -193,12 +216,29 @@ const BLEND: Color = ACCENT.mix(Color::hex("#f38ba8"), 0.5);</code></pre>
         </p>
         <h2 id="fonts">Fonts</h2>
         <pre><code class="rs">const BODY: Font = Font::new("Inter", 13.0);
-const BOLD: Font = Font::new("Inter", 13.0).weight(700);</code></pre>
+const BOLD: Font = Font::new("Inter", 13.0).weight(700);
+const CLOCK: Font = Font::new("Inter", 24.0)
+  .letter_spacing(0.5)
+  .features(&amp;[FontFeature::TABULAR_NUMBERS]);
+const QUOTE: Font = BODY.italic();</code></pre>
         <p>
           The family is any name fontconfig knows, including
           <code>sans-serif</code> and <code>monospace</code>, and the size is in
           logical pixels. Characters the font lacks come from fontconfig's
           fallbacks. The shell loads only the font files your styles name.
+        </p>
+        <p>
+          Letter spacing is extra pixels after each glyph. Features are OpenType
+          tags: <code>TABULAR_NUMBERS</code> keeps every digit the same width,
+          so a clock doesn't jitter, and
+          <code>FontFeature::new(*b"zero", 1)</code> names any other inside a
+          <code>const</code>.
+        </p>
+        <p>
+          To ship a font with your config, call
+          <code>cx.add_font(include_bytes!("fonts/Inter.ttf"))</code> before the
+          first window. The shell uses it for that family, weight and slant
+          without asking fontconfig, which also makes the first frame faster.
         </p>
         <h2 id="borders">Borders and corners</h2>
         <pre><code class="rs">const CARD: Style = Style::new()

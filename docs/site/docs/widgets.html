@@ -213,7 +213,8 @@ let x = cx.animate(move || tab_rect.get().x, Transition::new(200));
         <h2 id="text">Text</h2>
         <pre><code class="rs">Text::new("volume")
 Text::new(move || format!("{}%", volume.get()))
-Text::new(move || title.get()).ellipsis(true)</code></pre>
+Text::new(move || title.get()).elide(Elide::End)
+Text::rich(move || parse_markup(&amp;body.get())).on_link(open)</code></pre>
         <table>
           <thead>
             <tr>
@@ -223,8 +224,19 @@ Text::new(move || title.get()).ellipsis(true)</code></pre>
           </thead>
           <tbody>
             <tr>
+              <td><code>elide(Elide)</code></td>
+              <td>
+                Cuts text that doesn't fit with "…" at the <code>Start</code>,
+                <code>Middle</code> or <code>End</code>. <code>None</code> by
+                default.
+              </td>
+            </tr>
+            <tr>
               <td><code>ellipsis(bool)</code></td>
-              <td>Ends text that doesn't fit in "…". Off by default.</td>
+              <td>
+                Short for <code>elide(Elide::End)</code>, or
+                <code>Elide::None</code> when false.
+              </td>
             </tr>
             <tr>
               <td><code>max_lines(n)</code></td>
@@ -232,12 +244,45 @@ Text::new(move || title.get()).ellipsis(true)</code></pre>
                 Lets the text wrap onto this many lines. The default is 1.
               </td>
             </tr>
+            <tr>
+              <td><code>selectable(bool)</code></td>
+              <td>
+                Lets the pointer select the text, and Ctrl+C copy it. Inside a
+                button, it takes the press, so the button doesn't click.
+              </td>
+            </tr>
+            <tr>
+              <td><code>on_link(handler)</code></td>
+              <td>
+                Runs with <code>&amp;Cx</code> and the URL when a link span is
+                clicked.
+              </td>
+            </tr>
           </tbody>
         </table>
         <p>
           Text is black <code>sans-serif</code> at 13 pixels until a style says
-          otherwise, and takes <code>color</code> and <code>font</code> from the
-          nearest widget above that sets them.
+          otherwise, and takes <code>color</code>, <code>font</code>,
+          <code>text_align</code>, <code>line_height</code>,
+          <code>underline</code> and <code>strikethrough</code> from the nearest
+          widget above that sets each.
+        </p>
+        <p>
+          <code>Text::rich(spans)</code> shows a <code>Vec&lt;Span&gt;</code>.
+          <code>Span::new(text)</code> takes <code>bold()</code>,
+          <code>italic()</code>, <code>underline()</code>,
+          <code>strikethrough()</code>, <code>color(c)</code> and
+          <code>link(url)</code>, and takes the rest from the text.
+          <code>parse_markup(body)</code> reads a notification body's markup
+          (<code>b</code>, <code>i</code>, <code>u</code>, <code>a</code> and
+          <code>img</code>) into spans. It keeps only <code>http</code>,
+          <code>https</code> and <code>mailto</code> links, shows an image's alt
+          text and never loads it.
+        </p>
+        <p>
+          <code>cx.measure_text(text, font)</code> gives a
+          <code>TextMetrics</code> with the width, height, ascent, descent and
+          line height a <code>Text</code> in that font would have.
         </p>
         <h2 id="button">Button</h2>
         <p>
@@ -437,7 +482,27 @@ TextInput::new(query)
           clipboard on Ctrl+C, Ctrl+X and Ctrl+V, and input methods. A password
           field pastes but never copies. Keys it doesn't use go on to the
           window's <code>on_key</code>. Its window needs a
-          <a href="windows.html#keyboard-focus">keyboard focus</a>.
+          <a href="windows.html#keyboard-focus">keyboard focus</a>. Dragging
+          selects, a double click selects a word, and Shift with a click extends
+          the selection.
+        </p>
+        <h2 id="textarea">TextArea</h2>
+        <p>
+          <code>TextArea::new(text)</code> is a multi-line editor. It takes the
+          <code>Signal&lt;String&gt;</code> it edits, as a field does, and takes
+          <code>placeholder</code>, <code>focus</code>, <code>wrap</code> and
+          <code>on_accept</code>.
+        </p>
+        <pre><code class="rs">let note = cx.persist("note", String::new());
+ScrollView::new(TextArea::new(note).placeholder("jot something down"))
+  .style(NOTE)</code></pre>
+        <p>
+          Enter breaks the line and Ctrl+Enter runs <code>on_accept</code>. Up
+          and Down move by line, Home and End go to the ends of the wrapped
+          line, and PageUp and PageDown move by the height of the scroll view
+          around it. It wraps at words to its width, 200 pixels by default;
+          <code>wrap(false)</code> lets lines run on. Inside a
+          <code>ScrollView</code>, the view scrolls to keep the caret shown.
         </p>
         <h2 id="slider">Slider</h2>
         <p>

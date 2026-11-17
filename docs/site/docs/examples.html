@@ -6,7 +6,7 @@
     <title>Examples | Crabshell docs</title>
     <meta
       name="description"
-      content="Twelve complete Crabshell shells, each in one file: bars, a launcher, notifications, a control center, a dashboard, a lock screen and a greeter."
+      content="Thirteen complete Crabshell shells, each in one file: bars, a launcher, notifications, a control center, a dashboard, a lock screen and a greeter."
     />
     <script>
       try {
@@ -30,8 +30,8 @@
       <article>
         <h1>Examples</h1>
         <p class="lede">
-          Twelve complete shells, each in one file. Run one from a clone of the
-          repository, then copy what you need into your own config.
+          Thirteen complete shells, each in one file. Run one from a clone of
+          the repository, then copy what you need into your own config.
         </p>
         <pre><code class="sh">$ git clone https://github.com/w0x7y/crabshell
 $ cd crabshell
@@ -94,6 +94,13 @@ $ cargo run --release -p crabshell --example counter</code></pre>
               <td><a href="#dashboard">dashboard</a></td>
               <td>A battery ring, a CPU graph, a media card, a wallpaper</td>
               <td>Drawing and images</td>
+            </tr>
+            <tr>
+              <td><a href="#notes">notes</a></td>
+              <td>
+                Notifications with markup and links, a clock, a quick note
+              </td>
+              <td>Text</td>
             </tr>
             <tr>
               <td><a href="#overview">overview</a></td>
@@ -340,6 +347,35 @@ $ crabshell ipc wallpaper set ~/Pictures/lake.jpg</code></pre>
           sampling <code>/proc</code> on an interval only while shown.
           <a
             href="https://github.com/w0x7y/crabshell/blob/main/crates/crabshell/examples/dashboard.rs"
+            >Read the source</a
+          >.
+        </p>
+        <h2 id="notes">notes</h2>
+        <figure class="shot">
+          <img
+            src="../img/notes.png"
+            width="376"
+            height="656"
+            alt="A dark side panel: a clock reading 11:11:11, three notifications with bold, italic and underlined link text, the last cut short with an ellipsis, and an empty quick note."
+          />
+        </figure>
+        <p>
+          A notification center. Each body's markup becomes styled text with
+          links that open in your browser, the clock's digits keep one width so
+          it doesn't jitter, and the quick note is a multi-line editor whose
+          text survives a reload.
+        </p>
+        <pre><code class="sh">$ cargo run --release -p crabshell --example notes
+$ notify-send "Build finished" "&lt;b&gt;crabshell&lt;/b&gt; passed. See &lt;a href='https://example.org'&gt;the log&lt;/a&gt;."</code></pre>
+        <p>
+          It shows <a href="widgets.html#text"><code>Text::rich</code></a> with
+          <code>parse_markup</code> and <code>on_link</code>, eliding,
+          <a href="styles.html#fonts">tabular digits and letter spacing</a>,
+          <code>text_align</code>, <code>line_height</code> and a
+          <a href="widgets.html#textarea"><code>TextArea</code></a> kept with
+          <code>cx.persist</code>.
+          <a
+            href="https://github.com/w0x7y/crabshell/blob/main/crates/crabshell/examples/notes.rs"
             >Read the source</a
           >.
         </p>
