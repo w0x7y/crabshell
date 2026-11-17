@@ -841,3 +841,86 @@ fn the_real_polkit_authorizes_through_its_helper_socket() {
   assert_eq!(result.borrow_mut().take(), Some(Ok(true)));
   assert_eq!(agent.request().get_untracked(), None);
 }
+
+/// A user lookup that takes `slow` for uids past 0, as NSS does with an
+/// LDAP server it can't reach, with the agent waiting at most `limit`.
+fn slow_users(slow: Duration, limit: Duration) -> impl FnOnce(Config) -> Config {
+  move |config| Config {
+    polkit_users: std::sync::Arc::new(move |uid| {
+      if uid != 0 {
+        std::thread::sleep(slow);
+      }
+      Some(if uid == 0 {
+        "root".into()
+      } else {
+        format!("user{uid}")
+      })
+    }),
+    polkit_users_limit: limit,
+    ..config
+  }
+}
+
+#[test]
+fn a_slow_user_lookup_never_holds_up_the_loop() {
+  let users = slow_users(Duration::from_millis(800), Duration::from_secs(5));
+  let mut polkit = Polkit::with(PASSWORD, users);
+  let (agent, name) = polkit.agent();
+  let answer = polkit.begin(&name, "cookie-1", &[1000, 1001]);
+  let started = Instant::now();
+  polkit.shell.run_until(started + Duration::from_millis(200));
+  assert!(
+    started.elapsed() < Duration::from_millis(500),
+    "the loop waited"
+  );
+  assert_eq!(
+    agent.request().get_untracked(),
+    None,
+    "not before the names"
+  );
+  polkit.wait_state(&agent, asking);
+  let shown = agent.request().get_untracked().expect("a request");
+  assert_eq!(shown.identities, ["user1000", "user1001"]);
+  agent.respond("hunter2");
+  assert_eq!(polkit.answered(&answer), Ok(()));
+}
+
+#[test]
+fn a_lookup_past_the_limit_offers_the_users_found_or_fails() {
+  let users = slow_users(Duration::from_secs(3), Duration::from_millis(300));
+  let mut polkit = Polkit::with(PASSWORD, users);
+  let (agent, name) = polkit.agent();
+  // Not the session's user, which would be looked up first.
+  let other = rustix::process::getuid().as_raw().wrapping_add(4242);
+  let started = Instant::now();
+  let answer = polkit.begin(&name, "cookie-1", &[0, other]);
+  polkit.wait_state(&agent, asking);
+  assert!(started.elapsed() < Duration::from_secs(2), "the limit held");
+  let shown = agent.request().get_untracked().expect("a request");
+  assert_eq!(shown.identities, ["root"]);
+  agent.respond("hunter2");
+  assert_eq!(polkit.answered(&answer), Ok(()));
+
+  let nobody = polkit.begin(&name, "cookie-2", &[other]);
+  assert_eq!(polkit.answered(&nobody), Err(FAILED.to_owned()));
+  assert_eq!(agent.request().get_untracked(), None);
+}
+
+#[test]
+fn polkit_cancelling_a_request_whose_users_are_looked_up_answers_it() {
+  let users = slow_users(Duration::from_millis(500), Duration::from_secs(5));
+  let mut polkit = Polkit::with(PASSWORD, users);
+  let (agent, name) = polkit.agent();
+  let answer = polkit.begin(&name, "cookie-1", &[1000]);
+  polkit
+    .shell
+    .run_until(Instant::now() + Duration::from_millis(50));
+  let from = polkit.authority.connection.clone();
+  assert_eq!(polkit.cancel_from(&from, &name, "cookie-1"), Ok(()));
+  assert_eq!(polkit.answered(&answer), Err(CANCELLED.to_owned()));
+  polkit
+    .shell
+    .run_until(Instant::now() + Duration::from_secs(1));
+  assert_eq!(agent.request().get_untracked(), None);
+  assert!(polkit.runs().is_empty(), "no helper ran");
+}

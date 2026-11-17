@@ -118,6 +118,8 @@ pub(crate) fn offline() -> Config {
     // Never polkit's own, which would ask PAM.
     polkit_helpers: vec![PathBuf::from("/nonexistent/crabshell-polkit-helper")],
     polkit_socket: PathBuf::from("/nonexistent/crabshell-polkit-socket"),
+    polkit_users: Arc::new(crate::user_name),
+    polkit_users_limit: crate::polkit::USERS_LIMIT,
     pam: Arc::new(FakePam::default()),
   }
 }

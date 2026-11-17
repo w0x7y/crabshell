@@ -615,6 +615,13 @@ trait EventLoop {
     channel: Channel<pam::Event>,
     on_event: Box<dyn FnMut(calloop::channel::Event<pam::Event>)>,
   ) -> Option<RegistrationToken>;
+
+  /// Adds the channel a user lookup's thread sends names on.
+  fn insert_users_channel(
+    &self,
+    channel: Channel<polkit::Found>,
+    on_event: Box<dyn FnMut(calloop::channel::Event<polkit::Found>)>,
+  ) -> Option<RegistrationToken>;
 }
 
 impl<D: 'static> EventLoop for LoopHandle<'static, D> {
@@ -681,6 +688,17 @@ impl<D: 'static> EventLoop for LoopHandle<'static, D> {
       .inspect_err(|error| tracing::error!(%error, "a PAM attempt's channel couldn't be added"))
       .ok()
   }
+
+  fn insert_users_channel(
+    &self,
+    channel: Channel<polkit::Found>,
+    mut on_event: Box<dyn FnMut(calloop::channel::Event<polkit::Found>)>,
+  ) -> Option<RegistrationToken> {
+    self
+      .insert_source(channel, move |event, _, _| on_event(event))
+      .inspect_err(|error| tracing::error!(%error, "a user lookup's channel couldn't be added"))
+      .ok()
+  }
 }
 
 /// Where the services find the system. Tests point it at their own files
@@ -720,6 +738,12 @@ struct Config {
   polkit_helpers: Vec<PathBuf>,
   /// polkit's socket for its helper, tried before `polkit_helpers`.
   polkit_socket: PathBuf,
+  /// How polkit's identities are named: through NSS, and in tests a
+  /// lookup as slow as they like. It runs off the loop's thread.
+  polkit_users: Arc<dyn Fn(u32) -> Option<String> + Send + Sync>,
+  /// How long a request waits for its identities' names before it goes on
+  /// with those found.
+  polkit_users_limit: Duration,
 }
 
 impl Config {
@@ -757,6 +781,8 @@ impl Config {
       pam: Arc::new(pam::LibPam),
       polkit_helpers: polkit::HELPERS.map(PathBuf::from).to_vec(),
       polkit_socket: PathBuf::from(polkit::HELPER_SOCKET),
+      polkit_users: Arc::new(user_name),
+      polkit_users_limit: polkit::USERS_LIMIT,
     }
   }
 }

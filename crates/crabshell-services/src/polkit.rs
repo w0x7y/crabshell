@@ -19,9 +19,12 @@ use std::future::poll_fn;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::rc::Rc;
-use std::sync::Once;
+use std::sync::{Arc, Once};
+use std::time::{Duration, Instant};
 
-use calloop::Interest;
+use calloop::channel::Event as Arrived;
+use calloop::timer::TimeoutAction;
+use calloop::{Interest, RegistrationToken};
 use crabshell_reactive::{ReadSignal, Signal};
 use crabshell_ui::Cx;
 use zbus::export::futures_core::Stream;
@@ -75,6 +78,14 @@ const MAX_TRIES: u32 = 3;
 const MAX_IDENTITIES: usize = 64;
 /// The most requests waiting behind the one answered.
 const MAX_QUEUED: usize = 8;
+/// How long a request waits for its users' names, as NSS may ask a
+/// server that doesn't answer.
+pub(crate) const USERS_LIMIT: Duration = Duration::from_secs(3);
+
+/// A name a user lookup's thread found: the identity's place, and its
+/// name, or `None` for no such user.
+pub(crate) type Found = (usize, Option<String>);
+
 /// The most info and error lines a request keeps, the newest.
 const MAX_LINES: usize = 16;
 
@@ -209,6 +220,19 @@ struct State {
   current: Option<Current>,
   /// Requests that came while one was answered, oldest first.
   queue: VecDeque<Begin>,
+  /// Requests whose users are being named, oldest first.
+  resolving: Vec<Resolving>,
+}
+
+/// A request whose users are named on a thread of their own, since NSS
+/// may block. It goes on once they are, or once [`USERS_LIMIT`] passed.
+struct Resolving {
+  begin: Begin,
+  uids: Vec<u32>,
+  names: Vec<Option<String>>,
+  /// The thread's channel and the limit's timer, while it runs.
+  sources: Vec<RegistrationToken>,
+  done: bool,
 }
 
 /// Stops the helper and forgets the requests when the root goes. The
@@ -275,6 +299,7 @@ impl Service {
       authority: None,
       current: None,
       queue: VecDeque::new(),
+      resolving: Vec::new(),
     });
     self.shared.root.signal(StopOnDrop(Rc::clone(self)));
     match self.shared.config.system_bus.clone() {
@@ -296,6 +321,14 @@ impl Service {
   /// Drops every request unanswered, stopping the helper, as when polkit
   /// goes and nobody could answer. Touches no signal.
   fn drop_requests(&self) {
+    let resolving = self
+      .state
+      .borrow_mut()
+      .as_mut()
+      .map(|state| std::mem::take(&mut state.resolving));
+    for resolving in resolving.unwrap_or_default() {
+      self.remove(resolving.sources);
+    }
     let current = self.state.borrow_mut().as_mut().and_then(|state| {
       state.queue.clear();
       state.authority = None;
@@ -367,38 +400,159 @@ impl Service {
     }
   }
 
-  /// polkit asks the user to authenticate.
+  /// polkit asks the user to authenticate. Its users are named first.
   fn begin(self: &Rc<Self>, call: Message) {
-    let begin = match begin_args(&call, self.next()) {
-      Ok(begin) => begin,
+    let (begin, uids) = match begin_args(&call, self.next()) {
+      Ok(begun) => begun,
       Err((error, why)) => {
         tracing::warn!(why, "a polkit request the agent can't answer");
         return self.reply(&call, Some((error, why)));
       }
     };
-    let refused = {
-      let mut state = self.state.borrow_mut();
-      let Some(state) = state.as_mut() else {
+    let full = {
+      let state = self.state.borrow();
+      let Some(state) = state.as_ref() else {
         return;
       };
-      let action = &begin.shown.action_id;
-      tracing::info!(action, "polkit asks to authenticate");
-      if state.current.is_none() {
-        state.current = Some(Current::new(begin));
-        None
-      } else if state.queue.len() < MAX_QUEUED {
-        state.queue.push_back(begin);
-        return;
-      } else {
-        Some(begin)
-      }
+      let held = usize::from(state.current.is_some()) + state.queue.len();
+      held + state.resolving.len() > MAX_QUEUED
     };
-    match refused {
-      Some(begin) => {
-        tracing::warn!("{MAX_QUEUED} polkit requests wait already; refused another");
-        self.reply(&begin.call, Some((FAILED, "too many requests wait")));
+    if full {
+      tracing::warn!("{MAX_QUEUED} polkit requests wait already; refused another");
+      return self.reply(&begin.call, Some((FAILED, "too many requests wait")));
+    }
+    let action = &begin.shown.action_id;
+    tracing::info!(action, "polkit asks to authenticate");
+    self.resolve(begin, uids);
+  }
+
+  /// Names `uids` on a thread of their own, so NSS never holds up the
+  /// loop, which hears from it only until it is done or the limit passed.
+  fn resolve(self: &Rc<Self>, begin: Begin, uids: Vec<u32>) {
+    let id = begin.shown.id;
+    let mut sources = Vec::new();
+    if let Some(event_loop) = self.shared.event_loop() {
+      let (sender, channel) = calloop::channel::channel::<Found>();
+      let lookup = Arc::clone(&self.shared.config.polkit_users);
+      let looked = uids.clone();
+      let spawned = std::thread::Builder::new()
+        .name(String::from("crabshell-users"))
+        .spawn(move || {
+          for (at, uid) in looked.into_iter().enumerate() {
+            // Refused once the request went on without it.
+            if sender.send((at, lookup(uid))).is_err() {
+              return;
+            }
+          }
+        });
+      // Its channel closed with it, which ends the lookup.
+      if let Err(error) = spawned {
+        tracing::warn!(%error, "couldn't look polkit's users up");
       }
-      None => self.run_helper(),
+      let service = Rc::clone(self);
+      let arrived = Box::new(move |event| match event {
+        Arrived::Msg((at, name)) => service.found(id, at, name),
+        Arrived::Closed => service.resolved(id),
+      });
+      sources.extend(event_loop.insert_users_channel(channel, arrived));
+      let service = Rc::clone(self);
+      let limit = Instant::now() + self.shared.config.polkit_users_limit;
+      let tick = Box::new(move || {
+        service.resolved(id);
+        TimeoutAction::Drop
+      });
+      sources.extend(event_loop.insert_timer(limit, tick));
+    }
+    let done = sources.is_empty();
+    if let Some(state) = self.state.borrow_mut().as_mut() {
+      let names = vec![None; uids.len()];
+      state.resolving.push(Resolving {
+        begin,
+        uids,
+        names,
+        sources,
+        done,
+      });
+    }
+    self.promote();
+  }
+
+  /// Request `id`'s identity `at` is named `name`.
+  fn found(&self, id: u64, at: usize, name: Option<String>) {
+    let mut state = self.state.borrow_mut();
+    let resolving = state.as_mut().and_then(|state| {
+      let mut all = state.resolving.iter_mut();
+      all.find(|resolving| resolving.begin.shown.id == id)
+    });
+    if let Some(slot) = resolving.and_then(|resolving| resolving.names.get_mut(at)) {
+      *slot = name;
+    }
+  }
+
+  /// Request `id`'s users are named, or the limit passed.
+  fn resolved(self: &Rc<Self>, id: u64) {
+    let sources = self.state.borrow_mut().as_mut().and_then(|state| {
+      let mut all = state.resolving.iter_mut();
+      let resolving = all.find(|resolving| resolving.begin.shown.id == id)?;
+      resolving.done = true;
+      Some(std::mem::take(&mut resolving.sources))
+    });
+    if let Some(sources) = sources {
+      self.remove(sources);
+      self.promote();
+    }
+  }
+
+  fn remove(&self, sources: Vec<RegistrationToken>) {
+    if let Some(event_loop) = self.shared.event_loop() {
+      for token in sources {
+        event_loop.remove(token);
+      }
+    }
+  }
+
+  /// Moves the requests whose users are named on, in the order they
+  /// came: to be answered, to wait, or, with no user found, to polkit as
+  /// failed.
+  fn promote(self: &Rc<Self>) {
+    loop {
+      let next = self.state.borrow_mut().as_mut().and_then(|state| {
+        let first = state.resolving.first()?;
+        first.done.then(|| state.resolving.remove(0))
+      });
+      let Some(Resolving {
+        mut begin,
+        uids,
+        names,
+        ..
+      }) = next
+      else {
+        return;
+      };
+      let found = uids.iter().zip(names).filter_map(|(uid, name)| {
+        name.or_else(|| {
+          tracing::info!(uid, "polkit named a user NSS didn't name in time; left out");
+          None
+        })
+      });
+      begin.shown.identities = found.collect();
+      if begin.shown.identities.is_empty() {
+        let why = "no user the agent knows may answer";
+        tracing::warn!(why, "a polkit request the agent can't answer");
+        self.reply(&begin.call, Some((FAILED, why)));
+        continue;
+      }
+      let first = self.state.borrow_mut().as_mut().is_some_and(|state| {
+        if state.current.is_some() {
+          state.queue.push_back(begin);
+          return false;
+        }
+        state.current = Some(Current::new(begin));
+        true
+      });
+      if first {
+        self.run_helper();
+      }
     }
   }
 
@@ -422,7 +576,17 @@ impl Service {
       state.queue.remove(at)
     });
     if let Some(begin) = queued {
-      self.reply(&begin.call, Some((CANCELLED, why)));
+      return self.reply(&begin.call, Some((CANCELLED, why)));
+    }
+    let resolving = self.state.borrow_mut().as_mut().and_then(|state| {
+      let mut all = state.resolving.iter();
+      let at = all.position(|resolving| resolving.begin.cookie == cookie)?;
+      Some(state.resolving.remove(at))
+    });
+    if let Some(resolving) = resolving {
+      self.remove(resolving.sources);
+      self.reply(&resolving.begin.call, Some((CANCELLED, why)));
+      self.promote();
     }
   }
 
@@ -686,8 +850,10 @@ type BeginArgs<'a> = (
   Vec<(&'a str, HashMap<&'a str, OwnedVariant>)>,
 );
 
-/// The request `call` asks for, numbered `id`, or the error to answer.
-fn begin_args(call: &Message, id: u64) -> Result<Begin, (&'static str, &'static str)> {
+/// The request `call` asks for, numbered `id`, with no identities yet,
+/// and the uids of the users who may answer, the session's first; or the
+/// error to answer.
+fn begin_args(call: &Message, id: u64) -> Result<(Begin, Vec<u32>), (&'static str, &'static str)> {
   let body = call.body();
   let Ok((action_id, message, icon_name, _, cookie, identities)) =
     body.deserialize::<BeginArgs<'_>>()
@@ -698,24 +864,22 @@ fn begin_args(call: &Message, id: u64) -> Result<Begin, (&'static str, &'static 
   if cookie.is_empty() || cookie.len() > MAX_TEXT || cookie.contains('\n') {
     return Err((FAILED, "a bad cookie"));
   }
-  let mut users: Vec<(u32, String)> = identities
+  let mut uids: Vec<u32> = identities
     .iter()
     .take(MAX_IDENTITIES)
     .filter(|(kind, _)| *kind == "unix-user")
     .filter_map(|(_, details)| u32::try_from(details.get("uid")?).ok())
-    .filter_map(|uid| Some((uid, crate::user_name(uid)?)))
     .collect();
   // The session's user is asked first: polkit may list root first, as for
   // an admin group.
   let own = rustix::process::getuid().as_raw();
-  if let Some(at) = users.iter().position(|(uid, _)| *uid == own) {
-    users[..=at].rotate_right(1);
+  if let Some(at) = uids.iter().position(|uid| *uid == own) {
+    uids[..=at].rotate_right(1);
   }
-  let names: Vec<String> = users.into_iter().map(|(_, name)| name).collect();
-  if names.is_empty() {
+  if uids.is_empty() {
     return Err((FAILED, "no user the agent knows may answer"));
   }
-  Ok(Begin {
+  let begin = Begin {
     call: call.clone(),
     cookie: cookie.to_owned(),
     shown: AuthRequest {
@@ -723,12 +887,13 @@ fn begin_args(call: &Message, id: u64) -> Result<Begin, (&'static str, &'static 
       action_id: cut(action_id, MAX_TEXT),
       message: cut(message, MAX_TEXT),
       icon_name: cut(icon_name, MAX_TEXT),
-      identities: names,
+      identities: Vec::new(),
       state: AuthState::Waiting,
       info: Vec::new(),
       errors: Vec::new(),
     },
-  })
+  };
+  Ok((begin, uids))
 }
 
 /// `text`'s first `max` bytes at most, cut at a char boundary.
