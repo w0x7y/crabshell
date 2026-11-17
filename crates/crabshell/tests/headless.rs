@@ -98,6 +98,7 @@ mod lock;
 mod pipewire;
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader};
 use std::ops::Range;
 use std::panic::{self, AssertUnwindSafe};
@@ -494,19 +495,27 @@ impl ExampleBar {
 
   /// Context switches of all its threads so far: each is a wakeup.
   fn context_switches(&self) -> u64 {
+    self.switches_by_thread().values().sum()
+  }
+
+  /// Each live thread's context switches so far, by thread id. A thread
+  /// that exits takes its count with it, so wakeups are counted per
+  /// thread, never from a total that can drop.
+  fn switches_by_thread(&self) -> HashMap<String, u64> {
     let tasks = format!("/proc/{}/task", self.child.id());
     std::fs::read_dir(&tasks)
       .expect("the example is running")
       .filter_map(Result::ok)
-      .filter_map(|task| std::fs::read_to_string(task.path().join("status")).ok())
-      .flat_map(|status| {
-        status
+      .filter_map(|task| {
+        let status = std::fs::read_to_string(task.path().join("status")).ok()?;
+        let switches = status
           .lines()
           .filter(|line| line.contains("ctxt_switches"))
           .filter_map(|line| line.split_whitespace().last()?.parse::<u64>().ok())
-          .collect::<Vec<u64>>()
+          .sum();
+        Some((task.file_name().to_string_lossy().into_owned(), switches))
       })
-      .sum()
+      .collect()
   }
 
   /// Waits until its context switches stop changing for a second.
@@ -530,18 +539,23 @@ impl ExampleBar {
   /// many switches it was.
   fn wakeups_for(&self, time: Duration) -> Vec<(f64, u64)> {
     let end = Instant::now() + time;
-    let mut last = self.context_switches();
+    let mut last = self.switches_by_thread();
     let mut seen = Vec::new();
     while Instant::now() < end {
       std::thread::sleep(Duration::from_millis(50));
-      let now = self.context_switches();
-      if now != last {
+      let now = self.switches_by_thread();
+      // A new thread's switches all count; an exited one's drop out.
+      let new: u64 = now
+        .iter()
+        .map(|(thread, switches)| switches.saturating_sub(last.get(thread).copied().unwrap_or(0)))
+        .sum();
+      if new > 0 {
         let wall = SystemTime::now()
           .duration_since(SystemTime::UNIX_EPOCH)
           .expect("the clock is past 1970");
-        seen.push((wall.as_secs_f64() % 60.0, now - last));
-        last = now;
+        seen.push((wall.as_secs_f64() % 60.0, new));
       }
+      last = now;
     }
     seen
   }
@@ -593,6 +607,28 @@ impl Drop for ExampleBar {
     let _ = self.child.kill();
     let _ = self.child.wait();
   }
+}
+
+/// A program whose worker thread wakes 50 times and exits, as a decode
+/// thread does, counts those wakeups and nothing back when it goes.
+#[test]
+fn wakeups_are_counted_per_thread_so_an_exiting_one_takes_none_back() {
+  const TEST: &str = "wakeups_are_counted_per_thread_so_an_exiting_one_takes_none_back";
+  run_as_child();
+  let child = Command::new(std::env::current_exe().expect("the test binary"))
+    .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+    .env(CHILD, "a thread exits")
+    .stdout(Stdio::null())
+    .spawn()
+    .expect("the test binary runs again");
+  let (_sender, lines) = mpsc::channel();
+  let program = ExampleBar { child, lines };
+  let woke: u64 = program
+    .wakeups_for(Duration::from_millis(1500))
+    .iter()
+    .map(|(_, switches)| switches)
+    .sum();
+  assert!(woke >= 20, "{woke} wakeups seen from the worker");
 }
 
 #[test]
@@ -1565,6 +1601,16 @@ fn run_as_child() {
         counter::bar(cx, output)
       });
     }),
+    Ok("a thread exits") => {
+      let worker = std::thread::spawn(|| {
+        for _ in 0..50 {
+          std::thread::sleep(Duration::from_millis(10));
+        }
+      });
+      let _ = worker.join();
+      std::thread::sleep(Duration::from_secs(2));
+      std::process::exit(0);
+    }
     Ok("counter") => crabshell::run(|cx| cx.per_output(counter::bar)),
     Ok("v0.1") => run_v0_1_bar_logging_its_volume(),
     Ok("exits") => crabshell::run(|cx| {
