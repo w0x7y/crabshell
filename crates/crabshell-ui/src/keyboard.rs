@@ -314,7 +314,11 @@ impl Tree {
       .into_iter()
       .rev()
       .find_map(|at| match &self.node(at)?.kind {
-        NodeKind::Scroll(scroll) if !scroll.horizontal => Some(scroll.length),
+        NodeKind::Scroll(scroll) => scroll
+          .active()
+          .iter()
+          .find(|axis| !axis.horizontal)
+          .map(|axis| axis.length),
         _ => None,
       })
   }

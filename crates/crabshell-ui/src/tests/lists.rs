@@ -245,7 +245,8 @@ fn heights_are_kept_by_key_when_the_items_move() {
   // 40 and nine of 20: 220 pixels, of which 100 show.
   let handle = |window: &Window| {
     node_at(window.view().root(), &[0, 0])
-      .scroll_bar()
+      .scroll_bars()
+      .next()
       .map(|(rect, _)| rect.height)
   };
   assert_eq!(handle(&window), Some(100.0_f32 * 100.0 / 220.0));
@@ -405,7 +406,9 @@ fn a_list_turned_sideways_measures_its_items_again() {
   let built = items_built(&window);
   assert_eq!((built[1].x, built[1].y), (20.0, 0.0));
   // Those not built again count 10 wide, not 40: 6 of 20 and 4 of 10.
-  let handle = node_at(window.view().root(), &[0, 0, 0]).scroll_bar();
+  let handle = node_at(window.view().root(), &[0, 0, 0])
+    .scroll_bars()
+    .next();
   assert_eq!(
     handle.map(|(rect, _)| rect.width),
     Some(100.0_f32 * 100.0 / 160.0)
@@ -676,7 +679,7 @@ fn rows_measured_as_the_items_change_keep_their_lengths() {
   .geometry(geometry);
   let window = h.window(h.panel().child(list), 100.0, 200.0);
   // Six rows built and measured 40, and four counted 20: 320.
-  let handle = node_at(window.view().root(), &[0, 0]).scroll_bar();
+  let handle = node_at(window.view().root(), &[0, 0]).scroll_bars().next();
   assert_eq!(
     handle.map(|(rect, _)| rect.height),
     Some(100.0_f32 * 100.0 / 320.0)

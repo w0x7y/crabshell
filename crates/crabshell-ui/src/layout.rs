@@ -26,7 +26,7 @@ use crate::scroll::{BAR_MIN_LENGTH, BAR_WIDTH};
 use crate::style::{Font, Shadow, Style};
 use crate::text::{Fonts, TextStyle, fonts_added};
 use crate::text_input::DEFAULT_WIDTH;
-use crate::tree::{Node, NodeId, NodeKind, ScrollNode, Tree, add_damage, centered, icon_rect};
+use crate::tree::{Axis, Node, NodeId, NodeKind, Tree, add_damage, centered, icon_rect};
 use crate::widgets::{Align, Justify};
 
 /// The kind of container a node sits in, which decides how it is placed.
@@ -149,26 +149,32 @@ impl Tree {
       else {
         continue;
       };
-      let (start, end, low, high) = if scroll.horizontal {
-        (caret.x, caret.right(), content.x, content.right())
-      } else {
-        (caret.y, caret.bottom(), content.y, content.bottom())
-      };
-      let to = if start < low {
-        scroll.shown - (low - start)
-      } else if end > high {
-        scroll.shown + (end - high)
-      } else {
-        continue;
-      };
-      let to = to.clamp(0.0, scroll.most);
-      if to == scroll.shown {
-        continue;
+      let mut moved = false;
+      for axis in scroll.active_mut() {
+        let (start, end, low, high) = if axis.horizontal {
+          (caret.x, caret.right(), content.x, content.right())
+        } else {
+          (caret.y, caret.bottom(), content.y, content.bottom())
+        };
+        let to = if start < low {
+          axis.shown - (low - start)
+        } else if end > high {
+          axis.shown + (end - high)
+        } else {
+          continue;
+        };
+        let to = to.clamp(0.0, axis.most);
+        if to == axis.shown {
+          continue;
+        }
+        axis.offset = to;
+        self.offsets.push((axis.signal, to));
+        moved = true;
       }
-      scroll.offset = to;
-      self.offsets.push((scroll.signal, to));
-      let root = self.root;
-      self.place(root, Point::default(), &mut Vec::new(), fonts);
+      if moved {
+        let root = self.root;
+        self.place(root, Point::default(), &mut Vec::new(), fonts);
+      }
     }
   }
 
@@ -286,43 +292,51 @@ impl Tree {
     // clamped so neither end scrolls past the box.
     let mut origin = Point::new(rect.x, rect.y);
     if let Some(NodeKind::Scroll(scroll)) = self.node(id).map(|node| &node.kind) {
-      let horizontal = scroll.horizontal;
-      let end = self
+      // Where the child ends, down and across, with the space after it.
+      let (right, bottom) = self
         .taffy
         .children(id)
         .unwrap_or_default()
         .into_iter()
         .filter_map(|child| self.taffy.layout(child).ok())
-        .map(|child| {
-          if horizontal {
-            child.location.x + child.size.width + layout.padding.right + layout.border.right
-          } else {
-            child.location.y + child.size.height + layout.padding.bottom + layout.border.bottom
-          }
-        })
-        .fold(0.0, f32::max);
-      let length = if horizontal {
-        layout.size.width
-      } else {
-        layout.size.height
-      };
-      let most = (end - length).max(0.0);
-      let shown = if scroll.offset.is_nan() {
-        0.0
-      } else {
-        scroll.offset.clamp(0.0, most)
-      };
-      // An overshoot is only shown, as a paint move of the child.
-      let moved = shown + scroll.overshoot;
-      if horizontal {
-        origin.x -= moved;
-      } else {
-        origin.y -= moved;
+        .fold((0.0_f32, 0.0_f32), |(right, bottom), child| {
+          (
+            right.max(
+              child.location.x + child.size.width + layout.padding.right + layout.border.right,
+            ),
+            bottom.max(
+              child.location.y + child.size.height + layout.padding.bottom + layout.border.bottom,
+            ),
+          )
+        });
+      let mut placed = [(0.0, 0.0, 0.0); 2];
+      for (slot, axis) in placed.iter_mut().zip(scroll.active()) {
+        let (end, length) = if axis.horizontal {
+          (right, layout.size.width)
+        } else {
+          (bottom, layout.size.height)
+        };
+        let most = (end - length).max(0.0);
+        let shown = if axis.offset.is_nan() {
+          0.0
+        } else {
+          axis.offset.clamp(0.0, most)
+        };
+        // An overshoot is only shown, as a paint move of the child.
+        let moved = shown + axis.overshoot;
+        if axis.horizontal {
+          origin.x -= moved;
+        } else {
+          origin.y -= moved;
+        }
+        *slot = (shown, most, length);
       }
       if let Some(NodeKind::Scroll(scroll)) = self.node_mut(id).map(|node| &mut node.kind) {
-        scroll.shown = shown;
-        scroll.most = most;
-        scroll.length = length;
+        for (axis, (shown, most, length)) in scroll.active_mut().iter_mut().zip(placed) {
+          axis.shown = shown;
+          axis.most = most;
+          axis.length = length;
+        }
       }
     }
     self.begin_slide(id, Point::new(layout.location.x, layout.location.y));
@@ -378,14 +392,25 @@ impl Tree {
     // A scroll view's style is the style in effect: only a button's
     // differs.
     let border = style.border.map_or(0.0, |border| border.width.max(0.0));
-    let handle = scroll
-      .bar
-      .filter(|_| scroll.most > 0.0)
-      .and_then(|bar| bar_rects(scroll, bar, rect, border));
-    let old = std::mem::replace(&mut scroll.handle, handle);
-    if old != handle {
-      for (_, shape) in [old, handle].into_iter().flatten() {
-        add_damage(&mut self.damage, through(chain, shape));
+    let count = scroll.active().len();
+    let bar = scroll.bar;
+    let shows = |axis: &Axis| bar.filter(|_| axis.most > 0.0);
+    // Two bars leave each other the corner they would share.
+    let corner = match scroll.active() {
+      [main, cross] if shows(main).is_some() && shows(cross).is_some() => {
+        bar.map_or(0.0, bar_width)
+      }
+      _ => 0.0,
+    };
+    for (n, axis) in scroll.axes.iter_mut().enumerate() {
+      let handle = shows(axis)
+        .filter(|_| n < count)
+        .and_then(|bar| bar_rects(axis, bar, rect, border, corner));
+      let old = std::mem::replace(&mut axis.handle, handle);
+      if old != handle {
+        for (_, shape) in [old, handle].into_iter().flatten() {
+          add_damage(&mut self.damage, through(chain, shape));
+        }
       }
     }
   }
@@ -575,29 +600,32 @@ fn displaced(transform: Option<Affine>, by: Point) -> Option<Affine> {
 /// with a border `border` wide: as long as the part shown, placed by the
 /// offset shown, and never shorter than [`BAR_MIN_LENGTH`] unless the
 /// track is.
-fn bar_rects(scroll: &ScrollNode, bar: Style, rect: Rect, border: f32) -> Option<(Rect, Rect)> {
-  let width = bar
-    .width
-    .filter(|w| w.is_finite() && *w > 0.0)
-    .unwrap_or(BAR_WIDTH);
-  let (along, start) = if scroll.horizontal {
-    (rect.width - 2.0 * border, rect.x + border)
+fn bar_rects(
+  axis: &Axis,
+  bar: Style,
+  rect: Rect,
+  border: f32,
+  corner: f32,
+) -> Option<(Rect, Rect)> {
+  let width = bar_width(bar);
+  let (along, start) = if axis.horizontal {
+    (rect.width - 2.0 * border - corner, rect.x + border)
   } else {
-    (rect.height - 2.0 * border, rect.y + border)
+    (rect.height - 2.0 * border - corner, rect.y + border)
   };
   if along <= 0.0 {
     return None;
   }
-  let view = if scroll.horizontal {
+  let view = if axis.horizontal {
     rect.width
   } else {
     rect.height
   };
-  let length = (along * view / (view + scroll.most))
+  let length = (along * view / (view + axis.most))
     .max(BAR_MIN_LENGTH)
     .min(along);
-  let at = start + (along - length) * scroll.shown / scroll.most;
-  Some(if scroll.horizontal {
+  let at = start + (along - length) * axis.shown / axis.most;
+  Some(if axis.horizontal {
     let y = rect.bottom() - border - width;
     (
       Rect::new(start, y, along, width),
@@ -610,6 +638,14 @@ fn bar_rects(scroll: &ScrollNode, bar: Style, rect: Rect, border: f32) -> Option
       Rect::new(x, at, width, length),
     )
   })
+}
+
+/// A scroll bar's thickness: its style's `width`, or 6.
+fn bar_width(bar: Style) -> f32 {
+  bar
+    .width
+    .filter(|w| w.is_finite() && *w > 0.0)
+    .unwrap_or(BAR_WIDTH)
 }
 
 /// Measures a leaf: text through its buffer, an icon as a square, an

@@ -5,13 +5,13 @@
 use std::rc::Rc;
 use std::time::Instant;
 
-use crabshell_reactive::untrack;
+use crabshell_reactive::{Signal, untrack};
 
 use crate::animation::{self, Spring};
 use crate::geometry::{Point, Rect};
 use crate::input::{DRAG_THRESHOLD, Pointer, ScrollSource, Wheel, WheelAxis, local};
 use crate::scroll::PIXELS_PER_NOTCH;
-use crate::tree::{Change, NodeId, NodeKind, ScrollNode, Tree};
+use crate::tree::{Axis, Change, NodeId, NodeKind, ScrollNode, Tree};
 
 /// How fast a fling slows, in logical pixels a second each second: Qt's
 /// `flickDeceleration`.
@@ -86,6 +86,8 @@ pub(crate) struct Flick {
 #[derive(Clone, Copy)]
 pub(crate) struct BarDrag {
   pub(crate) view: NodeId,
+  /// Which of the view's axes the bar runs along.
+  axis: usize,
   /// Where the press was along the bar, in the view's own coordinates.
   from: f32,
   /// The offset then.
@@ -113,10 +115,19 @@ impl Pointer {
   }
 }
 
-impl ScrollNode {
-  /// The offset to scroll from: the signal's, not the last layout's, so
+/// Offsets to write once the tree is released, one an axis.
+type Writes = [Option<(Signal<f32>, f32)>; 2];
+
+fn write(writes: Writes) {
+  for (signal, offset) in writes.into_iter().flatten() {
+    signal.try_set(offset);
+  }
+}
+
+impl Axis {
+  /// The offset to scroll from: the signal's, not the last placing's, so
   /// scrolls and writes since then add up, within the content as of the
-  /// last layout. `None` once the signal's owner is gone.
+  /// last placing. `None` once the signal's owner is gone.
   pub(crate) fn current(&self) -> Option<f32> {
     let now = untrack(|| self.signal.try_get())?;
     Some(if now.is_nan() {
@@ -124,6 +135,20 @@ impl ScrollNode {
     } else {
       now.clamp(0.0, self.most)
     })
+  }
+
+  /// `delta`'s part along the axis.
+  fn part(&self, delta: Point) -> f32 {
+    if self.horizontal { delta.x } else { delta.y }
+  }
+
+  /// `rect`'s start and length along the axis.
+  fn span(&self, rect: Rect) -> (f32, f32) {
+    if self.horizontal {
+      (rect.x, rect.width)
+    } else {
+      (rect.y, rect.height)
+    }
   }
 
   fn limit(&self) -> f32 {
@@ -150,56 +175,21 @@ impl ScrollNode {
     -shown.signum() * limit / RESISTANCE * (1.0 - part).ln()
   }
 
-  /// Stops the motion on the clock where it is, and the gesture's speed;
-  /// a touch carries on from the overshoot shown.
-  fn halt(&mut self) {
-    self.set_moving(false);
-    self.motion.generation += 1;
-    self.motion.samples.clear();
-    self.motion.raw = self.unrubber(self.overshoot);
-  }
-
-  /// Stops any motion and shows no overshoot, at once.
-  pub(crate) fn stop_overshoot(&mut self) -> Change {
-    self.set_moving(false);
-    self.motion.generation += 1;
-    self.motion.samples.clear();
-    self.motion.raw = 0.0;
-    if std::mem::replace(&mut self.overshoot, 0.0) != 0.0 {
-      Change::Place
-    } else {
-      Change::None
-    }
-  }
-
-  /// Moves the child `delta` logical pixels at `time`, as a touchpad or a
-  /// drag does: past an end it goes on with resistance. Returns the
-  /// offset to write, if it changed, and what the overshoot repaints.
-  fn push(&mut self, delta: f32, time: u32) -> (Option<f32>, Change) {
-    let Some(now) = self.current() else {
-      return (None, Change::None);
-    };
-    self.set_moving(true);
+  /// Moves the child `delta` logical pixels at `time`: past an end it goes
+  /// on with resistance if it `overshoots`. Returns the offset to write,
+  /// if it changed, and whether the overshoot shown did. `None` once the
+  /// signal's owner is gone.
+  fn push(&mut self, delta: f32, time: u32, overshoots: bool) -> Option<(Option<f32>, bool)> {
+    let now = self.current()?;
     let total = now + self.motion.raw + delta;
     let offset = total.clamp(0.0, self.most);
-    self.motion.raw = if self.overshoots { total - offset } else { 0.0 };
+    self.motion.raw = if overshoots { total - offset } else { 0.0 };
     let samples = &mut self.motion.samples;
     samples.retain(|&(then, _)| time.wrapping_sub(then) <= SAMPLE_MS);
     samples.push((time, delta));
     let shown = self.rubber(self.motion.raw);
-    let change = if std::mem::replace(&mut self.overshoot, shown) != shown {
-      Change::Place
-    } else {
-      Change::None
-    };
-    ((offset != now).then_some(offset), change)
-  }
-
-  /// Tells a list whether the view is moving.
-  fn set_moving(&self, moving: bool) {
-    if let Some(cell) = &self.moving {
-      cell.set(moving);
-    }
+    let moved = std::mem::replace(&mut self.overshoot, shown) != shown;
+    Some(((offset != now).then_some(offset), moved))
   }
 
   /// The speed of the moves in the 100 ms before `time`, in logical
@@ -231,37 +221,99 @@ impl ScrollNode {
       .current()
       .is_some_and(|now| (delta > 0.0 && now < self.most) || (delta < 0.0 && now > 0.0))
   }
+}
 
-  /// Point `at`'s place along the view's axis.
-  fn along(&self, at: Point) -> f32 {
-    if self.horizontal { at.x } else { at.y }
-  }
-
-  /// `rect`'s start and length along the view's axis.
-  fn span(&self, rect: Rect) -> (f32, f32) {
-    if self.horizontal {
-      (rect.x, rect.width)
-    } else {
-      (rect.y, rect.height)
+impl ScrollNode {
+  /// Stops the motion on the clock where it is, and the gesture's speed;
+  /// a touch carries on from the overshoot shown.
+  fn halt(&mut self) {
+    self.set_moving(false);
+    for axis in &mut self.axes {
+      axis.motion.generation += 1;
+      axis.motion.samples.clear();
+      axis.motion.raw = axis.unrubber(axis.overshoot);
     }
   }
 
-  /// How far `wheel` scrolls this view, in logical pixels: a wheel's
-  /// notches 48 pixels each, else a touchpad's pixels. A horizontal view
-  /// takes sideways scrolling, and a turned wheel when there is none.
-  pub(crate) fn wheel_pixels(&self, wheel: Wheel) -> Option<f32> {
+  /// Stops any motion and shows no overshoot, at once.
+  pub(crate) fn stop_overshoot(&mut self) -> Change {
+    self.set_moving(false);
+    let mut change = Change::None;
+    for axis in &mut self.axes {
+      axis.motion.generation += 1;
+      axis.motion.samples.clear();
+      axis.motion.raw = 0.0;
+      if std::mem::replace(&mut axis.overshoot, 0.0) != 0.0 {
+        change = Change::Place;
+      }
+    }
+    change
+  }
+
+  /// Moves the child `delta` logical pixels at `time`, as a touchpad or a
+  /// drag does, each axis by its part: past an end it goes on with
+  /// resistance. Returns the offsets to write and what the overshoot
+  /// repaints.
+  fn push(&mut self, delta: Point, time: u32) -> (Writes, Change) {
+    let overshoots = self.overshoots;
+    let (mut writes, mut change, mut pushed) = ([None; 2], Change::None, false);
+    for (slot, axis) in writes.iter_mut().zip(self.active_mut()) {
+      let Some((offset, moved)) = axis.push(axis.part(delta), time, overshoots) else {
+        continue;
+      };
+      pushed = true;
+      *slot = offset.map(|offset| (axis.signal, offset));
+      if moved {
+        change = Change::Place;
+      }
+    }
+    if pushed {
+      self.set_moving(true);
+    }
+    (writes, change)
+  }
+
+  /// Tells a list whether the view is moving.
+  fn set_moving(&self, moving: bool) {
+    if let Some(cell) = &self.moving {
+      cell.set(moving);
+    }
+  }
+
+  /// Whether `delta` can still move the offset along an axis, rather
+  /// than only push past an end.
+  fn can_move(&self, delta: Point) -> bool {
+    self
+      .active()
+      .iter()
+      .any(|axis| axis.can_move(axis.part(delta)))
+  }
+
+  /// Whether the view scrolls along x, or else along y.
+  fn runs(&self, horizontal: bool) -> bool {
+    self
+      .active()
+      .iter()
+      .any(|axis| axis.horizontal == horizontal)
+  }
+
+  /// How far `wheel` scrolls this view, in logical pixels along x and y: a
+  /// wheel's notches 48 pixels each, else a touchpad's pixels. A view
+  /// scrolling only sideways takes a turned wheel when there is no
+  /// sideways scrolling.
+  pub(crate) fn wheel_pixels(&self, wheel: Wheel) -> Option<Point> {
     let notched = |axis: WheelAxis| {
       (axis.notches != 0.0 && axis.notches.is_finite()).then_some(axis.notches * PIXELS_PER_NOTCH)
     };
     let smooth =
       |axis: WheelAxis| (axis.pixels != 0.0 && axis.pixels.is_finite()).then_some(axis.pixels);
-    if self.horizontal {
-      notched(wheel.x)
-        .or_else(|| smooth(wheel.x))
-        .or_else(|| notched(wheel.y))
-    } else {
-      notched(wheel.y).or_else(|| smooth(wheel.y))
-    }
+    let along = |axis: WheelAxis| notched(axis).or_else(|| smooth(axis));
+    let (x, y) = match self.active() {
+      [main] if main.horizontal => (along(wheel.x).or_else(|| notched(wheel.y)), None),
+      [_] => (None, along(wheel.y)),
+      _ => (along(wheel.x), along(wheel.y)),
+    };
+    (x.is_some() || y.is_some()).then(|| Point::new(x.unwrap_or(0.0), y.unwrap_or(0.0)))
   }
 }
 
@@ -299,64 +351,73 @@ impl Tree {
     chain
   }
 
+  fn scroll_node(&self, id: NodeId) -> Option<&ScrollNode> {
+    match &self.node(id)?.kind {
+      NodeKind::Scroll(scroll) => Some(scroll),
+      _ => None,
+    }
+  }
+
   /// Scrolls the innermost scroll view under the pointer that `wheel`
   /// can still move, at `time`. A wheel's notch moves it at once, within
   /// its content. A touchpad moves it past an end with resistance.
   pub(crate) fn scroll_view(&mut self, wheel: Wheel, time: u32) {
     let finger = wheel.source == ScrollSource::Finger;
-    if let Some((id, pixels)) = self.wheel_target(wheel, finger) {
-      if finger {
-        if self.pointer.gesture != Some(id) {
-          if let Some(last) = self.pointer.gesture.replace(id) {
-            self.release_view(last, None);
-          }
-          self.update_scroll(id, |scroll| {
-            scroll.halt();
-            Change::None
-          });
+    let Some((id, pixels)) = self.wheel_target(wheel, finger) else {
+      return;
+    };
+    if finger {
+      if self.pointer.gesture != Some(id) {
+        if let Some(last) = self.pointer.gesture.replace(id) {
+          self.release_view(last, None);
         }
-        self.push_view(id, pixels, time);
-      } else {
-        let mut write = None;
         self.update_scroll(id, |scroll| {
-          let change = scroll.stop_overshoot();
-          if let Some(now) = scroll.current() {
-            let offset = (now + pixels).clamp(0.0, scroll.most);
-            write = (offset != now).then_some((scroll.signal, offset));
-          }
-          change
+          scroll.halt();
+          Change::None
         });
-        if let Some((signal, offset)) = write {
-          signal.try_set(offset);
+      }
+      self.push_view(id, pixels, time);
+      return;
+    }
+    let mut writes = [None; 2];
+    self.update_scroll(id, |scroll| {
+      let change = scroll.stop_overshoot();
+      for (slot, axis) in writes.iter_mut().zip(scroll.active()) {
+        if let Some(now) = axis.current() {
+          let offset = (now + axis.part(pixels)).clamp(0.0, axis.most);
+          *slot = (offset != now).then_some((axis.signal, offset));
         }
       }
-    }
+      change
+    });
+    write(writes);
   }
 
-  /// The view `wheel` scrolls and by how much: the innermost under the
-  /// pointer it can still move, else for a touchpad the innermost it can
-  /// push past an end, or the one it already did.
-  fn wheel_target(&self, wheel: Wheel, finger: bool) -> Option<(NodeId, f32)> {
+  /// The view `wheel` scrolls and by how much along x and y: the
+  /// innermost under the pointer it can still move, else for a touchpad
+  /// the innermost it can push past an end, or the one it already did.
+  fn wheel_target(&self, wheel: Wheel, finger: bool) -> Option<(NodeId, Point)> {
     let chain = self.scroll_views_at(self.pointer.position?);
-    let scroll = |id: NodeId| match self.node(id).map(|node| &node.kind) {
-      Some(NodeKind::Scroll(scroll)) => Some(&**scroll),
-      _ => None,
-    };
     let past = self
       .pointer
       .gesture
       .filter(|id| finger && chain.contains(id))
-      .filter(|&id| scroll(id).is_some_and(|scroll| scroll.motion.raw != 0.0));
+      .filter(|&id| {
+        self
+          .scroll_node(id)
+          .is_some_and(|scroll| scroll.active().iter().any(|axis| axis.motion.raw != 0.0))
+      });
     if let Some(id) = past {
-      return Some((id, scroll(id)?.wheel_pixels(wheel)?));
+      return Some((id, self.scroll_node(id)?.wheel_pixels(wheel)?));
     }
     let moves = chain.iter().find_map(|&id| {
-      let pixels = scroll(id)?.wheel_pixels(wheel)?;
-      scroll(id)?.can_move(pixels).then_some((id, pixels))
+      let scroll = self.scroll_node(id)?;
+      let pixels = scroll.wheel_pixels(wheel)?;
+      scroll.can_move(pixels).then_some((id, pixels))
     });
     moves.or_else(|| {
       chain.iter().filter(|_| finger).find_map(|&id| {
-        let scroll = scroll(id)?;
+        let scroll = self.scroll_node(id)?;
         Some((
           id,
           scroll.wheel_pixels(wheel).filter(|_| scroll.overshoots)?,
@@ -365,47 +426,56 @@ impl Tree {
     })
   }
 
-  /// Moves view `id`'s child `delta` logical pixels at `time`, as a
-  /// touchpad or a drag does.
-  fn push_view(&mut self, id: NodeId, delta: f32, time: u32) {
-    let mut write = None;
+  /// Moves view `id`'s child `delta` logical pixels along x and y at
+  /// `time`, as a touchpad or a drag does.
+  fn push_view(&mut self, id: NodeId, delta: Point, time: u32) {
+    let mut writes = [None; 2];
     self.update_scroll(id, |scroll| {
-      let (offset, change) = scroll.push(delta, time);
-      write = offset.map(|offset| (scroll.signal, offset));
+      let (pushed, change) = scroll.push(delta, time);
+      writes = pushed;
       change
     });
-    if let Some((signal, offset)) = write {
-      signal.try_set(offset);
-    }
+    write(writes);
   }
 
   /// Lets go of view `id` after a touchpad gesture or a drag that ended
-  /// at `time`, if it moved it: past an end it springs back, and
+  /// at `time`, if it moved it: past an end each axis springs back, and
   /// otherwise a kinetic view goes on at the speed it moved.
   pub(crate) fn release_view(&mut self, id: NodeId, time: Option<u32>) {
     let Some(NodeKind::Scroll(scroll)) = self.node_mut(id).map(|node| &mut node.kind) else {
       return;
     };
-    let speed = time.map_or(0.0, |time| scroll.speed(time));
-    scroll.motion.samples.clear();
-    scroll.motion.raw = 0.0;
-    let phase = if scroll.overshoot != 0.0 {
-      Phase::Spring {
-        x: scroll.overshoot,
-        v: 0.0,
-      }
-    } else if scroll.kinetic && speed.abs() >= MIN_FLING {
-      Phase::Fling { v: speed }
-    } else {
+    let kinetic = scroll.kinetic;
+    let mut phases = [None; 2];
+    for (phase, axis) in phases.iter_mut().zip(scroll.active_mut()) {
+      let speed = time.map_or(0.0, |time| axis.speed(time));
+      axis.motion.samples.clear();
+      axis.motion.raw = 0.0;
+      *phase = if axis.overshoot != 0.0 {
+        Some(Phase::Spring {
+          x: axis.overshoot,
+          v: 0.0,
+        })
+      } else if kinetic && speed.abs() >= MIN_FLING {
+        Some(Phase::Fling { v: speed })
+      } else {
+        None
+      };
+    }
+    if phases.iter().all(Option::is_none) {
       scroll.set_moving(false);
-      return;
-    };
-    self.start_motion(id, phase);
+    }
+    for (axis, phase) in phases.into_iter().enumerate() {
+      if let Some(phase) = phase {
+        self.start_motion(id, axis, phase);
+      }
+    }
   }
 
-  /// Moves view `id` on the animation clock from `phase` until it rests,
-  /// another motion replaces it, or the offset is written from outside.
-  fn start_motion(&mut self, id: NodeId, mut phase: Phase) {
+  /// Moves view `id` along `axis` on the animation clock from `phase`
+  /// until it rests, another motion replaces it, or the offset is written
+  /// from outside.
+  fn start_motion(&mut self, id: NodeId, axis: usize, mut phase: Phase) {
     let tree = self.this.clone();
     let Some(node) = self.node_mut(id) else {
       return;
@@ -415,14 +485,15 @@ impl Tree {
     let NodeKind::Scroll(scroll) = &mut node.kind else {
       return;
     };
-    let Some(mut written) = scroll.current() else {
+    let Some(mut written) = scroll.axes[axis].current() else {
       return;
     };
-    if let Some(shifts) = &scroll.shifts {
+    if let Some(shifts) = scroll.shifts.as_ref().filter(|_| axis == 0) {
       shifts.set(0.0);
     }
-    scroll.motion.generation += 1;
-    let generation = scroll.motion.generation;
+    let motion = &mut scroll.axes[axis].motion;
+    motion.generation += 1;
+    let generation = motion.generation;
     let mut previous: Option<Instant> = None;
     animation::start(
       label,
@@ -441,48 +512,54 @@ impl Tree {
             .min(MAX_STEP)
         });
         previous = Some(now);
-        tree.step_motion(id, generation, &mut phase, &mut written, seconds)
+        let step = Step {
+          id,
+          axis,
+          generation,
+          seconds,
+        };
+        tree.step_motion(step, &mut phase, &mut written)
       }),
     );
   }
 
-  /// One tick of view `id`'s motion number `generation`, `seconds` after
-  /// the last. `written` is the offset it last wrote. Returns whether it
-  /// still moves.
-  fn step_motion(
-    &mut self,
-    id: NodeId,
-    generation: u64,
-    phase: &mut Phase,
-    written: &mut f32,
-    seconds: f32,
-  ) -> bool {
+  /// One tick of a motion. `written` is the offset it last wrote. Returns
+  /// whether it still moves.
+  fn step_motion(&mut self, step: Step, phase: &mut Phase, written: &mut f32) -> bool {
     let mut running = false;
     let mut write = None;
-    self.update_scroll(id, |scroll| {
-      if scroll.motion.generation != generation {
+    self.update_scroll(step.id, |scroll| {
+      let ScrollNode {
+        axes,
+        overshoots,
+        shifts,
+        ..
+      } = scroll;
+      let axis = &mut axes[step.axis];
+      if axis.motion.generation != step.generation {
         return Change::None;
       }
-      let Some(offset) = scroll.current() else {
+      let Some(offset) = axis.current() else {
         return Change::None;
       };
-      if let Some(shifts) = &scroll.shifts {
+      if let Some(shifts) = shifts.as_ref().filter(|_| step.axis == 0) {
         *written += shifts.take();
       }
       // A write from outside, or content that shrank under it, stops it.
       if offset != *written {
         return scroll.stop_overshoot();
       }
+      let seconds = step.seconds;
       let mut to = offset;
-      let mut overshoot = scroll.overshoot;
+      let mut overshoot = axis.overshoot;
       match phase {
         Phase::Fling { v } => {
           let slowed = v.signum() * (v.abs() - DECELERATION * seconds).max(0.0);
           let moved = offset + (*v + slowed) / 2.0 * seconds;
-          to = moved.clamp(0.0, scroll.most);
-          if moved != to && scroll.overshoots {
+          to = moved.clamp(0.0, axis.most);
+          if moved != to && *overshoots {
             // Past an end, the spring takes over at the speed it had.
-            overshoot = (moved - to).clamp(-scroll.limit(), scroll.limit());
+            overshoot = (moved - to).clamp(-axis.limit(), axis.limit());
             *phase = Phase::Spring {
               x: overshoot,
               v: slowed,
@@ -496,7 +573,7 @@ impl Tree {
         Phase::Spring { x, v } => {
           let (mut x64, mut v64) = (f64::from(*x), f64::from(*v));
           SPRING_BACK.advance(&mut x64, &mut v64, 0.0, f64::from(seconds));
-          let limit = scroll.limit();
+          let limit = axis.limit();
           let clamped = (x64 as f32).clamp(-limit, limit);
           let rest = clamped.abs() < REST.0 && (v64 as f32).abs() < REST.1;
           *x = if rest { 0.0 } else { clamped };
@@ -507,16 +584,13 @@ impl Tree {
       }
       if to != offset {
         *written = to;
-        write = Some((scroll.signal, to));
+        write = Some((axis.signal, to));
       }
+      let moved = std::mem::replace(&mut axis.overshoot, overshoot) != overshoot;
       if !running {
         scroll.set_moving(false);
       }
-      if std::mem::replace(&mut scroll.overshoot, overshoot) != overshoot {
-        Change::Place
-      } else {
-        Change::None
-      }
+      if moved { Change::Place } else { Change::None }
     });
     if let Some((signal, offset)) = write {
       signal.try_set(offset);
@@ -555,7 +629,7 @@ impl Tree {
     };
     let last = std::mem::replace(&mut flick.last, at);
     if let Some(id) = flick.view {
-      let delta = self.along_view(id, last) - self.along_view(id, at);
+      let delta = self.drag_delta(id, last, at);
       self.push_view(id, delta, time);
       return true;
     }
@@ -565,12 +639,17 @@ impl Tree {
     }
     let (from, views) = (flick.at, flick.views.clone());
     let sideways = dx.abs() > dy.abs();
-    let along: Vec<(NodeId, f32)> = views
+    let along: Vec<(NodeId, Point)> = views
       .into_iter()
-      .filter(|&id| matches!(self.node(id).map(|node| &node.kind), Some(NodeKind::Scroll(scroll)) if scroll.horizontal == sideways))
-      .map(|id| (id, self.along_view(id, from) - self.along_view(id, at)))
+      .filter(|&id| {
+        self
+          .scroll_node(id)
+          .is_some_and(|scroll| scroll.runs(sideways))
+      })
+      .map(|id| (id, self.drag_delta(id, from, at)))
       .collect();
-    let can = |id: NodeId, test: &dyn Fn(&ScrollNode) -> bool| matches!(self.node(id).map(|node| &node.kind), Some(NodeKind::Scroll(scroll)) if test(scroll));
+    let can =
+      |id: NodeId, test: &dyn Fn(&ScrollNode) -> bool| self.scroll_node(id).is_some_and(test);
     let picked = along
       .iter()
       .find(|&&(id, delta)| can(id, &|scroll| scroll.can_move(delta)))
@@ -594,15 +673,12 @@ impl Tree {
     true
   }
 
-  /// Point `at`, in window coordinates, along view `id`'s axis in its own
-  /// coordinates.
-  fn along_view(&self, id: NodeId, at: Point) -> f32 {
-    match (
-      self.node(id).map(|node| &node.kind),
-      self.local_point(id, at),
-    ) {
-      (Some(NodeKind::Scroll(scroll)), Some(point)) => scroll.along(point),
-      _ => 0.0,
+  /// How far a drag of view `id`'s child from `from` to `to`, in window
+  /// coordinates, scrolls it along x and y in its own coordinates.
+  fn drag_delta(&self, id: NodeId, from: Point, to: Point) -> Point {
+    match (self.local_point(id, from), self.local_point(id, to)) {
+      (Some(from), Some(to)) => Point::new(from.x - to.x, from.y - to.y),
+      _ => Point::default(),
     }
   }
 
@@ -630,23 +706,25 @@ impl Tree {
       let Some(point) = self.local_point(id, at) else {
         continue;
       };
-      let Some(NodeKind::Scroll(scroll)) = self.node(id).map(|node| &node.kind) else {
-        continue;
-      };
-      let (Some((track, handle)), Some(rect)) = (scroll.handle, self.node(id).and_then(|n| n.rect))
+      let (Some(scroll), Some(rect)) = (self.scroll_node(id), self.node(id).and_then(|n| n.rect))
       else {
         continue;
       };
-      if !track.contains(point) {
+      let held = scroll.active().iter().enumerate().find_map(|(n, axis)| {
+        let (track, handle) = axis.handle?;
+        track.contains(point).then_some((n, handle))
+      });
+      let Some((n, handle)) = held else {
         continue;
-      }
-      let Some(offset) = scroll.current() else {
+      };
+      let axis = &scroll.axes[n];
+      let Some(offset) = axis.current() else {
         return true;
       };
-      let from = scroll.along(point);
+      let from = axis.part(point);
       let on_handle = handle.contains(point);
-      let (start, _) = scroll.span(handle);
-      let (_, page) = scroll.span(rect);
+      let (start, _) = axis.span(handle);
+      let (_, page) = axis.span(rect);
       let to = if on_handle {
         offset
       } else if from < start {
@@ -654,7 +732,7 @@ impl Tree {
       } else {
         offset + page
       };
-      let (to, signal) = (to.clamp(0.0, scroll.most), scroll.signal);
+      let (to, signal) = (to.clamp(0.0, axis.most), axis.signal);
       // It stops at once, as under any press, until the bar lets go.
       self.update_scroll(id, |scroll| {
         scroll.halt();
@@ -662,6 +740,7 @@ impl Tree {
       });
       self.pointer.bar = Some(BarDrag {
         view: id,
+        axis: n,
         from,
         offset,
         handle: on_handle,
@@ -692,20 +771,32 @@ impl Tree {
     let Some(point) = self.local_point(drag.view, at) else {
       return;
     };
-    let Some(NodeKind::Scroll(scroll)) = self.node(drag.view).map(|node| &node.kind) else {
+    let Some(axis) = self
+      .scroll_node(drag.view)
+      .map(|scroll| &scroll.axes[drag.axis])
+    else {
       return;
     };
-    let Some((track, handle)) = scroll.handle else {
+    let Some((track, handle)) = axis.handle else {
       return;
     };
-    let room = scroll.span(track).1 - scroll.span(handle).1;
+    let room = axis.span(track).1 - axis.span(handle).1;
     if room <= 0.0 {
       return;
     }
-    let to = (drag.offset + (scroll.along(point) - drag.from) * scroll.most / room)
-      .clamp(0.0, scroll.most);
-    if scroll.current() != Some(to) {
-      scroll.signal.try_set(to);
+    let to =
+      (drag.offset + (axis.part(point) - drag.from) * axis.most / room).clamp(0.0, axis.most);
+    if axis.current() != Some(to) {
+      axis.signal.try_set(to);
     }
   }
+}
+
+/// What one tick of a motion moves: view `id` along `axis`, in its motion
+/// number `generation`, `seconds` after the last tick.
+struct Step {
+  id: NodeId,
+  axis: usize,
+  generation: u64,
+  seconds: f32,
 }

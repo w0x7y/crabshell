@@ -227,35 +227,81 @@ pub(crate) struct GridNode {
 }
 
 pub(crate) struct ScrollNode {
-  /// Written by scrolling, read for the offset.
-  pub(crate) signal: Signal<f32>,
-  /// The offset asked for; layout shows it clamped to the content.
-  pub(crate) offset: f32,
-  /// The offset shown at the last layout.
-  pub(crate) shown: f32,
-  /// How far the child can scroll, from the last layout.
-  pub(crate) most: f32,
+  /// The main axis, down or across in a horizontal view, then the
+  /// sideways one of a view that scrolls both ways.
+  pub(crate) axes: [Axis; 2],
   /// Scrolls along x, with its child at full width.
   pub(crate) horizontal: bool,
+  /// Scrolls down and across, with its child at its full size.
+  pub(crate) both: bool,
   /// The scroll bar's style, when it has one.
   pub(crate) bar: Option<Style>,
-  /// The bar's track and handle from the last layout, in the node's own
-  /// coordinates, while the child is longer than the box.
-  pub(crate) handle: Option<(Rect, Rect)>,
-  /// The box's length along its axis at the last layout.
-  pub(crate) length: f32,
   /// A touchpad fling and a dragged child's release keep it moving.
   pub(crate) kinetic: bool,
   /// A touchpad, drag or fling may go past either end.
   pub(crate) overshoots: bool,
-  /// How far past an end the child is shown, in logical pixels: below 0
-  /// before the start, above it past the end.
-  pub(crate) overshoot: f32,
-  pub(crate) motion: Motion,
   /// What a list moved the offset by since a motion last looked.
   pub(crate) shifts: Option<Rc<Cell<f32>>>,
   /// Told whether the view is moving.
   pub(crate) moving: Option<Rc<Cell<bool>>>,
+}
+
+/// One way a scroll view scrolls.
+pub(crate) struct Axis {
+  /// Written by scrolling, read for the offset.
+  pub(crate) signal: Signal<f32>,
+  /// The offset asked for; placing shows it clamped to the content.
+  pub(crate) offset: f32,
+  /// The offset shown at the last placing.
+  pub(crate) shown: f32,
+  /// How far the child can scroll, from the last placing.
+  pub(crate) most: f32,
+  /// The box's length along the axis at the last placing.
+  pub(crate) length: f32,
+  /// Runs along x.
+  pub(crate) horizontal: bool,
+  /// The bar's track and handle from the last placing, in the node's own
+  /// coordinates, while the child is longer than the box.
+  pub(crate) handle: Option<(Rect, Rect)>,
+  /// How far past an end the child is shown, in logical pixels: below 0
+  /// before the start, above it past the end.
+  pub(crate) overshoot: f32,
+  pub(crate) motion: Motion,
+}
+
+impl Axis {
+  fn new(signal: Signal<f32>, horizontal: bool) -> Axis {
+    Axis {
+      signal,
+      offset: 0.0,
+      shown: 0.0,
+      most: 0.0,
+      length: 0.0,
+      horizontal,
+      handle: None,
+      overshoot: 0.0,
+      motion: Motion::default(),
+    }
+  }
+}
+
+impl ScrollNode {
+  /// The axes it scrolls along: the main one, and the sideways one too
+  /// while it scrolls both ways.
+  pub(crate) fn active(&self) -> &[Axis] {
+    &self.axes[..1 + usize::from(self.both)]
+  }
+
+  pub(crate) fn active_mut(&mut self) -> &mut [Axis] {
+    &mut self.axes[..1 + usize::from(self.both)]
+  }
+
+  /// Points each axis its way: both ways, the main one runs down.
+  pub(crate) fn orient(&mut self) {
+    let across = self.horizontal && !self.both;
+    self.axes[0].horizontal = across;
+    self.axes[1].horizontal = !across;
+  }
 }
 
 pub(crate) struct ImageNode {
@@ -781,22 +827,20 @@ impl Tree {
         cx.signal(props.on_accept.take()),
         props.multiline,
       ))),
-      ElementKind::Scroll(props) => NodeKind::Scroll(Box::new(ScrollNode {
-        signal: props.offset.unwrap_or_else(|| cx.signal(0.0)),
-        offset: 0.0,
-        shown: 0.0,
-        most: 0.0,
-        horizontal: false,
-        bar: None,
-        handle: None,
-        length: 0.0,
-        kinetic: true,
-        overshoots: true,
-        overshoot: 0.0,
-        motion: Motion::default(),
-        shifts: props.shifts.take(),
-        moving: props.moving.take(),
-      })),
+      ElementKind::Scroll(props) => {
+        let main = props.offset.unwrap_or_else(|| cx.signal(0.0));
+        NodeKind::Scroll(Box::new(ScrollNode {
+          // The sideways axis has no signal of its own until `both` gives one.
+          axes: [Axis::new(main, false), Axis::new(main, true)],
+          horizontal: false,
+          both: false,
+          bar: None,
+          kinetic: true,
+          overshoots: true,
+          shifts: props.shifts.take(),
+          moving: props.moving.take(),
+        }))
+      }
       ElementKind::Image(_) => NodeKind::Image(ImageNode::new()),
       ElementKind::Capture(_) => NodeKind::Capture(CaptureNode::new()),
       ElementKind::Canvas(_) => NodeKind::Canvas(CanvasNode::default()),
@@ -942,7 +986,11 @@ impl Tree {
       }
       ElementKind::Scroll(props) => {
         self.bind_opt(id, props.horizontal, "horizontal", |tree, id, value| {
-          tree.update_scroll(id, |scroll| replace(&mut scroll.horizontal, value));
+          tree.update_scroll(id, |scroll| {
+            let change = replace(&mut scroll.horizontal, value);
+            scroll.orient();
+            change
+          });
         });
         self.bind_opt(id, props.kinetic, "kinetic", |tree, id, value| {
           tree.update_scroll(id, |scroll| {
@@ -964,7 +1012,7 @@ impl Tree {
           });
         });
         if let Some(NodeKind::Scroll(scroll)) = self.node(id).map(|node| &node.kind) {
-          let signal = scroll.signal;
+          let signal = scroll.axes[0].signal;
           self.bind(
             id,
             (move || signal.get()).into_prop(),
@@ -972,8 +1020,8 @@ impl Tree {
             |tree, id, value| {
               // The child keeps its layout; only where it is drawn moves.
               let change = tree.update(id, |node| match &mut node.kind {
-                NodeKind::Scroll(scroll) if scroll.offset != value => {
-                  scroll.offset = value;
+                NodeKind::Scroll(scroll) if scroll.axes[0].offset != value => {
+                  scroll.axes[0].offset = value;
                   Change::Place
                 }
                 _ => Change::None,

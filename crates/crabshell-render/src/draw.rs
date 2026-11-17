@@ -640,7 +640,7 @@ impl Painter<'_> {
         painter.node(layer, child);
       }
       // A scroll view always clips; its bar is cut to its corners too.
-      if let Some((handle, bar)) = node.scroll_bar() {
+      for (handle, bar) in node.scroll_bars() {
         painter.draw_box(layer, handle, &bar);
       }
     });

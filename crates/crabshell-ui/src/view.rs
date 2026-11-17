@@ -121,13 +121,19 @@ impl<'a> NodeView<'a> {
     self.node.clips()
   }
 
-  /// A scroll view's scroll bar handle and the style to draw it with,
-  /// over its children, while it shows one.
-  pub fn scroll_bar(&self) -> Option<(Rect, Style)> {
-    match &self.node.kind {
-      NodeKind::Scroll(scroll) => Some((scroll.handle?.1, scroll.bar?)),
+  /// A scroll view's scroll bar handles, one an axis it shows a bar
+  /// along, and the style to draw them with, over its children.
+  pub fn scroll_bars(&self) -> impl Iterator<Item = (Rect, Style)> + 'a {
+    let scroll = match &self.node.kind {
+      NodeKind::Scroll(scroll) => Some(&**scroll),
       _ => None,
-    }
+    };
+    scroll.into_iter().flat_map(|scroll| {
+      scroll
+        .axes
+        .iter()
+        .filter_map(|axis| Some((axis.handle?.1, scroll.bar?)))
+    })
   }
 
   /// What the node draws besides its background and border.
