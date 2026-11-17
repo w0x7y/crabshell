@@ -5,7 +5,8 @@
 //! It offers `wl_compositor` 4, `wl_shm`, `xdg_wm_base`, layer-shell and
 //! one output, `FAKE-1`, at the scale it is started with, and each extra
 //! global a test asks for: a second output described a read later, a seat
-//! with touch, the background effect manager, or workspaces. Each layer surface is configured at its first
+//! with touch, the background effect manager, workspaces, or activation
+//! tokens. Each layer surface is configured at its first
 //! commit, at the size it asked for or the output's, and each frame
 //! callback is answered at the next commit, so windows draw freely. The
 //! requests a test checks are written to a log as short lines, such as
@@ -25,6 +26,10 @@ use wayland_protocols::ext::workspace::v1::server::{
   ext_workspace_group_handle_v1::{ExtWorkspaceGroupHandleV1, GroupCapabilities},
   ext_workspace_handle_v1::{self, ExtWorkspaceHandleV1, WorkspaceCapabilities},
   ext_workspace_manager_v1::{self, ExtWorkspaceManagerV1},
+};
+use wayland_protocols::xdg::activation::v1::server::{
+  xdg_activation_token_v1::{self, XdgActivationTokenV1},
+  xdg_activation_v1::{self, XdgActivationV1},
 };
 use wayland_protocols::xdg::shell::server::xdg_wm_base::XdgWmBase;
 use wayland_protocols_wlr::layer_shell::v1::server::{
@@ -67,6 +72,10 @@ pub struct Globals {
   /// `ext_workspace_manager_v1`, with one group of these workspaces: a
   /// name and what it takes.
   pub workspaces: Option<Vec<(&'static str, WorkspaceCapabilities)>>,
+  /// `xdg_activation_v1`, which logs each token's request at its commit,
+  /// as `token <app id> serial <serial> on <panel|other|none>`, answers
+  /// it with `token-<n>`, and logs `token destroyed`.
+  pub activation: bool,
 }
 
 /// Something the test runs on the fake's thread, with its state.
@@ -96,6 +105,7 @@ impl Fake {
       effects: Vec::new(),
       serial: 0,
       copying: false,
+      tokens: 0,
     };
     let thread = std::thread::spawn(move || serve(ours, state, received));
     let fake = Fake {
@@ -156,6 +166,9 @@ fn serve(stream: UnixStream, mut state: State, commands: Receiver<Command>) {
   if state.globals.workspaces.is_some() {
     handle.create_global::<State, ExtWorkspaceManagerV1, ()>(1, ());
   }
+  if state.globals.activation {
+    handle.create_global::<State, XdgActivationV1, ()>(1, ());
+  }
   handle
     .insert_client(stream, Arc::new(Gone))
     .expect("the client");
@@ -204,6 +217,8 @@ pub struct State {
   /// Whether a buffer is released as soon as it is committed, as a
   /// compositor that copies it does; otherwise at the next commit.
   copying: bool,
+  /// The activation tokens handed out.
+  tokens: u32,
 }
 
 impl State {
@@ -249,6 +264,7 @@ impl State {
   pub fn tap(&mut self, (x, y): (f64, f64), dx: f64, cancel: bool) {
     let surface = self.panel();
     let (down, up) = (self.serial(), self.serial());
+    self.log(format!("down {down}"));
     for touch in &self.touches {
       touch.down(down, 1, &surface, 0, x, y);
       touch.frame();
@@ -319,7 +335,7 @@ macro_rules! plain_global {
   )*};
 }
 
-plain_global!(WlCompositor, XdgWmBase, ZwlrLayerShellV1);
+plain_global!(WlCompositor, XdgWmBase, ZwlrLayerShellV1, XdgActivationV1);
 
 impl GlobalDispatch<WlShm, ()> for State {
   fn bind(
@@ -698,5 +714,66 @@ impl Dispatch<ExtWorkspaceHandleV1, &'static str> for State {
       _ => return,
     };
     state.log(format!("{what} {name}"));
+  }
+}
+
+impl Dispatch<XdgActivationV1, ()> for State {
+  fn request(
+    _: &mut State,
+    _: &Client,
+    _: &XdgActivationV1,
+    request: xdg_activation_v1::Request,
+    _: &(),
+    _: &DisplayHandle,
+    init: &mut DataInit<'_, State>,
+  ) {
+    if let xdg_activation_v1::Request::GetActivationToken { id } = request {
+      init.init(id, Mutex::new(Token::default()));
+    }
+  }
+}
+
+/// What a token's request was given before its commit.
+#[derive(Default)]
+struct Token {
+  app_id: Option<String>,
+  serial: Option<u32>,
+  surface: Option<WlSurface>,
+}
+
+impl Dispatch<XdgActivationTokenV1, Mutex<Token>> for State {
+  fn request(
+    state: &mut State,
+    _: &Client,
+    token: &XdgActivationTokenV1,
+    request: xdg_activation_token_v1::Request,
+    data: &Mutex<Token>,
+    _: &DisplayHandle,
+    _: &mut DataInit<'_, State>,
+  ) {
+    let mut ours = data.lock().expect("a token");
+    match request {
+      xdg_activation_token_v1::Request::SetAppId { app_id } => ours.app_id = Some(app_id),
+      xdg_activation_token_v1::Request::SetSerial { serial, .. } => ours.serial = Some(serial),
+      xdg_activation_token_v1::Request::SetSurface { surface } => ours.surface = Some(surface),
+      xdg_activation_token_v1::Request::Commit => {
+        let panel = |surface: &WlSurface| {
+          let data = surface.data::<Mutex<Surface>>().expect("a surface's data");
+          data.lock().expect("a surface").layer.is_some()
+        };
+        let on = match &ours.surface {
+          None => "none",
+          Some(surface) if panel(surface) => "panel",
+          Some(_) => "other",
+        };
+        let serial = ours.serial.map_or(String::from("none"), |n| n.to_string());
+        let app_id = ours.app_id.as_deref().unwrap_or("none");
+        state.log(format!("token {app_id} serial {serial} on {on}"));
+        state.tokens += 1;
+        token.done(format!("token-{}", state.tokens));
+      }
+      xdg_activation_token_v1::Request::Destroy => state.log(String::from("token destroyed")),
+      _ => {}
+    }
   }
 }

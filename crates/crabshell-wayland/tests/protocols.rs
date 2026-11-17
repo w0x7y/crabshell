@@ -1,6 +1,7 @@
 //! The platform against a fake compositor, for protocols no compositor
-//! here offers or lets a test drive: blur behind windows, touch, and
-//! workspace requests Sway and labwc refuse. They run by default.
+//! here offers or lets a test drive: blur behind windows, touch,
+//! workspace requests Sway and labwc refuse, and what an activation
+//! token is asked with. They run by default.
 
 mod fake;
 
@@ -242,6 +243,7 @@ fn blur_the_compositor_turns_on_late_is_sent_then() {
 fn tapped() -> (Fake, EventLoop, crabshell_reactive::Signal<u32>, Cx) {
   let (fake, mut event_loop) = connect(Globals {
     touch: true,
+    activation: true,
     ..Globals::default()
   });
   let cx = Cx::new(Runtime::current().new_owner());
@@ -282,6 +284,65 @@ fn a_cancelled_touch_doesnt_click() {
   run_for(&mut event_loop, Duration::from_millis(50));
   assert_eq!(clicks.get(), 1, "only the tap that lifted");
   cx.owner().dispose();
+}
+
+/// Asks for an activation token for `app_id`, and dispatches until it
+/// comes.
+fn token(event_loop: &mut EventLoop, app_id: Option<&str>) -> String {
+  let got: Rc<RefCell<Option<String>>> = Rc::default();
+  let into = Rc::clone(&got);
+  let asked = event_loop
+    .platform()
+    .request_activation_token(app_id, move |token| *into.borrow_mut() = Some(token));
+  assert!(asked, "the compositor hands out tokens");
+  wait(event_loop, "the token", |_| got.borrow().is_some());
+  got.take().expect("the token")
+}
+
+#[test]
+fn an_activation_token_names_the_last_tap_and_its_window() {
+  let (fake, mut event_loop, clicks, cx) = tapped();
+  assert!(event_loop.platform().offers_activation());
+  // Before any input, there is no serial or surface to give.
+  assert_eq!(token(&mut event_loop, Some("org.example.App")), "token-1");
+  wait(&mut event_loop, "the token's end", |_| {
+    fake.log().len() == 2
+  });
+  assert_eq!(
+    fake.log(),
+    [
+      "token org.example.App serial none on none",
+      "token destroyed"
+    ]
+  );
+
+  fake.clear();
+  fake.run(|state| state.tap((10.0, 10.0), 0.0, false));
+  wait(&mut event_loop, "the click", |_| clicks.get() == 1);
+  assert_eq!(token(&mut event_loop, None), "token-2");
+  wait(&mut event_loop, "the token's end", |_| {
+    fake.log().len() == 3
+  });
+  let down = fake.log()[0].clone();
+  let serial = down.strip_prefix("down ").expect("the tap's serial");
+  assert_eq!(
+    fake.log()[1..],
+    [
+      format!("token none serial {serial} on panel"),
+      String::from("token destroyed")
+    ]
+  );
+  cx.owner().dispose();
+}
+
+#[test]
+fn without_xdg_activation_no_token_is_asked_for() {
+  let (_fake, mut event_loop) = connect(Globals::default());
+  let platform = event_loop.platform();
+  assert!(!platform.offers_activation());
+  assert!(
+    !platform.request_activation_token(Some("org.example.App"), |_| { panic!("no token comes") })
+  );
 }
 
 #[test]

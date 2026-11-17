@@ -203,6 +203,9 @@ impl KeyboardHandler for Platform {
       .find(|ours| ours.keyboard == *keyboard)
     {
       ours.serial = serial;
+      if let Some(window) = ours.focus {
+        self.last_input = Some((ours.seat.clone(), serial, window));
+      }
     }
     self.key(keyboard, &event, false);
   }

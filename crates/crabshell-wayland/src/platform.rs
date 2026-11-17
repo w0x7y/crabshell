@@ -28,6 +28,7 @@ use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1:
 use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
+use crate::activation::Activation;
 use crate::blur::Effects;
 use crate::clipboard::Offered;
 use crate::events::{self, Event, Listener};
@@ -353,6 +354,11 @@ pub struct Platform {
   pub(crate) last_button: Option<(WlSeat, u32)>,
   /// Whether that last button event was a press, still held.
   pub(crate) button_held: bool,
+  /// The seat and serial of the last button press, touch or key press on
+  /// one of the windows, and that window, for activation tokens.
+  pub(crate) last_input: Option<(WlSeat, u32, WindowId)>,
+  /// Activation tokens for the programs the shell starts.
+  pub(crate) activation: Activation,
   /// Whether the animation timer is in the loop.
   ticking: bool,
   /// The one calloop timer for the config's timers and the deadline it is
@@ -426,6 +432,7 @@ impl Platform {
     };
     let data_devices_manager = DataDeviceManagerState::bind(globals, &qh).ok();
     let locks = Locks::new(globals.bind(&qh, 1..=1, ()).ok());
+    let activation = Activation::new(globals.bind(&qh, 1..=1, ()).ok());
     tracing::debug!(
       fractional = fractional.is_some(),
       text_input = text_inputs_manager.is_some(),
@@ -435,6 +442,7 @@ impl Platform {
       shortcuts_inhibit = shortcuts_inhibit.manager.is_some(),
       global_shortcuts = global_shortcuts.manager.is_some(),
       focus_grab = focus_grabs.manager.is_some(),
+      activation = activation.offers(),
       "bound the compositor's globals"
     );
     let mut platform = Platform {
@@ -475,6 +483,8 @@ impl Platform {
       text_inputs: Vec::new(),
       last_button: None,
       button_held: false,
+      last_input: None,
+      activation,
       ticking: false,
       timers: None,
       images: None,

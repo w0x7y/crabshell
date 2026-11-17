@@ -408,6 +408,9 @@ impl PointerHandler for Platform {
         PointerEventKind::Enter { serial } => ours.cursor.enter(serial, entry.id),
         PointerEventKind::Leave { .. } => ours.cursor.leave(),
         PointerEventKind::Press { serial, .. } | PointerEventKind::Release { serial, .. } => {
+          if let PointerEventKind::Press { .. } = event.kind {
+            self.last_input = Some((ours.seat.clone(), serial, entry.id));
+          }
           self.last_button = Some((ours.seat.clone(), serial));
           self.button_held = matches!(event.kind, PointerEventKind::Press { .. });
           // Shift and a press extend a selection.
@@ -453,6 +456,7 @@ impl TouchHandler for Platform {
     if !inputs.is_empty() {
       // A popup opened by a tap grabs with the down's serial.
       self.last_button = Some((ours.seat.clone(), serial));
+      self.last_input = Some((ours.seat.clone(), serial, window));
       self.button_held = true;
     }
     self.touch_inputs(window, inputs);
