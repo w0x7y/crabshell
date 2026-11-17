@@ -355,8 +355,8 @@ pub struct Platform {
   /// Whether that last button event was a press, still held.
   pub(crate) button_held: bool,
   /// The seat and serial of the last button press, touch or key press on
-  /// one of the windows, and that window, for activation tokens.
-  pub(crate) last_input: Option<(WlSeat, u32, WindowId)>,
+  /// one of the windows, that window, and when, for activation tokens.
+  pub(crate) last_input: Option<((WlSeat, u32, WindowId), Instant)>,
   /// Activation tokens for the programs the shell starts.
   pub(crate) activation: Activation,
   /// Whether the animation timer is in the loop.

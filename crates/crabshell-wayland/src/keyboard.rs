@@ -5,6 +5,8 @@
 //! key with a calloop timer that exists only while the key is down, so an
 //! idle keyboard wakes nothing.
 
+use std::time::Instant;
+
 use crabshell_ui::{Clipboard, Key, KeyEvent, Modifiers};
 use smithay_client_toolkit::reexports::client::protocol::{
   wl_keyboard::WlKeyboard, wl_seat::WlSeat, wl_surface::WlSurface,
@@ -204,7 +206,7 @@ impl KeyboardHandler for Platform {
     {
       ours.serial = serial;
       if let Some(window) = ours.focus {
-        self.last_input = Some((ours.seat.clone(), serial, window));
+        self.last_input = Some(((ours.seat.clone(), serial, window), Instant::now()));
       }
     }
     self.key(keyboard, &event, false);

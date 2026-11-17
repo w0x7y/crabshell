@@ -3,6 +3,8 @@
 //! is for and updates it. Nothing here trusts the compositor's numbers
 //! without checking them.
 
+use std::time::Instant;
+
 use crabshell_ui::{Modifiers, Size};
 use smithay_client_toolkit::compositor::CompositorHandler;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
@@ -409,7 +411,7 @@ impl PointerHandler for Platform {
         PointerEventKind::Leave { .. } => ours.cursor.leave(),
         PointerEventKind::Press { serial, .. } | PointerEventKind::Release { serial, .. } => {
           if let PointerEventKind::Press { .. } = event.kind {
-            self.last_input = Some((ours.seat.clone(), serial, entry.id));
+            self.last_input = Some(((ours.seat.clone(), serial, entry.id), Instant::now()));
           }
           self.last_button = Some((ours.seat.clone(), serial));
           self.button_held = matches!(event.kind, PointerEventKind::Press { .. });
@@ -456,7 +458,7 @@ impl TouchHandler for Platform {
     if !inputs.is_empty() {
       // A popup opened by a tap grabs with the down's serial.
       self.last_button = Some((ours.seat.clone(), serial));
-      self.last_input = Some((ours.seat.clone(), serial, window));
+      self.last_input = Some(((ours.seat.clone(), serial, window), Instant::now()));
       self.button_held = true;
     }
     self.touch_inputs(window, inputs);

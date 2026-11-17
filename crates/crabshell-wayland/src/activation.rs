@@ -1,6 +1,8 @@
 //! Activation tokens through `xdg-activation-v1`, for the programs the
 //! shell starts, so the compositor may focus their windows.
 
+use std::time::{Duration, Instant};
+
 use smithay_client_toolkit::reexports::client::{
   Connection, Dispatch, Proxy, QueueHandle, delegate_noop,
 };
@@ -46,7 +48,8 @@ impl Platform {
   /// Asks the compositor for an activation token for a program about to
   /// start, with `app_id` if given, and the seat and serial of the last
   /// button press, touch or key press on one of the windows and that
-  /// window's surface, as the compositor wants for focusing it. `done`
+  /// window's surface, as the compositor wants for focusing it, if that
+  /// input came no more than 10 s ago. `done`
   /// gets the token. `false`, and `done` is dropped, without
   /// `xdg-activation-v1`.
   pub fn request_activation_token(
@@ -60,7 +63,7 @@ impl Platform {
     let number = self.activation.next;
     self.activation.next += 1;
     let token = manager.get_activation_token(&self.qh, number);
-    if let Some((seat, serial, window)) = &self.last_input
+    if let Some((seat, serial, window)) = recent(self.last_input.as_ref(), Instant::now())
       && seat.is_alive()
     {
       token.set_serial(*serial, seat);
@@ -79,6 +82,21 @@ impl Platform {
     self.activation.waiting.push((number, Box::new(done)));
     true
   }
+}
+
+/// How long after the input a token is asked for its serial and surface
+/// still go with it. A launch an input caused asks within a moment, or
+/// a little later after a config's animation or confirmation; an older
+/// one more likely came from a timer or IPC, and its serial may have left
+/// the ring of recent serials wlroots checks, which would cost the token
+/// its workspace.
+pub(crate) const INPUT_AGE: Duration = Duration::from_secs(10);
+
+/// What `input` holds, if it came no longer than [`INPUT_AGE`] before
+/// `now`.
+fn recent<T>(input: Option<&(T, Instant)>, now: Instant) -> Option<&T> {
+  let (input, at) = input?;
+  (now.saturating_duration_since(*at) <= INPUT_AGE).then_some(input)
 }
 
 delegate_noop!(Platform: XdgActivationV1);
@@ -101,5 +119,23 @@ impl Dispatch<XdgActivationTokenV1, u64> for Platform {
       let (_, done) = waiting.swap_remove(index);
       done(token);
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::time::{Duration, Instant};
+
+  use super::{INPUT_AGE, recent};
+
+  #[test]
+  fn an_input_older_than_the_age_names_no_token() {
+    let at = Instant::now();
+    let input = Some((7_u32, at));
+    assert_eq!(recent(input.as_ref(), at), Some(&7));
+    assert_eq!(recent(input.as_ref(), at + INPUT_AGE), Some(&7));
+    let late = at + INPUT_AGE + Duration::from_millis(1);
+    assert_eq!(recent(input.as_ref(), late), None);
+    assert_eq!(recent::<u32>(None, at), None);
   }
 }
