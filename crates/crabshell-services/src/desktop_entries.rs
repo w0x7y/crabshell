@@ -6,7 +6,7 @@ mod parse;
 mod tests;
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::Read;
@@ -21,11 +21,15 @@ use calloop::timer::TimeoutAction;
 use crabshell_reactive::{ReadSignal, Signal, untrack};
 use crabshell_ui::Cx;
 use inotify::EventMask;
+use zbus::OwnedObjectPath;
+use zbus::names::WellKnownName;
 
-use crate::dbus::set_changed;
+use crate::dbus::{CALL_TIMEOUT, set_changed};
 use crate::watch::{self, Change, Watch};
 use crate::{Shared, spawn};
 
+/// The interface a D-Bus activatable application is started through.
+const APPLICATION: &str = "org.freedesktop.Application";
 /// How long the files stay still after a change before the list is read
 /// again, so a package manager that writes many reads it once.
 const SETTLE: Duration = Duration::from_millis(100);
@@ -52,6 +56,9 @@ pub struct DesktopEntry {
   /// What it runs, as its `Exec` key writes it, field codes such as `%U`
   /// and quotes included. `""` for one only D-Bus starts.
   pub exec: String,
+  /// Whether it is started over D-Bus, from `DBusActivatable`, with
+  /// `exec` only for when that fails.
+  pub dbus_activatable: bool,
   /// Whether it runs in a terminal.
   pub terminal: bool,
   /// Its categories, such as `Network` and `WebBrowser`.
@@ -165,16 +172,20 @@ impl DesktopEntries {
 
   /// Starts the application with ID `id`, on its own: in a process
   /// group of its own, with no input or output, and in its `working_dir`
-  /// if it has one. A terminal app runs through `xdg-terminal-exec`.
-  /// What can't start is logged: an unknown ID, a malformed `Exec`, a
-  /// terminal app without `xdg-terminal-exec` on `PATH`, and an app only
-  /// D-Bus starts, which the shell can't do yet.
+  /// if it has one. A terminal app runs through `xdg-terminal-exec`. One
+  /// that is [`dbus_activatable`](DesktopEntry::dbus_activatable) is
+  /// called with `org.freedesktop.Application.Activate` on the session
+  /// bus, which starts it if it isn't running, and runs its `Exec` if
+  /// that fails. What can't start is logged: an unknown ID, a malformed
+  /// `Exec`, a terminal app without `xdg-terminal-exec` on `PATH`, and a
+  /// D-Bus app that didn't start with no `Exec` to fall back on.
   pub fn launch(&self, id: &str) {
     self.launch_with(id, None);
   }
 
   /// Starts one of an application's actions, named by its
-  /// [`DesktopAction::id`], as [`launch`](Self::launch) does.
+  /// [`DesktopAction::id`], as [`launch`](Self::launch) does, a D-Bus
+  /// app's with `ActivateAction`.
   pub fn launch_action(&self, id: &str, action: &str) {
     self.launch_with(id, Some(action));
   }
@@ -211,7 +222,8 @@ fn lookup<'a>(apps: &'a [DesktopEntry], app_id: &str) -> Option<&'a DesktopEntry
     .or_else(|| apps.iter().find(last_part))
 }
 
-/// Runs `app`, or its `action`, apart from the shell.
+/// Starts `app`, or its `action`, apart from the shell: over D-Bus if
+/// it says so, falling back to its `Exec`.
 fn launch(shared: &Rc<Shared>, app: &DesktopEntry, action: Option<&str>) {
   let id = app.id.as_str();
   let exec = match action {
@@ -227,12 +239,77 @@ fn launch(shared: &Rc<Shared>, app: &DesktopEntry, action: Option<&str>) {
       }
     },
   };
+  if !app.dbus_activatable {
+    return run(shared, app, exec);
+  }
+  let Some(path) = object_path(id) else {
+    tracing::warn!(
+      id,
+      "the application's ID isn't a D-Bus name, so it can't start over D-Bus"
+    );
+    return run(shared, app, exec);
+  };
+  let Some(address) = shared.config.session_bus.clone() else {
+    tracing::warn!(id, "no session bus to start the application over D-Bus");
+    return run(shared, app, exec);
+  };
+  let (shared, app) = (Rc::clone(shared), app.clone());
+  let (exec, action) = (exec.clone(), action.map(str::to_owned));
+  let started = Rc::clone(&shared);
+  started.spawn(async move {
+    let activated = activate(&shared, address, &app.id, path, action.as_deref()).await;
+    if let Err(error) = activated {
+      tracing::warn!(id = app.id, %error, "couldn't start the application over D-Bus");
+      run(&shared, &app, &exec);
+    }
+  });
+}
+
+/// The object path of the application with ID `id`, as the Desktop
+/// Entry Specification derives it, or `None` when `id` isn't a D-Bus
+/// well-known name.
+fn object_path(id: &str) -> Option<OwnedObjectPath> {
+  WellKnownName::try_from(id).ok()?;
+  let path = format!("/{}", id.replace('.', "/").replace('-', "_"));
+  OwnedObjectPath::try_from(path).ok()
+}
+
+/// Calls `Activate`, or `ActivateAction` for `action`, on the
+/// application `id` at `path` on the session bus, which starts it first
+/// if it isn't running.
+async fn activate(
+  shared: &Shared,
+  address: zbus::Address,
+  id: &str,
+  path: OwnedObjectPath,
+  action: Option<&str>,
+) -> zbus::Result<()> {
+  let connection = zbus::connection::Builder::address(address).build().await?;
+  // No startup notification or activation token: the shell has neither.
+  let platform_data = HashMap::<&str, zbus::Variant<'_>>::new();
+  let (destination, interface) = (Some(id), Some(APPLICATION));
+  let reply = match action {
+    None => {
+      let body = (platform_data,);
+      let call = connection.call_method(destination, &path, interface, "Activate", &body);
+      shared.timeout(CALL_TIMEOUT, call).await
+    }
+    Some(action) => {
+      let body = (action, Vec::<zbus::Variant<'_>>::new(), platform_data);
+      let call = connection.call_method(destination, &path, interface, "ActivateAction", &body);
+      shared.timeout(CALL_TIMEOUT, call).await
+    }
+  };
+  reply.map(drop)
+}
+
+/// Runs `exec`, `app`'s or one of its actions', apart from the shell.
+fn run(shared: &Rc<Shared>, app: &DesktopEntry, exec: &str) {
+  let id = app.id.as_str();
   if exec.is_empty() {
-    // shortcut: no D-Bus activation yet; it would call
-    // org.freedesktop.Application.Activate on the session bus.
     return tracing::warn!(
       id,
-      "only D-Bus starts this application, which the shell can't yet, so nothing starts"
+      "the application has no Exec to fall back on, so nothing starts"
     );
   }
   let argv = match parse::command_line(exec, app) {

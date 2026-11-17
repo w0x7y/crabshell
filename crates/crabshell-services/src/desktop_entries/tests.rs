@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use super::{DesktopEntries, Service, Sources};
-use crate::testing::{Harness, TempDir, capture_logs, offline};
+use super::{DesktopEntries, Service, Sources, object_path};
+use crate::testing::{FakeService, Harness, PrivateBus, TempDir, capture_logs, offline, reply};
 use crate::{Config, ServicesExt};
 
 /// A user's and a system's `applications` directory, and a `bin` for
@@ -380,13 +380,110 @@ fn what_cant_start_is_logged_and_runs_nothing() {
   assert!(!out.exists());
   for line in [
     "a malformed Exec",
-    "only D-Bus starts this application",
+    "no Exec to fall back on",
     "xdg-terminal-exec isn't on PATH",
     "no application has this ID",
     "no such action",
   ] {
     assert!(logs.contains(line), "{line}: {logs}");
   }
+}
+
+#[test]
+fn a_d_bus_application_is_activated_and_falls_back_to_its_exec() {
+  let dirs = Dirs::new();
+  let (program, out) = dirs.recorder("record");
+  let extra = "DBusActivatable=true\nActions=new-window;\n\
+               [Desktop Action new-window]\nName=New Window\nExec=record --new";
+  let notes = app("Notes", &format!("\"{}\" plain", program.display()), extra);
+  write(&dirs.user(), "org.example.Notes.desktop", &notes);
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(Config {
+    desktop_entries: dirs.sources(),
+    session_bus: Some(bus.address.parse().expect("dbus-daemon's address")),
+    ..offline()
+  });
+  let entries = shell.cx.desktop_entries();
+  run(&mut shell, 50);
+  let found = entries.lookup("org.example.Notes").expect("the entry");
+  assert!(found.dbus_activatable);
+
+  let fake = FakeService::start(&mut shell, &bus, "org.example.Notes");
+  let actions: Rc<RefCell<Vec<String>>> = Rc::default();
+  fake.on("Activate", |call| reply(call, &()));
+  let named = Rc::clone(&actions);
+  fake.on("ActivateAction", move |call| {
+    type Body = (
+      String,
+      Vec<zbus::OwnedVariant>,
+      std::collections::HashMap<String, zbus::OwnedVariant>,
+    );
+    let (action, parameters, _): Body = call.body().deserialize().expect("(sava{sv})");
+    assert!(parameters.is_empty());
+    named.borrow_mut().push(action);
+    reply(call, &())
+  });
+  fake.own(&mut shell);
+  let called = |member: &str| {
+    let (calls, call) = (
+      Rc::clone(&fake.calls),
+      format!("{member} /org/example/Notes"),
+    );
+    move || calls.borrow().contains(&call)
+  };
+  entries.launch("org.example.Notes");
+  shell.retry_until("Activate", called("Activate"), |_| {});
+  entries.launch_action("org.example.Notes", "new-window");
+  shell.retry_until("ActivateAction", called("ActivateAction"), |_| {});
+  assert_eq!(*actions.borrow(), ["new-window"]);
+  run(&mut shell, 100);
+  assert!(!out.exists(), "Exec didn't run");
+
+  // Nobody owns the name now, and the bus starts nothing.
+  fake.leave(&mut shell);
+  let logs = capture_logs(|| {
+    entries.launch("org.example.Notes");
+    shell.retry_until("Exec instead", || out.exists(), |_| {});
+  });
+  assert!(
+    logs.contains("couldn't start the application over D-Bus"),
+    "{logs}"
+  );
+  let lines = std::fs::read_to_string(&out).expect("its output");
+  assert_eq!(lines.lines().nth(2), Some("plain"));
+}
+
+#[test]
+fn an_id_that_isnt_a_d_bus_name_runs_its_exec() {
+  assert_eq!(
+    object_path("org.gnome.Nautilus")
+      .as_ref()
+      .map(|path| path.as_str()),
+    Some("/org/gnome/Nautilus")
+  );
+  assert_eq!(
+    object_path("org.example.my-app")
+      .as_ref()
+      .map(|path| path.as_str()),
+    Some("/org/example/my_app")
+  );
+  assert_eq!(object_path("firefox"), None, "one element");
+  assert_eq!(object_path("org..x"), None);
+  assert_eq!(object_path("1org.example"), None);
+
+  let dirs = Dirs::new();
+  let (program, out) = dirs.recorder("record");
+  let exec = format!("\"{}\"", program.display());
+  write(
+    &dirs.user(),
+    "firefox.desktop",
+    &app("Firefox", &exec, "DBusActivatable=true"),
+  );
+  let (mut shell, entries) = shell(dirs.sources());
+  run(&mut shell, 50);
+  let logs = capture_logs(|| entries.launch("firefox"));
+  shell.retry_until("Exec instead", || out.exists(), |_| {});
+  assert!(logs.contains("isn't a D-Bus name"), "{logs}");
 }
 
 #[test]

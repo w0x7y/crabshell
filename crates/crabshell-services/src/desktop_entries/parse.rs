@@ -201,6 +201,7 @@ pub(super) fn entry(
     comment: local("Comment"),
     icon: local("Icon"),
     exec,
+    dbus_activatable: flag(main, "DBusActivatable"),
     terminal: flag(main, "Terminal"),
     categories: items(main, "Categories"),
     keywords: localized(main, "Keywords", locales).map_or_else(Vec::new, list),
