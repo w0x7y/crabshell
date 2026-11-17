@@ -52,10 +52,10 @@ jobs:
           EOF
           fc-cache -f
           fc-match sans-serif
-      - name: Check dependency licenses against deny.toml
+      - name: Check dependency licenses and advisories against deny.toml
         run: |
           cargo install --locked cargo-deny@0.20.2
-          cargo deny check licenses
+          cargo deny check licenses advisories
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace

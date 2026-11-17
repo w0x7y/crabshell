@@ -1,4 +1,4 @@
-# The design doc's dependency policy: `cargo deny check licenses`.
+# The design doc's dependency policy: `cargo deny check licenses advisories`.
 
 [licenses]
 allow = [
@@ -10,4 +10,12 @@ allow = [
   "ISC",
   "Zlib",
   "Unicode-3.0",
+]
+
+[advisories]
+ignore = [
+  # ttf-parser is unmaintained. It comes only through fontdb 0.23, which
+  # cosmic-text 0.19 pins; cosmic-text's main branch already moved to fontdb
+  # 0.24, which doesn't use it. Drop this once a cosmic-text release does.
+  { id = "RUSTSEC-2026-0192", reason = "unmaintained, via cosmic-text 0.19's fontdb 0.23; fixed upstream on cosmic-text main" },
 ]

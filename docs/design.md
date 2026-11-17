@@ -1211,7 +1211,7 @@ One Cargo workspace with seven crates. Each crate owns one area, so an agent can
 - Pin every external version once, in the workspace `Cargo.toml` under `[workspace.dependencies]`.
 - Add a crate only when it saves more than about 200 lines or implements a protocol or file format. Add it to the table above first.
 - `nix` 0.31.3 (MIT), with only its `user` feature, looks users up by uid through NSS with a safe `getpwuid_r`, and is the version calloop already uses. `wayland-server` (MIT) builds the fake compositor the wayland and `crabshell` tests run against, and is a dev-dependency only.
-- Rust crates must be MIT, Apache-2.0, BSD, ISC, Zlib or Unicode licensed. `cargo deny check licenses` enforces this with `deny.toml`, in CI on every push.
+- Rust crates must be MIT, Apache-2.0, BSD, ISC, Zlib or Unicode licensed. `cargo deny check licenses advisories` enforces this with `deny.toml`, in CI on every push, and fails on a security advisory against any dependency unless `deny.toml` ignores it with a reason.
 - System C libraries (libpulse, fontconfig, libxkbcommon, libpam) are linked dynamically. sctk speaks the Wayland protocol in pure Rust, so libwayland-client isn't linked.
 - Use edition 2024 on the latest stable toolchain. No nightly features.
 
@@ -1311,10 +1311,12 @@ Left out, with the reason:
 
 ### Still open
 
+The hand checks are tracked in [issue #2](https://github.com/w0x7y/crabshell/issues/2) and the upstream reports, with their drafts, in [issue #3](https://github.com/w0x7y/crabshell/issues/3).
+
 - Hand checks that need the desktop: the greeter example against a real greetd on a real VT, peak meters on a real PulseAudio rather than pipewire-pulse, and Phase 6's clean user account that installs Rust through rustup first.
 - nonstick 0.1.2 frees its own copy of a PAM answer without zeroing it, and no `pam_setcred` runs, so Kerberos tickets aren't refreshed on unlock. Crabshell's crates forbid the `unsafe` a fix of their own would need, so both wait on nonstick.
 - cosmic-text 0.19 keeps the leading space on an elided wrapped line. Crabshell works around it until an upgrade fixes it upstream.
-- ttf-parser 0.25.1, which fontdb and cosmic-text pull in, is marked unmaintained (RUSTSEC-2026-0192). CI checks licenses only, so it stays until cosmic-text moves.
+- ttf-parser 0.25.1, which cosmic-text 0.19 pulls in through fontdb 0.23, is marked unmaintained (RUSTSEC-2026-0192). cosmic-text's main branch already moved to fontdb 0.24, which drops it, so the advisory is ignored in `deny.toml` until a cosmic-text release does.
 - Settled limits: window views pair windows by app id and title, the most the protocols give; neither `geometry` nor `mapped_geometry` can say where a window is on its output, which Wayland doesn't tell a client; Hyprland 0.42 and later are supported; and the dashboard's 37 MiB with a 1080p wallpaper is no breach of rule 1, whose cap is for the counter bar, since a 1080p picture and its window buffer take about 16 MiB.
 - Crabshell has no wrapper widgets, since a `Stack` or `Button` with a padded style covers `WrapperItem`, `WrapperRectangle` and `WrapperMouseArea`, and `Style::clip` covers `ClippingRectangle`.
 
