@@ -2874,7 +2874,8 @@ impl Overview {
     std::fs::write(
       &launch,
       format!(
-        "#!/bin/sh\necho \"$1\" > {}\n",
+        "#!/bin/sh\necho \"$XDG_ACTIVATION_TOKEN $DESKTOP_STARTUP_ID\" > {}\necho \"$1\" > {}\n",
+        dir.join("token").display(),
         dir.join("launched").display()
       ),
     )
@@ -2928,6 +2929,12 @@ impl Overview {
 
   fn launched(&self) -> Option<String> {
     std::fs::read_to_string(self.dir.join("launched")).ok()
+  }
+
+  /// The activation token the last launched application was given, in
+  /// both variables.
+  fn token(&self) -> Option<String> {
+    std::fs::read_to_string(self.dir.join("token")).ok()
   }
 }
 
@@ -3039,6 +3046,10 @@ fn the_overview_opens_from_the_command_line_launches_an_app_and_sleeps() {
     std::thread::sleep(Duration::from_millis(50));
   }
   assert_eq!(overview.launched().as_deref(), Some("terminal\n"));
+  // Sway handed out an activation token for the click, in both variables.
+  let token = overview.token().expect("the token's file");
+  let (xdg, startup) = token.trim_end().split_once(' ').expect("two words");
+  assert!(!xdg.is_empty() && xdg == startup, "{token:?}");
   wait_for_shot(&sway, "HEADLESS-1", "the overview to close", |shot| {
     shot.rgba == closed.rgba
   });

@@ -231,6 +231,20 @@ impl Shell {
     if let Some(state) = saved.remove(persist::SERVICES_KEY) {
       crabshell_services::restore_state(&cx, state);
     }
+    if event_loop.platform().offers_activation() {
+      let (idle, signal) = (idle_inserter(&event_loop), event_loop.signal());
+      crabshell_services::provide_activation_tokens(&cx, move |app_id, done| {
+        let app_id = app_id.map(str::to_owned);
+        schedule(
+          &idle,
+          &signal,
+          "an activation token's request",
+          move |platform| {
+            platform.request_activation_token(app_id.as_deref(), done);
+          },
+        );
+      });
+    }
     // `cx.measure_text` and `cx.add_font` use the fonts windows lay out with.
     cx.provide(event_loop.platform().text_system().clone());
     let state = Rc::new(RefCell::new(PerOutput::new()));
