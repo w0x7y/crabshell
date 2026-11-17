@@ -185,6 +185,12 @@ impl IntoProp<PathBuf> for &Path {
   }
 }
 
+impl IntoProp<PathBuf> for &PathBuf {
+  fn into_prop(self) -> Prop<PathBuf> {
+    Prop(PropKind::Value(self.clone()))
+  }
+}
+
 impl IntoProp<PathBuf> for &str {
   fn into_prop(self) -> Prop<PathBuf> {
     Prop(PropKind::Value(PathBuf::from(self)))
@@ -208,5 +214,27 @@ impl IntoProp<IconSource> for &Path {
 impl IntoProp<IconSource> for PathBuf {
   fn into_prop(self) -> Prop<IconSource> {
     Prop(PropKind::Value(IconSource::File(self)))
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::path::PathBuf;
+
+  use super::{IntoProp, PropKind};
+
+  fn value(prop: impl IntoProp<PathBuf>) -> Option<PathBuf> {
+    match prop.into_prop().0 {
+      PropKind::Value(value) => Some(value),
+      PropKind::Binding(_) => None,
+    }
+  }
+
+  #[test]
+  fn a_path_buf_by_reference_is_a_plain_value() {
+    let path = PathBuf::from("/walls");
+    assert_eq!(value(&path), Some(path.clone()));
+    assert_eq!(value(path.as_path()), Some(path.clone()));
+    assert_eq!(value("/walls"), Some(path));
   }
 }
