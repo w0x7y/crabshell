@@ -4,12 +4,12 @@
 //!
 //! It offers `wl_compositor` 4, `wl_shm`, `xdg_wm_base`, layer-shell and
 //! one output, `FAKE-1`, at the scale it is started with, and each extra
-//! global a test asks for: a seat with touch or the background effect
-//! manager. Each layer surface is configured at its first
+//! global a test asks for: a seat with touch, the background effect
+//! manager, or workspaces. Each layer surface is configured at its first
 //! commit, at the size it asked for or the output's, and each frame
 //! callback is answered at the next commit, so windows draw freely. The
 //! requests a test checks are written to a log as short lines, such as
-//! `blur 0,0,200,30`.
+//! `blur 0,0,200,30` or `deactivate two`.
 
 use std::os::unix::net::UnixStream;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -20,6 +20,11 @@ use std::time::Duration;
 use wayland_protocols::ext::background_effect::v1::server::{
   ext_background_effect_manager_v1::{self, Capability, ExtBackgroundEffectManagerV1},
   ext_background_effect_surface_v1::{self, ExtBackgroundEffectSurfaceV1},
+};
+use wayland_protocols::ext::workspace::v1::server::{
+  ext_workspace_group_handle_v1::{ExtWorkspaceGroupHandleV1, GroupCapabilities},
+  ext_workspace_handle_v1::{self, ExtWorkspaceHandleV1, WorkspaceCapabilities},
+  ext_workspace_manager_v1::{self, ExtWorkspaceManagerV1},
 };
 use wayland_protocols::xdg::shell::server::xdg_wm_base::XdgWmBase;
 use wayland_protocols_wlr::layer_shell::v1::server::{
@@ -56,6 +61,9 @@ pub struct Globals {
   /// `ext_background_effect_manager_v1`, and whether it says it can blur
   /// as soon as it is bound.
   pub effects: Option<bool>,
+  /// `ext_workspace_manager_v1`, with one group of these workspaces: a
+  /// name and what it takes.
+  pub workspaces: Option<Vec<(&'static str, WorkspaceCapabilities)>>,
 }
 
 /// Something the test runs on the fake's thread, with its state.
@@ -98,6 +106,11 @@ impl Fake {
     self.log.lock().expect("the log").clone()
   }
 
+  /// Empties the log.
+  pub fn clear(&self) {
+    self.log.lock().expect("the log").clear();
+  }
+
   /// Runs `command` on the fake's thread, soon.
   pub fn run(&self, command: impl FnOnce(&mut State) + Send + 'static) {
     let commands = self.commands.as_ref().expect("the fake runs");
@@ -131,6 +144,9 @@ fn serve(stream: UnixStream, mut state: State, commands: Receiver<Command>) {
   }
   if let Some(now) = state.globals.effects {
     handle.create_global::<State, ExtBackgroundEffectManagerV1, bool>(1, now);
+  }
+  if state.globals.workspaces.is_some() {
+    handle.create_global::<State, ExtWorkspaceManagerV1, ()>(1, ());
   }
   handle
     .insert_client(stream, Arc::new(Gone))
@@ -250,6 +266,7 @@ ignore!(
   XdgWmBase: (),
   WlOutput: (),
   WlTouch: (),
+  ExtWorkspaceGroupHandleV1: (),
 );
 
 /// Binds a global with no events to send, giving it `()` as its data.
@@ -568,5 +585,71 @@ impl Dispatch<ExtBackgroundEffectSurfaceV1, ()> for State {
       });
       state.log(format!("blur {}", rects.as_deref().unwrap_or("none")));
     }
+  }
+}
+
+impl GlobalDispatch<ExtWorkspaceManagerV1, ()> for State {
+  fn bind(
+    state: &mut State,
+    handle: &DisplayHandle,
+    client: &Client,
+    resource: New<ExtWorkspaceManagerV1>,
+    _: &(),
+    init: &mut DataInit<'_, State>,
+  ) {
+    let manager = init.init(resource, ());
+    let group = client
+      .create_resource::<ExtWorkspaceGroupHandleV1, (), State>(handle, 1, ())
+      .expect("a group");
+    manager.workspace_group(&group);
+    group.capabilities(GroupCapabilities::empty());
+    for (name, can) in state.globals.workspaces.clone().unwrap_or_default() {
+      let workspace = client
+        .create_resource::<ExtWorkspaceHandleV1, &'static str, State>(handle, 1, name)
+        .expect("a workspace");
+      manager.workspace(&workspace);
+      workspace.name(name.to_owned());
+      workspace.capabilities(can);
+      workspace.state(ext_workspace_handle_v1::State::empty());
+      group.workspace_enter(&workspace);
+    }
+    manager.done();
+  }
+}
+
+impl Dispatch<ExtWorkspaceManagerV1, ()> for State {
+  fn request(
+    state: &mut State,
+    _: &Client,
+    _: &ExtWorkspaceManagerV1,
+    request: ext_workspace_manager_v1::Request,
+    _: &(),
+    _: &DisplayHandle,
+    _: &mut DataInit<'_, State>,
+  ) {
+    if let ext_workspace_manager_v1::Request::Commit = request {
+      state.log(String::from("commit"));
+    }
+  }
+}
+
+impl Dispatch<ExtWorkspaceHandleV1, &'static str> for State {
+  fn request(
+    state: &mut State,
+    _: &Client,
+    _: &ExtWorkspaceHandleV1,
+    request: ext_workspace_handle_v1::Request,
+    name: &&'static str,
+    _: &DisplayHandle,
+    _: &mut DataInit<'_, State>,
+  ) {
+    let what = match request {
+      ext_workspace_handle_v1::Request::Activate => "activate",
+      ext_workspace_handle_v1::Request::Deactivate => "deactivate",
+      ext_workspace_handle_v1::Request::Remove => "remove",
+      ext_workspace_handle_v1::Request::Assign { .. } => "assign",
+      _ => return,
+    };
+    state.log(format!("{what} {name}"));
   }
 }

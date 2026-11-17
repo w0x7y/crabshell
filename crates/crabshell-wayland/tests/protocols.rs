@@ -1,16 +1,19 @@
 //! The platform against a fake compositor, for protocols no compositor
-//! here offers or lets a test drive: blur behind windows and touch. They
-//! run by default.
+//! here offers or lets a test drive: blur behind windows, touch, and
+//! workspace requests Sway and labwc refuse. They run by default.
 
 mod fake;
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crabshell_reactive::Runtime;
 use crabshell_ui::{Button, Color, Cx, Edge, Output, PanelWindow, Region, Style, Text, Window};
-use crabshell_wayland::{EventLoop, WindowId};
+use crabshell_wayland::{EventLoop, WindowId, Windowset};
 use fake::{Fake, Globals};
 use smithay_client_toolkit::reexports::client::Connection;
+use wayland_protocols::ext::workspace::v1::server::ext_workspace_handle_v1::WorkspaceCapabilities as Can;
 
 /// A loop connected to a new fake with `globals`.
 fn connect(globals: Globals) -> (Fake, EventLoop) {
@@ -188,4 +191,50 @@ fn a_cancelled_touch_doesnt_click() {
   run_for(&mut event_loop, Duration::from_millis(50));
   assert_eq!(clicks.get(), 1, "only the tap that lifted");
   cx.owner().dispose();
+}
+
+#[test]
+fn deactivate_and_remove_go_out_with_a_commit_only_where_the_compositor_takes_them() {
+  let (fake, mut event_loop) = connect(Globals {
+    workspaces: Some(vec![
+      ("one", Can::Activate | Can::Deactivate | Can::Remove),
+      ("two", Can::Activate),
+    ]),
+    ..Globals::default()
+  });
+  let heard: Rc<RefCell<Vec<Windowset>>> = Rc::default();
+  let log = Rc::clone(&heard);
+  event_loop
+    .platform()
+    .watch_windowsets(move |sets, _| *log.borrow_mut() = sets.to_vec());
+  wait(&mut event_loop, "the workspaces", |_| {
+    heard.borrow().len() == 2
+  });
+  let (one, two) = {
+    let heard = heard.borrow();
+    assert!(heard[0].can_deactivate && heard[0].can_remove);
+    assert!(!heard[1].can_deactivate && !heard[1].can_remove);
+    (heard[0].id, heard[1].id)
+  };
+
+  let platform = event_loop.platform();
+  platform.deactivate_windowset(one);
+  platform.remove_windowset(one);
+  platform.deactivate_windowset(two);
+  platform.remove_windowset(two);
+  wait(&mut event_loop, "the requests", |_| {
+    fake.log().last().map(String::as_str) == Some("commit")
+  });
+  assert_eq!(fake.log(), ["deactivate one", "remove one", "commit"]);
+
+  // Neither request goes out for a windowset that refuses both.
+  fake.clear();
+  let platform = event_loop.platform();
+  platform.deactivate_windowset(two);
+  platform.remove_windowset(two);
+  platform.activate_windowset(two);
+  wait(&mut event_loop, "the activation", |_| {
+    fake.log().last().map(String::as_str) == Some("commit")
+  });
+  assert_eq!(fake.log(), ["activate two", "commit"]);
 }
