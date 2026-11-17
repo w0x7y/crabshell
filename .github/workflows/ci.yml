@@ -59,3 +59,10 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # A golden that doesn't match leaves the picture it drew here
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-failures
+          path: target/golden-failures
+          if-no-files-found: ignore
