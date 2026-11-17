@@ -24,6 +24,15 @@ jobs:
       # Ubuntu's Noto Sans is older than the one the goldens were drawn with, and it
       # has no Znamenny or Symbols 2 (cosmic-text's fallback for ☃), so they come
       # from the notofonts commit Gentoo packages
+      # Ubuntu builds DejaVu itself, with other underline metrics than the
+      # official 2.37 release the goldens were drawn with, so that replaces it
+      - name: Install the DejaVu release the goldens were drawn with
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSLO https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.zip
+          echo "7576310b219e04159d35ff61dd4a4ec4cdba4f35c00e002a136f00e96a908b0a  dejavu-fonts-ttf-2.37.zip" | sha256sum -c
+          unzip -q dejavu-fonts-ttf-2.37.zip
+          sudo cp dejavu-fonts-ttf-2.37/ttf/DejaVuSans*.ttf /usr/share/fonts/truetype/dejavu/
       - name: Install the Noto fonts the goldens were drawn with
         run: |
           mkdir -p ~/.local/share/fonts ~/.config/fontconfig
