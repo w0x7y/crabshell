@@ -3,8 +3,11 @@
 
 use super::{Harness, node_at, rect_at};
 use crate::text::{Fonts, TextNode};
+use crabshell_reactive::Signal;
+
 use crate::{
-  Align, Column, Content, Elide, Font, FontFeature, Row, Style, Text, TextAlign, Window,
+  Align, Column, Content, Elide, Font, FontFeature, Key, KeyEvent, Modifiers, Point, PointerButton,
+  Rect, Row, Style, Text, TextAlign, TextArea, TextInput, Window,
 };
 
 const LONG: &str = "a sentence much too long for the narrow window it sits in";
@@ -331,4 +334,198 @@ fn start_eliding_with_more_lines_cuts_the_last_line() {
     ellipsis_at(&mut h, &window, 0, 1).map(|(at, _)| at),
     Some(0)
   );
+}
+
+/// A 200 by 40 window with the keyboard and a focused field 100 wide
+/// editing `text` in `style`, and the field's signal.
+fn styled_field(h: &mut Harness, text: &str, style: Style) -> (Window, Signal<String>) {
+  let signal = h.cx.signal(text.to_owned());
+  let field = TextInput::new(signal)
+    .focus(true)
+    .style(Style::new().width(100.0).merge(style));
+  let window = h.window(
+    h.panel().child(Row::new().align(Align::Start).child(field)),
+    200.0,
+    40.0,
+  );
+  window.keyboard_enter();
+  h.frame(&window);
+  (window, signal)
+}
+
+/// The field at `path`'s rectangle and caret.
+fn field_caret(window: &Window, path: &[usize]) -> (Rect, Rect) {
+  let view = window.view();
+  let node = node_at(view.root(), path);
+  match node.content() {
+    Content::Input(input) => (node.rect(), input.caret.expect("a caret")),
+    _ => panic!("not a field"),
+  }
+}
+
+fn key(h: &mut Harness, window: &Window, key: Key) {
+  window.key(&KeyEvent {
+    key,
+    text: None,
+    modifiers: Modifiers::default(),
+    repeat: false,
+  });
+  h.frame(window);
+}
+
+fn near(a: f32, b: f32) -> bool {
+  (a - b).abs() <= 0.5
+}
+
+#[test]
+fn an_aligned_field_puts_its_caret_and_takes_clicks_where_its_text_sits() {
+  let mut h = Harness::new();
+  let w = h.cx.measure_text("ab", Font::DEFAULT).width;
+  // The caret's own pixel is the last of the 100.
+  let room = 99.0;
+  for (align, end) in [
+    (None, w),
+    (Some(TextAlign::Start), w),
+    (Some(TextAlign::Center), (room + w) / 2.0),
+    (Some(TextAlign::End), room),
+  ] {
+    let style = align.map_or(Style::new(), |align| Style::new().text_align(align));
+    let (window, _) = styled_field(&mut h, "ab", style);
+    let (rect, caret) = field_caret(&window, &[0, 0]);
+    assert!(
+      near(caret.x, rect.x + end),
+      "{align:?}: {caret:?} in {rect:?}"
+    );
+    key(&mut h, &window, Key::Home);
+    let (_, caret) = field_caret(&window, &[0, 0]);
+    assert!(near(caret.x, rect.x + end - w), "{align:?}: {caret:?}");
+  }
+  // A click just inside the start of centered text lands before it.
+  let (window, _) = styled_field(&mut h, "ab", Style::new().text_align(TextAlign::Center));
+  let (rect, _) = field_caret(&window, &[0, 0]);
+  window.pointer_motion_at(Point::new(rect.x + (room - w) / 2.0 + 1.0, 10.0), 0);
+  window.pointer_button_at(PointerButton::Left, true, 0);
+  window.pointer_button_at(PointerButton::Left, false, 10);
+  assert_eq!(window.field().expect("the field").cursor, 0);
+  // Empty, the caret waits in the middle, or at the end.
+  for (align, x) in [(TextAlign::Center, room / 2.0), (TextAlign::End, room)] {
+    let (window, _) = styled_field(&mut h, "", Style::new().text_align(align));
+    let (rect, caret) = field_caret(&window, &[0, 0]);
+    assert!(
+      near(caret.x, rect.x + x),
+      "{align:?}: {caret:?} in {rect:?}"
+    );
+  }
+  // Too long to fit, it scrolls as unaligned text does.
+  let (window, _) = styled_field(
+    &mut h,
+    &"w".repeat(40),
+    Style::new().text_align(TextAlign::Center),
+  );
+  let (rect, caret) = field_caret(&window, &[0, 0]);
+  assert!(near(caret.x, rect.x + room), "{caret:?} in {rect:?}");
+  key(&mut h, &window, Key::Home);
+  assert_eq!(field_caret(&window, &[0, 0]).1.x, rect.x);
+  // Right to left, its end is on the left, and shows.
+  let (window, _) = styled_field(
+    &mut h,
+    &"שלום ".repeat(12),
+    Style::new().text_align(TextAlign::Center),
+  );
+  let (rect, caret) = field_caret(&window, &[0, 0]);
+  assert!(near(caret.x, rect.x), "{caret:?} in {rect:?}");
+}
+
+#[test]
+fn an_aligned_area_is_measured_with_the_lines_it_draws() {
+  let mut h = Harness::new();
+  // One word 99.5 wide: it fits 100, but not the 99 left of the caret.
+  let advance = h.cx.measure_text("x", Font::DEFAULT).width;
+  let font = Font::DEFAULT.letter_spacing(9.95 - advance);
+  let word = "x".repeat(10);
+  let width = h.cx.measure_text(&word, font).width;
+  assert!(width > 99.0 && width <= 100.0, "{width}");
+  let text = h.cx.signal(word);
+  let area = TextArea::new(text).style(
+    Style::new()
+      .width(100.0)
+      .font(font)
+      .text_align(TextAlign::Center),
+  );
+  let window = h.window(h.panel().child(Column::new().child(area)), 200.0, 100.0);
+  h.frame(&window);
+  let lines = with_input_runs(&window, &[0, 0]);
+  assert_eq!(lines, 2);
+  assert_eq!(rect_at(&window, &[0, 0]).height, 32.0);
+}
+
+/// How many lines the field at `path` draws.
+fn with_input_runs(window: &Window, path: &[usize]) -> usize {
+  let view = window.view();
+  match node_at(view.root(), path).content() {
+    Content::Input(input) => input.text.runs().count(),
+    _ => panic!("not a field"),
+  }
+}
+
+#[test]
+fn a_field_takes_the_line_height_and_its_caret_stays_on_the_glyphs() {
+  let mut h = Harness::new();
+  let (window, _) = styled_field(&mut h, "ab", Style::new().line_height(1.5));
+  let (rect, caret) = field_caret(&window, &[0, 0]);
+  // 13 px at 1.5 is 20 px, and the caret is the default line's 16.
+  assert_eq!(rect.height, 20.0);
+  assert_eq!((caret.y, caret.height), (rect.y + 2.0, 16.0));
+  // An input method's text is underlined at the glyphs' foot too.
+  window.set_preedit(Some(crate::Preedit {
+    text: String::from("c"),
+    cursor: None,
+  }));
+  h.frame(&window);
+  let view = window.view();
+  let Content::Input(input) = node_at(view.root(), &[0, 0]).content() else {
+    panic!("not a field");
+  };
+  assert_eq!(input.underline[0].y, caret.bottom() - 1.0);
+  drop(view);
+
+  let text = h.cx.signal(String::from("a\nb"));
+  let area = TextArea::new(text)
+    .focus(true)
+    .style(Style::new().width(100.0).line_height(1.5));
+  let window = h.window(h.panel().child(Column::new().child(area)), 200.0, 100.0);
+  window.keyboard_enter();
+  h.frame(&window);
+  let (rect, caret) = field_caret(&window, &[0, 0]);
+  assert_eq!(rect.height, 40.0);
+  assert_eq!((caret.y, caret.height), (rect.y + 22.0, 16.0));
+  key(&mut h, &window, Key::Up);
+  assert_eq!(field_caret(&window, &[0, 0]).1.y, rect.y + 2.0);
+}
+
+#[test]
+fn a_field_draws_inherited_decorations_and_its_font() {
+  let mut h = Harness::new();
+  let text = h.cx.signal(String::from("abc"));
+  let column = Column::new()
+    .style(Style::new().underline(true).strikethrough(true))
+    .child(TextInput::new(text).focus(true));
+  let window = h.window(h.panel().child(column), 200.0, 40.0);
+  window.keyboard_enter();
+  h.frame(&window);
+  let view = window.view();
+  let Content::Input(input) = node_at(view.root(), &[0, 0]).content() else {
+    panic!("not a field");
+  };
+  assert!(input.text.underline() && input.text.strikethrough());
+  drop(view);
+
+  let plain = field_caret(&styled_field(&mut h, "abc", Style::new()).0, &[0, 0]).1;
+  let font = Font::DEFAULT.letter_spacing(2.0);
+  let spaced = field_caret(
+    &styled_field(&mut h, "abc", Style::new().font(font)).0,
+    &[0, 0],
+  )
+  .1;
+  assert!(spaced.x - plain.x > 5.0, "{plain:?} {spaced:?}");
 }

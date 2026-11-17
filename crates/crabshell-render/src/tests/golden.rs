@@ -935,6 +935,53 @@ fn input() {
   }
 }
 
+/// A focused field with its text centered, at a line height of 1.5 and
+/// underlined, with "world" selected and the caret before it, beside an
+/// empty one whose placeholder is centered too.
+#[test]
+fn styled_field() {
+  for (scale, suffix) in SCALES {
+    let mut scene = Scene::new();
+    let typed = scene.cx.signal(String::from("hello world"));
+    let empty = scene.cx.signal(String::new());
+    let field = |text| {
+      crabshell_ui::TextInput::new(text).style(
+        Style::new()
+          .width(90.0)
+          .padding(2, 4)
+          .background(Color::hex("#313244"))
+          .radius(4.0)
+          .text_align(TextAlign::Center)
+          .line_height(1.5)
+          .underline(true),
+      )
+    };
+    let panel = scene.panel().style(BAR).child(
+      Row::new()
+        .padding(4, 4)
+        .gap(4)
+        .align(Align::Center)
+        .child(field(typed).focus(true))
+        .child(field(empty).placeholder("Search")),
+    );
+    let window = scene.window(panel, 200.0, 36.0);
+    window.keyboard_enter();
+    window.key(&crabshell_ui::KeyEvent {
+      key: crabshell_ui::Key::Left,
+      text: None,
+      modifiers: crabshell_ui::Modifiers {
+        ctrl: true,
+        shift: true,
+        ..crabshell_ui::Modifiers::default()
+      },
+      repeat: false,
+    });
+    scene.frame(&window);
+    let buffer = scene.full(&window, scale);
+    assert_golden(&format!("styled_field@{suffix}"), &buffer);
+  }
+}
+
 /// A selectable text on two lines, selected from the middle of the first
 /// to the middle of the second by a drag.
 #[test]

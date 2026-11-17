@@ -158,8 +158,8 @@ impl<'a> NodeView<'a> {
           text: TextView {
             text: &input.text,
             color,
-            underline: false,
-            strikethrough: false,
+            underline: self.inherited(|style| style.underline) == Some(true),
+            strikethrough: self.inherited(|style| style.strikethrough) == Some(true),
           },
           // An input method may ask for no caret while it composes.
           caret: (input.focused

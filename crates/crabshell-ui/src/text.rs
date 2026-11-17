@@ -679,8 +679,13 @@ impl TextNode {
     self.elide != Elide::None || self.wraps()
   }
 
-  fn wraps(&self) -> bool {
+  pub(crate) fn wraps(&self) -> bool {
     self.max_lines > 1 && self.wrap
+  }
+
+  /// Whether the style the text was shaped with aligns it.
+  pub(crate) fn aligned(&self) -> bool {
+    self.style.is_some_and(|style| style.align.is_some())
   }
 
   /// Shapes the text again if its content, settings or style changed,
@@ -851,8 +856,13 @@ impl TextNode {
   /// vertically there. Text with an alignment takes the box's width, so
   /// its lines sit in it.
   pub(crate) fn finish(&mut self, content: Rect, fonts: &mut FontSystem) {
-    let aligned = self.style.is_some_and(|style| style.align.is_some());
-    let width = (self.fits_width() || aligned).then_some(content.width);
+    let width = (self.fits_width() || self.aligned()).then_some(content.width);
+    self.finish_at(content, width, fonts);
+  }
+
+  /// [`finish`](Self::finish), laying the lines out across `width`, or
+  /// each as long as it is.
+  pub(crate) fn finish_at(&mut self, content: Rect, width: Option<f32>, fonts: &mut FontSystem) {
     self.buffer.set_size(width, None);
     self.buffer.shape_until_scroll(fonts, false);
     let top = ((content.height - self.height()) / 2.0).round();
@@ -938,7 +948,7 @@ impl TextNode {
     self.buffer.layout_runs().take(self.max_lines as usize)
   }
 
-  fn width(&self) -> f32 {
+  pub(crate) fn width(&self) -> f32 {
     self.runs().map(|run| run.line_w).fold(0.0, f32::max)
   }
 

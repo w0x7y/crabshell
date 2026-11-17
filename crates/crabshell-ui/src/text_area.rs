@@ -86,6 +86,8 @@ impl TextArea {
   }
 
   /// Sets the style. An area cuts its text to the inside of its border.
+  /// Its text takes the font, color, alignment, line height and
+  /// decorations it inherits or sets, as a [`Text`](crate::Text) does.
   pub fn style(mut self, style: impl IntoProp<Style>) -> TextArea {
     self.common.style = Some(style.into_prop());
     self

@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use cosmic_text::{Affinity, LayoutRun};
+use cosmic_text::{Affinity, FontSystem, LayoutRun};
 use crabshell_reactive::Signal;
 
 use crate::cx::Cx;
@@ -105,6 +105,8 @@ impl TextInput {
   }
 
   /// Sets the style. A field cuts its text to the inside of its border.
+  /// Its text takes the font, color, alignment, line height and
+  /// decorations it inherits or sets, as a [`Text`](crate::Text) does.
   pub fn style(mut self, style: impl IntoProp<Style>) -> TextInput {
     self.common.style = Some(style.into_prop());
     self
@@ -421,15 +423,44 @@ impl InputNode {
 
   /// Where the caret before byte `at` of what is shown is, from the
   /// text's corner: across, the top of its line and the line's height.
-  /// In right-to-left text, the start is on the right.
+  /// In right-to-left text, the start is on the right. On an empty line,
+  /// or over the placeholder, it is where typed text would start.
   fn caret_spot(&self, at: usize, upstream: bool) -> Option<(f32, f32, f32)> {
     let run = self
       .caret_run(at, upstream)
       .or_else(|| self.text.runs().next())?;
-    let x = run
-      .cursor_position(&cursor_at(&self.text.buffer, at))
-      .unwrap_or(0.0);
+    let x = if run.glyphs.is_empty() || self.showing_placeholder() {
+      self.text.empty_line_place(&run) * self.text.layout_width()
+    } else {
+      run
+        .cursor_position(&cursor_at(&self.text.buffer, at))
+        .unwrap_or(0.0)
+    };
     Some((x, run.line_top, run.line_height))
+  }
+
+  /// The part of a line `height` tall from `top` that its glyphs fill,
+  /// as top and height: the default line height's, centered as
+  /// cosmic-text centers the glyphs, when the style's is taller.
+  fn glyph_box(&self, top: f32, height: f32) -> (f32, f32) {
+    let natural = (1.2 * self.text.buffer.metrics().font_size).round();
+    let glyphs = natural.min(height);
+    (top + ((height - glyphs) / 2.0).round(), glyphs)
+  }
+
+  /// Lays the text out in the field's `content` box. Aligned text sits
+  /// in the room left of the caret's last pixel; a line too long for it
+  /// starts at the start, as unaligned text does, and scrolls.
+  pub(crate) fn finish(&mut self, content: Rect, fonts: &mut FontSystem) {
+    let room = (content.width - 1.0).max(0.0);
+    let width = match (self.text.aligned(), self.text.wraps()) {
+      (false, wraps) => wraps.then_some(content.width),
+      (true, true) => Some(room),
+      // A long placeholder is cut, but typed text starts where it should.
+      (true, false) if self.showing_placeholder() => Some(room),
+      (true, false) => Some(self.text.width().max(room)),
+    };
+    self.text.finish_at(content, width, fonts);
   }
 
   /// Scrolls the text sideways to keep the caret inside `content`, then
@@ -462,6 +493,7 @@ impl InputNode {
     self.scroll = scroll.max(0.0);
     self.text.origin.x = content.x - self.scroll;
     let origin = self.text.origin;
+    let (top, height) = self.glyph_box(top, height);
     self.caret = Rect::new(origin.x + x, origin.y + top, 1.0, height);
     self.area = content;
     self.selection = match self.edit.selection() {
@@ -474,7 +506,10 @@ impl InputNode {
     self.underline = match &self.preedit {
       Some(preedit) => highlights(&self.text, at..at + preedit.text.len())
         .into_iter()
-        .map(|span| Rect::new(span.x, span.bottom() - 1.0, span.width, 1.0))
+        .map(|span| {
+          let (top, height) = self.glyph_box(span.y, span.height);
+          Rect::new(span.x, top + height - 1.0, span.width, 1.0)
+        })
         .collect(),
       None => Vec::new(),
     };

@@ -218,9 +218,7 @@ impl Tree {
     let mut reshaped = false;
     match &mut node.kind {
       NodeKind::Text(text_node) => reshaped = text_node.prepare(inherited, text),
-      // A field takes the font alone: its caret and scrolling expect one
-      // line at the start, of the default height.
-      NodeKind::Input(input) => reshaped = input.text.prepare(inherited.font, text),
+      NodeKind::Input(input) => reshaped = input.text.prepare(inherited, text),
       _ => {}
     }
     let changed = node.changed;
@@ -441,7 +439,7 @@ impl Tree {
       // A field's text is cut to its content box, so it paints only its
       // own rectangle.
       NodeKind::Input(input) => {
-        input.text.finish(content, fonts);
+        input.finish(content, fonts);
         input.place(content);
       }
       NodeKind::Icon(icon) => painted = painted.union(icon_rect(content, icon.size)),
@@ -623,15 +621,20 @@ fn measure(
     // else is as wide as its longest, plus the caret.
     Some(NodeKind::Input(input)) if input.edit.multiline => {
       let wrap = input.text.wrap;
+      let width = known.width.or(wrap.then_some(DEFAULT_WIDTH));
+      // Aligned lines wrap left of the caret's last pixel, as
+      // `InputNode::finish` lays them out.
+      let room = |width: f32| match wrap && input.text.aligned() {
+        true => (width - 1.0).max(0.0),
+        false => width,
+      };
       let known = taffy::Size {
-        width: known.width.or(wrap.then_some(DEFAULT_WIDTH)),
+        width: width.map(room),
         height: known.height,
       };
       let lines = input.text.measure(fonts, known, available);
       taffy::Size {
-        width: known
-          .width
-          .unwrap_or((lines.width + 1.0).max(DEFAULT_WIDTH)),
+        width: width.unwrap_or((lines.width + 1.0).max(DEFAULT_WIDTH)),
         height: lines.height,
       }
     }

@@ -827,7 +827,8 @@ pub struct Padding {
 /// to the widget's default: no background, black text in
 /// [`Font::DEFAULT`], no padding, square corners, no border, fully opaque.
 ///
-/// [`Text`](crate::Text) takes `color`, `font`, `text_align`,
+/// [`Text`](crate::Text), [`TextInput`](crate::TextInput) and
+/// [`TextArea`](crate::TextArea) take `color`, `font`, `text_align`,
 /// `line_height`, `underline` and `strikethrough` from the nearest widget
 /// that sets each, starting with itself and going up. Nothing else
 /// inherits.
@@ -860,19 +861,19 @@ pub struct Style {
   pub gradient: Option<Gradient>,
   /// A shadow under the widget's box.
   pub shadow: Option<Shadow>,
-  /// The text color, inherited by [`Text`](crate::Text).
+  /// The text color, inherited by text and text fields.
   pub color: Option<Color>,
-  /// The text font, inherited by [`Text`](crate::Text).
+  /// The text font, inherited by text and text fields.
   pub font: Option<Font>,
-  /// Where text lines sit in their box, inherited by
-  /// [`Text`](crate::Text).
+  /// Where text lines sit in their box, inherited by text and text
+  /// fields.
   pub text_align: Option<TextAlign>,
   /// The height of a line of text, as a multiple of the font size,
-  /// inherited by [`Text`](crate::Text). 1.2 by default.
+  /// inherited by text and text fields. 1.2 by default.
   pub line_height: Option<f32>,
-  /// Whether text is underlined, inherited by [`Text`](crate::Text).
+  /// Whether text is underlined, inherited by text and text fields.
   pub underline: Option<bool>,
-  /// Whether text is struck through, inherited by [`Text`](crate::Text).
+  /// Whether text is struck through, inherited by text and text fields.
   pub strikethrough: Option<bool>,
   /// Space between the edge and the content.
   pub padding: Option<Padding>,
