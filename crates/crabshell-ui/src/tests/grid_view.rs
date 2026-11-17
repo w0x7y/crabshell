@@ -427,3 +427,56 @@ fn a_horizontal_binding_that_panics_is_logged_with_the_grids_path_and_the_rest_r
   assert!(logs.contains("PanelWindow[DP-1]/GridView"), "{logs}");
   assert!(logs.contains("turn failure"), "{logs}");
 }
+
+#[test]
+fn a_grid_made_narrower_takes_fewer_columns() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0);
+  let window = grid(&mut h, 1000, 200.0, offset, |grid| grid);
+  // Ten columns of 20 in 200.
+  assert_eq!(cell(&window, 7), Some(Rect::new(140.0, 0.0, 20.0, 20.0)));
+  window.set_size(Size::new(100.0, 200.0));
+  h.frame(&window);
+  h.frame(&window);
+  assert_eq!(cell(&window, 7), Some(Rect::new(40.0, 20.0, 20.0, 20.0)));
+}
+
+#[test]
+fn a_horizontal_grid_made_shorter_takes_fewer_rows() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0);
+  let window = sideways(&mut h, 1000, 200.0, offset, |grid| grid);
+  // Ten rows of 20 in 200.
+  assert_eq!(cell(&window, 7), Some(Rect::new(0.0, 140.0, 20.0, 20.0)));
+  window.set_size(Size::new(200.0, 100.0));
+  h.frame(&window);
+  h.frame(&window);
+  assert_eq!(cell(&window, 7), Some(Rect::new(20.0, 40.0, 20.0, 20.0)));
+}
+
+#[test]
+fn a_grid_turned_at_run_time_fills_the_other_way() {
+  let mut h = Harness::new();
+  let offset = h.cx.signal(0.0);
+  let turned = h.cx.signal(false);
+  // 100 wide and 200 tall: five columns, or ten rows turned.
+  let grid = GridView::new(
+    || (0..1000).collect::<Vec<u32>>(),
+    |n| *n,
+    |_, n| Text::new(move || n.get().to_string()),
+  )
+  .horizontal(move || turned.get())
+  .cell_size(20, 20)
+  .height(100)
+  .offset(offset);
+  let window = h.window(h.panel().child(grid), 100.0, 200.0);
+  assert_eq!(cell(&window, 7), Some(Rect::new(40.0, 20.0, 20.0, 20.0)));
+  turned.set(true);
+  h.frame(&window);
+  h.frame(&window);
+  assert_eq!(cell(&window, 7), Some(Rect::new(0.0, 140.0, 20.0, 20.0)));
+  turned.set(false);
+  h.frame(&window);
+  h.frame(&window);
+  assert_eq!(cell(&window, 7), Some(Rect::new(40.0, 20.0, 20.0, 20.0)));
+}

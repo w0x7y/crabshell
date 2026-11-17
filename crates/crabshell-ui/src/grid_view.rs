@@ -248,23 +248,30 @@ where
   let breadth = move || along(!horizontal.get(), cell());
   let height = cx.memo(prop_fn(height, GridView::DEFAULT_HEIGHT));
   let style = style.map(Prop::shared);
-  // The length cells show in: the grid's, less its padding and border.
-  let inner = {
+  // What the grid's padding and border take, across and down.
+  let sides = {
     let style = style.clone();
     cx.memo(move || {
       let own = style.as_ref().map(|style| style()).unwrap_or_default();
       let padding = own.padding.unwrap_or_default();
-      let border = own.border.map_or(0.0, |border| border.width.max(0.0));
-      let sides = if horizontal.get() {
-        padding.left + padding.right
-      } else {
-        padding.top + padding.bottom
-      };
-      (height.get() as f32 - sides as f32 - 2.0 * border).max(0.0)
+      let border = 2.0 * own.border.map_or(0.0, |border| border.width.max(0.0));
+      Size::new(
+        (padding.left + padding.right) as f32 + border,
+        (padding.top + padding.bottom) as f32 + border,
+      )
     })
   };
-  // The room across the grid that cells fit in, 0 until the first layout.
-  let width = cx.signal(0.0_f32);
+  // The length cells show in: the grid's, less its padding and border.
+  let inner =
+    cx.memo(move || (height.get() as f32 - along(horizontal.get(), sides.get())).max(0.0));
+  // The grid's own size, which its parent or style sets and its cells
+  // don't, 0 until the first layout.
+  let outer = cx.signal(Size::default());
+  // The room across the grid that cells fit in.
+  let width = cx.memo(move || {
+    let across = !horizontal.get();
+    (along(across, outer.get()) - along(across, sides.get())).max(0.0)
+  });
   // Cells across: the columns, or the rows of a horizontal grid. Then
   // `rows` are the lines of cells along it.
   let columns = cx.memo(move || ((width.get() / breadth()) as usize).max(1));
@@ -415,17 +422,6 @@ where
   if let ElementKind::Flex(flex) = &mut content.kind {
     flex.column_binding = Some((move || !horizontal.get()).into_prop());
   }
-  content.common.measure = Some(Rc::new(move |size: Size| {
-    // Run with no effect running; a grid gone by then is left alone.
-    let across = if horizontal.try_get().unwrap_or_default() {
-      size.height
-    } else {
-      size.width
-    };
-    if width.try_get() != Some(across) {
-      width.try_set(across);
-    }
-  }));
   let mut scroll = ScrollView::new(Built(Some(content)))
     .offset(offset)
     .horizontal(move || horizontal.get());
@@ -444,9 +440,23 @@ where
   }
   scroll = scroll.style(move || {
     let own = style.as_ref().map(|style| style()).unwrap_or_default();
+    // As CSS's `min-width: 0`: the cells don't hold the grid wide.
+    let own = match (horizontal.get(), own.min_width, own.min_height) {
+      (false, None, _) => own.min_width(0.0),
+      (true, _, None) => own.min_height(0.0),
+      _ => own,
+    };
     scroll::along(horizontal.get(), own, height.get() as f32)
   });
-  Box::new(scroll).into_element()
+  let mut scroll = Box::new(scroll).into_element();
+  // Measured outside the cells, so their row can't hold the grid wide.
+  scroll.common.measure = Some(Rc::new(move |size: Size| {
+    // Run with no effect running; a grid gone by then is left alone.
+    if outer.try_get() != Some(size) {
+      outer.try_set(size);
+    }
+  }));
+  scroll
 }
 
 /// `size`'s height, or its width if `horizontal`: its length along a
