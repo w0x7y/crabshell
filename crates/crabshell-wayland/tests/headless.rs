@@ -5569,3 +5569,68 @@ fn an_image_transition_draws_while_it_runs_and_then_nothing_wakes() {
   settle(&mut event_loop);
   assert_eq!(run_for(&mut event_loop, Duration::from_secs(2)), (1, 0));
 }
+
+/// Dispatches for `ms` milliseconds, whatever comes.
+fn pump(event_loop: &mut EventLoop, ms: u64) {
+  let until = Instant::now() + Duration::from_millis(ms);
+  while Instant::now() < until {
+    event_loop
+      .dispatch(Some(Duration::from_millis(10)))
+      .expect("the connection works");
+  }
+}
+
+/// A virtual pointer drags a button's value out of a bar along the top
+/// and drops it on a button in a bar along the bottom: Sway's own data
+/// device carries the drag between the two windows.
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_typed_drag_crosses_from_the_top_bar_to_the_bottom_bar_through_sway() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let mut pointer = VirtualPointer::new(&sway);
+  let mut event_loop = sway.connect();
+  let cx = Cx::new(Runtime::current().new_owner());
+  let drops: Rc<RefCell<Vec<u32>>> = Rc::default();
+  let ends: Rc<RefCell<Vec<bool>>> = Rc::default();
+  let hovered = cx.signal(false);
+  let size = Style::new().width(100.0).height(30.0);
+  let (kept, ended) = (Rc::clone(&drops), Rc::clone(&ends));
+  let source = Button::new(Text::new("drag"))
+    .style(size)
+    .drag_data(Some(7_u32))
+    .on_drag(move |_, drag| {
+      if drag.phase == crabshell_ui::DragPhase::End {
+        ended.borrow_mut().push(drag.dropped);
+      }
+    });
+  let target = Button::new(Text::new("in"))
+    .style(size)
+    .on_drop(move |_, value: u32| kept.borrow_mut().push(value))
+    .drop_hovered(hovered);
+  for (edge, button) in [(Edge::Top, source), (Edge::Bottom, target)] {
+    let bar = PanelWindow::new(&Output::new("HEADLESS-1"))
+      .anchors(edge | Edge::Left | Edge::Right)
+      .height(30)
+      .child(Row::new().child(button));
+    event_loop.platform().add_window(Window::new(&cx, bar));
+  }
+  settle(&mut event_loop);
+
+  pointer.move_to(50, 15, (1920, 1080));
+  pump(&mut event_loop, 100);
+  pointer.press(VirtualPointer::LEFT);
+  pump(&mut event_loop, 100);
+  // Out of the top bar: the shell starts Sway's drag.
+  pointer.move_to(50, 500, (1920, 1080));
+  pump(&mut event_loop, 200);
+  pointer.move_to(50, 1065, (1920, 1080));
+  run_until(&mut event_loop, "the target lit", |_| hovered.get());
+  pointer.release(VirtualPointer::LEFT);
+  run_until(&mut event_loop, "the drop", |_| !drops.borrow().is_empty());
+  assert_eq!(*drops.borrow(), [7]);
+  run_until(&mut event_loop, "the end", |_| !ends.borrow().is_empty());
+  assert_eq!(*ends.borrow(), [true]);
+  assert!(!hovered.get());
+  cx.owner().dispose();
+}

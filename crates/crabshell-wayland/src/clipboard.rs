@@ -362,20 +362,27 @@ impl DataSourceHandler for Platform {
     _: &Connection,
     _: &QueueHandle<Self>,
     source: &WlDataSource,
-    _: String,
+    mime: String,
     pipe: WritePipe,
   ) {
+    let pipe: OwnedFd = pipe.into();
+    let Some(pipe) = self.drag_send(source, &mime, pipe) else {
+      return;
+    };
     let Some(offered) = &self.offered else {
       return;
     };
     if offered.source.inner() == source {
       let bytes = Rc::clone(&offered.bytes);
-      self.send(pipe.into(), bytes);
+      self.send(pipe, bytes);
     }
   }
 
-  /// Another program took the clipboard.
+  /// Another program took the clipboard, or the drag was cancelled.
   fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource) {
+    if self.drag_dropped(source, false) {
+      return;
+    }
     if self
       .offered
       .as_ref()
@@ -385,9 +392,13 @@ impl DataSourceHandler for Platform {
     }
   }
 
-  fn dnd_dropped(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
+  fn dnd_dropped(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource) {
+    self.drag_dropped(source, true);
+  }
 
-  fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
+  fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource) {
+    self.drag_finished(source);
+  }
 
   fn action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: DndAction) {}
 }

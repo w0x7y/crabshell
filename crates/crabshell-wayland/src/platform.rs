@@ -335,7 +335,7 @@ pub struct Platform {
   pub(crate) pasting: Option<RegistrationToken>,
   /// The primary selection, which a middle click pastes.
   pub(crate) primary: Primary,
-  /// The drag over the shell's windows.
+  /// The drag the shell started and the one over its windows.
   pub(crate) drags: Drags,
   /// The clipboard as configs follow it, once a watch asks.
   pub(crate) control: Control,
@@ -917,6 +917,7 @@ impl Platform {
       self.lay_out_and_draw(&mut drawn);
     }
     self.update_focus_grabs();
+    self.update_drags();
     // A view that joined a session shows its last frame now.
     if self.sync_captures() {
       self.lay_out_and_draw(&mut drawn);

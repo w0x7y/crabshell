@@ -6,6 +6,7 @@
 
 use std::io::Write;
 use std::os::fd::AsFd;
+use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
 
 use wayland_server::protocol::{
@@ -13,6 +14,7 @@ use wayland_server::protocol::{
   wl_data_device_manager::{self, DndAction, WlDataDeviceManager},
   wl_data_offer::{self, WlDataOffer},
   wl_data_source::{self, WlDataSource},
+  wl_pointer,
 };
 use wayland_server::{Client, DataInit, Dispatch, DisplayHandle, Resource};
 
@@ -40,6 +42,35 @@ struct Offer {
 }
 
 impl State {
+  /// A left press at `from` on layer surface `index`, its serial logged
+  /// as `press <serial>`, then a move to `to`, outside it as a held
+  /// button's motion goes.
+  pub fn press_out(&mut self, index: usize, from: (f64, f64), to: (f64, f64)) {
+    const LEFT: u32 = 0x110;
+    let surface = self.layer(index);
+    let (enter, press) = (self.serial(), self.serial());
+    self.log(format!("press {press}"));
+    for pointer in &self.pointers {
+      pointer.enter(enter, &surface, from.0, from.1);
+      pointer.frame();
+      pointer.button(press, 1, LEFT, wl_pointer::ButtonState::Pressed);
+      pointer.frame();
+      pointer.motion(2, to.0, to.1);
+      pointer.frame();
+    }
+  }
+
+  /// The pointer leaves layer surface `index`, as a drag taking it over
+  /// makes it.
+  pub fn pointer_leave(&mut self, index: usize) {
+    let surface = self.layer(index);
+    let serial = self.serial();
+    for pointer in &self.pointers {
+      pointer.leave(serial, &surface);
+      pointer.frame();
+    }
+  }
+
   /// A drag enters layer surface `index` at `at`: the client's own, or
   /// another program's offering `types`, each sending `bytes`.
   pub fn drag_enter(&mut self, index: usize, at: (f64, f64), program: Option<(&[&str], Vec<u8>)>) {
@@ -107,6 +138,30 @@ impl State {
       (Some(source), false) => source.cancelled(),
       _ => {}
     }
+  }
+
+  /// Another program over no shell window asks the client's drag for
+  /// `kind` and gets what it sends.
+  pub fn read_started(&mut self, kind: &str) -> UnixStream {
+    let source = self
+      .dnd
+      .started
+      .as_ref()
+      .expect("a drag the client started");
+    let (ours, theirs) = UnixStream::pair().expect("a socket pair");
+    source.send(kind.to_owned(), theirs.as_fd());
+    ours
+  }
+
+  /// That program took the drop and finished.
+  pub fn take_started(&mut self) {
+    let source = self
+      .dnd
+      .started
+      .as_ref()
+      .expect("a drag the client started");
+    source.dnd_drop_performed();
+    source.dnd_finished();
   }
 }
 

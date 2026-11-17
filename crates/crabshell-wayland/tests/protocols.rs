@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 use crabshell_reactive::Runtime;
 use crabshell_ui::{
-  Button, Color, Cx, DragContent, Edge, Output, PanelWindow, Region, Row, ScrollView, Stack, Style,
-  Text, TextInput, Window,
+  Button, Color, Cx, DragContent, DragPhase, Edge, Output, PanelWindow, Region, Row, ScrollView,
+  Stack, Style, Text, TextInput, Window,
 };
 use crabshell_wayland::{EventLoop, WindowId, Windowset};
 use fake::{Fake, Globals};
@@ -566,6 +566,20 @@ fn logged(fake: &Fake, event_loop: &mut EventLoop, line: &str) {
   wait(event_loop, line, |_| fake.log().iter().any(|l| l == line));
 }
 
+/// The serial the fake's last `press_out` pressed with, once it has.
+fn press_serial(fake: &Fake, event_loop: &mut EventLoop) -> String {
+  let press = || {
+    let log = fake.log();
+    let press = log
+      .iter()
+      .rev()
+      .find_map(|line| line.strip_prefix("press "));
+    press.map(String::from)
+  };
+  wait(event_loop, "the press", |_| press().is_some());
+  press().expect("a press")
+}
+
 /// After a drag, once its frames are drawn, nothing wakes the loop: no
 /// timer, pipe or callback is left in it.
 fn asleep_after(event_loop: &mut EventLoop) {
@@ -673,5 +687,136 @@ fn a_drop_past_its_cap_drops_nothing_and_text_drops_as_text() {
   });
   assert_eq!(*dropped.borrow(), [DragContent::Text(String::from("hi"))]);
   assert!(fake.log().contains(&String::from("receive UTF8_STRING")));
+  cx.owner().dispose();
+}
+
+/// Reads everything `stream` gets while the loop runs, until it closes.
+fn read_all(event_loop: &mut EventLoop, mut stream: std::os::unix::net::UnixStream) -> Vec<u8> {
+  use std::io::Read;
+  stream.set_nonblocking(true).expect("non-blocking");
+  let (mut bytes, mut chunk) = (Vec::new(), [0; 64]);
+  wait(event_loop, "the bytes", |_| match stream.read(&mut chunk) {
+    Ok(0) => true,
+    Ok(n) => {
+      bytes.extend_from_slice(&chunk[..n]);
+      false
+    }
+    Err(error) if error.kind() == io::ErrorKind::WouldBlock => false,
+    Err(error) => panic!("{error}"),
+  });
+  bytes
+}
+
+/// Asks the drag the shell started for `kind`, as another program would.
+fn read_started(fake: &Fake, event_loop: &mut EventLoop, kind: &'static str) -> Vec<u8> {
+  let (sent, received) = std::sync::mpsc::channel();
+  fake.run(move |state| sent.send(state.read_started(kind)).expect("the test waits"));
+  read_all(event_loop, received.recv().expect("a stream"))
+}
+
+#[test]
+fn a_drag_leaving_its_window_offers_its_text_and_ends_when_taken() {
+  let ends: Rc<RefCell<Vec<bool>>> = Rc::default();
+  let (fake, mut event_loop, cx) = dnd_bars(|_| {
+    let ends = Rc::clone(&ends);
+    let source = Button::new(Text::new("drag"))
+      .drag_content(Some(DragContent::Text(String::from("hello"))))
+      .on_drag(move |_, drag| {
+        if drag.phase == DragPhase::End {
+          ends.borrow_mut().push(drag.dropped);
+        }
+      });
+    (source, Button::new(Text::new("other")))
+  });
+  fake.run(|state| state.press_out(0, (10.0, 10.0), (10.0, -20.0)));
+  let started = format!(
+    "start_drag {} application/x-crabshell-drag,text/plain;charset=utf-8,UTF8_STRING",
+    press_serial(&fake, &mut event_loop)
+  );
+  logged(&fake, &mut event_loop, &started);
+  fake.run(|state| state.pointer_leave(0));
+  run_for(&mut event_loop, Duration::from_millis(30));
+  assert!(ends.borrow().is_empty(), "the leave doesn't end it");
+
+  assert_eq!(
+    read_started(&fake, &mut event_loop, "UTF8_STRING"),
+    b"hello"
+  );
+  let private = read_started(&fake, &mut event_loop, "application/x-crabshell-drag");
+  assert!(private.is_empty(), "the private type sends nothing");
+  fake.run(|state| state.take_started());
+  wait(&mut event_loop, "the end", |_| !ends.borrow().is_empty());
+  assert_eq!(*ends.borrow(), [true]);
+  logged(&fake, &mut event_loop, "source destroyed");
+  cx.owner().dispose();
+}
+
+#[test]
+fn a_typed_drag_crosses_from_one_window_to_a_button_in_another() {
+  let ends: Rc<RefCell<Vec<bool>>> = Rc::default();
+  let drops: Rc<RefCell<Vec<u32>>> = Rc::default();
+  let mut hovered = None;
+  let (fake, mut event_loop, cx) = dnd_bars(|cx| {
+    let (ends, drops) = (Rc::clone(&ends), Rc::clone(&drops));
+    let lit = cx.signal(false);
+    hovered = Some(lit);
+    let source = Button::new(Text::new("drag"))
+      .drag_data(Some(7_u32))
+      .on_drag(move |_, drag| {
+        if drag.phase == DragPhase::End {
+          ends.borrow_mut().push(drag.dropped);
+        }
+      });
+    let target = Button::new(Text::new("in"))
+      .on_drop(move |_, value: u32| drops.borrow_mut().push(value))
+      .drop_hovered(lit);
+    (source, target)
+  });
+  let hovered = hovered.expect("built");
+  fake.run(|state| state.press_out(0, (10.0, 10.0), (10.0, 40.0)));
+  let started = format!(
+    "start_drag {} application/x-crabshell-drag",
+    press_serial(&fake, &mut event_loop)
+  );
+  logged(&fake, &mut event_loop, &started);
+  fake.run(|state| {
+    state.pointer_leave(0);
+    state.drag_enter(1, (50.0, 10.0), None);
+  });
+  logged(
+    &fake,
+    &mut event_loop,
+    "accept application/x-crabshell-drag",
+  );
+  assert!(hovered.get());
+  fake.run(|state| state.drag_drop());
+  wait(&mut event_loop, "the drop", |_| !drops.borrow().is_empty());
+  assert_eq!(*drops.borrow(), [7]);
+  assert_eq!(*ends.borrow(), [true]);
+  assert!(!hovered.get());
+  logged(&fake, &mut event_loop, "finish");
+  asleep_after(&mut event_loop);
+  cx.owner().dispose();
+}
+
+#[test]
+fn a_source_removed_mid_drag_cancels_the_drag() {
+  let mut shown = None;
+  let (fake, mut event_loop, cx) = dnd_bars(|cx| {
+    let on = cx.signal(true);
+    shown = Some(on);
+    let source = Button::new(Text::new("drag"))
+      .drag_data(Some(7_u32))
+      .visible(move || on.get());
+    (source, Button::new(Text::new("other")))
+  });
+  fake.run(|state| state.press_out(0, (10.0, 10.0), (10.0, 40.0)));
+  let started = format!(
+    "start_drag {} application/x-crabshell-drag",
+    press_serial(&fake, &mut event_loop)
+  );
+  logged(&fake, &mut event_loop, &started);
+  shown.expect("built").set(false);
+  logged(&fake, &mut event_loop, "source destroyed");
   cx.owner().dispose();
 }

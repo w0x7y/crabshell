@@ -224,6 +224,12 @@ impl Touch {
     }
   }
 
+  /// Stops following the finger, which a drag the compositor took over
+  /// lifted unseen.
+  pub(crate) fn forget(&mut self) {
+    self.active = None;
+  }
+
   /// The window the followed finger went down on.
   pub(crate) fn window(&self) -> Option<WindowId> {
     self.active.map(|(_, window)| window)
