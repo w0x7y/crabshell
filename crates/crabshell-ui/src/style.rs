@@ -880,6 +880,9 @@ pub struct Style {
   /// shadow, color, border, radius, opacity and the transform. Other
   /// fields change at once.
   pub transition: Option<Transition>,
+  /// How a button's style fades back to its own once no hover, pressed
+  /// or focus style is laid over it; `transition` when unset.
+  pub transition_out: Option<Transition>,
 }
 
 impl Style {
@@ -924,6 +927,7 @@ impl Style {
       rotate: None,
       origin: None,
       transition: None,
+      transition_out: None,
     }
   }
 
@@ -1400,6 +1404,17 @@ impl Style {
     }
   }
 
+  /// Sets how a button's style fades back to its own, once no hover,
+  /// pressed or focus style is laid over it, so the way out can take a
+  /// different curve from the way in. Without it the way back takes
+  /// `transition` too. The style being changed to says how.
+  pub const fn transition_out(self, transition: Transition) -> Style {
+    Style {
+      transition_out: Some(transition),
+      ..self
+    }
+  }
+
   /// This style with every field that `over` sets replaced by its value.
   /// Buttons use it to lay their hover and pressed styles over the normal
   /// one.
@@ -1443,6 +1458,7 @@ impl Style {
       rotate: or(over.rotate, self.rotate),
       origin: or(over.origin, self.origin),
       transition: or(over.transition, self.transition),
+      transition_out: or(over.transition_out, self.transition_out),
     }
   }
 

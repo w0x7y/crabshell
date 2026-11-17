@@ -12,6 +12,7 @@ use crabshell_reactive::{Owner, ReadSignal, Signal, untrack};
 use crate::cx::Cx;
 use crate::geometry::Point;
 use crate::input::panic_message;
+use crate::prop::IntoProp;
 use crate::style::Color;
 
 /// How an animation moves from its start to its end: what fraction of
@@ -567,7 +568,8 @@ fn set_changed<T: PartialEq + 'static>(signal: Signal<T>, value: T) {
   }
 }
 
-/// A value moving toward its target, from [`Cx::animation`]: a `Copy`
+/// A value moving toward its target, from [`Cx::animation`] or
+/// [`Cx::spring`]: a `Copy`
 /// handle to its value and to whether it moves.
 pub struct Animation<T: 'static> {
   value: ReadSignal<T>,
@@ -616,7 +618,7 @@ impl Cx {
   pub fn animate<T: Animate>(
     &self,
     target: impl FnMut() -> T + 'static,
-    transition: Transition,
+    transition: impl IntoProp<Transition>,
   ) -> ReadSignal<T> {
     self.follow("cx.animate", target, transition).value
   }
@@ -643,7 +645,7 @@ impl Cx {
   pub fn animation<T: Animate>(
     &self,
     target: impl FnMut() -> T + 'static,
-    transition: Transition,
+    transition: impl IntoProp<Transition>,
   ) -> Animation<T> {
     self.follow("cx.animation", target, transition)
   }
@@ -654,9 +656,10 @@ impl Cx {
     &self,
     what: &str,
     mut target: impl FnMut() -> T + 'static,
-    transition: Transition,
+    transition: impl IntoProp<Transition>,
   ) -> Animation<T> {
     let label: Rc<str> = format!("{what} at {}", std::panic::Location::caller()).into();
+    let transition = transition.into_prop().shared();
     let activity = self.activity.clone();
     let first = untrack(&mut target);
     let value = self.signal(first.clone());
@@ -678,6 +681,13 @@ impl Cx {
       if to == last {
         return;
       }
+      // Read as each move starts, so a binding can pick its curve.
+      let Some(transition) = guarded(&label, || untrack(&*transition)) else {
+        broken = true;
+        generation.set(generation.get() + 1);
+        set_changed(running, false);
+        return;
+      };
       last = to.clone();
       let Some(from) = untrack(|| value.try_get()) else {
         return;
@@ -867,7 +877,9 @@ impl Cx {
   /// `target`'s first value and comes to rest exactly on the target, when
   /// the clock stops. A target that isn't finite, or a spring that isn't
   /// valid (see [`Spring`]), jumps there at once. A panic in `target` is
-  /// logged with this call's place, and the value stops where it is.
+  /// logged with this call's place, and the value stops where it is. The
+  /// [`Animation`]'s `running()` is true from a new target until it comes
+  /// to rest, and never for a jump.
   ///
   /// ```
   /// use crabshell_ui::{Cx, Spring};
@@ -875,7 +887,7 @@ impl Cx {
   /// fn indicator(cx: &Cx) {
   ///     let hovered = cx.signal(0_usize);
   ///     let x = cx.spring(move || hovered.get() as f32 * 40.0, Spring::new(380.0, 0.8));
-  ///     // Read `x.get()` in a binding, such as a style's padding.
+  ///     // Read `x.value().get()` in a binding, such as a style's padding.
   /// }
   /// ```
   #[track_caller]
@@ -883,11 +895,12 @@ impl Cx {
     &self,
     mut target: impl FnMut() -> f32 + 'static,
     spring: Spring,
-  ) -> ReadSignal<f32> {
+  ) -> Animation<f32> {
     let label: Rc<str> = format!("cx.spring at {}", std::panic::Location::caller()).into();
     let activity = self.activity.clone();
     let first = untrack(&mut target);
     let value = self.signal(first);
+    let running = self.signal(false);
     let mut last = first;
     // Where the step on the clock heads, and whether there is one. A goal
     // that isn't finite stops it.
@@ -901,6 +914,7 @@ impl Cx {
       let Some(to) = guarded(&label, &mut target) else {
         broken = true;
         goal.set(f32::NAN);
+        set_changed(running, false);
         return;
       };
       if to == last {
@@ -910,6 +924,10 @@ impl Cx {
       goal.set(to);
       if !to.is_finite() || !spring.is_valid() {
         value.try_set(to);
+        // One on the clock stops at its next tick and says so then.
+        if !ticking.get() {
+          set_changed(running, false);
+        }
         return;
       }
       if ticking.get() {
@@ -919,6 +937,7 @@ impl Cx {
         return;
       };
       ticking.set(true);
+      set_changed(running, true);
       let (goal, ticking) = (Rc::clone(&goal), Rc::clone(&ticking));
       let (mut x, mut v) = (f64::from(from), 0.0);
       let mut previous = start_time();
@@ -929,6 +948,7 @@ impl Cx {
           let to = f64::from(goal.get());
           if !to.is_finite() {
             ticking.set(false);
+            set_changed(running, false);
             return false;
           }
           let seconds = previous.map_or(0.0, |previous| {
@@ -948,11 +968,15 @@ impl Cx {
           let kept = value.try_set(x as f32);
           if rest || !kept {
             ticking.set(false);
+            set_changed(running, false);
           }
           kept && !rest
         }),
       );
     });
-    value.read_only()
+    Animation {
+      value: value.read_only(),
+      running: running.read_only(),
+    }
   }
 }

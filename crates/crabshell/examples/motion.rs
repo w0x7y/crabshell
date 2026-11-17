@@ -156,8 +156,7 @@ pub fn osd(
   pinned: ReadSignal<bool>,
 ) -> PanelWindow {
   // The OSD shows while this runs; each change starts it again.
-  let hide = cx.after(OSD_HIDE, || {});
-  hide.stop();
+  let hide = cx.after(OSD_HIDE, || {}).stopped();
   let mut last = None;
   cx.effect(move || {
     let now = sink.with(|sink| sink.as_ref().map(|sink| (sink.volume_percent, sink.muted)));

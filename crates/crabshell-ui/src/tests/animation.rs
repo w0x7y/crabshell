@@ -742,7 +742,9 @@ fn everything_goes_with_its_owner() {
   let slide = child.animation(move || target.get(), LINEAR);
   let spin = child.cycle(|| true, LINEAR);
   let elapsed = child.frames(|| true);
-  let follow = child.spring(move || target.get() * 10.0, Spring::default());
+  let follow = child
+    .spring(move || target.get() * 10.0, Spring::default())
+    .value();
   h.runtime.flush();
   target.set(1.0);
   h.runtime.flush();
@@ -776,7 +778,7 @@ fn run_for(
 fn a_spring_reaches_its_target_settles_and_stops_the_clock() {
   let h = Harness::new();
   let target = h.cx.signal(0.0_f32);
-  let x = h.cx.spring(move || target.get(), Spring::default());
+  let x = h.cx.spring(move || target.get(), Spring::default()).value();
   h.runtime.flush();
   assert!(!animating());
   target.set(100.0);
@@ -795,10 +797,102 @@ fn a_spring_reaches_its_target_settles_and_stops_the_clock() {
 }
 
 #[test]
+fn a_spring_runs_while_it_moves_and_rests_when_it_settles() {
+  let h = Harness::new();
+  let target = h.cx.signal(0.0_f32);
+  let x = h.cx.spring(move || target.get(), Spring::default());
+  let broken = h
+    .cx
+    .spring(move || target.get(), Spring::new(f32::NAN, 0.9));
+  h.runtime.flush();
+  assert!(!x.running().get(), "at rest from the start");
+  target.set(100.0);
+  h.runtime.flush();
+  assert!(
+    x.running().get(),
+    "from the new target, before the first tick"
+  );
+  assert!(!broken.running().get(), "a jump never runs");
+  let start = Instant::now();
+  tick(start, 0);
+  tick(start, 100);
+  assert!(x.running().get() && x.value().get() > 0.0);
+  let (_, stopped) = run_for(start + Duration::from_millis(116), 3000, x.value());
+  assert!(stopped.is_some());
+  assert!(!x.running().get(), "false once it settles");
+  assert_eq!(x.value().get(), 100.0);
+}
+
+#[test]
+fn a_transition_binding_picks_each_moves_curve() {
+  let h = Harness::new();
+  let open = h.cx.signal(false);
+  let slow = h.cx.signal(false);
+  let x = h.cx.animate(
+    move || if open.get() { 100.0 } else { 0.0 },
+    move || {
+      if open.get() || slow.get() {
+        LINEAR
+      } else {
+        LINEAR.delay(100)
+      }
+    },
+  );
+  h.runtime.flush();
+  open.set(true);
+  h.runtime.flush();
+  let start = Instant::now();
+  tick(start, 0);
+  tick(start, 50);
+  assert!(close(x.get(), 50.0), "in over LINEAR: {}", x.get());
+  assert!(!tick(start, 100));
+
+  open.set(false);
+  h.runtime.flush();
+  tick(start, 200);
+  tick(start, 250);
+  assert_eq!(x.get(), 100.0, "out waits its delay");
+  tick(start, 350);
+  assert!(close(x.get(), 50.0), "{}", x.get());
+  assert!(!tick(start, 400));
+
+  // Read untracked: a change to it alone moves nothing.
+  slow.set(true);
+  h.runtime.flush();
+  assert!(!animating());
+}
+
+#[test]
+fn a_panicking_transition_binding_is_logged_and_stops_its_animation() {
+  let h = Harness::new();
+  let target = h.cx.signal(0.0_f32);
+  let slide = h.cx.animation(
+    move || target.get(),
+    move || -> Transition { panic!("transition failure") },
+  );
+  h.runtime.flush();
+  let logs = capture_logs(|| {
+    target.set(100.0);
+    h.runtime.flush();
+  });
+  assert!(logs.contains("animation cx.animation at "), "{logs}");
+  assert!(logs.contains("tests/animation.rs"), "{logs}");
+  assert!(
+    logs.contains("panicked and stops: transition failure"),
+    "{logs}"
+  );
+  assert!(!slide.running().get() && !animating());
+  assert_eq!(slide.value().get(), 0.0, "it stays where it was");
+}
+
+#[test]
 fn a_spring_with_little_damping_overshoots() {
   let h = Harness::new();
   let target = h.cx.signal(0.0_f32);
-  let x = h.cx.spring(move || target.get(), Spring::new(300.0, 0.3));
+  let x = h
+    .cx
+    .spring(move || target.get(), Spring::new(300.0, 0.3))
+    .value();
   h.runtime.flush();
   target.set(100.0);
   h.runtime.flush();
@@ -814,7 +908,10 @@ fn a_spring_with_little_damping_overshoots() {
 fn a_new_target_keeps_the_springs_velocity() {
   let h = Harness::new();
   let target = h.cx.signal(0.0_f32);
-  let x = h.cx.spring(move || target.get(), Spring::new(100.0, 1.0));
+  let x = h
+    .cx
+    .spring(move || target.get(), Spring::new(100.0, 1.0))
+    .value();
   h.runtime.flush();
   target.set(100.0);
   h.runtime.flush();
@@ -838,7 +935,8 @@ fn a_spring_survives_a_huge_gap_between_ticks() {
   // Stiff enough that a plain Euler step of a millisecond flies apart.
   let x = h
     .cx
-    .spring(move || target.get(), Spring::new(10_000_000.0, 0.1));
+    .spring(move || target.get(), Spring::new(10_000_000.0, 0.1))
+    .value();
   h.runtime.flush();
   target.set(100.0);
   h.runtime.flush();
@@ -858,10 +956,11 @@ fn a_spring_survives_a_huge_gap_between_ticks() {
 fn a_target_or_spring_that_isnt_finite_jumps_and_stops() {
   let h = Harness::new();
   let target = h.cx.signal(0.0_f32);
-  let x = h.cx.spring(move || target.get(), Spring::default());
+  let x = h.cx.spring(move || target.get(), Spring::default()).value();
   let stiff = h
     .cx
-    .spring(move || target.get(), Spring::new(f32::NAN, 0.9));
+    .spring(move || target.get(), Spring::new(f32::NAN, 0.9))
+    .value();
   h.runtime.flush();
   target.set(10.0);
   h.runtime.flush();
@@ -890,14 +989,17 @@ fn a_target_or_spring_that_isnt_finite_jumps_and_stops() {
 fn a_panicking_spring_target_is_logged_and_stops_where_it_is() {
   let h = Harness::new();
   let target = h.cx.signal(0.0_f32);
-  let x = h.cx.spring(
-    move || {
-      let to = target.get();
-      assert!(to < 50.0, "spring failure");
-      to
-    },
-    Spring::default(),
-  );
+  let x = h
+    .cx
+    .spring(
+      move || {
+        let to = target.get();
+        assert!(to < 50.0, "spring failure");
+        to
+      },
+      Spring::default(),
+    )
+    .value();
   h.runtime.flush();
   target.set(10.0);
   h.runtime.flush();
@@ -1117,6 +1219,79 @@ mod fades {
     let bounds = super::super::node_at(view.root(), &[0, 0]).bounds();
     let both = shadow(-10.0).reach(rect).union(shadow(10.0).reach(rect));
     assert_eq!(bounds, rect.union(both));
+  }
+
+  const SLOW: Transition = Transition::new(200).easing(Easing::Linear);
+
+  fn fading_button(h: &mut Harness, normal: Style) -> Window {
+    let row = Row::new().align(Align::Start).child(
+      Button::new(Icon::new("x").size(20))
+        .style(normal)
+        .hover_style(HOVER),
+    );
+    h.window(h.panel().child(row), 200.0, 30.0)
+  }
+
+  #[test]
+  fn a_fade_back_to_the_base_style_takes_transition_out() {
+    let mut h = hover_harness();
+    let window = fading_button(&mut h, NORMAL.transition_out(SLOW));
+    window.pointer_motion(Point::new(10.0, 10.0));
+    let start = Instant::now();
+    advance_animations(start);
+    assert!(!advance_animations(start + Duration::from_millis(100)));
+    assert_eq!(
+      background(&window),
+      Some(Color::rgb(200, 100, 0)),
+      "in over FADE"
+    );
+
+    window.pointer_leave();
+    advance_animations(start + Duration::from_millis(200));
+    advance_animations(start + Duration::from_millis(300));
+    assert_eq!(
+      background(&window),
+      Some(Color::rgb(100, 50, 0)),
+      "out over SLOW"
+    );
+    assert!(!advance_animations(start + Duration::from_millis(400)));
+    assert_eq!(background(&window), Some(Color::rgb(0, 0, 0)));
+  }
+
+  #[test]
+  fn a_fade_out_cut_short_fades_back_in_from_where_it_was() {
+    let mut h = hover_harness();
+    let window = fading_button(&mut h, NORMAL.transition_out(SLOW));
+    window.pointer_motion(Point::new(10.0, 10.0));
+    let start = Instant::now();
+    advance_animations(start);
+    advance_animations(start + Duration::from_millis(100));
+    window.pointer_leave();
+    advance_animations(start + Duration::from_millis(100));
+    advance_animations(start + Duration::from_millis(200));
+    assert_eq!(background(&window), Some(Color::rgb(100, 50, 0)));
+    // Back in over FADE, from the halfway color.
+    window.pointer_motion(Point::new(10.0, 10.0));
+    advance_animations(start + Duration::from_millis(250));
+    assert_eq!(background(&window), Some(Color::rgb(150, 75, 0)));
+  }
+
+  #[test]
+  fn transition_out_alone_fades_only_the_way_back() {
+    let mut h = hover_harness();
+    let normal = Style::new()
+      .background(Color::rgb(0, 0, 0))
+      .transition_out(SLOW);
+    let window = fading_button(&mut h, normal);
+    window.pointer_motion(Point::new(10.0, 10.0));
+    assert!(!animating(), "in at once");
+    assert_eq!(background(&window), Some(Color::rgb(200, 100, 0)));
+    window.pointer_leave();
+    assert!(animating(), "out over SLOW");
+    let start = Instant::now();
+    advance_animations(start);
+    advance_animations(start + Duration::from_millis(100));
+    assert_eq!(background(&window), Some(Color::rgb(100, 50, 0)));
   }
 
   fn hover_harness() -> Harness {

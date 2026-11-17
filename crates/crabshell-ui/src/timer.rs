@@ -56,7 +56,7 @@ impl Cx {
   /// use crabshell_ui::Cx;
   ///
   /// fn osd(cx: &Cx) {
-  ///     let hide = cx.after(Duration::from_millis(1500), || {});
+  ///     let hide = cx.after(Duration::from_millis(1500), || {}).stopped();
   ///     // Show the OSD while `hide.running()`, and call `hide.restart()`
   ///     // on each change.
   /// #   let _ = hide;
@@ -107,6 +107,13 @@ impl Timer {
   /// Stops the timer before it fires again.
   pub fn stop(&self) {
     self.set_deadline(|_| None);
+  }
+
+  /// The timer, stopped before it ever fires, so it waits for its first
+  /// [`restart`](Self::restart): `cx.after(delay, f).stopped()`.
+  pub fn stopped(self) -> Timer {
+    self.stop();
+    self
   }
 
   /// Counts the delay or period again from now, so a timer restarted on

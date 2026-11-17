@@ -444,6 +444,11 @@ impl Node {
     style
   }
 
+  /// Whether a focus, hover or pressed style is laid over its own.
+  fn in_state(&self) -> bool {
+    matches!(&self.kind, NodeKind::Button(button) if button.focused || button.hovered)
+  }
+
   /// The style as drawn: the style in effect, or partway to it while a
   /// change fades in.
   pub(crate) fn shown_style(&self) -> Style {
@@ -1194,8 +1199,10 @@ impl Tree {
     let change = self.update(id, |node| {
       let shown = node.shown_style();
       let before = node.effective_style();
+      let was_in_state = node.in_state();
       f(node);
       let after = node.effective_style();
+      let back = was_in_state && !node.in_state();
       if before == after {
         return Change::None;
       }
@@ -1204,9 +1211,12 @@ impl Tree {
         return Change::Layout;
       }
       // A node not yet drawn shows its style at once.
-      if let Some(transition) = after
-        .transition
-        .filter(|transition| !transition.is_instant())
+      let transition = if back {
+        after.transition_out.or(after.transition)
+      } else {
+        after.transition
+      };
+      if let Some(transition) = transition.filter(|transition| !transition.is_instant())
         && node.rect.is_some()
       {
         node.fades += 1;

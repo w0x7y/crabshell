@@ -97,6 +97,27 @@ fn stop_and_restart_count_again_from_now_and_rearm_a_fired_one_shot() {
 }
 
 #[test]
+fn a_stopped_timer_arms_nothing_and_waits_for_its_first_restart() {
+  let cx = root();
+  let count = Counter::default();
+  let once = cx.after(100 * MS, hit(&count)).stopped();
+  let every = cx.interval(100 * MS, hit(&count)).stopped();
+  assert!(!once.running() && !every.running());
+  assert_eq!(next_timer(), None, "nothing to wake for");
+  fire_timers(Instant::now() + 10_000 * MS);
+  assert_eq!(count.get(), 0, "neither ever fired");
+
+  once.restart();
+  fire_timers(next_timer().expect("the restart armed it"));
+  assert_eq!(count.get(), 1);
+  every.restart();
+  let first = next_timer().expect("the restart armed it");
+  fire_timers(first);
+  assert_eq!(count.get(), 2);
+  assert_eq!(next_timer(), Some(first + 100 * MS), "and it repeats");
+}
+
+#[test]
 fn running_is_a_signal_bindings_follow() {
   let rt = Runtime::current();
   let cx = root();
