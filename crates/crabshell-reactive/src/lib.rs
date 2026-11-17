@@ -12,39 +12,16 @@
 //!
 //! # How it behaves
 //!
-//! - Handles are `Copy` keys into this thread's arena, and can't be sent to
-//!   another thread.
-//! - `get()` and `with()` inside a memo or effect record a dependency.
-//!   `get_untracked()`, `with_untracked()` and anything inside [`untrack`]
-//!   don't. Dependencies are recorded afresh on every run.
-//! - `set()` and `update()` store the value, mark what read it as stale and
-//!   queue effects. They never run anything; [`Runtime::flush`] does. If the
-//!   closure passed to `update()` panics, readers are still told before the
-//!   panic goes on. `try_set()` and `try_update()` return `false` on a
-//!   disposed signal instead of panicking.
-//! - A memo recomputes only when read while stale. Its dependents rerun only
-//!   if the new value differs from the old one. Memos must not write
-//!   signals or call `flush()`: either panics, and the memo is disabled.
-//! - Reading a memo that has to recompute while one of its sources is being
-//!   updated, or while a `with()` on the memo itself is running, panics in
-//!   the reader. The memo is not disabled, and recomputes on its next read.
-//! - `flush()` runs queued effects in creation order, each at most once per
-//!   round. Effects queued by writes during the flush run in a later round
-//!   of the same flush. An effect queued again after running
-//!   [`MAX_RUNS_PER_FLUSH`] times in one flush is logged and disabled.
-//! - Disposing an [`Owner`] frees everything created under it. After that,
-//!   `get()` on its handles panics and `try_get()` returns `None`.
-//!   [`Owner::effect_scoped`] gives each run of an effect a fresh scope
-//!   owner and disposes the previous one. The last scope goes when the
-//!   effect is disposed or disabled.
-//! - A memo or effect whose closure panics is logged and disabled, and the
-//!   runtime stays usable. A panic in the `Drop` of a value or closure the
-//!   runtime drops is logged too. Such `Drop` code records no dependencies.
-//!   This needs `panic = "unwind"`, the default.
-//! - When the thread exits, the runtime is dropped with everything still in
-//!   it. `Drop` code that calls back in then finds every handle disposed:
-//!   `dispose()`, `set()` and `update()` do nothing, and `try_get()` returns
-//!   `None`.
+//! Handles are `Copy` keys into this thread's arena. `get()` inside a memo
+//! or effect records a dependency; [`untrack`] and the `_untracked` methods
+//! don't. `set()` only marks readers stale and queues effects, and
+//! [`Runtime::flush`] runs them. A memo recomputes when read while stale and
+//! wakes its dependents only if its value changed. Disposing an [`Owner`]
+//! frees everything created under it. A memo or effect that panics is logged
+//! and disabled, and the runtime keeps working. The full rules are in the
+//! design doc's
+//! [Reactive core](https://github.com/w0x7y/crabshell/blob/main/docs/design.md#reactive-core)
+//! section.
 //!
 //! # Example
 //!
