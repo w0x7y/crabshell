@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crabshell_reactive::Runtime;
-use crabshell_ui::{Button, Color, Cx, Edge, Output, PanelWindow, Region, Style, Text, Window};
+use crabshell_ui::{
+  Button, Color, Cx, Edge, Output, PanelWindow, Region, Row, ScrollView, Stack, Style, Text, Window,
+};
 use crabshell_wayland::{EventLoop, WindowId, Windowset};
 use fake::{Fake, Globals};
 use smithay_client_toolkit::reexports::client::Connection;
@@ -192,6 +194,31 @@ fn a_cancelled_touch_doesnt_click() {
   });
   run_for(&mut event_loop, Duration::from_millis(50));
   assert_eq!(clicks.get(), 1, "only the tap that lifted");
+  cx.owner().dispose();
+}
+
+#[test]
+fn a_finger_drags_a_view_whose_mouse_drag_is_off() {
+  let (fake, mut event_loop) = connect(Globals {
+    touch: true,
+    ..Globals::default()
+  });
+  let cx = Cx::new(Runtime::current().new_owner());
+  let offset = cx.signal(0.0_f32);
+  let view = ScrollView::new(Stack::new().style(Style::new().width(400.0).height(30.0)))
+    .horizontal(true)
+    .mouse_drag(false)
+    .offset(offset)
+    .style(Style::new().width(100.0).height(30.0));
+  let bar = PanelWindow::new(&Output::new("FAKE-1"))
+    .anchors(Edge::Top | Edge::Left | Edge::Right)
+    .height(30)
+    .child(Row::new().child(view));
+  let bar = event_loop.platform().add_window(Window::new(&cx, bar));
+  frames(&mut event_loop, bar, 1);
+  // 30 pixels left, past the threshold: the content follows the finger.
+  fake.run(|state| state.tap((50.0, 10.0), -30.0, false));
+  wait(&mut event_loop, "the drag", |_| offset.get() == 30.0);
   cx.owner().dispose();
 }
 
