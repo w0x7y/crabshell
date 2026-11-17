@@ -85,6 +85,7 @@ pub(crate) struct Common {
   pub(crate) style: Option<Prop<Style>>,
   pub(crate) visible: Option<Prop<bool>>,
   pub(crate) geometry: Option<Signal<Rect>>,
+  pub(crate) mapped_geometry: Option<Signal<Rect>>,
   /// Told the widget's size after each layout that changes it, with the
   /// tree released. Lists measure their rows with it; configs have
   /// `geometry`.
@@ -392,7 +393,8 @@ macro_rules! container_methods {
   };
 }
 
-/// The `visible` and `geometry` methods every widget has.
+/// The `visible`, `geometry` and `mapped_geometry` methods every widget
+/// has.
 macro_rules! visibility_methods {
   () => {
     /// Shows or hides the widget. Hidden, it is taken out of the layout,
@@ -414,6 +416,18 @@ macro_rules! visibility_methods {
     /// moves.
     pub fn geometry(mut self, geometry: ::crabshell_reactive::Signal<$crate::Rect>) -> Self {
       self.common.geometry = Some(geometry);
+      self
+    }
+
+    /// Shares where the widget is drawn: the box around it once its own
+    /// and its ancestors' translate, scale and rotate have moved it, in
+    /// the window's logical pixels, scrolled with any scroll view around
+    /// it. It is written after each layout that moves it and after each
+    /// change of a transform or an offset that does, every frame of an
+    /// animated one. A hidden widget writes nothing. Where the window
+    /// itself is on its output is unknown: Wayland doesn't tell a client.
+    pub fn mapped_geometry(mut self, geometry: ::crabshell_reactive::Signal<$crate::Rect>) -> Self {
+      self.common.mapped_geometry = Some(geometry);
       self
     }
   };

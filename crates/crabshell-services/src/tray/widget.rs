@@ -51,6 +51,7 @@ pub struct Tray {
   menu_style: Option<Prop<Style>>,
   visible: Option<Prop<bool>>,
   geometry: Option<Signal<Rect>>,
+  mapped_geometry: Option<Signal<Rect>>,
 }
 
 impl Tray {
@@ -85,6 +86,13 @@ impl Tray {
     self.geometry = Some(geometry);
     self
   }
+
+  /// Shares where the tray is drawn, through every transform, as
+  /// [`Row::mapped_geometry`] does for a row.
+  pub fn mapped_geometry(mut self, geometry: Signal<Rect>) -> Tray {
+    self.mapped_geometry = Some(geometry);
+    self
+  }
 }
 
 impl Widget for Tray {
@@ -116,6 +124,9 @@ impl Widget for Tray {
     }
     if let Some(geometry) = self.geometry {
       tray = tray.geometry(geometry);
+    }
+    if let Some(geometry) = self.mapped_geometry {
+      tray = tray.mapped_geometry(geometry);
     }
     Box::new(tray).into_element()
   }

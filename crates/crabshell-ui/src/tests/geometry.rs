@@ -236,3 +236,119 @@ fn a_layout_that_writes_no_rectangle_runs_no_effects() {
   window.layout(&mut h.text);
   assert_eq!(runs.get(), 1);
 }
+
+/// Whether `a` and `b` agree to a thousandth of a pixel: a quarter turn
+/// in `f32` leaves a little.
+fn near(a: Rect, b: Rect) -> bool {
+  [
+    (a.x, b.x),
+    (a.y, b.y),
+    (a.width, b.width),
+    (a.height, b.height),
+  ]
+  .iter()
+  .all(|(a, b)| (a - b).abs() < 1e-3)
+}
+
+#[test]
+fn the_mapped_rectangle_follows_its_own_and_its_ancestors_transforms() {
+  let mut h = Harness::new();
+  let laid_out = rect_signal(&h);
+  let mapped = rect_signal(&h);
+  // A 20 by 10 box turned a quarter, in a 40 by 40 box scaled twice
+  // around its middle.
+  let inner = Stack::new()
+    .geometry(laid_out)
+    .mapped_geometry(mapped)
+    .style(Style::new().width(20.0).height(10.0).rotate(90.0));
+  let outer = Stack::new()
+    .style(Style::new().width(40.0).height(40.0).scale(2.0))
+    .child(inner);
+  let row = Row::new().align(Align::Start).child(outer);
+  let window = h.window(h.panel().child(row), 200.0, 60.0);
+  let rect = laid_out.get_untracked();
+  assert_eq!(rect, Rect::new(0.0, 0.0, 20.0, 10.0));
+  assert_eq!(rect, rect_at(&window, &[0, 0, 0]));
+  // Turned: 10 wide and 20 tall around (10, 5); then twice that around
+  // (20, 20).
+  let turned = Rect::new(5.0, -5.0, 10.0, 20.0);
+  let scaled = Rect::new(
+    20.0 + (turned.x - 20.0) * 2.0,
+    20.0 + (turned.y - 20.0) * 2.0,
+    20.0,
+    40.0,
+  );
+  assert!(
+    near(mapped.get_untracked(), scaled),
+    "{:?}",
+    mapped.get_untracked()
+  );
+}
+
+#[test]
+fn the_mapped_rectangle_scrolls_and_moves_with_a_transform_without_a_layout() {
+  let mut h = Harness::new();
+  let mapped = rect_signal(&h);
+  let offset = h.cx.signal(0.0);
+  let shifted = h.cx.signal(false);
+  let content = Column::new()
+    .align(Align::Start)
+    .child(Icon::new("spacer").size(100))
+    .child(Icon::new("a").size(10).mapped_geometry(mapped));
+  let scroll = ScrollView::new(content).offset(offset).style(move || {
+    let style = Style::new().height(50.0);
+    if shifted.get() {
+      style.translate(7.0, 3.0)
+    } else {
+      style
+    }
+  });
+  let window = h.window(h.panel().child(scroll), 200.0, 50.0);
+  assert_eq!(mapped.get_untracked(), Rect::new(0.0, 100.0, 10.0, 10.0));
+
+  offset.set(60.0);
+  h.frame(&window);
+  assert_eq!(mapped.get_untracked(), Rect::new(0.0, 40.0, 10.0, 10.0));
+
+  let runs = watch(&h, mapped);
+  shifted.set(true);
+  h.frame(&window);
+  assert_eq!(runs.get(), 2);
+  assert_eq!(mapped.get_untracked(), Rect::new(7.0, 43.0, 10.0, 10.0));
+  // Nothing moved since: nothing is written.
+  h.frame(&window);
+  assert_eq!(runs.get(), 2);
+}
+
+#[test]
+fn an_animated_transform_writes_the_mapped_rectangle_each_frame() {
+  use std::time::{Duration, Instant};
+  let mut h = Harness::new();
+  let mapped = rect_signal(&h);
+  let shifted = h.cx.signal(false);
+  let icon = Icon::new("a")
+    .size(10)
+    .mapped_geometry(mapped)
+    .style(move || {
+      let style =
+        Style::new().transition(crate::Transition::new(100).easing(crate::Easing::Linear));
+      if shifted.get() {
+        style.translate(40.0, 0.0)
+      } else {
+        style
+      }
+    });
+  let row = Row::new().align(Align::Start).child(icon);
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+  shifted.set(true);
+  h.frame(&window);
+  let start = Instant::now();
+  crate::advance_animations(start);
+  crate::advance_animations(start + Duration::from_millis(50));
+  h.frame(&window);
+  assert_eq!(mapped.get_untracked().x, 20.0);
+  crate::advance_animations(start + Duration::from_millis(100));
+  h.frame(&window);
+  assert_eq!(mapped.get_untracked().x, 40.0);
+  assert!(!crate::animating());
+}

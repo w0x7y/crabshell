@@ -180,6 +180,11 @@ pub(crate) struct Node {
   /// What `geometry` was last written, so a layout that moves nothing
   /// writes nothing.
   pub(crate) written: Option<Rect>,
+  /// Written with where the node is drawn, through every transform, when
+  /// a layout or a placing changes it.
+  pub(crate) mapped: Option<Signal<Rect>>,
+  /// What `mapped` was last written.
+  pub(crate) mapped_written: Option<Rect>,
   /// Told the size after a layout that changes it.
   pub(crate) measure: Option<Measure>,
   /// The size `measure` was last told.
@@ -474,6 +479,8 @@ impl Node {
       slides: 0,
       geometry: None,
       written: None,
+      mapped: None,
+      mapped_written: None,
       measure: None,
       measured: None,
     }
@@ -891,6 +898,7 @@ impl Tree {
     anchor.set(self.this.clone(), id);
     if let Some(node) = self.node_mut(id) {
       node.geometry = common.geometry;
+      node.mapped = common.mapped_geometry;
       node.measure = common.measure;
     }
 

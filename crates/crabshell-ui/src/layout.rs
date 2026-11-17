@@ -518,6 +518,13 @@ impl Tree {
       node.written = Some(rect);
       self.geometry.push((signal, rect));
     }
+    if let Some(signal) = node.mapped {
+      let mapped = transformed(chain, rect);
+      if node.mapped_written != Some(mapped) {
+        node.mapped_written = Some(mapped);
+        self.geometry.push((signal, mapped));
+      }
+    }
     let size = crate::Size::new(rect.width, rect.height);
     if let Some(measure) = &node.measure
       && node.measured != Some(size)
@@ -603,6 +610,15 @@ pub(crate) fn through(chain: &[Step], rect: Rect) -> Rect {
       Step::Transform(transform) => transform.map_rect(rect.outset(1.0)),
       Step::Shadow(shadow) => rect.union(shadow.reach(rect)),
     }
+  })
+}
+
+/// The box around `rect`, in the innermost space of `chain`, once each
+/// transform in it, from the innermost out, has moved it.
+fn transformed(chain: &[Step], rect: Rect) -> Rect {
+  chain.iter().rev().fold(rect, |rect, step| match step {
+    Step::Transform(transform) => transform.map_rect(rect),
+    Step::Shadow(_) => rect,
   })
 }
 
