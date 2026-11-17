@@ -92,48 +92,80 @@ fn shared_kib() -> u64 {
     .expect("an RssShmem line")
 }
 
+/// A window over the whole 640x480 output at scale 2, 4.7 MiB a buffer,
+/// whose background `tint` sets, and how many buffers hold memory.
+fn full_window(cx: &Cx, event_loop: &mut EventLoop) -> (crabshell_reactive::Signal<u8>, WindowId) {
+  let tint = cx.signal(0_u8);
+  let window = PanelWindow::new(&Output::new("FAKE-1"))
+    .anchors(Edge::Top | Edge::Bottom | Edge::Left | Edge::Right)
+    .style(move || Style::new().background(Color::rgb(tint.get(), 0, 0)));
+  let window = event_loop.platform().add_window(Window::new(cx, window));
+  frames(event_loop, window, 1);
+  (tint, window)
+}
+
+/// How many of window `id`'s buffers hold memory.
+fn buffers(event_loop: &mut EventLoop, id: WindowId) -> usize {
+  let info = event_loop.platform().window_info(id);
+  info.expect("the window").buffers
+}
+
 /// The fake reads a buffer until the next commit, as compositors that
-/// keep shm buffers do, so each new frame lands in a second buffer. Once
-/// the window rests, the memory of the spare the compositor released is
-/// given back, keeping the buffer shown, and nothing wakes the loop for
-/// it.
+/// keep shm buffers do, so each new frame lands in the buffer it read
+/// before. The spare is never emptied there, or every frame would be
+/// repainted whole.
 #[test]
-fn a_resting_window_gives_back_its_spare_buffers() {
+fn a_compositor_that_holds_the_buffer_shown_leaves_the_spare() {
   let (_fake, mut event_loop) = connect(Globals {
     scale: 2,
     ..Globals::default()
   });
   let cx = Cx::new(Runtime::current().new_owner());
-  let tint = cx.signal(0_u8);
-  // The whole 640x480 output at scale 2: 4.7 MiB a buffer.
-  let window = PanelWindow::new(&Output::new("FAKE-1"))
-    .anchors(Edge::Top | Edge::Bottom | Edge::Left | Edge::Right)
-    .style(move || Style::new().background(Color::rgb(tint.get(), 0, 0)));
-  let window = event_loop.platform().add_window(Window::new(&cx, window));
-  frames(&mut event_loop, window, 1);
-  let buffers = |event_loop: &mut EventLoop| {
-    let info = event_loop.platform().window_info(window);
-    info.expect("the window").buffers
-  };
+  let (tint, window) = full_window(&cx, &mut event_loop);
   for value in 1..=3 {
     tint.set(value);
     frames(&mut event_loop, window, 1);
-    assert_eq!(
-      buffers(&mut event_loop),
-      2,
-      "a new frame while the last is read"
-    );
-    let both = shared_kib();
-    wait(&mut event_loop, "the spare given back", |event_loop| {
-      buffers(event_loop) == 1
-    });
-    let one = shared_kib();
-    assert!(one + 4096 <= both, "{both} KiB with both, {one} KiB after");
+    run_for(&mut event_loop, Duration::from_millis(50));
+    assert_eq!(buffers(&mut event_loop, window), 2, "after frame {value}");
+  }
+  cx.owner().dispose();
+}
+
+/// Once the compositor releases the buffer shown too, as one that copies
+/// buffers does, the memory of the spare is given back, keeping the
+/// buffer shown, and nothing wakes the loop for it.
+#[test]
+fn a_spare_is_given_back_once_the_buffer_shown_is_released() {
+  let (fake, mut event_loop) = connect(Globals {
+    scale: 2,
+    ..Globals::default()
+  });
+  let cx = Cx::new(Runtime::current().new_owner());
+  let (tint, window) = full_window(&cx, &mut event_loop);
+  tint.set(1);
+  frames(&mut event_loop, window, 1);
+  assert_eq!(
+    buffers(&mut event_loop, window),
+    2,
+    "a frame while the last is read"
+  );
+  let both = shared_kib();
+  fake.run(fake::State::copy_buffers);
+  wait(&mut event_loop, "the spare given back", |event_loop| {
+    buffers(event_loop, window) == 1
+  });
+  let one = shared_kib();
+  assert!(one + 4096 <= both, "{both} KiB with both, {one} KiB after");
+  // Copied, each frame goes back into the one buffer.
+  for value in 2..=4 {
+    tint.set(value);
+    frames(&mut event_loop, window, 1);
+    run_for(&mut event_loop, Duration::from_millis(20));
+    assert_eq!(buffers(&mut event_loop, window), 1, "after frame {value}");
   }
   let wakeups = event_loop.platform().stats().wayland_wakeups;
   run_for(&mut event_loop, Duration::from_millis(200));
   assert_eq!(event_loop.platform().stats().wayland_wakeups, wakeups);
-  assert_eq!(buffers(&mut event_loop), 1);
   cx.owner().dispose();
 }
 

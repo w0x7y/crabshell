@@ -566,24 +566,6 @@ impl Platform {
   /// GIF it drew is due, moves it when that changes, and takes it out of
   /// the loop while none is. When it fires, the GIFs due move on a frame
   /// and their boxes repaint; a GIF not drawn then waits for nothing.
-  /// Gives back the spare buffers of each window with nothing to draw,
-  /// while nothing animates, once the compositor released them: the
-  /// release woke the loop anyway, and the window's next frame takes a
-  /// buffer again. An animation or a GIF would draw again within a frame,
-  /// so while one runs every window keeps its buffers.
-  fn trim_buffers(&mut self) {
-    if crabshell_ui::animating() || self.images.is_some() {
-      return;
-    }
-    for entry in &mut self.windows.entries {
-      if let Some(surface) = &mut entry.surface
-        && !entry.window.has_damage()
-      {
-        surface.trim_buffers();
-      }
-    }
-  }
-
   fn arm_images(&mut self) {
     let next = self.renderer.next_image_frame(Instant::now());
     if self.images.map(|(_, due)| due) == next {
@@ -612,6 +594,24 @@ impl Platform {
     match armed {
       Ok(token) => self.images = Some((token, due)),
       Err(error) => tracing::warn!(%error, "couldn't start the GIF timer"),
+    }
+  }
+
+  /// Gives back the spare buffers of each window with nothing to draw,
+  /// while nothing animates, once the compositor released them: the
+  /// release woke the loop anyway, and the window's next frame takes a
+  /// buffer again. An animation or a GIF would draw again within a frame,
+  /// so while one runs every window keeps its buffers.
+  fn trim_buffers(&mut self) {
+    if crabshell_ui::animating() || self.images.is_some() {
+      return;
+    }
+    for entry in &mut self.windows.entries {
+      if let Some(surface) = &mut entry.surface
+        && !entry.window.has_damage()
+      {
+        surface.trim_buffers();
+      }
     }
   }
 

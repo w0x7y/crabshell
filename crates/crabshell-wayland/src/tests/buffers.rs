@@ -131,6 +131,20 @@ fn a_buffer_that_cant_be_made_draws_nothing() {
   assert_eq!(buffers.len(), 0);
 }
 
+/// A compositor that holds the buffer shown until the next commit would
+/// have the spare emptied between every two frames, each then repainted
+/// whole, so nothing is emptied while the buffer drawn last is read.
+#[test]
+fn nothing_is_trimmed_while_the_buffer_drawn_last_is_read() {
+  let mut h = Harness::new();
+  h.draw((10, 10));
+  h.draw((10, 10));
+  h.release(0);
+  h.buffers.trim();
+  assert_eq!(h.buffers.held(), 2);
+  assert_eq!(h.emptied(0), 0);
+}
+
 #[test]
 fn trimming_empties_the_free_buffers_but_the_one_drawn_last() {
   let mut h = Harness::new();

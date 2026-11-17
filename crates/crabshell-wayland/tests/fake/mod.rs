@@ -95,6 +95,7 @@ impl Fake {
       touches: Vec::new(),
       effects: Vec::new(),
       serial: 0,
+      copying: false,
     };
     let thread = std::thread::spawn(move || serve(ours, state, received));
     let fake = Fake {
@@ -200,6 +201,9 @@ pub struct State {
   touches: Vec<WlTouch>,
   effects: Vec<ExtBackgroundEffectManagerV1>,
   serial: u32,
+  /// Whether a buffer is released as soon as it is committed, as a
+  /// compositor that copies it does; otherwise at the next commit.
+  copying: bool,
 }
 
 impl State {
@@ -219,6 +223,18 @@ impl State {
       data.lock().expect("a surface").layer.is_some()
     });
     panel.expect("a panel").clone()
+  }
+
+  /// Releases every buffer shown, and from now on each as it is
+  /// committed, as a compositor that copies them does.
+  pub fn copy_buffers(&mut self) {
+    self.copying = true;
+    for surface in &self.surfaces {
+      let data = surface.data::<Mutex<Surface>>().expect("a surface's data");
+      if let Some(shown) = data.lock().expect("a surface").shown.take() {
+        shown.release();
+      }
+    }
   }
 
   /// Says the compositor can blur now.
@@ -479,6 +495,11 @@ impl Dispatch<WlSurface, Mutex<Surface>> for State {
           && let Some(old) = ours.shown.replace(buffer)
         {
           old.release();
+        }
+        if state.copying
+          && let Some(copied) = ours.shown.take()
+        {
+          copied.release();
         }
         for callback in ours.callbacks.drain(..) {
           callback.done(0);

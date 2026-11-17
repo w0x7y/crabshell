@@ -79,14 +79,22 @@ impl<B: ShmBuffer> Buffers<B> {
     Some(slot)
   }
 
-  /// Gives back the memory of each buffer the compositor isn't reading,
-  /// but the one drawn last, which holds the frame shown. The buffers are
-  /// kept, so the compositor hears nothing, and one drawn again is
-  /// repainted whole.
+  /// Once the compositor released the buffer drawn last, which holds the
+  /// frame shown, gives back the memory of every other buffer it isn't
+  /// reading. One that holds the buffer shown until the next commit
+  /// would otherwise have the spare emptied between every two frames.
+  /// The buffers are kept, so the compositor hears nothing, and one drawn
+  /// again is repainted whole.
   pub(crate) fn trim(&mut self) {
-    let last = self.slots.iter().map(|slot| slot.drawn).max();
+    let Some(last) = self.slots.iter().max_by_key(|slot| slot.drawn) else {
+      return;
+    };
+    if last.buffer.busy() {
+      return;
+    }
+    let last = last.drawn;
     for slot in &mut self.slots {
-      if !slot.emptied && !slot.buffer.busy() && Some(slot.drawn) != last {
+      if !slot.emptied && !slot.buffer.busy() && slot.drawn != last {
         slot.buffer.empty();
         slot.age = BufferAge::default();
         slot.emptied = true;
