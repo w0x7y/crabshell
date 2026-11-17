@@ -14,6 +14,7 @@
 //! Each directory is listed once, so a lookup checks names in memory
 //! instead of asking the filesystem about every candidate.
 
+use std::cell::{RefCell, RefMut};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -32,6 +33,40 @@ const REMEMBERED: usize = 1024;
 
 /// The largest `index.theme` read, in bytes.
 const MAX_INDEX_BYTES: u64 = 1024 * 1024;
+
+/// The icon theme in use and the lookups in it, shared by the renderer
+/// and `cx.icon_path`, so both find the same file and read each directory
+/// once.
+#[derive(Clone)]
+pub struct IconLookup(Rc<RefCell<Lookup>>);
+
+pub(crate) struct Lookup {
+  pub(crate) theme: String,
+  pub(crate) themes: Themes,
+}
+
+impl IconLookup {
+  pub(crate) fn new(themes: Themes) -> IconLookup {
+    IconLookup(Rc::new(RefCell::new(Lookup {
+      theme: crate::icons::DEFAULT_THEME.to_owned(),
+      themes,
+    })))
+  }
+
+  /// The file the current theme resolves icon `name` to at `size`
+  /// logical pixels and scale 1, through the themes it inherits and
+  /// `hicolor`, as an `Icon` finds it.
+  pub fn find(&self, name: &str, size: u32) -> Option<PathBuf> {
+    let mut lookup = self.borrow();
+    let Lookup { theme, themes } = &mut *lookup;
+    themes.find(theme, name, size, 1)
+  }
+
+  /// No user code runs while this is held.
+  pub(crate) fn borrow(&self) -> RefMut<'_, Lookup> {
+    self.0.borrow_mut()
+  }
+}
 
 /// Icon themes and the icons found in them, cached.
 pub(crate) struct Themes {

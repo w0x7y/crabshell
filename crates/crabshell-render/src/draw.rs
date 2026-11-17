@@ -20,6 +20,7 @@ use tiny_skia::{
 
 use crate::damage::{BufferAge, DamageHistory, PixelRect};
 use crate::icons::{Drawn, Icons};
+use crate::theme::IconLookup;
 
 mod canvas;
 mod effects;
@@ -150,6 +151,12 @@ impl Renderer {
   /// Sets the icon theme names are looked up in.
   pub fn set_icon_theme(&mut self, theme: impl Into<String>) {
     self.icons.set_theme(theme.into());
+  }
+
+  /// The lookup icon names go through, which follows
+  /// [`set_icon_theme`](Renderer::set_icon_theme).
+  pub fn icon_lookup(&self) -> IconLookup {
+    self.icons.lookup()
   }
 
   /// The number of rasterized icons cached, for tests.
@@ -1501,7 +1508,12 @@ impl Painter<'_> {
     let size = icon.rect.width.round() as u32;
     let theme_scale = scale.ceil().max(1.0) as u32;
     let sizes = (side as u32, size, theme_scale);
-    if let Some(image) = self.icons.get(icon.source, sizes, icon.tint) {
+    // Asked twice when there is a fallback; the second is a cache hit.
+    let source = match icon.fallback {
+      Some(fallback) if self.icons.get(icon.source, sizes, icon.tint).is_none() => fallback,
+      _ => icon.source,
+    };
+    if let Some(image) = self.icons.get(source, sizes, icon.tint) {
       pixmap.draw_pixmap(
         x as i32,
         y as i32,

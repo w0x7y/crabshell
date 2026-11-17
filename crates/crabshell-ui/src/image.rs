@@ -384,6 +384,9 @@ impl Tree {
       // A new picture of the same size only needs a repaint.
       tree.update_icon(id, |icon| repaint(&mut icon.source, Some(value)));
     });
+    self.bind_opt(id, props.fallback, "fallback", |tree, id, value| {
+      tree.update_icon(id, |icon| repaint(&mut icon.fallback, Some(value)));
+    });
     self.bind_opt(id, props.size, "size", |tree, id, value| {
       tree.update_icon(id, |icon| replace(&mut icon.size, value));
     });

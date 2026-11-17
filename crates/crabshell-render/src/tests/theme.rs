@@ -556,3 +556,58 @@ fn directories_that_would_leave_the_theme_are_refused() {
   assert!(logs.contains(r#"directory="../other""#), "{logs}");
   assert!(logs.contains(r#"directory="/tmp""#), "{logs}");
 }
+
+#[test]
+fn the_icon_lookup_follows_the_renderers_theme() {
+  let fixtures =
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../crabshell/tests/fixtures/icons");
+  let mut renderer = Renderer::with_icon_dirs(vec![fixtures.clone()]);
+  let lookup = renderer.icon_lookup();
+  assert_eq!(lookup.find("computer-symbolic", 16), None, "not in hicolor");
+  renderer.set_icon_theme("crabshell-fixtures");
+  assert_eq!(
+    lookup.find("computer-symbolic", 16),
+    Some(fixtures.join("crabshell-fixtures/symbolic/computer-symbolic.svg"))
+  );
+  assert_eq!(lookup.find("not-in-any-theme", 16), None);
+}
+
+#[test]
+fn the_icon_lookup_reaches_inherited_themes_and_hicolor() {
+  let tree = Tree::new("lookup");
+  tree
+    .file(
+      "data/icons/child/index.theme",
+      "[Icon Theme]\nInherits=parent\nDirectories=16\n[16]\nSize=16\nType=Fixed\n",
+    )
+    .file(
+      "data/icons/parent/index.theme",
+      "[Icon Theme]\nDirectories=16\n[16]\nSize=16\nType=Fixed\n",
+    )
+    .file("data/icons/parent/16/inherited.png", "")
+    .file(
+      "data/icons/hicolor/index.theme",
+      "[Icon Theme]\nDirectories=16\n[16]\nSize=16\nType=Fixed\n",
+    )
+    .file("data/icons/hicolor/16/colorful.png", "");
+  let mut renderer = Renderer::with_icon_dirs(tree.bases());
+  renderer.set_icon_theme("child");
+  let lookup = renderer.icon_lookup();
+  let found = |name| {
+    lookup.find(name, 16).map(|path| {
+      path
+        .strip_prefix(&tree.root)
+        .expect("under the root")
+        .to_owned()
+    })
+  };
+  assert_eq!(
+    found("inherited"),
+    Some("data/icons/parent/16/inherited.png".into())
+  );
+  assert_eq!(
+    found("colorful"),
+    Some("data/icons/hicolor/16/colorful.png".into())
+  );
+  assert_eq!(found("absent"), None);
+}

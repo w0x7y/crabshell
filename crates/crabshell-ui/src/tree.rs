@@ -337,6 +337,7 @@ pub(crate) struct ImageNode {
 pub(crate) struct IconNode {
   /// `None` until the icon's binding first runs.
   pub(crate) source: Option<IconSource>,
+  pub(crate) fallback: Option<IconSource>,
   pub(crate) size: u32,
   pub(crate) tint: Option<Color>,
 }
@@ -869,6 +870,7 @@ impl Tree {
       ElementKind::Canvas(_) => NodeKind::Canvas(CanvasNode::default()),
       ElementKind::Icon(_) => NodeKind::Icon(IconNode {
         source: None,
+        fallback: None,
         size: crate::Icon::DEFAULT_SIZE,
         tint: None,
       }),

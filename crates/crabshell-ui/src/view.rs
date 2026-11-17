@@ -155,6 +155,7 @@ impl<'a> NodeView<'a> {
       NodeKind::Icon(icon) => match &icon.source {
         Some(source) => Content::Icon(IconView {
           source,
+          fallback: icon.fallback.as_ref(),
           rect: icon_rect(self.node.content, icon.size),
           tint: icon.tint,
         }),
@@ -370,6 +371,8 @@ impl<'a> TextView<'a> {
 pub struct IconView<'a> {
   /// What to show.
   pub source: &'a IconSource,
+  /// What to show when `source` can't be loaded.
+  pub fallback: Option<&'a IconSource>,
   /// Where: a square of the icon's size, centered in the node.
   pub rect: Rect,
   /// The color its pixels are painted in, keeping their alpha.

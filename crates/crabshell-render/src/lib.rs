@@ -82,3 +82,4 @@ pub use colors::quantize_colors;
 pub use damage::{BufferAge, DamageHistory, PixelRect};
 pub use draw::{Canvas, CanvasError, PixelFormat, Renderer};
 pub use icons::DEFAULT_THEME as DEFAULT_ICON_THEME;
+pub use theme::IconLookup;

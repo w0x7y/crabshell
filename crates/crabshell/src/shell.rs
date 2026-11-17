@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use calloop::generic::Generic;
 use calloop::{Interest, Mode};
 use crabshell_reactive::{Owner, ReadSignal, Runtime, Signal};
+use crabshell_render::IconLookup;
 use crabshell_services::Sway;
 use crabshell_ui::{Color, Cx, FloatingWindow, IntoProp, Lock, Output, SessionLock, Window};
 use crabshell_wayland::{
@@ -231,6 +232,8 @@ impl Shell {
     }
     // `cx.measure_text` and `cx.add_font` use the fonts windows lay out with.
     cx.provide(event_loop.platform().text_system().clone());
+    // `cx.icon_path` finds icons as windows draw them.
+    cx.provide(event_loop.platform().icon_lookup());
     let state = Rc::new(RefCell::new(PerOutput::new()));
     let outputs = cx.signal(event_loop.platform().outputs().cloned().collect::<Vec<_>>());
     cx.provide(Service {
@@ -1023,6 +1026,13 @@ pub trait ShellExt {
   /// `hicolor`. Every window is repainted.
   fn set_icon_theme(&self, theme: impl Into<String>);
 
+  /// The file the icon theme resolves `name` to at `size` logical pixels,
+  /// through the themes it inherits and `hicolor`, as an [`Icon`](crabshell_ui::Icon) finds
+  /// it; `.is_some()` says the theme has the icon. It isn't reactive
+  /// itself: a binding that reads the signal it sets the theme from runs
+  /// again when that changes. `None` without the shell [`run`] starts.
+  fn icon_path(&self, name: &str, size: u32) -> Option<PathBuf>;
+
   /// A signal whose value survives a reload. `key` names it: asking again
   /// with the same key gives the same signal, which lives as long as the
   /// shell, not this context, so it outlasts an output unplugged and
@@ -1342,6 +1352,10 @@ impl ShellExt for Cx {
     crabshell_services::stop_programs(self);
     remove_clipboard_files(self);
     std::process::exit(code)
+  }
+
+  fn icon_path(&self, name: &str, size: u32) -> Option<PathBuf> {
+    self.service::<IconLookup>()?.find(name, size)
   }
 
   fn set_icon_theme(&self, theme: impl Into<String>) {

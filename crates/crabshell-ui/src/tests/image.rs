@@ -1,9 +1,9 @@
-//! An image's filters and playback, and an icon's tint: what the view
+//! An image's filters and playback, and an icon's tint and fallback: what the view
 //! hands the renderer, what a change repaints, and the platform's repaint
 //! of a GIF's next frame.
 
 use super::{Harness, capture_logs, node_at};
-use crate::{Color, Content, Icon, Image, ImageFilters, Row, Stack, Style, Window};
+use crate::{Color, Content, Icon, IconSource, Image, ImageFilters, Row, Stack, Style, Window};
 
 /// The filters, id and playing flag of the image at `path`.
 fn image_at(window: &Window, path: &[usize]) -> (ImageFilters, u64, bool) {
@@ -254,4 +254,62 @@ fn the_platform_repaints_one_image_by_its_id() {
   window.take_damage();
   assert!(!window.repaint_image(second));
   assert!(!window.has_damage());
+}
+
+fn fallback_at(window: &Window, path: &[usize]) -> Option<IconSource> {
+  let view = window.view();
+  match node_at(view.root(), path).content() {
+    Content::Icon(icon) => icon.fallback.cloned(),
+    _ => panic!("no icon at {path:?}"),
+  }
+}
+
+#[test]
+fn an_icons_fallback_reaches_the_view_and_a_change_repaints_only_it() {
+  let mut h = Harness::new();
+  let fallback = h.cx.signal(String::from("b"));
+  let row = Row::new().child(Icon::new("a")).child(
+    Icon::new("a")
+      .size(10)
+      .fallback(move || IconSource::Name(fallback.get())),
+  );
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+  assert_eq!(fallback_at(&window, &[0, 0]), None);
+  assert_eq!(
+    fallback_at(&window, &[0, 1]),
+    Some(IconSource::Name("b".into()))
+  );
+  let icon = super::rect_at(&window, &[0, 1]);
+  window.take_damage();
+  fallback.set("c".into());
+  h.runtime.flush();
+  assert!(!window.needs_layout());
+  assert_eq!(window.take_damage(), vec![icon]);
+  assert_eq!(
+    fallback_at(&window, &[0, 1]),
+    Some(IconSource::Name("c".into()))
+  );
+}
+
+#[test]
+fn a_panicking_fallback_is_logged_with_its_path() {
+  let mut h = Harness::new();
+  let fail = h.cx.signal(false);
+  let icon = Icon::new("a").fallback(move || {
+    assert!(!fail.get(), "fallback failure");
+    IconSource::Name("b".into())
+  });
+  let window = h.window(h.panel().child(Row::new().child(icon)), 200.0, 30.0);
+  let logs = capture_logs(|| {
+    fail.set(true);
+    h.frame(&window);
+  });
+  assert!(
+    logs.contains("effect PanelWindow[DP-1]/Row/Icon[0].fallback panicked and is disabled"),
+    "{logs}"
+  );
+  assert_eq!(
+    fallback_at(&window, &[0, 0]),
+    Some(IconSource::Name("b".into()))
+  );
 }

@@ -15,7 +15,7 @@ use resvg::usvg;
 use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, PixmapRef, Transform};
 
 use crate::animation::Frames;
-use crate::theme::Themes;
+use crate::theme::{IconLookup, Lookup, Themes};
 use crate::worker::{Job, Worker};
 
 /// How many rasterized icons stay cached. Past that, icons no draw used
@@ -56,8 +56,7 @@ pub const DEFAULT_THEME: &str = "hicolor";
 
 /// Rasterized icons, by source and size in physical pixels.
 pub(crate) struct Icons {
-  theme: String,
-  themes: Themes,
+  lookup: IconLookup,
   cache: HashMap<Key, Entry>,
   /// Counts draws, to tell which icons the latest one used.
   frame: u64,
@@ -349,8 +348,7 @@ impl Icons {
 
   pub(crate) fn with_themes(themes: Themes) -> Icons {
     Icons {
-      theme: DEFAULT_THEME.to_owned(),
-      themes,
+      lookup: IconLookup::new(themes),
       cache: HashMap::new(),
       frame: 0,
       failed: HashSet::new(),
@@ -490,7 +488,11 @@ impl Icons {
   }
 
   pub(crate) fn set_theme(&mut self, theme: String) {
-    self.theme = theme;
+    self.lookup.borrow().theme = theme;
+  }
+
+  pub(crate) fn lookup(&self) -> IconLookup {
+    self.lookup.clone()
   }
 
   /// The number of rasterized icons held, for tests.
@@ -546,7 +548,7 @@ impl Icons {
   ) -> Option<&Pixmap> {
     let key = match source {
       IconSource::Name(name) => Key::Name {
-        theme: self.theme.clone(),
+        theme: self.lookup.borrow().theme.clone(),
         name: name.clone(),
         size,
         scale,
@@ -568,10 +570,14 @@ impl Icons {
     };
     if !self.cache.contains_key(&key) {
       let rasterized = match source {
-        IconSource::Name(name) => match self.themes.find(&self.theme, name, size, scale) {
-          Some(path) => rasterize_file(&path, side),
-          None => Err(format!("no icon named {name:?} in theme {:?}", self.theme)),
-        },
+        IconSource::Name(name) => {
+          let mut lookup = self.lookup.borrow();
+          let Lookup { theme, themes } = &mut *lookup;
+          match themes.find(theme, name, size, scale) {
+            Some(path) => rasterize_file(&path, side),
+            None => Err(format!("no icon named {name:?} in theme {theme:?}")),
+          }
+        }
         IconSource::File(path) => rasterize_file(path, side),
         IconSource::Pixels(pixels) => from_argb(pixels).and_then(|image| fit(&image, side)),
       };

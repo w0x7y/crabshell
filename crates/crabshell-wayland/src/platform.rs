@@ -5,7 +5,9 @@ use std::time::{Duration, Instant};
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{LoopHandle, LoopSignal, RegistrationToken};
 use crabshell_reactive::Runtime;
-use crabshell_render::{BufferAge, Canvas, DamageHistory, PixelFormat, PixelRect, Renderer};
+use crabshell_render::{
+  BufferAge, Canvas, DamageHistory, IconLookup, PixelFormat, PixelRect, Renderer,
+};
 use crabshell_ui::{CursorShape, TextSystem, Window};
 use smithay_client_toolkit::compositor::CompositorState;
 use smithay_client_toolkit::output::OutputState;
@@ -858,6 +860,12 @@ impl Platform {
       surface.frames.repaint_whole();
     }
     self.icon_theme = Some(theme);
+  }
+
+  /// The lookup icon names are drawn through, which follows
+  /// [`set_icon_theme`](Platform::set_icon_theme).
+  pub fn icon_lookup(&self) -> IconLookup {
+    self.renderer.icon_lookup()
   }
 
   /// The text system windows are laid out and drawn with.

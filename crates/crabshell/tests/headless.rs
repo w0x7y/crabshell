@@ -1641,15 +1641,19 @@ fn run_as_child() {
       dashboard::shell(cx, feeds);
       cx.set_icon_theme(FIXTURE_ICONS);
     }),
-    // A red icon from the fixtures' theme, on a bar that names no theme.
+    // A red icon from the fixtures' theme, as a missing icon's fallback,
+    // on a bar that names no theme.
     Ok("themed icon") => crabshell::run(|cx| {
+      let found = cx.icon_path("computer-symbolic", 32).is_some();
+      eprintln!("the theme has computer-symbolic: {found}");
       cx.per_output(|_, output| {
         PanelWindow::new(output)
           .anchors(Edge::Top | Edge::Left | Edge::Right)
           .height(32)
           .style(Style::new().background(Color::rgb(0, 0, 0)))
           .child(
-            Icon::new("computer-symbolic")
+            Icon::new("not-in-any-theme")
+              .fallback("computer-symbolic")
               .size(32)
               .tint(Color::rgb(255, 0, 0)),
           )
@@ -5074,6 +5078,7 @@ fn a_config_without_an_icon_theme_gets_gtks_and_its_own_wins_over_it() {
     ];
     let sway = Sway::start();
     let shell = ExampleBar::spawn(&sway, this_as_shell(TEST), &env);
+    shell.wait_for(&format!("the theme has computer-symbolic: {drawn}"));
     shell.wait_for(FIRST_FRAME);
     let shot = steady_shot(&sway, "HEADLESS-1");
     assert_eq!(red_pixels(&shot) > 100, drawn, "GTK names {theme}");

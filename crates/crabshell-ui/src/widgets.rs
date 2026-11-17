@@ -158,6 +158,7 @@ pub(crate) struct TextProps {
 
 pub(crate) struct IconProps {
   pub(crate) source: Prop<IconSource>,
+  pub(crate) fallback: Option<Prop<IconSource>>,
   pub(crate) size: Option<Prop<u32>>,
   pub(crate) tint: Option<Prop<Option<Color>>>,
 }
@@ -883,6 +884,7 @@ impl Icon {
     Icon {
       icon: IconProps {
         source: source.into_prop(),
+        fallback: None,
         size: None,
         tint: None,
       },
@@ -901,6 +903,14 @@ impl Icon {
   /// it as it is.
   pub fn tint(mut self, tint: impl IntoProp<Option<Color>>) -> Icon {
     self.icon.tint = Some(tint.into_prop());
+    self
+  }
+
+  /// What to draw when the icon's own source isn't in the theme or its
+  /// file can't be loaded, taking what [`Icon::new`] takes. A chain of
+  /// fallbacks picks one with `cx.icon_path`.
+  pub fn fallback(mut self, fallback: impl IntoProp<IconSource>) -> Icon {
+    self.icon.fallback = Some(fallback.into_prop());
     self
   }
 

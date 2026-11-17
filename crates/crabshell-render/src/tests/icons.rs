@@ -477,3 +477,26 @@ fn icons_used_by_any_recent_draw_stay_cached() {
   }
   assert_eq!(scene.renderer.rasterized_icons(), 140);
 }
+
+#[test]
+fn an_icon_that_cant_be_loaded_draws_its_fallback() {
+  let draw = |icon: Icon| {
+    let mut scene = Scene::new();
+    scene.renderer = Renderer::with_icon_dirs(Vec::new());
+    let window = scene.window(scene.panel().child(icon.size(20)), 30.0, 24.0);
+    scene.full(&window, 1.5).pixels
+  };
+  let shapes = draw(Icon::new(fixture("shapes.svg")));
+  assert!(shapes.iter().any(|&byte| byte != 0), "the fixture draws");
+  // A name not in the theme, and a file that isn't there.
+  let missing_name = draw(Icon::new("not-in-any-theme").fallback(fixture("shapes.svg")));
+  let missing_file = draw(Icon::new(fixture("missing.svg")).fallback(fixture("shapes.svg")));
+  assert!(missing_name == shapes);
+  assert!(missing_file == shapes);
+  // A source that loads keeps its own picture.
+  let loads = draw(Icon::new(fixture("shapes.svg")).fallback(fixture("symbolic.svg")));
+  assert!(loads == shapes);
+  // A fallback that fails too draws nothing.
+  let neither = draw(Icon::new("not-in-any-theme").fallback("also-not-in-any-theme"));
+  assert!(neither.iter().all(|&byte| byte == 0));
+}
