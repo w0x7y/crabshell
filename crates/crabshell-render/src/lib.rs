@@ -50,33 +50,15 @@
 //!
 //! # How it works
 //!
-//! - Damage arrives in logical pixels and becomes buffer pixels, rounded
-//!   outward. Overlapping areas are merged, a buffer that skipped frames
-//!   also repaints what changed in them, and when more than half of the
-//!   buffer is dirty, all of it is repainted.
-//! - The areas are drawn from scratch in 64-pixel tiles of a fixed grid,
-//!   each into an RGBA pixmap of its own that clips the drawing, and copied
-//!   into the buffer in the buffer's byte order. A pixel is always drawn
-//!   in the same tile, so a repaint gives the same pixels as drawing
-//!   everything, even where a tile's edge cuts a curve.
-//! - Rectangles snap to whole pixels, so edges stay sharp at fractional
-//!   scales. A border is drawn inside the edge. Opacity applies to a widget
-//!   and everything inside it as one layer.
-//! - Text is drawn from the cosmic-text buffer layout measured, as
-//!   grayscale masks, with the baseline on a whole pixel. It isn't clipped:
-//!   the window's damage covers text that overflows its widget.
-//! - Icons are rasterized at their size in pixels and cached by source and
-//!   that size. Once the platform calls
-//!   [`Renderer::decode_off_thread`], large image files are decoded on a
-//!   worker thread that runs only while it has work, and the platform
-//!   repaints the images that waited for them.
-//! - A transformed subtree is drawn at the resolution its transforms
-//!   scale it up to, up to four times, so scaled text stays sharp.
-//! - A screencopy view's frame is scaled to its box and kept, one per
-//!   view, until a new frame or box replaces it. [`capture_frame`] turns
-//!   a compositor's buffer into such a frame, scaled down to the view.
-//! - [`quantize_colors`] decodes an image file as `Image` does and finds
-//!   its main colors by median cut, as for a theme taken from a wallpaper.
+//! Damage arrives in logical pixels and becomes buffer pixels, rounded
+//! outward. A buffer that skipped frames also repaints what changed in
+//! them, and one more than half dirty repaints whole. Damaged areas are
+//! drawn in fixed 64-pixel tiles, so a repaint matches a full draw. Edges
+//! snap to whole pixels, text is drawn as grayscale masks, and icons are
+//! cached by source and size. [`capture_frame`] and [`quantize_colors`]
+//! serve screencopy views and wallpaper themes. The design doc's
+//! [Rendering](https://github.com/w0x7y/crabshell/blob/main/docs/design.md#rendering)
+//! section has the full rules.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
