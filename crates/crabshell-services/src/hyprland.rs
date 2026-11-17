@@ -17,7 +17,9 @@ use std::panic::{self, AssertUnwindSafe, Location};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Once;
+use std::time::{Duration, Instant};
 
+use calloop::timer::TimeoutAction;
 use calloop::{Interest, RegistrationToken};
 use crabshell_reactive::{Owner, ReadSignal, Signal};
 use crabshell_ui::Cx;
@@ -41,6 +43,11 @@ const MAX_DISPATCHES: usize = 64;
 /// The most requests out at once. Hyprland's listen backlog holds 10, and
 /// a connect to a full one would block the loop.
 const MAX_IN_FLIGHT: usize = 8;
+
+/// How long a request another program's full backlog holds up waits
+/// before it tries again, when none of the shell's requests is out to
+/// end and make it try sooner.
+const RETRY: Duration = Duration::from_millis(100);
 
 /// The longest text kept, cut at a character.
 pub(crate) const MAX_TEXT: usize = 4 * 1024;
@@ -362,6 +369,9 @@ struct State {
   focusing: Vec<String>,
   /// Requests waiting for fewer than [`MAX_IN_FLIGHT`] to be out.
   queued: VecDeque<(Asked, String)>,
+  /// The timer that tries the queue again, while another program's
+  /// backlog holds it up and none of the shell's requests is out.
+  retry: Option<RegistrationToken>,
   /// The urgent windows from before the event socket was connected
   /// again, which the events Hyprland dropped may have focused or closed.
   recheck: Option<Recheck>,
@@ -480,6 +490,7 @@ impl Service {
         status_asked: false,
         focusing: Vec::new(),
         queued: VecDeque::new(),
+        retry: None,
         reconnected: false,
         recheck: None,
       });
@@ -642,7 +653,10 @@ impl Service {
       };
       match self.send(state, &command, asked) {
         Sent::Out => {}
-        Sent::Full => return state.queued.push_front((asked, command)),
+        Sent::Full => {
+          state.queued.push_front((asked, command));
+          return self.retry_later(state);
+        }
         Sent::Failed => match asked {
           Asked::List(query) => {
             state.reading[query as usize] = Reading::Idle;
@@ -657,6 +671,31 @@ impl Service {
         },
       }
     }
+  }
+
+  /// Tries the queue again after [`RETRY`], on a one-shot timer, when no
+  /// request of the shell's is out to end and try it sooner.
+  fn retry_later(self: &Rc<Self>, state: &mut State) {
+    if !state.requests.is_empty() || state.retry.is_some() {
+      return;
+    }
+    let Some(event_loop) = self.shared.event_loop() else {
+      return;
+    };
+    let service = Rc::clone(self);
+    let retry = Box::new(move || {
+      // Gone with this call, so nothing removes it again.
+      if let Some(state) = service.state.borrow_mut().as_mut() {
+        state.retry = None;
+      }
+      if !service.alive() {
+        service.close();
+      } else if let Some(state) = service.state.borrow_mut().as_mut() {
+        service.send_queued(state);
+      }
+      TimeoutAction::Drop
+    });
+    state.retry = event_loop.insert_timer(Instant::now() + RETRY, retry);
   }
 
   /// Connects and sends `command`. `Failed`, logged once, if Hyprland
@@ -975,12 +1014,13 @@ impl Service {
     state.burst_of = [None; 4];
     state.bursts.clear();
     state.queued.clear();
+    let retry = state.retry.take();
     state.status_asked = false;
     state.focusing.clear();
     let Some(event_loop) = self.shared.event_loop() else {
       return;
     };
-    let readers = events.map(|events| events.reader).into_iter();
+    let readers = events.map(|events| events.reader).into_iter().chain(retry);
     for reader in readers.chain(requests.into_iter().map(|request| request.reader)) {
       event_loop.remove(reader);
     }

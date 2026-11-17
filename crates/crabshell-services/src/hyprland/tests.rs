@@ -1328,6 +1328,37 @@ fn without_waiting<R>(f: impl FnOnce() -> R) -> R {
 }
 
 #[test]
+fn a_request_another_programs_backlog_holds_up_goes_on_its_own_once_there_is_room() {
+  let mut fake = FakeHyprland::new();
+  let socket = fake.dir.join(".socket.sock");
+  std::fs::remove_file(&socket).expect("the request socket");
+  fake.requests = listen_with_room_for_one(&socket);
+  let mut shell = Harness::new(fake.config());
+  let hyprland = without_waiting(|| shell.cx.hyprland());
+  let _events = fake.events();
+  for _ in 0..4 {
+    fake.answer(&replies());
+    run(&mut shell);
+  }
+  // Another program fills the backlog while none of the shell's is out,
+  // and nothing else happens after.
+  let other = UnixStream::connect(&socket).expect("another program");
+  without_waiting(|| hyprland.dispatch("workspace 1"));
+  run(&mut shell);
+  let (taken, _) = fake.requests.accept().expect("the other program");
+  drop((other, taken));
+  shell.run_until(Instant::now() + Duration::from_millis(300));
+  assert_eq!(fake.answer(&[]), ["dispatch workspace 1"]);
+  run(&mut shell);
+  // Asleep once it went: the retry was a one-shot.
+  assert_eq!(
+    shell.run_until(Instant::now() + Duration::from_millis(500)),
+    1,
+    "only the run's own deadline"
+  );
+}
+
+#[test]
 fn a_full_backlog_queues_a_request_until_one_ends_or_another_is_made() {
   let mut fake = FakeHyprland::new();
   let socket = fake.dir.join(".socket.sock");
