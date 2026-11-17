@@ -11,7 +11,7 @@ use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp, Zoned};
 
 use super::{Clocks, EARLY, Precision, boundaries, current, system_zone};
-use crate::testing::{Harness, PrivateBus, capture_logs, offline};
+use crate::testing::{Harness, PrivateBus, offline};
 use crate::{Config, ServicesExt};
 
 fn at(time: &str) -> Timestamp {
@@ -291,8 +291,8 @@ fn one_system_bus_watcher_serves_every_clock() {
   let clocks = shell.cx.service::<Clocks>().expect("provided");
   let held = Rc::strong_count(&clocks);
   shell.cx.clock(Precision::Minute);
-  // The first clock adds its timer and the watcher, which waits on the
-  // executor until the loop runs; the second only its timer.
+  // The first clock adds its timer and the one that starts the watcher
+  // a moment later; the second only its timer.
   assert_eq!(Rc::strong_count(&clocks), held + 2);
   shell.cx.clock(Precision::Second);
   assert_eq!(Rc::strong_count(&clocks), held + 3);
@@ -309,18 +309,15 @@ fn the_system_bus_is_reached_only_once_the_shell_has_started() {
     ),
     ..offline()
   });
-  let logs = capture_logs(|| {
-    shell.cx.clock(Precision::Day);
-    shell.run_until(Instant::now() + Duration::from_millis(100));
-  });
-  assert!(
-    !logs.contains("no system bus"),
-    "not before the first frame: {logs}"
-  );
-  let logs = capture_logs(|| {
-    shell.run_until(Instant::now() + Duration::from_millis(300));
-  });
-  assert!(logs.contains("no system bus"), "{logs}");
+  let clocks = shell.cx.service::<Clocks>().expect("provided");
+  let held = Rc::strong_count(&clocks);
+  shell.cx.clock(Precision::Day);
+  // The clock's timer and the timer that starts the watcher.
+  shell.run_until(Instant::now() + Duration::from_millis(100));
+  assert_eq!(Rc::strong_count(&clocks), held + 2, "not reached yet");
+  // The watcher ran and, with no bus there, ended.
+  shell.run_until(Instant::now() + Duration::from_millis(300));
+  assert_eq!(Rc::strong_count(&clocks), held + 1);
 }
 
 #[test]
