@@ -70,6 +70,8 @@ pub const EXIT_NO_COMPOSITOR: i32 = 2;
 pub fn run(root: impl FnOnce(&Cx)) -> ! {
   let started = Instant::now();
   init_logging();
+  #[cfg(target_env = "gnu")]
+  crate::tuned::start_again_tuned();
   let mut event_loop = match EventLoop::connect() {
     Ok(event_loop) => event_loop,
     Err(error) => {

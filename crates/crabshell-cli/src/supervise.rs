@@ -662,8 +662,10 @@ fn timed_build(config: &Path, target: &Path) -> Result<Built, String> {
 /// By default the threshold rises to the size of each large block freed,
 /// so after a wallpaper is decoded the next one's buffers come from the
 /// heap and stay there: tens of MiB for a 4K image. The shell's own
-/// `spawn` takes it out of what it starts. Kept in step with
-/// crabshell-services' `spawn::TUNABLE`.
+/// `spawn` takes it out of what it starts. A shell started without the
+/// supervisor starts itself again with crabshell-services'
+/// `shell_tunables`, which a test keeps this in step with; set here, the
+/// shell skips that.
 pub(crate) const TUNABLE: &str = "glibc.malloc.mmap_threshold=131072";
 
 /// `GLIBC_TUNABLES` for the shell: `old` with [`TUNABLE`] added, unless it

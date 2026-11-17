@@ -5049,6 +5049,50 @@ fn a_1080p_wallpaper_crossfade_holds_both_pictures_only_while_it_runs() {
   sleeps(&mut shell);
 }
 
+/// A shell started without the supervisor, as the dashboard example
+/// from a terminal, starts itself again with the `GLIBC_TUNABLES` the
+/// supervisor gives a shell, so a wallpaper it replaces is given back:
+/// before, the RSS kept the high-water mark of both pictures, 52 MiB
+/// against 30.
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_shell_run_alone_starts_again_with_the_mmap_threshold_and_frees_a_replaced_wallpaper() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let files = DashboardFiles::new();
+  let mut desktop = Desktop::new("tuned");
+  let first = files.wallpaper_1080p().display().to_string();
+  desktop.env.push(("WALLPAPER", first));
+  let dashboard = desktop.run(&sway, "dashboard");
+  dashboard.wait_for(FIRST_FRAME);
+  let environ = std::fs::read(format!("/proc/{}/environ", dashboard.child.id()))
+    .expect("the shell's environment");
+  let tuned = environ
+    .split(|&byte| byte == 0)
+    .any(|entry| entry == b"GLIBC_TUNABLES=glibc.malloc.mmap_threshold=131072");
+  assert!(
+    tuned,
+    "the shell started again with the supervisor's tunable"
+  );
+  ipc_call(&sway, "dashboard", "close");
+  dashboard.wait_until_quiet();
+  let resting = dashboard.rss_kib() as f64 / 1024.0;
+
+  let second = files.dir.join("second.png");
+  gradient_png(&second, [0xa6, 0xe3, 0xa1], [0x31, 0x32, 0x44]);
+  ipc_call_with(&sway, "wallpaper", "set", &[&second.display().to_string()]);
+  // The crossfade runs 800 ms after the new picture is decoded.
+  std::thread::sleep(Duration::from_secs(2));
+  dashboard.wait_until_quiet();
+  let after = dashboard.rss_kib() as f64 / 1024.0;
+  eprintln!("a 1080p wallpaper replaced: RSS {resting:.1} MiB before, {after:.1} MiB after");
+  // A 1920x1080 picture decoded is 7.9 MiB.
+  assert!(
+    after < resting + 4.0,
+    "the old picture given back: {after:.1} MiB"
+  );
+}
+
 thread_local! {
   /// How many times [`counted_cpu`] started the CPU's samples.
   static CPU_STARTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };

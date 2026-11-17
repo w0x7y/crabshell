@@ -69,6 +69,8 @@ mod per_output;
 mod persist;
 mod shell;
 mod switch_log;
+#[cfg(target_env = "gnu")]
+mod tuned;
 
 #[cfg(test)]
 mod tests;

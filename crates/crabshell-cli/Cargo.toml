@@ -24,6 +24,8 @@ serde_json.workspace = true
 zbus.workspace = true
 
 [dev-dependencies]
+# The glibc tunable the shell gives itself, which the supervisor's matches.
+crabshell-services.workspace = true
 # The exit check's headless Sway, through crabshell-wayland's test helper.
 crabshell-wayland.workspace = true
 png.workspace = true

@@ -419,4 +419,10 @@ fn the_shell_gets_a_fixed_mmap_threshold_added_to_the_users_tunables() {
   );
   let own = "glibc.malloc.mmap_threshold=65536";
   assert_eq!(tunables(Some(own.into())), own, "the user's own wins");
+  // What a shell started without the supervisor gives itself.
+  for old in [None, Some(""), Some("glibc.malloc.arena_max=2"), Some(own)] {
+    let old = old.map(std::ffi::OsString::from);
+    let own = crabshell_services::shell_tunables(old.clone()).or(old.clone());
+    assert_eq!(Some(tunables(old)), own);
+  }
 }

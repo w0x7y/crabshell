@@ -11,6 +11,8 @@ mod persist;
 mod prelude;
 mod startup;
 mod switch_log;
+#[cfg(target_env = "gnu")]
+mod tuned;
 mod window_manager;
 
 use std::panic::Location;

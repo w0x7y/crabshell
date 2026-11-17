@@ -2,6 +2,7 @@
 //! opens.
 
 use std::cell::Cell;
+use std::ffi::OsString;
 use std::io;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
@@ -33,11 +34,35 @@ pub(crate) fn spawn(shared: &Rc<Shared>, command: &mut Command) -> io::Result<u3
   Ok(pid)
 }
 
-/// What `crabshell run` sets `GLIBC_TUNABLES` to for the shell, when the
-/// user set none: a fixed threshold for glibc's `mmap`, which keeps the
-/// shell from holding on to a decoded wallpaper's memory. Kept in step
-/// with crabshell-cli's `supervise::TUNABLE`.
+/// glibc's tunable that keeps its threshold for using `mmap` where it is.
+/// By default the threshold rises to the size of each large block freed,
+/// so after a wallpaper is decoded the next one's buffers come from the
+/// heap and stay there: tens of MiB for a 4K image. Kept in step with
+/// crabshell-cli's `supervise::TUNABLE`, which a test there checks.
 const TUNABLE: &str = "glibc.malloc.mmap_threshold=131072";
+
+/// `GLIBC_TUNABLES` for the shell: `old` with the shell's fixed `mmap`
+/// threshold added, or `None` if it sets that threshold already.
+/// `crabshell::run` starts the shell again with it when the supervisor
+/// didn't, and [`spawn`] keeps it from the programs the shell starts.
+#[doc(hidden)]
+pub fn shell_tunables(old: Option<OsString>) -> Option<OsString> {
+  match old {
+    Some(old)
+      if old
+        .to_string_lossy()
+        .contains("glibc.malloc.mmap_threshold") =>
+    {
+      None
+    }
+    Some(mut old) if !old.is_empty() => {
+      old.push(":");
+      old.push(TUNABLE);
+      Some(old)
+    }
+    _ => Some(TUNABLE.into()),
+  }
+}
 
 /// Takes what is the shell's own out of what `command` inherits, so the
 /// programs it starts run as they would anywhere else: the supervisor's
@@ -48,7 +73,7 @@ pub(crate) fn untune(command: &mut Command) {
 }
 
 /// [`untune`], given the shell's `GLIBC_TUNABLES`.
-fn untune_from(command: &mut Command, ours: Option<std::ffi::OsString>) {
+fn untune_from(command: &mut Command, ours: Option<OsString>) {
   command.env_remove("CRABSHELL_CONTROL");
   if ours.is_some_and(|value| value == TUNABLE) {
     command.env_remove("GLIBC_TUNABLES");
@@ -147,6 +172,20 @@ mod tests {
     });
     assert!(logs.contains("couldn't start"), "{logs}");
     assert!(logs.contains("/nonexistent/crabshell-program"), "{logs}");
+  }
+
+  #[test]
+  fn the_shell_gets_a_fixed_mmap_threshold_added_to_the_users_tunables() {
+    use super::{TUNABLE, shell_tunables};
+    let tunables = |old: Option<&str>| shell_tunables(old.map(Into::into));
+    assert_eq!(tunables(None), Some(TUNABLE.into()));
+    assert_eq!(tunables(Some("")), Some(TUNABLE.into()));
+    assert_eq!(
+      tunables(Some("glibc.malloc.arena_max=2")),
+      Some(format!("glibc.malloc.arena_max=2:{TUNABLE}").into())
+    );
+    let own = "glibc.malloc.mmap_threshold=65536";
+    assert_eq!(tunables(Some(own)), None, "the user's own wins");
   }
 
   #[test]

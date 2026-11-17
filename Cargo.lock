@@ -201,6 +201,7 @@ name = "crabshell-cli"
 version = "0.5.0"
 dependencies = [
  "calloop",
+ "crabshell-services",
  "crabshell-wayland",
  "inotify",
  "png",

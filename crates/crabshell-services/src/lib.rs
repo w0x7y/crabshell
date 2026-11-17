@@ -83,6 +83,8 @@ pub use power::{
 pub use process::{IntoCommand, Process};
 pub use socket::Socket;
 pub use socket_server::SocketServer;
+#[doc(hidden)]
+pub use spawn::shell_tunables;
 pub use sway::{Sway, SwayEvent, SwayEventKind, SwayOutput, Workspace};
 pub use tray::{
   MenuEntry, MenuToggle, Tray, TrayCategory, TrayHost, TrayItem, TrayMenu, TrayStatus,
