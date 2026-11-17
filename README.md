@@ -2,7 +2,7 @@
 
 # crabshell
 
-a rust replacement for quickshell: your whole desktop shell is a rust crate, and everything quickshell does, crabshell will do. v0.5 is on crates.io, with bars, launchers, lock screens, notifications, animation and drawing for sway, hyprland and other wlroots compositors. [the design doc](docs/design.md) has every decision and the phases still to come, and [the site](docs/site/index.html) has the full docs
+a rust replacement for quickshell: your whole desktop shell is a rust crate, and everything quickshell does, crabshell will do. v0.6 is on crates.io, with bars, launchers, lock screens, notifications, animation and drawing for sway, hyprland and other wlroots compositors. [the design doc](docs/design.md) has every decision and the phases still to come, and [the site](docs/site/index.html) has the full docs
 
 ### ai disclosure
 
