@@ -224,8 +224,8 @@ fn notifications(feeds: Feeds) -> Column {
 /// over at most a few lines, its links opened by `open`.
 fn card(notification: Memo<Notification>, open: fn(&Cx, &str)) -> Button {
   let id = notification.get_untracked().id;
-  let has =
-    move |part: fn(&Notification) -> &String| move || notification.with(|n| !part(n).is_empty());
+  let has_app = move || notification.with(|n| !n.app_name.is_empty());
+  let has_body = move || notification.with(|n| !n.body.is_empty());
   Button::new(
     Column::new()
       .gap(3)
@@ -233,7 +233,7 @@ fn card(notification: Memo<Notification>, open: fn(&Cx, &str)) -> Button {
       .child(
         Text::new(move || notification.get().app_name)
           .style(APP)
-          .visible(has(|n| &n.app_name)),
+          .visible(has_app),
       )
       .child(
         Text::new(move || notification.get().summary)
@@ -246,7 +246,7 @@ fn card(notification: Memo<Notification>, open: fn(&Cx, &str)) -> Button {
           .max_lines(BODY_LINES)
           .elide(Elide::End)
           .on_link(open)
-          .visible(has(|n| &n.body)),
+          .visible(has_body),
       ),
   )
   .style(CARD)
