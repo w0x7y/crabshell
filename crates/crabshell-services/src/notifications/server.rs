@@ -166,7 +166,7 @@ fn notification(args: NotifyArgs<'_>, markup: bool) -> (u32, Notification) {
     app_name: cut(app_name, MAX_TEXT),
     summary: cut(summary, MAX_SUMMARY),
     body: match markup {
-      true => cut(body, MAX_BODY),
+      true => cut_markup(body, MAX_BODY),
       // Read past the cap only so far, since tags and entities shrink.
       false => cut(
         &plain(&body[..body.floor_char_boundary(MAX_BODY * 4)]),
@@ -201,10 +201,31 @@ fn notification(args: NotifyArgs<'_>, markup: bool) -> (u32, Notification) {
   (replaces, notification)
 }
 
-/// `body` as the text it shows. Unless a config turns `body-markup` on,
-/// the server doesn't offer it, but many apps send it anyway, so tags are taken out and XML's five
-/// entities and numeric ones decoded. An unknown entity and a `<` with no
-/// `>` stay as they are.
+/// A markup body's first `max` bytes at most, cut at a char boundary,
+/// without the tag or entity the cut split, which would show as raw text.
+pub(super) fn cut_markup(body: &str, max: usize) -> String {
+  let mut kept = &body[..body.floor_char_boundary(max)];
+  // `open` was split if the cut left out the `close` that ends it within
+  // `within` bytes; a bare `<` or `&` the body never closes stays.
+  let split = |kept: &str, open: char, close: char, within: usize| {
+    let at = kept.rfind(open)?;
+    let closed = body[at..].find(close).is_some_and(|end| end <= within);
+    (!kept[at..].contains(close) && closed).then_some(at)
+  };
+  if let Some(at) = split(kept, '<', '>', usize::MAX) {
+    kept = &kept[..at];
+  }
+  // An entity is at most 10 bytes, `&#x10FFFF;`, as `plain` reads them.
+  if let Some(at) = split(kept, '&', ';', 10) {
+    kept = &kept[..at];
+  }
+  kept.to_owned()
+}
+
+/// `body` as the text it shows. When `body-markup` is off, many apps send
+/// markup anyway, so tags are taken out and XML's five entities and
+/// numeric ones decoded. An unknown entity and a `<` with no `>` stay as
+/// they are.
 fn plain(body: &str) -> String {
   let mut shown = String::with_capacity(body.len());
   let mut rest = body;

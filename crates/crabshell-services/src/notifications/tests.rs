@@ -12,7 +12,7 @@ use zbus::export::futures_core::Stream;
 use zbus::message::Type as Kind;
 use zbus::{Connection, MessageStream, Structure, Variant};
 
-use super::server::{RawImage, icon, image_pixels};
+use super::server::{RawImage, cut_markup, icon, image_pixels};
 use super::{
   CloseReason, MAX_KEPT, NOTIFICATIONS, NOTIFICATIONS_PATH, Notification, Notifications, Service,
   Timeout, Urgency, keep_pixels_within,
@@ -972,6 +972,13 @@ fn body_markup_follows_the_setting_in_the_capabilities_and_the_body() {
   };
   wait_for(&mut shell, "the notification", || body(id).is_some());
   assert_eq!(body(id).as_deref(), Some(markup), "kept as sent");
+  // Past the 4 KiB cap, the tag the cut split goes with it.
+  let long = "a".repeat(4090) + "<a href=\"https://example.org\">link</a>" + &"a".repeat(1000);
+  let mut sent = note("long");
+  sent.body = long;
+  let id = notify(&mut shell, &app, sent).expect("an id");
+  wait_for(&mut shell, "the long one", || body(id).is_some());
+  assert_eq!(body(id), Some("a".repeat(4090)));
 
   notifications.set_body_markup(false);
   assert_eq!(capabilities(&mut shell), plain);
@@ -980,4 +987,25 @@ fn body_markup_follows_the_setting_in_the_capabilities_and_the_body() {
   let id = notify(&mut shell, &app, sent).expect("an id");
   wait_for(&mut shell, "the notification", || body(id).is_some());
   assert_eq!(body(id).as_deref(), Some("Bold & a link"));
+}
+
+#[test]
+fn a_markup_body_cut_at_its_cap_never_ends_in_half_a_tag_or_entity() {
+  let filler = |n: usize| "a".repeat(n);
+  // The cap falls inside the tag, then inside the entity.
+  let tag = filler(4090) + "<a href=\"https://example.org\">link</a>" + &filler(1000);
+  assert_eq!(cut_markup(&tag, 4096), filler(4090));
+  let entity = filler(4094) + "&amp; more" + &filler(1000);
+  assert_eq!(cut_markup(&entity, 4096), filler(4094));
+  // An entity inside a tag goes with the tag.
+  let both = filler(4085) + "<a href=\"x&amp;y\">z</a>" + &filler(1000);
+  assert_eq!(cut_markup(&both, 4096), filler(4085));
+  // Whole tags and entities stay, and so do a bare `&` and `<`, which no
+  // cut split.
+  let whole = filler(4080) + "<b>b</b>&amp;" + &filler(1000);
+  assert_eq!(cut_markup(&whole, 4096), whole[..4096]);
+  let bare = filler(4000) + " & < " + &filler(1000);
+  assert_eq!(cut_markup(&bare, 4096), bare[..4096]);
+  // A short body is kept whole.
+  assert_eq!(cut_markup("<b>hi", 4096), "<b>hi");
 }
