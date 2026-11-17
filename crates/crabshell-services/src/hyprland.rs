@@ -46,8 +46,11 @@ const MAX_IN_FLIGHT: usize = 8;
 
 /// How long a request another program's full backlog holds up waits
 /// before it tries again, when none of the shell's requests is out to
-/// end and make it try sooner.
+/// end and make it try sooner: first [`RETRY`], twice as long after
+/// each try that fails, up to [`MAX_RETRY`], and [`RETRY`] again once
+/// a send gets out.
 const RETRY: Duration = Duration::from_millis(100);
+const MAX_RETRY: Duration = Duration::from_secs(2);
 
 /// The longest text kept, cut at a character.
 pub(crate) const MAX_TEXT: usize = 4 * 1024;
@@ -372,6 +375,8 @@ struct State {
   /// The timer that tries the queue again, while another program's
   /// backlog holds it up and none of the shell's requests is out.
   retry: Option<RegistrationToken>,
+  /// How long the next retry waits.
+  retry_wait: Duration,
   /// The urgent windows from before the event socket was connected
   /// again, which the events Hyprland dropped may have focused or closed.
   recheck: Option<Recheck>,
@@ -491,6 +496,7 @@ impl Service {
         focusing: Vec::new(),
         queued: VecDeque::new(),
         retry: None,
+        retry_wait: RETRY,
         reconnected: false,
         recheck: None,
       });
@@ -652,7 +658,7 @@ impl Service {
         return;
       };
       match self.send(state, &command, asked) {
-        Sent::Out => {}
+        Sent::Out => state.retry_wait = RETRY,
         Sent::Full => {
           state.queued.push_front((asked, command));
           return self.retry_later(state);
@@ -695,7 +701,8 @@ impl Service {
       }
       TimeoutAction::Drop
     });
-    state.retry = event_loop.insert_timer(Instant::now() + RETRY, retry);
+    state.retry = event_loop.insert_timer(Instant::now() + state.retry_wait, retry);
+    state.retry_wait = (state.retry_wait * 2).min(MAX_RETRY);
   }
 
   /// Connects and sends `command`. `Failed`, logged once, if Hyprland
@@ -1015,6 +1022,7 @@ impl Service {
     state.bursts.clear();
     state.queued.clear();
     let retry = state.retry.take();
+    state.retry_wait = RETRY;
     state.status_asked = false;
     state.focusing.clear();
     let Some(event_loop) = self.shared.event_loop() else {

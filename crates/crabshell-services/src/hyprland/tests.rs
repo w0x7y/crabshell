@@ -1343,14 +1343,22 @@ fn a_request_another_programs_backlog_holds_up_goes_on_its_own_once_there_is_roo
     run(&mut shell);
   }
   // Another program fills the backlog while none of the shell's is out,
-  // and nothing else happens after.
+  // and nothing else happens after: the shell tries after 100, 200 and
+  // 400 ms, and backs off up to 2 s.
   let other = UnixStream::connect(&socket).expect("another program");
   without_waiting(|| hyprland.dispatch("workspace 1"));
-  run(&mut shell);
+  let wakeups = shell.run_until(Instant::now() + Duration::from_millis(1000));
+  assert!(wakeups <= 5, "{wakeups} wakeups in a second held up");
   let (taken, _) = fake.requests.accept().expect("the other program");
   drop((other, taken));
-  shell.run_until(Instant::now() + Duration::from_millis(300));
-  assert_eq!(fake.answer(&[]), ["dispatch workspace 1"]);
+  let give_up = Instant::now() + Duration::from_secs(3);
+  let mut asked = Vec::new();
+  while asked.is_empty() {
+    assert!(Instant::now() < give_up, "nothing sent after 3 s");
+    shell.run_until(Instant::now() + Duration::from_millis(50));
+    asked = fake.answer(&[]);
+  }
+  assert_eq!(asked, ["dispatch workspace 1"]);
   run(&mut shell);
   // Asleep once it went: the retry was a one-shot.
   assert_eq!(
@@ -1358,6 +1366,15 @@ fn a_request_another_programs_backlog_holds_up_goes_on_its_own_once_there_is_roo
     1,
     "only the run's own deadline"
   );
+
+  // A send that got out starts the wait over at 100 ms.
+  let other = UnixStream::connect(&socket).expect("another program");
+  without_waiting(|| hyprland.dispatch("workspace 2"));
+  run(&mut shell);
+  let (taken, _) = fake.requests.accept().expect("the other program");
+  drop((other, taken));
+  shell.run_until(Instant::now() + Duration::from_millis(150));
+  assert_eq!(fake.answer(&[]), ["dispatch workspace 2"]);
 }
 
 #[test]
