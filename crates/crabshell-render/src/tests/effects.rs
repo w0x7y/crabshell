@@ -213,7 +213,7 @@ fn a_content_shadow_cast_across_a_tile_edge_is_whole_on_both_sides() {
 #[test]
 fn a_blurred_content_shadow_falls_off_as_a_box_shadow_does() {
   // A square filling the box casts what the box itself would.
-  for blur in [2.0, 3.0, 8.0, 13.0] {
+  for blur in [2.0, 3.0, 8.0, 13.0, 16.0, 21.0] {
     let shadow = Shadow::new(0.0, 4.0, blur, BLACK);
     let clear = Style::new().background(Color::rgba(0, 0, 0, 0));
     let content = boxed(clear.shadow(shadow.follow_content()), 40.0);
@@ -491,7 +491,12 @@ fn time_content_shadows() {
 /// A 400 by 300 card at 60, 60 casting a content shadow blurred by 40,
 /// in a 520 by 420 window.
 fn card(scene: &mut Scene) -> Window {
-  let shadow = Shadow::new(0.0, 8.0, 40.0, Color::rgba(0, 0, 0, 160)).follow_content();
+  blurred_card(scene, 40.0)
+}
+
+/// [`card`] with its shadow blurred by `blur`.
+fn blurred_card(scene: &mut Scene, blur: f32) -> Window {
+  let shadow = Shadow::new(0.0, 8.0, blur, Color::rgba(0, 0, 0, 160)).follow_content();
   let card = Stack::new().style(
     Style::new()
       .background(Color::hex("#45475a"))
@@ -549,6 +554,24 @@ fn a_content_shadow_is_cast_once_a_draw_over_the_damage_it_reaches() {
     "{blurred} pixels for a corner, {whole} for all"
   );
   assert!(buffer.pixels == scene.full(&window, 2.0).pixels);
+}
+
+#[test]
+fn a_wide_blur_is_worked_out_at_half_or_a_quarter_of_the_pixels() {
+  // Blurs of 6, 12 and 80 buffer pixels at scale 2: whole, halved and
+  // quartered on each side.
+  for (blur, factor) in [(3.0, 1.0), (6.0, 2.0), (40.0, 4.0)] {
+    let mut scene = Scene::new();
+    let window = blurred_card(&mut scene, blur);
+    scene.full(&window, 2.0);
+    let reach = 2.0 * (1.5 * blur + 8.0) + 4.0;
+    let once = (800.0 + 4.0 * reach) * (600.0 + 4.0 * reach) / (factor * factor);
+    let whole = scene.renderer.work().2 as f32;
+    assert!(
+      whole > once / 2.0 && whole <= once * 1.5,
+      "blur {blur}: {whole} pixels for {once}"
+    );
+  }
 }
 
 #[test]

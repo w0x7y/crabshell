@@ -77,7 +77,7 @@ impl Painter<'_> {
   pub(super) fn shadow_reach(&self, shadow: &Shadow) -> (f32, f32, f32) {
     let scale = self.grid.scale;
     let spread = (shadow.spread * scale).round().abs();
-    let blur = Blur::new(shadow.blur.max(0.0) * scale / 2.0).reach() as f32;
+    let blur = Reduced::new(shadow.blur.max(0.0) * scale).reach() as f32;
     let offset = |by: f32| (by * scale).round();
     (
       offset(shadow.x),
@@ -173,33 +173,200 @@ impl Painter<'_> {
         spread_line(line, out, reach, spread > 0.0);
       });
     }
-    let blur = Blur::new(shadow.blur.max(0.0) * scale / 2.0);
-    self.work.blurred += alpha.len() as u64;
-    if !matches!(blur, Blur::None) {
-      each_line(&mut alpha, width, height, |line, out| blur.line(line, out));
+    let blur = Reduced::new(shadow.blur.max(0.0) * scale);
+    let layer = (left, top, width, height);
+    if blur.factor == 1 {
+      self.work.blurred += alpha.len() as u64;
+      if !matches!(blur.blur, Blur::None) {
+        each_line(&mut alpha, width, height, |line, out| {
+          blur.blur.line(line, out)
+        });
+      }
+      let grid = blur.small_grid((left, top), (width, height));
+      return Some(Cast::new(layer, grid, 1, alpha));
     }
-    Some(Cast {
-      left,
-      top,
-      width,
-      alpha,
-    })
+    let grid = blur.small_grid((left, top), (width, height));
+    self.work.blurred += (grid.width * grid.height) as u64;
+    let blocks = blur.apply(&alpha, (left, top), width, &grid);
+    Some(Cast::new(layer, grid, blur.factor, blocks))
   }
 }
 
 /// The side of a content shadow's cells, in pixels, at least.
 const CELL: i64 = 256;
 
-/// A cell of a content shadow: the alpha of what casts it, spread and
-/// blurred, in its painter's pixels.
-pub(super) struct Cast {
-  /// Where `alpha` starts.
+/// A content shadow's blur, worked out at a `factor`th of the painter's
+/// resolution each way past 8 buffer pixels, and a quarter past 16: a
+/// wide blur loses no detail it shows, and costs a quarter or a
+/// sixteenth.
+struct Reduced {
+  blur: Blur,
+  factor: usize,
+}
+
+/// Where a reduced blur's grid of blocks lies over a layer: its corner
+/// in the painter's pixels, and its size in blocks.
+#[derive(Clone, Copy)]
+struct SmallGrid {
   left: i64,
   top: i64,
-  /// How many pixels a row of `alpha` holds.
   width: usize,
-  alpha: Vec<u8>,
+  height: usize,
 }
+
+impl Reduced {
+  /// The blur of a shadow blurred by `blur` buffer pixels, a Gaussian of
+  /// half that.
+  fn new(blur: f32) -> Reduced {
+    let factor = if blur >= 16.0 {
+      4
+    } else if blur >= 8.0 {
+      2
+    } else {
+      1
+    };
+    // Averaging the blocks and stretching them back blur by a
+    // deviation of half a block between them, taken off the blur's.
+    let sigma = blur / 2.0;
+    let reduced = match factor {
+      1 => sigma,
+      _ => (sigma * sigma - (factor * factor) as f32 / 4.0)
+        .max(0.0)
+        .sqrt(),
+    };
+    Reduced {
+      blur: Blur::new(reduced / factor as f32),
+      factor,
+    }
+  }
+
+  /// How many of the painter's pixels away a pixel's value reaches,
+  /// with a block and a block's stretch more when reduced.
+  fn reach(&self) -> usize {
+    match self.factor {
+      1 => self.blur.reach(),
+      factor => (self.blur.reach() + 2).saturating_mul(factor),
+    }
+  }
+
+  /// The blocks over a `width` by `height` layer at `left`, `top`, laid
+  /// from the painter's origin, so every layer blocks alike.
+  fn small_grid(&self, (left, top): (i64, i64), (width, height): (usize, usize)) -> SmallGrid {
+    let factor = self.factor as i64;
+    let (x, y) = (
+      left.div_euclid(factor) * factor,
+      top.div_euclid(factor) * factor,
+    );
+    SmallGrid {
+      left: x,
+      top: y,
+      width: ((left - x) as usize + width).div_ceil(self.factor),
+      height: ((top - y) as usize + height).div_ceil(self.factor),
+    }
+  }
+
+  /// `alpha`, `width` wide with its corner at `left`, `top`, averaged
+  /// over the blocks of `small` and blurred there.
+  fn apply(
+    &self,
+    alpha: &[u8],
+    (left, top): (i64, i64),
+    width: usize,
+    small: &SmallGrid,
+  ) -> Vec<u8> {
+    let factor = self.factor;
+    let (dx, dy) = ((left - small.left) as usize, (top - small.top) as usize);
+    let mut sums = vec![0_u32; small.width * small.height];
+    for (y, line) in alpha.chunks_exact(width).enumerate() {
+      let row = &mut sums[(dy + y) / factor * small.width..][..small.width];
+      // The first block starts `dx` pixels before the layer.
+      let (first, rest) = line.split_at((factor - dx).min(width));
+      let blocks = std::iter::once(first).chain(rest.chunks(factor));
+      for (sum, block) in row.iter_mut().zip(blocks) {
+        *sum += block.iter().map(|&value| u32::from(value)).sum::<u32>();
+      }
+    }
+    let area = (factor * factor) as u32;
+    let mut blocks: Vec<u8> = sums
+      .iter()
+      .map(|&sum| ((sum + area / 2) / area) as u8)
+      .collect();
+    each_line(&mut blocks, small.width, small.height, |line, out| {
+      self.blur.line(line, out);
+    });
+    blocks
+  }
+}
+
+/// A cell of a content shadow: the alpha of what casts it, spread and
+/// blurred, over its layer's pixels, or blocks of `factor` of them a side
+/// laid over the layer by `grid`, stretched back bilinearly as read.
+pub(super) struct Cast {
+  /// The layer's corner and size, in its painter's pixels.
+  left: i64,
+  top: i64,
+  width: i64,
+  height: i64,
+  grid: SmallGrid,
+  factor: usize,
+  values: Vec<u8>,
+}
+
+impl Cast {
+  fn new(
+    (left, top, width, height): (i64, i64, usize, usize),
+    grid: SmallGrid,
+    factor: usize,
+    values: Vec<u8>,
+  ) -> Cast {
+    Cast {
+      left,
+      top,
+      width: width as i64,
+      height: height as i64,
+      grid,
+      factor,
+      values,
+    }
+  }
+
+  /// Where column `x` of the painter's pixels reads, `None` off the
+  /// layer.
+  fn column(&self, x: i64) -> Option<Between> {
+    (self.left..self.left + self.width)
+      .contains(&x)
+      .then(|| self.between((x - self.grid.left) as usize, self.grid.width))
+  }
+
+  /// Where row `y` reads, likewise.
+  fn row(&self, y: i64) -> Option<Between> {
+    (self.top..self.top + self.height)
+      .contains(&y)
+      .then(|| self.between((y - self.grid.top) as usize, self.grid.height))
+  }
+
+  /// The alpha at `row` and `column`, mixed from the four values around.
+  fn at(&self, row: Between, column: Between) -> u8 {
+    let width = self.grid.width;
+    let at = |row: usize, column: usize| u32::from(self.values[row * width + column]);
+    let mix = |row| at(row, column.0) * (256 - column.2) + at(row, column.1) * column.2;
+    let value = mix(row.0) * (256 - row.2) + mix(row.1) * row.2;
+    ((value + (1 << 15)) >> 16) as u8
+  }
+
+  /// Where pixel `at` lies between the middles of `count` values: the
+  /// one before, the one after and how far toward it, in 256ths.
+  fn between(&self, at: usize, count: usize) -> Between {
+    let place = ((2 * at + 1) * 256 / self.factor).saturating_sub(256) / 2;
+    let before = (place / 256).min(count - 1);
+    let after = (before + 1).min(count - 1);
+    (before, after, (place % 256) as u32)
+  }
+}
+
+/// A place between two values of a cast: the one before, the one after,
+/// and how far toward it, in 256ths.
+type Between = (usize, usize, u32);
 
 /// Puts the shadow `cast` holds under `layer`, whose corner is at
 /// `corner`, over the painter's pixels `columns` by `rows`: each pixel's
@@ -215,22 +382,16 @@ fn blend_cast(
   let width = layer.width() as usize;
   let color = shadow.color;
   let data = layer.data_mut();
+  let reads: Vec<_> = columns.clone().map(|x| cast.column(x - dx)).collect();
   for y in rows {
-    let from_y = y - dy - cast.top;
-    let Some(line) = usize::try_from(from_y).ok().and_then(|from_y| {
-      cast
-        .alpha
-        .get(from_y * cast.width..(from_y + 1) * cast.width)
-    }) else {
+    let Some(row) = cast.row(y - dy) else {
       continue;
     };
-    for x in columns.clone() {
-      let Some(&alpha) = usize::try_from(x - dx - cast.left)
-        .ok()
-        .and_then(|from_x| line.get(from_x))
-      else {
+    for (x, column) in columns.clone().zip(&reads) {
+      let Some(column) = *column else {
         continue;
       };
+      let alpha = cast.at(row, column);
       let index = ((y - top) as usize * width + (x - left) as usize) * 4;
       let mut cast = mul(alpha, color.a);
       if shadow.cut_out {
