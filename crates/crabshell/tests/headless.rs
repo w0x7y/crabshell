@@ -4489,6 +4489,23 @@ fn the_control_center_sets_the_volume_flings_its_list_and_sleeps() {
     });
     let shot = steady_shot(&sway, "HEADLESS-1");
     check_golden(&format!("control@{scale}x"), &shot, shot.height);
+
+    // A pointer over the list's first row makes it current, and its
+    // highlight shows behind it once it rests.
+    let mut pointer = VirtualPointer::new(&sway);
+    let layout = (
+      (CONTROL_LAYOUT.0 as f32 / factor) as u32,
+      (CONTROL_LAYOUT.1 as f32 / factor) as u32,
+    );
+    let left = layout.0 - 8 - control::WIDTH + control::PADDING;
+    let top = 8 + control::HEIGHT - control::PADDING - control::LIST_HEIGHT;
+    pointer.move_to(left + control::WIDTH / 2, top + 18, layout);
+    wait_for_shot(&sway, "HEADLESS-1", "the highlight", |shot| {
+      let at = |n: u32| (n as f32 * factor) as u32;
+      rgb(shot, at(left + 3), at(top + 18)) == HIGHLIGHTED[..3]
+    });
+    let shot = steady_shot(&sway, "HEADLESS-1");
+    check_golden(&format!("control-hover@{scale}x"), &shot, shot.height);
   }
 
   let sway = Sway::start();
