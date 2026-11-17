@@ -49,6 +49,12 @@ pub fn image_source_failed(id: u64, source: &Path) {
   });
 }
 
+/// How many reports wait for a transition's tick, for tests.
+#[cfg(test)]
+pub(crate) fn failed_reports() -> usize {
+  FAILED.with(|failed| failed.borrow().len())
+}
+
 /// Whether the renderer said image `id` can't load `source`, using up
 /// every report about `id`.
 fn source_failed(id: u64, source: Option<&PathBuf>) -> bool {
@@ -72,6 +78,8 @@ impl Drop for ImageNode {
         dropped.push(self.id);
       }
     });
+    // A report about it would wait for a tick that never comes.
+    let _ = FAILED.try_with(|failed| failed.borrow_mut().retain(|(id, _)| *id != self.id));
   }
 }
 

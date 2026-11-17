@@ -334,3 +334,17 @@ fn a_source_the_renderer_cant_load_ends_its_transition_at_once() {
   assert!(advance_animations(start + Duration::from_millis(80)));
   assert!(!advance_animations(start + Duration::from_millis(500)));
 }
+
+#[test]
+fn a_report_about_an_image_dropped_is_let_go() {
+  let mut h = Harness::new();
+  let window = h.window(h.panel().child(Image::new("a.png")), 100.0, 64.0);
+  let id = match node_at(window.view().root(), &[0]).content() {
+    Content::Image(image) => image.id,
+    _ => panic!("no image"),
+  };
+  crate::image_source_failed(id, Path::new("broken.png"));
+  assert_eq!(crate::image::failed_reports(), 1);
+  drop(window);
+  assert_eq!(crate::image::failed_reports(), 0);
+}
