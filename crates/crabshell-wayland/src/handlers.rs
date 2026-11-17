@@ -397,6 +397,7 @@ impl PointerHandler for Platform {
     else {
       return;
     };
+    let mut primary = Vec::new();
     for event in events {
       let Some(entry) = self.windows.entries.iter().find(|entry| {
         entry
@@ -430,6 +431,15 @@ impl PointerHandler for Platform {
       if let Some(cursor) = cursor {
         ours.show(cursor);
       }
+      if let PointerEventKind::Press { serial, .. } | PointerEventKind::Release { serial, .. } =
+        event.kind
+        && let Some(asked) = entry.window.take_primary()
+      {
+        primary.push((asked, ours.seat.clone(), serial, entry.id));
+      }
+    }
+    for (asked, seat, serial, id) in primary {
+      self.primary_asked(Some(asked), &seat, serial, id);
     }
   }
 }

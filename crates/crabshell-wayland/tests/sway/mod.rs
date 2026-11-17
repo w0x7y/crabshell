@@ -438,9 +438,10 @@ impl VirtualPointer {
     }
   }
 
-  /// The left button, and the side buttons for back and forward, as
-  /// `button` takes them.
+  /// The left and middle buttons, and the side buttons for back and
+  /// forward, as `button` takes them.
   pub const LEFT: u32 = 0x110;
+  pub const MIDDLE: u32 = 0x112;
   pub const SIDE: u32 = 0x113;
   pub const EXTRA: u32 = 0x114;
 

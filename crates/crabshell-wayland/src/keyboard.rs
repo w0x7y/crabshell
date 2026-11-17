@@ -113,11 +113,14 @@ impl Platform {
     let Some(entry) = self.windows.get(id) else {
       return;
     };
-    match entry.window.key(&event) {
+    let clipboard = entry.window.key(&event);
+    let primary = entry.window.take_primary();
+    match clipboard {
       Some(Clipboard::Copy(text)) => self.copy(&seat, serial, text),
       Some(Clipboard::Paste) => self.paste(&seat, id),
       None => {}
     }
+    self.primary_asked(primary, &seat, serial, id);
   }
 
   /// Takes `keyboard` out of the window it was in.

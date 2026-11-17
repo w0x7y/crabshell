@@ -1627,6 +1627,88 @@ fn ctrl_c_copies_a_field_to_other_programs_and_ctrl_v_pastes_from_them() {
   let _ = copy.wait();
 }
 
+/// What `command` prints once it exits, the loop running meanwhile, since
+/// a reader waits for the shell to write.
+fn output_of(shell: &mut Shell, mut command: Command) -> String {
+  let child = command
+    .stdout(std::process::Stdio::piped())
+    .spawn()
+    .expect("the client runs");
+  let child = Rc::new(RefCell::new(Some(child)));
+  let output = Rc::new(RefCell::new(None));
+  let (held, out) = (Rc::clone(&child), Rc::clone(&output));
+  run_until(&mut shell.event_loop, "the client to finish", move |_| {
+    let mut held = held.borrow_mut();
+    match held.as_mut().map(std::process::Child::try_wait) {
+      Some(Ok(Some(_))) => {
+        let done = held.take().expect("still held");
+        *out.borrow_mut() = Some(done.wait_with_output().expect("its output"));
+        true
+      }
+      _ => false,
+    }
+  });
+  let output = output.borrow_mut().take().expect("the client finished");
+  String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[test]
+#[ignore = "needs headless Sway and wl-clipboard"]
+fn a_drag_selection_becomes_the_primary_selection_and_a_middle_click_pastes_it() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let _keyboard = VirtualKeyboard::new(&sway);
+  let mut pointer = VirtualPointer::new(&sway);
+  let setup = Setup {
+    keyboard: KeyboardFocus::Exclusive,
+    field: true,
+    ..PLAIN
+  };
+  let mut shell = Shell::build(&sway, setup);
+  let id = shell.wait_for_bar("HEADLESS-1");
+  let typed = shell.knobs.typed;
+  typed.set(String::from("hello"));
+  settle(&mut shell.event_loop);
+  let rect = shell
+    .event_loop
+    .platform()
+    .windows()
+    .find(|(held, _)| *held == id)
+    .and_then(|(_, window)| field_rect(window.view().root()))
+    .expect("a field");
+  let (x, y) = (rect.x as u32 + 1, (rect.y + rect.height / 2.0) as u32);
+  pointer.move_to(x, y, (1920, 1080));
+  settle(&mut shell.event_loop);
+  pointer.press(VirtualPointer::LEFT);
+  pointer.move_to(1900, y, (1920, 1080));
+  pointer.release(VirtualPointer::LEFT);
+  settle(&mut shell.event_loop);
+  let mut paste = sway.client("wl-paste");
+  paste.args(["--primary", "--no-newline"]);
+  assert_eq!(output_of(&mut shell, paste), "hello");
+
+  let mut copy = sway
+    .client("wl-copy")
+    .args(["--primary", "--foreground", "XY"])
+    .spawn()
+    .expect("wl-copy runs");
+  // The shell hears of wl-copy's offer in its own time: until then, a
+  // middle click pastes what the field offered, so the text is reset.
+  let mut last = Instant::now() - Duration::from_secs(1);
+  run_until(&mut shell.event_loop, "the middle-click paste", |_| {
+    if typed.get_untracked() != "XYhello" && last.elapsed() > Duration::from_millis(300) {
+      last = Instant::now();
+      typed.set(String::from("hello"));
+      pointer.move_to(x, y, (1920, 1080));
+      pointer.press(VirtualPointer::MIDDLE);
+      pointer.release(VirtualPointer::MIDDLE);
+    }
+    typed.get_untracked() == "XYhello"
+  });
+  let _ = copy.kill();
+  let _ = copy.wait();
+}
+
 /// The `fullscreen_mode` Sway gives the window titled `title`: it comes
 /// after the window's name in its object.
 fn fullscreen_mode(tree: &str, title: &str) -> Option<String> {

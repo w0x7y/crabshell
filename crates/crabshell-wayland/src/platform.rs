@@ -30,7 +30,7 @@ use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
 use crate::activation::Activation;
 use crate::blur::Effects;
-use crate::clipboard::Offered;
+use crate::clipboard::{Offered, Primary};
 use crate::events::{self, Event, Listener};
 use crate::focus_grab::FocusGrabs;
 use crate::foreign_toplevels::Foreign;
@@ -50,6 +50,7 @@ use crate::windows::{Entry, WindowId, Windows};
 use crate::windowsets::Windowsets;
 use smithay_client_toolkit::data_device_manager::DataDeviceManagerState;
 use smithay_client_toolkit::data_device_manager::data_device::DataDevice;
+use smithay_client_toolkit::primary_selection::PrimarySelectionManagerState;
 use smithay_client_toolkit::shell::xdg::XdgShell;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
 
@@ -326,6 +327,8 @@ pub struct Platform {
   pub(crate) data_devices: Vec<(WlSeat, DataDevice)>,
   /// The text this shell offers as the clipboard's.
   pub(crate) offered: Option<Offered>,
+  /// The primary selection, which a middle click pastes.
+  pub(crate) primary: Primary,
   /// Present when the compositor relays input methods.
   pub(crate) text_inputs_manager: Option<ZwpTextInputManagerV3>,
   /// The compositor's background effects, such as blur.
@@ -431,6 +434,7 @@ impl Platform {
       warned: false,
     };
     let data_devices_manager = DataDeviceManagerState::bind(globals, &qh).ok();
+    let primary = Primary::new(PrimarySelectionManagerState::bind(globals, &qh).ok());
     let locks = Locks::new(globals.bind(&qh, 1..=1, ()).ok());
     let activation = Activation::new(globals.bind(&qh, 1..=1, ()).ok());
     tracing::debug!(
@@ -480,6 +484,7 @@ impl Platform {
       data_devices_manager,
       data_devices: Vec::new(),
       offered: None,
+      primary,
       text_inputs: Vec::new(),
       last_button: None,
       button_held: false,
