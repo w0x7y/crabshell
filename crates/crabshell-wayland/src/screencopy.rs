@@ -402,13 +402,17 @@ impl Platform {
     }
     let views = &captures.views;
     captures.sessions.retain_mut(|session| {
+      let takers: Vec<WindowId> = views
+        .iter()
+        .filter(|view| view.takes(session))
+        .map(|view| view.window)
+        .collect();
       let key = (session.target.clone(), session.cursors);
-      let kept = !again.contains(&key) && views.iter().any(|view| view.takes(session));
-      // A window the next frame waited for went: it waits no more.
+      let kept = !again.contains(&key) && !takers.is_empty();
+      // A window the next frame waited for has no view of it now: it
+      // waits no more for that one.
       let waited = !session.waiting.is_empty();
-      session
-        .waiting
-        .retain(|window| views.iter().any(|view| view.window == *window));
+      session.waiting.retain(|window| takers.contains(window));
       if kept && waited && session.waiting.is_empty() {
         session.capture(&self.qh);
       }
