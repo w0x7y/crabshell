@@ -400,6 +400,8 @@ impl ExampleBar {
   /// is the private Sway's, never this process's. Its `PULSE_SERVER` is
   /// a socket that doesn't exist, unless `extra` names a private server:
   /// unset, libpulse could find the desktop's through HOME's client.conf.
+  /// Its `DBUS_SYSTEM_BUS_ADDRESS` is one that doesn't exist either,
+  /// unless `extra` gives one.
   /// Its `PATH` is this process's, unless `extra` gives one. Its
   /// `XDG_CONFIG_HOME` holds only a link to the user's fontconfig, unless
   /// `extra` gives one, so the goldens' fonts stay and the user's GTK
@@ -408,6 +410,13 @@ impl ExampleBar {
     command.env_clear();
     let nowhere = sway.runtime_dir().join("no-pulse-server");
     command.env("PULSE_SERVER", format!("unix:{}", nowhere.display()));
+    // Never the desktop's system bus, where the lock example would ask
+    // logind for an inhibitor.
+    let no_bus = sway.runtime_dir().join("no-system-bus");
+    command.env(
+      "DBUS_SYSTEM_BUS_ADDRESS",
+      format!("unix:path={}", no_bus.display()),
+    );
     let config = sway.runtime_dir().join("xdg-config");
     if let Some(fontconfig) = user_config().map(|dir| dir.join("fontconfig"))
       && std::fs::create_dir_all(&config).is_ok()

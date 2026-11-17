@@ -1,5 +1,5 @@
 //! A lock screen: `crabshell ipc lock on` locks the session, as an idle
-//! daemon would. Every monitor shows a password field; Enter checks the
+//! daemon would, and it locks before the machine sleeps. Every monitor shows a password field; Enter checks the
 //! password with PAM and unlocks, or says it was wrong.
 //!
 //! ```sh
@@ -90,7 +90,16 @@ pub fn lock_screen(cx: &Cx, locked: Signal<bool>, service: &str) {
     }
   };
   let accept = std::rc::Rc::new(accept);
-  cx.session_lock(
+  // Lock as the machine goes to sleep, which waits until the compositor
+  // shows the lock.
+  let logind = cx.logind();
+  let sleeping = logind.preparing_for_sleep();
+  cx.effect(move || {
+    if sleeping.get() {
+      locked.set(true);
+    }
+  });
+  let shown = cx.session_lock(
     SessionLock::new()
       .locked(move || locked.get())
       .style(SCREEN)
@@ -112,4 +121,5 @@ pub fn lock_screen(cx: &Cx, locked: Signal<bool>, service: &str) {
           .child(Text::new(move || notice.get()).style(NOTICE))
       }),
   );
+  logind.delay_sleep_until(move || shown.get());
 }

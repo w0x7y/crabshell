@@ -103,6 +103,7 @@ pub mod prelude {
     TrayHost, TrayItem, TrayMenu, TrayStatus, UPower, Urgency, WifiMode, WifiNetwork, WifiSecurity,
     Workspace,
   };
+  pub use crabshell_services::{Backlight, Brightness, Logind};
   pub use crabshell_ui::{
     Adjust, Align, Anchors, Animate, Animation, Border, Button, Canvas, Cap, CaptureSource, Color,
     Column, CursorShape, Cx, Drag, DragPhase, Easing, Edge, Elide, Fit, FloatingWindow, Font,
