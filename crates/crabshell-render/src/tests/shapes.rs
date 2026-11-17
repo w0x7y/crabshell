@@ -358,6 +358,105 @@ mod gradients {
     }
   }
 
+  /// A `width` by `height` window filled with `gradient` at `scale`.
+  fn sized(gradient: Gradient, width: f32, height: f32, scale: f32) -> super::super::Buffer {
+    let mut scene = Scene::new();
+    let panel = scene.panel().style(Style::new().gradient(gradient));
+    let window = scene.window(panel, width, height);
+    scene.full(&window, scale)
+  }
+
+  #[test]
+  fn a_subtle_gradient_is_dithered_by_under_a_step_so_it_shows_no_bands() {
+    // Four levels of red over 256 pixels: undithered, bands 64 wide.
+    let from = Color::rgb(16, 0, 0);
+    let to = Color::rgb(20, 0, 0);
+    let buffer = sized(Gradient::linear(90.0, from, to), 256.0, 8.0, 1.0);
+    let exact = |x: u32| 16.0 + 4.0 * (x as f32 + 0.5) / 256.0;
+    for x in 0..256 {
+      for y in 0..8 {
+        let red = f32::from(buffer.pixel(x, y)[0]);
+        assert!((red - exact(x)).abs() < 1.0, "at {x}, {y}: {red}");
+      }
+    }
+    // Each 4 by 4 block averages out close to the exact color.
+    for block in 0..64 {
+      let mean: f32 = (0..4)
+        .flat_map(|dx| (0..4).map(move |y| (block * 4 + dx, y)))
+        .map(|(x, y)| f32::from(buffer.pixel(x, y)[0]))
+        .sum::<f32>()
+        / 16.0;
+      let middle = exact(block * 4) + 1.5 * 4.0 / 256.0;
+      assert!(
+        (mean - middle).abs() < 0.15,
+        "block {block}: {mean} {middle}"
+      );
+    }
+  }
+
+  #[test]
+  fn every_gradient_shape_is_dithered_and_a_flat_one_is_not() {
+    let (from, to) = (Color::rgb(40, 40, 40), Color::rgb(44, 44, 44));
+    for gradient in [
+      Gradient::linear(90.0, from, to),
+      Gradient::radial(from, to),
+      Gradient::sweep(0.0, from, to),
+    ] {
+      let buffer = sized(gradient, 64.0, 64.0, 1.0);
+      // Neighbors differ all over, not only where one level ends: about
+      // 8 times a row undithered.
+      let changes = (0..64)
+        .flat_map(|y| (1..64).map(move |x| (x, y)))
+        .filter(|&(x, y)| buffer.pixel(x, y)[0] != buffer.pixel(x - 1, y)[0])
+        .count();
+      assert!(changes > 1000, "{gradient:?}: {changes}");
+    }
+    let flat = sized(Gradient::linear(90.0, from, from), 64.0, 64.0, 1.5);
+    assert!(
+      flat
+        .pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .all(|pixel| *pixel == [40, 40, 40, 255]),
+      "a gradient of one color stays that color"
+    );
+  }
+
+  /// How long a full draw of the effects example's translucent bar
+  /// gradient across a 1920 by 48 bar takes at scales 1 and 2, at best.
+  /// Run it in
+  /// a release build:
+  /// `cargo test --release -p crabshell-render --lib time_the_effects_bar_gradient -- --ignored --nocapture`.
+  #[test]
+  #[ignore = "a measurement, not a check"]
+  fn time_the_effects_bar_gradient() {
+    let bar = Gradient::linear(
+      90.0,
+      Color::rgba(0x1e, 0x1e, 0x2e, 0xd8),
+      Color::rgba(0x31, 0x32, 0x44, 0xd8),
+    );
+    for scale in [1.0, 2.0] {
+      let mut scene = Scene::new();
+      let panel = scene.panel().style(Style::new().gradient(bar));
+      let window = scene.window(panel, 1920.0, 48.0);
+      // The fastest of many draws, which other work on the machine
+      // slows least.
+      let fastest = (0..100)
+        .map(|_| {
+          let start = std::time::Instant::now();
+          scene.full(&window, scale);
+          start.elapsed()
+        })
+        .min()
+        .expect("a draw");
+      println!(
+        "{:.2} ms a full draw at scale {scale}",
+        fastest.as_secs_f64() * 1000.0
+      );
+    }
+  }
+
   #[test]
   fn a_radial_gradient_reaches_the_farthest_corner() {
     let round = filled(Gradient::radial(RED, BLUE));

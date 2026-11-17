@@ -10,13 +10,12 @@ use std::collections::HashMap;
 
 use cosmic_text::{FontSystem, LayoutGlyph, SwashCache, SwashContent, SwashImage};
 use crabshell_ui::{
-  Affine, CaptureView, Color, Content, Gradient, GradientShape, IconView, ImageView, InputView,
-  NodeView, Radii, Rect, Shadow, Size, Style, TextSystem, TextView, WindowView,
+  Affine, CaptureView, Color, Content, IconView, ImageView, InputView, NodeView, Radii, Rect,
+  Shadow, Size, Style, TextSystem, TextView, WindowView,
 };
 use tiny_skia::{
-  FillRule, FilterQuality, GradientStop, LineCap, LineJoin, LinearGradient, Mask, Paint,
-  PathBuilder, PathSegment, Pixmap, PixmapMut, PixmapPaint, RadialGradient, Shader, SpreadMode,
-  Stroke, StrokeDash, SweepGradient, Transform,
+  FillRule, FilterQuality, LineCap, LineJoin, Mask, Paint, PathBuilder, PathSegment, Pixmap,
+  PixmapMut, PixmapPaint, Stroke, StrokeDash, Transform,
 };
 
 use crate::damage::{BufferAge, DamageHistory, PixelRect};
@@ -24,6 +23,7 @@ use crate::icons::{Drawn, Icons};
 
 mod canvas;
 mod effects;
+mod gradient;
 mod transition;
 
 /// The side of a tile, in buffer pixels. tiny-skia cuts a curve where it
@@ -727,19 +727,9 @@ impl Painter<'_> {
     if let Some(gradient) = style.gradient {
       let mut path = PathBuilder::new();
       rounded_rect(&mut path, area, corners);
-      if let (Some(path), Some(shader)) = (path.finish(), self.shader(&gradient, area)) {
-        let paint = Paint {
-          shader,
-          anti_alias: true,
-          ..Paint::default()
-        };
-        pixmap.fill_path(
-          &path,
-          &paint,
-          FillRule::Winding,
-          Transform::identity(),
-          None,
-        );
+      let size = (pixmap.width(), pixmap.height());
+      if let (Some(path), Some(ramp)) = (path.finish(), self.ramp(&gradient, area, size)) {
+        ramp.fill(pixmap, &path);
       }
     }
     if let Some(shadow) = inset_shadow {
@@ -1100,65 +1090,6 @@ impl Painter<'_> {
     let (rule, at) = (FillRule::Winding, Transform::identity());
     mask.fill_path(&path.finish()?, rule, true, at);
     Some(mask)
-  }
-
-  /// `gradient` across `area`, a box in this pixmap's pixels. It is laid
-  /// out in buffer pixels and moved onto the pixmap, so every tile works
-  /// out the same color for a pixel.
-  fn shader(&self, gradient: &Gradient, area: tiny_skia::Rect) -> Option<Shader<'static>> {
-    let (left, top) = (area.left() + self.grid.left, area.top() + self.grid.top);
-    let (width, height) = (area.width(), area.height());
-    let middle = tiny_skia::Point::from_xy(left + width / 2.0, top + height / 2.0);
-    let given = gradient.stops();
-    let mut stops = Vec::with_capacity(given.len() * 2);
-    let stop = |at: f32, color: Color, alpha: u8| {
-      GradientStop::new(
-        at,
-        tiny_skia::Color::from_rgba8(color.r, color.g, color.b, alpha),
-      )
-    };
-    for (index, &(at, color)) in given.iter().enumerate() {
-      if color.a > 0 {
-        stops.push(stop(at, color, color.a));
-        continue;
-      }
-      // tiny-skia blends colors before their alpha, so a clear stop
-      // would fade through its own color. As in CSS, each side fades
-      // out in its neighbor's.
-      for neighbor in [index.checked_sub(1), Some(index + 1)]
-        .into_iter()
-        .flatten()
-      {
-        if let Some(&(_, near)) = given.get(neighbor) {
-          stops.push(stop(at, near, 0));
-        }
-      }
-    }
-    let moved = Transform::from_translate(-self.grid.left, -self.grid.top);
-    match gradient.shape {
-      GradientShape::Linear(angle) => {
-        // As CSS: 0 degrees points up, and the line is long enough for
-        // its ends to meet the corners.
-        let (sin, cos) = angle.to_radians().sin_cos();
-        let half = (width * sin.abs() + height * cos.abs()) / 2.0;
-        let (dx, dy) = (sin * half, -cos * half);
-        let start = tiny_skia::Point::from_xy(middle.x - dx, middle.y - dy);
-        let end = tiny_skia::Point::from_xy(middle.x + dx, middle.y + dy);
-        LinearGradient::new(start, end, stops, SpreadMode::Pad, moved)
-      }
-      GradientShape::Radial => {
-        let reach = (width * width + height * height).sqrt() / 2.0;
-        RadialGradient::new(middle, 0.0, middle, reach, stops, SpreadMode::Pad, moved)
-      }
-      GradientShape::Sweep(angle) => {
-        // As CSS: 0 degrees points up and the colors go clockwise.
-        // tiny-skia's start at 3 o'clock, and it skips a start angle
-        // other than 0 when the sweep is a whole turn, so it is turned.
-        let turn = Transform::from_rotate_at(angle - 90.0, middle.x, middle.y);
-        let at = moved.pre_concat(turn);
-        SweepGradient::new(middle, 0.0, 360.0, stops, SpreadMode::Pad, at)
-      }
-    }
   }
 
   /// Glyphs, drawn as masks in their span's color or else the text's,

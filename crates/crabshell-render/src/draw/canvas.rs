@@ -5,6 +5,7 @@
 use crabshell_ui::{CanvasOp, CanvasView, Cap, Join, Paint, Path, PathCommand, Point, Style};
 use tiny_skia::{FillRule, LineCap, LineJoin, PathBuilder, PixmapMut, StrokeDash, Transform};
 
+use super::gradient::Ramp;
 use super::{Painter, visible};
 
 impl Painter<'_> {
@@ -32,7 +33,16 @@ impl Painter<'_> {
         CanvasOp::Fill(path, paint)
         | CanvasOp::Stroke(path, crabshell_ui::Stroke { paint, .. }) => (path, paint),
       };
-      let (Some(path), Some(paint)) = (build(path), self.paint(paint, area, at)) else {
+      let ramp = match paint {
+        Paint::Color(_) => None,
+        Paint::Gradient(gradient) => {
+          let Some(ramp) = self.ramp(gradient, area, (pixmap.width(), pixmap.height())) else {
+            continue;
+          };
+          Some(ramp)
+        }
+      };
+      let (Some(path), Some(paint)) = (build(path), tiny_paint(paint, ramp.as_ref(), at)) else {
         continue;
       };
       match op {
@@ -48,30 +58,29 @@ impl Painter<'_> {
       }
     }
   }
+}
 
-  /// `paint` as tiny-skia's. A gradient is laid over `area`, the box in
-  /// this pixmap's pixels, as a style's is, and undoes `at`, which
-  /// tiny-skia applies to shaders as well as paths.
-  fn paint(
-    &self,
-    paint: &Paint,
-    area: tiny_skia::Rect,
-    at: Transform,
-  ) -> Option<tiny_skia::Paint<'static>> {
-    let mut out = tiny_skia::Paint {
-      anti_alias: true,
-      ..tiny_skia::Paint::default()
-    };
-    match paint {
-      Paint::Color(color) => out.set_color_rgba8(color.r, color.g, color.b, color.a),
-      Paint::Gradient(gradient) => {
-        let mut shader = self.shader(gradient, area)?;
-        shader.transform(at.invert()?);
-        out.shader = shader;
-      }
+/// `paint` as tiny-skia's, a gradient from `ramp`, laid over the box as a
+/// style's is. The shader undoes `at`, which tiny-skia applies to shaders
+/// as well as paths.
+fn tiny_paint<'a>(
+  paint: &Paint,
+  ramp: Option<&'a Ramp>,
+  at: Transform,
+) -> Option<tiny_skia::Paint<'a>> {
+  let mut out = tiny_skia::Paint {
+    anti_alias: true,
+    ..tiny_skia::Paint::default()
+  };
+  match paint {
+    Paint::Color(color) => out.set_color_rgba8(color.r, color.g, color.b, color.a),
+    Paint::Gradient(_) => {
+      let mut shader = ramp?.shader();
+      shader.transform(at.invert()?);
+      out.shader = shader;
     }
-    Some(out)
   }
+  Some(out)
 }
 
 /// `stroke` as tiny-skia's, or `None` for a dash pattern it refuses.
