@@ -214,5 +214,106 @@ fn a_period_under_250_ms_is_250_ms() {
   let mut shell = Harness::new(fake(&dir));
   let _stats = shell.cx.system_stats(Duration::from_millis(1));
   // Ticks at 250, 500 and 750 ms, and the deadline.
-  assert!(run(&mut shell, 900) <= 4);
+  let wakeups = run(&mut shell, 900);
+  assert!((3..=4).contains(&wakeups), "{wakeups} wakeups");
+}
+
+#[test]
+fn a_huge_period_is_the_longest_a_timer_takes() {
+  let dir = TempDir::new();
+  let mut shell = Harness::new(fake(&dir));
+  let stats = shell.cx.system_stats(Duration::MAX);
+  assert_eq!(stats.get_untracked().memory_total, 2048);
+  assert_eq!(run(&mut shell, 100), 1);
+}
+
+#[test]
+fn cpus_are_matched_by_number_when_one_goes_offline() {
+  let dir = TempDir::new();
+  let proc = dir.path().join("proc");
+  let line = |label: &str, busy: u64, idle: u64| format!("{label} {busy} 0 0 {idle}\n");
+  write(
+    &proc,
+    "stat",
+    &(line("cpu ", 0, 0) + &line("cpu0", 0, 100) + &line("cpu1", 0, 100) + &line("cpu2", 100, 0)),
+  );
+  let mut sampler = sampler(&dir);
+  sampler.sample();
+  // cpu1 went offline: cpu2 is compared with cpu2, not cpu1.
+  write(
+    &proc,
+    "stat",
+    &(line("cpu ", 0, 0) + &line("cpu0", 0, 200) + &line("cpu2", 200, 0)),
+  );
+  assert_eq!(sampler.sample().cpus, [0.0, 1.0]);
+  // Back online, it starts from 0.
+  write(
+    &proc,
+    "stat",
+    &(line("cpu ", 0, 0) + &line("cpu0", 0, 300) + &line("cpu1", 50, 150) + &line("cpu2", 300, 0)),
+  );
+  assert_eq!(sampler.sample().cpus, [0.0, 0.0, 1.0]);
+}
+
+#[test]
+fn sensors_are_listed_once_and_again_when_one_is_gone() {
+  let dir = TempDir::new();
+  let sys = dir.path().join("sys/class/hwmon");
+  write(&sys, "hwmon0/name", "first\n");
+  write(&sys, "hwmon0/temp1_input", "1000\n");
+  let mut sampler = sampler(&dir);
+  let named = |sampler: &mut Sampler| -> Vec<String> {
+    let stats = sampler.sample();
+    stats.temperatures.into_iter().map(|t| t.name).collect()
+  };
+  assert_eq!(named(&mut sampler), ["first temp1"]);
+  write(&sys, "hwmon0/temp1_label", "renamed\n");
+  write(&sys, "hwmon1/temp1_input", "2000\n");
+  assert_eq!(named(&mut sampler), ["first temp1"]);
+  // A driver reloaded: the old sensor is gone.
+  std::fs::remove_dir_all(sys.join("hwmon0")).unwrap();
+  assert_eq!(named(&mut sampler), Vec::<String>::new());
+  assert_eq!(named(&mut sampler), ["hwmon1 temp1"]);
+}
+
+#[test]
+fn a_sleeping_chip_isnt_read() {
+  let dir = TempDir::new();
+  let sys = dir.path().join("sys/class/hwmon");
+  write(&sys, "hwmon0/name", "amdgpu\n");
+  write(&sys, "hwmon0/device/power/runtime_status", "suspended\n");
+  // Not a reading: it would be logged if read.
+  write(&sys, "hwmon0/temp1_input", "asleep\n");
+  write(&sys, "hwmon1/name", "coretemp\n");
+  write(&sys, "hwmon1/temp1_input", "40000\n");
+  let mut sampler = sampler(&dir);
+  let logs = capture_logs(|| {
+    let names: Vec<_> = sampler
+      .sample()
+      .temperatures
+      .into_iter()
+      .map(|t| t.name)
+      .collect();
+    assert_eq!(names, ["coretemp temp1"]);
+  });
+  assert!(!logs.contains("temp1_input"), "{logs}");
+  write(&sys, "hwmon0/device/power/runtime_status", "active\n");
+  write(&sys, "hwmon0/temp1_input", "50000\n");
+  assert_eq!(sampler.sample().temperatures.len(), 2);
+}
+
+#[test]
+fn each_unreadable_file_is_logged_once() {
+  let dir = TempDir::new();
+  std::fs::create_dir_all(dir.path().join("sys/class/hwmon")).unwrap();
+  let mut sampler = sampler(&dir);
+  let logs = capture_logs(|| {
+    sampler.sample();
+    sampler.sample();
+  });
+  assert_eq!(logs.matches("can't read").count(), 2, "{logs}");
+  assert!(
+    logs.contains("proc/stat") && logs.contains("proc/meminfo"),
+    "{logs}"
+  );
 }

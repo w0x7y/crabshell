@@ -388,6 +388,8 @@ pub trait ServicesExt {
   /// `period`, at least 250 ms, from `/proc` and `/sys/class/hwmon`. Each
   /// call samples on its own timer, which goes with this context, so
   /// stats wake the shell only while a context that shows them lives.
+  /// Call it once, above `per_output`, and share the signal. Reading the
+  /// sensors costs a few ms per sample, so sample every second or slower.
   fn system_stats(&self, period: Duration) -> ReadSignal<SystemStats>;
 
   /// greetd, for a greeter: makes a session for a user, answers its

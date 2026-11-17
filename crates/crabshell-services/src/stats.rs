@@ -19,10 +19,13 @@ use crabshell_reactive::ReadSignal;
 use crabshell_ui::Cx;
 
 use crate::Shared;
-use crate::file::{open_file, set};
+use crate::file::{FileError, FileErrorKind, open_file, set};
 
 /// The shortest period, so stats can't keep the shell busy.
 const MIN_PERIOD: Duration = Duration::from_millis(250);
+/// The longest period, as `cx.interval`'s, so adding it to now can't
+/// overflow.
+const MAX_PERIOD: Duration = Duration::from_secs(u32::MAX as u64);
 const MAX_CPUS: usize = 256;
 const MAX_TEMPERATURES: usize = 64;
 /// The most read from one file.
@@ -39,7 +42,8 @@ pub struct SystemStats {
   /// The share of time every CPU was busy over the last period, from 0
   /// to 1; 0 until the second sample.
   pub cpu: f32,
-  /// Each CPU's share, as `cpu`, up to 256 CPUs.
+  /// Each online CPU's share, as `cpu`, in CPU number order, up to 256
+  /// CPUs. A CPU that came online since the last sample shows 0.
   pub cpus: Vec<f32>,
   /// Memory in bytes.
   pub memory_total: u64,
@@ -49,7 +53,9 @@ pub struct SystemStats {
   pub swap_total: u64,
   /// Swap free, in bytes.
   pub swap_free: u64,
-  /// Each hwmon sensor's temperature, up to 64.
+  /// Each hwmon sensor's temperature, up to 64, except those of a chip
+  /// whose device sleeps. The sensors are listed at the first sample and
+  /// again only once one is gone.
   pub temperatures: Vec<Temperature>,
 }
 
@@ -77,7 +83,7 @@ pub(crate) fn system_stats(cx: &Cx, period: Duration) -> ReadSignal<SystemStats>
   let shared = Rc::clone(&service.0);
   let mut sampler = Sampler::new(&shared.config.proc, &shared.config.sys);
   let stats = cx.signal(sampler.sample());
-  let period = period.max(MIN_PERIOD);
+  let period = period.clamp(MIN_PERIOD, MAX_PERIOD);
   let tick = Box::new(move || {
     if stats.try_with(|_| ()).is_none() {
       return TimeoutAction::Drop;
@@ -112,15 +118,26 @@ struct Times {
   total: u64,
 }
 
+/// A hwmon chip's temperature sensors, listed once.
+struct Chip {
+  /// The chip's device's power state, `suspended` while it sleeps.
+  runtime_status: PathBuf,
+  /// Each sensor's name and the file holding its reading.
+  sensors: Vec<(String, PathBuf)>,
+}
+
 /// Reads the stats, keeping the last CPU counters for the next sample's
 /// share.
 struct Sampler {
   proc: PathBuf,
   sys: PathBuf,
-  /// Every CPU's counters at the last sample, then each CPU's.
-  last: Option<(Times, Vec<Times>)>,
-  /// The kinds of problem logged already.
-  logged: HashSet<&'static str>,
+  /// Every CPU's counters at the last sample, then each CPU's by number.
+  last: Option<(Times, Vec<(u32, Times)>)>,
+  /// The temperature sensors, listed at the first sample and again after
+  /// one was gone.
+  chips: Option<Vec<Chip>>,
+  /// The problems logged already, by kind or by file.
+  logged: HashSet<String>,
 }
 
 impl Sampler {
@@ -129,6 +146,7 @@ impl Sampler {
       proc: proc.to_owned(),
       sys: sys.to_owned(),
       last: None,
+      chips: None,
       logged: HashSet::new(),
     }
   }
@@ -141,9 +159,9 @@ impl Sampler {
     stats
   }
 
-  /// Logs a kind of problem the first time it comes.
-  fn once(&mut self, kind: &'static str, detail: impl Display) {
-    if self.logged.insert(kind) {
+  /// Logs a problem the first time it comes.
+  fn once(&mut self, key: impl Into<String>, detail: impl Display) {
+    if self.logged.insert(key.into()) {
       tracing::info!("system stats: {detail}; it is skipped");
     }
   }
@@ -152,10 +170,9 @@ impl Sampler {
     match read_capped(path) {
       Ok(text) => Some(text),
       Err(error) => {
-        self.once(
-          "read",
-          format_args!("can't read {}: {error}", path.display()),
-        );
+        let path = path.display().to_string();
+        let detail = format!("can't read {path}: {}", error.message);
+        self.once(path, detail);
         None
       }
     }
@@ -172,41 +189,35 @@ impl Sampler {
       let Some(label) = words.next().filter(|label| label.starts_with("cpu")) else {
         continue;
       };
-      let Some(times) = parse_times(words) else {
-        self.once(
-          "cpu line",
-          format_args!("a CPU line doesn't parse: {line:.80}"),
-        );
+      let number = label[3..].parse::<u32>();
+      let Some(times) = parse_times(words).filter(|_| label == "cpu" || number.is_ok()) else {
+        let detail = format!("a CPU line doesn't parse: {line:.80}");
+        self.once("cpu line", detail);
         continue;
       };
-      if label == "cpu" {
-        all = Some(times);
-      } else if label[3..].parse::<u32>().is_err() {
-        self.once(
-          "cpu line",
-          format_args!("a CPU line doesn't parse: {line:.80}"),
-        );
-      } else if cpus.len() == MAX_CPUS {
-        self.once("cpus", "there are over 256 CPUs; the rest are left out");
-      } else {
-        cpus.push(times);
+      match number {
+        Err(_) => all = Some(times),
+        Ok(_) if cpus.len() == MAX_CPUS => {
+          self.once("cpus", "there are over 256 CPUs; the rest are left out");
+        }
+        Ok(number) => cpus.push((number, times)),
       }
     }
+    cpus.sort_unstable_by_key(|(number, _)| *number);
     let all = all.unwrap_or_default();
-    if let Some((last_all, last_cpus)) = &self.last {
-      stats.cpu = share(*last_all, all);
-      // A CPU that came or went since starts again from 0.
-      if last_cpus.len() == cpus.len() {
-        stats.cpus = last_cpus
-          .iter()
-          .zip(&cpus)
-          .map(|(a, b)| share(*a, *b))
-          .collect();
-      }
-    }
-    if stats.cpus.is_empty() {
-      stats.cpus = vec![0.0; cpus.len()];
-    }
+    let last = self.last.take();
+    stats.cpu = last.as_ref().map_or(0.0, |(then, _)| share(*then, all));
+    // A CPU that came online since starts from 0.
+    stats.cpus = cpus
+      .iter()
+      .map(|(number, now)| {
+        let then = last.as_ref().and_then(|(_, then)| {
+          let at = then.binary_search_by_key(number, |(number, _)| *number);
+          at.ok().map(|at| then[at].1)
+        });
+        then.map_or(0.0, |then| share(then, *now))
+      })
+      .collect();
     self.last = Some((all, cpus));
   }
 
@@ -235,52 +246,95 @@ impl Sampler {
     }
   }
 
+  /// Reads each listed sensor, except a sleeping chip's, so a sampled
+  /// dGPU isn't woken. A sensor gone has the sensors listed again at the
+  /// next sample.
   fn temperatures(&mut self, stats: &mut SystemStats) {
-    let class = self.sys.join("class/hwmon");
-    let Some(mut chips) = self.numbered(&class, "hwmon", "") else {
-      return;
+    let chips = match self.chips.take() {
+      Some(chips) => chips,
+      None => self.list_sensors(),
     };
-    chips.sort_unstable();
-    for (chip, dir) in chips {
+    let mut gone = false;
+    for chip in &chips {
+      let asleep =
+        read_capped(&chip.runtime_status).is_ok_and(|status| status.trim() == "suspended");
+      if asleep {
+        continue;
+      }
+      for (name, input) in &chip.sensors {
+        let text = match read_capped(input) {
+          Ok(text) => text,
+          Err(error) if error.kind == FileErrorKind::NotFound => {
+            gone = true;
+            continue;
+          }
+          Err(error) => {
+            let path = input.display().to_string();
+            let detail = format!("can't read {path}: {}", error.message);
+            self.once(path, detail);
+            continue;
+          }
+        };
+        match text.trim().parse::<i64>() {
+          Ok(millidegrees) => stats.temperatures.push(Temperature {
+            name: name.clone(),
+            celsius: millidegrees as f32 / 1000.0,
+          }),
+          Err(_) => {
+            let path = input.display().to_string();
+            let detail = format!("{path} doesn't hold a temperature");
+            self.once(path, detail);
+          }
+        }
+      }
+    }
+    self.chips = (!gone).then_some(chips);
+  }
+
+  /// The hwmon chips and their temperature sensors, named by the chip's
+  /// name and each sensor's label, in number order, up to
+  /// [`MAX_TEMPERATURES`] sensors.
+  fn list_sensors(&mut self) -> Vec<Chip> {
+    let class = self.sys.join("class/hwmon");
+    let Some(mut numbered) = self.numbered(&class, "hwmon", "") else {
+      return Vec::new();
+    };
+    numbered.sort_unstable();
+    let mut chips = Vec::new();
+    let mut count = 0;
+    for (number, dir) in numbered {
       let name = read_capped(&dir.join("name"))
         .ok()
         .map(|name| name.trim().to_owned())
         .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| format!("hwmon{chip}"));
-      let Some(mut sensors) = self.numbered(&dir, "temp", "_input") else {
+        .unwrap_or_else(|| format!("hwmon{number}"));
+      let Some(mut inputs) = self.numbered(&dir, "temp", "_input") else {
         continue;
       };
-      sensors.sort_unstable();
-      for (sensor, input) in sensors {
-        let Some(text) = self.read(&input) else {
-          continue;
-        };
-        let Ok(millidegrees) = text.trim().parse::<i64>() else {
-          let path = input.display();
-          self.once(
-            "temperature",
-            format_args!("{path} doesn't hold a temperature"),
-          );
-          continue;
-        };
-        if stats.temperatures.len() == MAX_TEMPERATURES {
+      inputs.sort_unstable();
+      let mut sensors = Vec::new();
+      for (sensor, input) in inputs {
+        if count == MAX_TEMPERATURES {
           self.once(
             "temperatures",
             "there are over 64 temperatures; the rest are left out",
           );
-          return;
+          break;
         }
         let label = read_capped(&dir.join(format!("temp{sensor}_label")))
           .ok()
           .map(|label| label.trim().to_owned())
           .filter(|label| !label.is_empty())
           .unwrap_or_else(|| format!("temp{sensor}"));
-        stats.temperatures.push(Temperature {
-          name: format!("{name} {label}"),
-          celsius: millidegrees as f32 / 1000.0,
-        });
+        sensors.push((format!("{name} {label}"), input));
+        count += 1;
       }
+      chips.push(Chip {
+        runtime_status: dir.join("device/power/runtime_status"),
+        sensors,
+      });
     }
+    chips
   }
 
   /// The entries in `dir` named `<prefix><number><suffix>`, with their
@@ -351,12 +405,9 @@ fn parse_bytes(value: &str) -> Option<u64> {
 
 /// Up to [`MAX_READ`] of the file at `path`, which must be a regular
 /// file, as procfs's and sysfs's are.
-fn read_capped(path: &Path) -> Result<String, String> {
-  let file = open_file(path).map_err(|error| error.message)?;
+fn read_capped(path: &Path) -> Result<String, FileError> {
+  let file = open_file(path)?;
   let mut bytes = Vec::new();
-  file
-    .take(MAX_READ)
-    .read_to_end(&mut bytes)
-    .map_err(|error| error.to_string())?;
+  file.take(MAX_READ).read_to_end(&mut bytes)?;
   Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
