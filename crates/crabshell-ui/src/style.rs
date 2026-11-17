@@ -580,7 +580,9 @@ impl Gradient {
 /// shape moved by `x` and `y`, grown by `spread` and blurred over `blur`
 /// logical pixels. Unlike CSS's, it is drawn under the box too, so a
 /// translucent background shows it through, unless it is
-/// [`cut_out`](Shadow::cut_out).
+/// [`cut_out`](Shadow::cut_out). An [`inset`](Shadow::inset) one is drawn
+/// inside the box instead. A style has one shadow; a second comes from a
+/// box wrapped around the widget.
 ///
 /// ```
 /// use crabshell_ui::{Color, Shadow, Style};
@@ -608,6 +610,9 @@ pub struct Shadow {
   /// Whether it is cast by what the widget and its children draw,
   /// through their alpha, instead of by its box.
   pub follow_content: bool,
+  /// Whether it is drawn inside the box, around a hole of the box's
+  /// shape, instead of outside it.
+  pub inset: bool,
 }
 
 impl Shadow {
@@ -622,6 +627,7 @@ impl Shadow {
       color,
       cut_out: false,
       follow_content: false,
+      inset: false,
     }
   }
 
@@ -662,6 +668,29 @@ impl Shadow {
     }
   }
 
+  /// The same shadow drawn inside the box, as CSS's `box-shadow: inset`:
+  /// over the background and under the border and content, everywhere
+  /// inside the border but a hole of the box's shape, moved by `x` and
+  /// `y`, shrunk by `spread` and blurred, so a pressed button or a well
+  /// looks sunk in. It never reaches past the box, and it is always cast
+  /// by the box, so [`follow_content`](Shadow::follow_content) and
+  /// [`cut_out`](Shadow::cut_out) do nothing to it.
+  ///
+  /// ```
+  /// use crabshell_ui::{Color, Shadow, Style};
+  ///
+  /// const PRESSED: Style = Style::new()
+  ///     .background(Color::hex("#313244"))
+  ///     .radius(6.0)
+  ///     .shadow(Shadow::new(0.0, 2.0, 6.0, Color::rgba(0, 0, 0, 128)).inset());
+  /// ```
+  pub const fn inset(self) -> Shadow {
+    Shadow {
+      inset: true,
+      ..self
+    }
+  }
+
   /// Whether this shadow is cast by the content and can be: its numbers
   /// are finite and it reaches at most 64 logical pixels past what casts
   /// it, the size of its spread plus one and a half blurs. One reaching
@@ -669,17 +698,21 @@ impl Shadow {
   /// work of casting it stays bounded.
   pub fn casts_from_content(&self) -> bool {
     let reach = self.spread.abs() + 1.5 * self.blur.max(0.0);
-    self.follow_content && [self.x, self.y, reach].iter().all(|n| n.is_finite()) && reach <= 64.0
+    self.follow_content
+      && !self.inset
+      && [self.x, self.y, reach].iter().all(|n| n.is_finite())
+      && reach <= 64.0
   }
 
   /// The area this shadow of `rect` covers: its shape, grown by one and a
   /// half blurs, past which the blur fades below a 255th. A spread that
   /// swallows the box still reaches between the edges it would have, so
   /// a fade from it stays within its start and end. A shadow with a
-  /// number that isn't finite is never drawn, so it reaches only `rect`.
+  /// number that isn't finite is never drawn, and an inset one stays
+  /// inside, so each reaches only `rect`.
   pub(crate) fn reach(&self, rect: Rect) -> Rect {
     let grow = self.spread + 1.5 * self.blur.max(0.0);
-    if ![self.x, self.y, grow].iter().all(|n| n.is_finite()) {
+    if self.inset || ![self.x, self.y, grow].iter().all(|n| n.is_finite()) {
       return rect;
     }
     let (left, right) = (rect.x + self.x - grow, rect.right() + self.x + grow);
@@ -703,6 +736,7 @@ impl Shadow {
       // Not numbers: they change at once.
       cut_out: to.cut_out,
       follow_content: to.follow_content,
+      inset: to.inset,
     }
   }
 

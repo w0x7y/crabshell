@@ -237,6 +237,28 @@ fn a_shadow_reaches_past_the_box_by_its_offset_spread_and_blur() {
 }
 
 #[test]
+fn an_inset_shadow_stays_inside_its_box_and_is_cast_by_it() {
+  const PRESSED: Style = Style::new().shadow(
+    Shadow::new(0.0, 2.0, 6.0, Color::rgba(0, 0, 0, 128))
+      .spread(1.0)
+      .inset()
+      .follow_content(),
+  );
+  let shadow = PRESSED.shadow.expect("set by the builder");
+  assert!(shadow.inset);
+  assert!(!Shadow::new(0.0, 0.0, 0.0, Color::rgb(0, 0, 0)).inset);
+  // It paints nothing past the box, so damage stays inside it.
+  let box_ = Rect::new(10.0, 10.0, 20.0, 10.0);
+  assert_eq!(shadow.reach(box_), box_);
+  // Inside the box, the box casts it, never the content.
+  assert!(!shadow.casts_from_content());
+  // A fade turns it inset at once, as it does cut out.
+  let outer = Shadow::new(0.0, 2.0, 6.0, Color::rgba(0, 0, 0, 128));
+  let half = Style::new().shadow(outer).lerp(&PRESSED, 0.5);
+  assert!(half.shadow.expect("both set").inset);
+}
+
+#[test]
 fn shadows_blend_and_fade_in_from_clear() {
   let gray = Color::rgba(0, 0, 0, 200);
   let from = Style::new().shadow(Shadow::new(0.0, 0.0, 2.0, gray));

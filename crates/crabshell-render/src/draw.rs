@@ -580,8 +580,10 @@ impl Painter<'_> {
 
   fn node_contents(&mut self, pixmap: &mut PixmapMut<'_>, node: NodeView<'_>, style: &Style) {
     self.work.nodes += 1;
-    // A content shadow is cast by the layer this is drawn into.
-    if let Some(shadow) = style.shadow.filter(|shadow| !shadow.follow_content) {
+    // A content shadow is cast by the layer this is drawn into, and an
+    // inset one inside the box.
+    let outside = |shadow: &Shadow| !shadow.follow_content && !shadow.inset;
+    if let Some(shadow) = style.shadow.filter(outside) {
       self.shadow(pixmap, node.rect(), style, &shadow);
     }
     self.draw_box(pixmap, node.rect(), style);
@@ -699,9 +701,15 @@ impl Painter<'_> {
     }
   }
 
-  /// The background and border of a widget's rectangle.
+  /// The background, an inset shadow and the border of a widget's
+  /// rectangle.
   fn draw_box(&self, pixmap: &mut PixmapMut<'_>, rect: Rect, style: &Style) {
-    if style.background.is_none() && style.gradient.is_none() && style.border.is_none() {
+    let inset_shadow = style.shadow.filter(|shadow| shadow.inset);
+    if style.background.is_none()
+      && style.gradient.is_none()
+      && style.border.is_none()
+      && inset_shadow.is_none()
+    {
       return;
     }
     let Some((area, corners)) = self.box_shape(rect, style) else {
@@ -733,6 +741,9 @@ impl Painter<'_> {
           None,
         );
       }
+    }
+    if let Some(shadow) = inset_shadow {
+      self.inset_shadow(pixmap, (area, corners), self.border_width(style), &shadow);
     }
     if let Some(border) = style.border {
       let width = self.border_width(style);
@@ -910,16 +921,7 @@ impl Painter<'_> {
     ) else {
       return;
     };
-    // As CSS: a corner smaller than the spread grows by less, so a square
-    // box keeps square corners.
-    let corners = corners.map(|radius| {
-      if spread > 0.0 && radius < spread {
-        radius + spread * (1.0 + (radius / spread - 1.0).powi(3))
-      } else {
-        radius + spread
-      }
-    });
-    let corners = fit(corners, shape);
+    let corners = fit(spread_corners(corners, spread), shape);
     // A cut-out shadow leaves clear what the box's background covers.
     let cut = if shadow.cut_out {
       self.box_mask(pixmap, rect, style)
@@ -978,6 +980,114 @@ impl Painter<'_> {
     let height = rows.len() as u32;
     let (x, y) = (columns.start as i32, rows.start as i32);
     blend_mask(pixmap, x, y, width, height, &mask, shadow.color);
+  }
+
+  /// An inset `shadow` inside `area` with `corners`, within a border
+  /// `border` pixels wide: the inside of the border, but for a hole of its
+  /// shape moved, shrunk by the spread and blurred, as CSS draws one. Like
+  /// an outer shadow, it is worked out in buffer pixels, so tiles agree.
+  fn inset_shadow(
+    &self,
+    pixmap: &mut PixmapMut<'_>,
+    (area, corners): (tiny_skia::Rect, Corners),
+    border: f32,
+    shadow: &Shadow,
+  ) {
+    let Grid {
+      scale, left, top, ..
+    } = self.grid;
+    let numbers = [shadow.x, shadow.y, shadow.blur, shadow.spread];
+    if shadow.color.a == 0 || !numbers.iter().all(|n| n.is_finite()) {
+      return;
+    }
+    let Some(inside) = tiny_skia::Rect::from_ltrb(
+      area.left() + border,
+      area.top() + border,
+      area.right() - border,
+      area.bottom() - border,
+    ) else {
+      return;
+    };
+    let inside_corners = inset(corners, border);
+    if !visible(pixmap, inside) {
+      return;
+    }
+    let mut path = PathBuilder::new();
+    rounded_rect(&mut path, inside, inside_corners);
+    let Some(path) = path.finish() else {
+      return;
+    };
+    // The hole in buffer pixels; a spread that swallows it leaves none.
+    let (x, y, spread) = (shadow.x * scale, shadow.y * scale, shadow.spread * scale);
+    let hole = tiny_skia::Rect::from_ltrb(
+      inside.left() + left + x + spread,
+      inside.top() + top + y + spread,
+      inside.right() + left + x - spread,
+      inside.bottom() + top + y - spread,
+    );
+    let hole = hole.map(|hole| (hole, fit(spread_corners(inside_corners, -spread), hole)));
+    let sigma = shadow.blur.max(0.0) * scale / 2.0;
+    let color = shadow.color;
+    if sigma < 0.25 {
+      let mut outside = None;
+      if let Some((hole, corners)) = hole {
+        let mut cut = PathBuilder::new();
+        let Some(moved) = hole.transform(Transform::from_translate(-left, -top)) else {
+          return;
+        };
+        rounded_rect(&mut cut, moved, corners);
+        let Some(mut mask) = Mask::new(pixmap.width(), pixmap.height()) else {
+          return;
+        };
+        let (rule, at) = (FillRule::Winding, Transform::identity());
+        let Some(cut) = cut.finish() else {
+          return;
+        };
+        mask.fill_path(&cut, rule, true, at);
+        mask.invert();
+        outside = Some(mask);
+      }
+      let mut paint = Paint::default();
+      paint.set_color_rgba8(color.r, color.g, color.b, color.a);
+      paint.anti_alias = true;
+      let (rule, at) = (FillRule::Winding, Transform::identity());
+      pixmap.fill_path(&path, &paint, rule, at, outside.as_ref());
+      return;
+    }
+    // The inside of the border covers these pixels, and the shadow shows
+    // where the blurred hole doesn't.
+    let Some(mut mask) = Mask::new(pixmap.width(), pixmap.height()) else {
+      return;
+    };
+    mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
+    let columns = inside.left().floor().max(0.0) as u32
+      ..(inside.right().ceil().max(0.0) as u32).min(pixmap.width());
+    let rows = inside.top().floor().max(0.0) as u32
+      ..(inside.bottom().ceil().max(0.0) as u32).min(pixmap.height());
+    if columns.is_empty() || rows.is_empty() {
+      return;
+    }
+    let blurred = hole.map(|(hole, corners)| BlurredBox::new(hole, corners, sigma));
+    let mut alpha = Vec::with_capacity(columns.len() * rows.len());
+    for row in rows.clone() {
+      let start = alpha.len();
+      match &blurred {
+        Some(blurred) => {
+          let xs = columns.clone().map(|column| left + column as f32 + 0.5);
+          blurred.row(top + row as f32 + 0.5, xs, &mut alpha);
+        }
+        None => alpha.resize(start + columns.len(), 0),
+      }
+      let stride = pixmap.width() as usize;
+      let row = &mask.data()[row as usize * stride..];
+      let covered = &row[columns.start as usize..columns.end as usize];
+      for (value, &covered) in alpha[start..].iter_mut().zip(covered) {
+        *value = mul(255 - *value, covered);
+      }
+    }
+    let (width, height) = (columns.len() as u32, rows.len() as u32);
+    let (x, y) = (columns.start as i32, rows.start as i32);
+    blend_mask(pixmap, x, y, width, height, &alpha, color);
   }
 
   /// How much of each of this pixmap's pixels the box `rect` with
@@ -1371,6 +1481,19 @@ fn corner(rect: tiny_skia::Rect, corners: Corners, index: usize) -> [tiny_skia::
   points.map(|(x, y)| tiny_skia::Point::from_xy(x, y))
 }
 
+/// `corners` for a shadow's shape grown by `spread` pixels, or shrunk by
+/// a negative one. As in CSS, a corner smaller than the spread grows by
+/// less, so a square box keeps square corners.
+fn spread_corners(corners: Corners, spread: f32) -> Corners {
+  corners.map(|radius| {
+    if spread > 0.0 && radius < spread {
+      radius + spread * (1.0 + (radius / spread - 1.0).powi(3))
+    } else {
+      (radius + spread).max(0.0)
+    }
+  })
+}
+
 /// `corners` fitted to `area` as CSS fits them ([`Radii::fit`]).
 fn fit(
   [top_left, top_right, bottom_right, bottom_left]: Corners,
@@ -1498,11 +1621,19 @@ struct BlurredBox {
   corners: Corners,
   largest: f32,
   sigma: f32,
+  /// What the samples sum to where the shape covers them all, a little
+  /// under 1, so a point the shape covers whole is covered whole.
+  whole: f32,
 }
 
 impl BlurredBox {
   fn new(shape: tiny_skia::Rect, corners: Corners, sigma: f32) -> BlurredBox {
+    let step = 6.0 * sigma / SAMPLES as f32;
+    let whole = (0..SAMPLES)
+      .map(|sample| gaussian(step * (sample as f32 + 0.5) - 3.0 * sigma, sigma) * step)
+      .sum();
     BlurredBox {
+      whole,
       middle: (
         (shape.left() + shape.right()) / 2.0,
         (shape.top() + shape.bottom()) / 2.0,
@@ -1536,7 +1667,7 @@ impl BlurredBox {
           .iter()
           .map(|&(left, right, weight)| self.between(x, left, right) * weight)
           .sum();
-        sum.clamp(0.0, 1.0)
+        (sum / self.whole).clamp(0.0, 1.0)
       };
       mask.push((coverage * 255.0).round() as u8);
     }

@@ -509,6 +509,72 @@ mod shadows {
   }
 
   #[test]
+  fn an_inset_shadow_is_drawn_inside_the_box_over_its_background() {
+    let black = Color::rgb(0, 0, 0);
+    let white = [255, 255, 255, 255];
+    // Spread 4 shrinks the hole 4 pixels from each edge of the 40 by 40
+    // box at 20, 10.
+    let ring = cast(Shadow::new(0.0, 0.0, 0.0, black).spread(4.0).inset(), 0.0);
+    assert_eq!(ring.pixel(20, 30), [0, 0, 0, 255], "the left edge");
+    assert_eq!(ring.pixel(23, 30), [0, 0, 0, 255], "4 pixels in");
+    assert_eq!(ring.pixel(24, 30), white, "the hole");
+    assert_eq!(ring.pixel(40, 45), white);
+    assert_eq!(ring.pixel(40, 46), [0, 0, 0, 255], "4 pixels up");
+    assert_eq!(ring.pixel(40, 49), [0, 0, 0, 255], "the bottom edge");
+    for (x, y) in [(19, 30), (60, 30), (40, 9), (40, 50)] {
+      assert_eq!(ring.pixel(x, y), [0, 0, 0, 0], "outside, at {x}, {y}");
+    }
+    // Moved down and right, the hole leaves the top and left edges dark.
+    let moved = cast(Shadow::new(5.0, 5.0, 0.0, black).inset(), 0.0);
+    assert_eq!(moved.pixel(24, 30), [0, 0, 0, 255], "the left");
+    assert_eq!(moved.pixel(40, 14), [0, 0, 0, 255], "the top");
+    assert_eq!(moved.pixel(25, 30), white);
+    assert_eq!(moved.pixel(59, 49), white, "the bottom right");
+    assert_eq!(moved.pixel(65, 55), [0, 0, 0, 0], "nothing outside");
+  }
+
+  #[test]
+  fn a_blurred_inset_shadow_fades_in_from_the_edge_and_follows_the_corners() {
+    let black = Color::rgb(0, 0, 0);
+    let buffer = cast(Shadow::new(0.0, 0.0, 8.0, black).inset(), 12.0);
+    // Darker toward the left edge, white in the middle.
+    let red = |x, y| buffer.pixel(x, y)[0];
+    assert!(red(20, 30) < red(22, 30) && red(22, 30) < red(26, 30));
+    assert_eq!(buffer.pixel(40, 30), [255, 255, 255, 255]);
+    // The edge of the hole meets the edge of the box: half dark there.
+    assert!((100..=156).contains(&red(20, 30)), "{}", red(20, 30));
+    // Cut to the rounded corner, and nothing outside the box.
+    assert_eq!(buffer.pixel(20, 10), [0, 0, 0, 0]);
+    assert_eq!(buffer.pixel(16, 30), [0, 0, 0, 0]);
+    assert_eq!(buffer.pixel(40, 52), [0, 0, 0, 0]);
+  }
+
+  #[test]
+  fn an_inset_shadow_starts_inside_the_border() {
+    let mut scene = Scene::new();
+    let row = Row::new().padding(10, 20).align(Align::Start).child(
+      Row::new().style(
+        Style::new()
+          .background(Color::rgb(255, 255, 255))
+          .border(3.0, Color::rgba(255, 0, 0, 128))
+          .shadow(
+            Shadow::new(0.0, 0.0, 0.0, Color::rgb(0, 0, 0))
+              .spread(2.0)
+              .inset(),
+          )
+          .width(40.0)
+          .height(40.0),
+      ),
+    );
+    let window = scene.window(scene.panel().child(row), 120.0, 70.0);
+    let buffer = scene.full(&window, 1.0);
+    // The translucent border shows the white background, not the shadow.
+    assert_eq!(buffer.pixel(21, 30), [255, 127, 127, 255], "the border");
+    assert_eq!(buffer.pixel(24, 30), [0, 0, 0, 255], "the shadow");
+    assert_eq!(buffer.pixel(25, 30), [255, 255, 255, 255], "the hole");
+  }
+
+  #[test]
   fn a_shadow_with_a_number_that_isnt_finite_is_not_drawn() {
     for blur in [f32::NAN, f32::INFINITY] {
       let buffer = cast(Shadow::new(10.0, 0.0, blur, Color::rgb(0, 0, 0)), 0.0);

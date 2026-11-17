@@ -207,6 +207,57 @@ fn shadows() {
 }
 
 #[test]
+fn inset_shadows() {
+  check("inset_shadows", 240.0, 60.0, |scene| {
+    scene.panel().style(BAR).child(
+      Row::new()
+        .padding(12, 14)
+        .gap(16)
+        .align(Align::Center)
+        // A pressed button: dark from the top.
+        .child(
+          Row::new().style(
+            Style::new()
+              .background(Color::hex("#45475a"))
+              .radius(8.0)
+              .shadow(Shadow::new(0.0, 3.0, 4.0, Color::rgba(0, 0, 0, 180)).inset())
+              .padding(12, 20),
+          ),
+        )
+        // A sharp, moved one inside a border, square at two corners.
+        .child(
+          Row::new().style(
+            Style::new()
+              .background(Color::hex("#f9e2af"))
+              .border(2.0, Color::hex("#fab387"))
+              .radii(0.0, 10.0, 0.0, 10.0)
+              .shadow(Shadow::new(4.0, 4.0, 0.0, Color::hex("#f38ba8")).inset())
+              .padding(12, 18),
+          ),
+        )
+        // A glow spread in from the edges of a pill, over a gradient.
+        .child(
+          Row::new().style(
+            Style::new()
+              .gradient(Gradient::linear(
+                90.0,
+                Color::hex("#313244"),
+                Color::hex("#1e1e2e"),
+              ))
+              .radius(100.0)
+              .shadow(
+                Shadow::new(0.0, 0.0, 8.0, Color::hex("#89b4fa"))
+                  .spread(2.0)
+                  .inset(),
+              )
+              .padding(12, 26),
+          ),
+        ),
+    )
+  });
+}
+
+#[test]
 fn corners() {
   check("corners", 240.0, 60.0, |scene| {
     scene.panel().style(BAR).child(
