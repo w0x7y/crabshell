@@ -982,6 +982,28 @@ fn measure_the_counter_bar() {
     "; then hidden over IPC: RSS {:.1} MiB, {idle} context switches in 60 idle s\n",
     dashboard.rss_kib() as f64 / 1024.0
   );
+  drop(dashboard);
+  // Then Phase 18's system bar, with workspaces from a fake niri and the
+  // weather from a local server. It samples its stats every 2 s, so its
+  // wakeups are counted from the first frame.
+  let niri = FakeNiri::start(&sway);
+  let server = LocalServer::start(vec![("/weather", WEATHER.as_bytes().to_vec())]);
+  let folder = wallpaper_folder(&sway);
+  let env = system_env(&niri, &server, &folder, "");
+  let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+  let system = ExampleBar::start(&sway, "system", true, &env);
+  let first_frame_ms = system.first_frame_ms();
+  let woke: u64 = system
+    .wakeups_for(Duration::from_secs(60))
+    .iter()
+    .map(|(_, switches)| switches)
+    .sum();
+  report += &format!(
+    "system example with a fake niri and the weather from a local server, release build, one \
+     1920x1080 headless output at scale 1: first frame {first_frame_ms:.1} ms after run(); \
+     sampling its stats every 2 s, RSS {:.1} MiB after 60 s and {woke} context switches in them\n",
+    system.rss_kib() as f64 / 1024.0
+  );
   eprint!("{report}");
   let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("headless");
   std::fs::create_dir_all(&dir).expect("create the output directory");
