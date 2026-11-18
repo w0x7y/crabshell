@@ -93,6 +93,13 @@ mod notes;
 #[path = "../examples/lock.rs"]
 mod lock;
 
+#[allow(
+  dead_code,
+  reason = "the example's bar is tested; its main isn't run here"
+)]
+#[path = "../examples/system.rs"]
+mod system;
+
 #[allow(dead_code, reason = "the services' own tests use the rest")]
 #[path = "../../crabshell-services/tests/pipewire/mod.rs"]
 mod pipewire;
@@ -5965,4 +5972,72 @@ fn a_panicking_link_in_the_notes_panel_is_logged_with_its_path_and_the_shell_run
       .is_none(),
     "the shell runs on"
   );
+}
+
+/// Open-Meteo's reply for 7.6°C and partly cloudy, code 2, whose icon
+/// the fixtures' theme lacks, so the bar draws its fallback.
+const WEATHER: &str = r#"{"latitude":52.52,"longitude":13.419998,"current_units":{"temperature_2m":"°C","weather_code":"wmo code"},"current":{"time":"2026-11-18T09:30","interval":900,"temperature_2m":7.6,"weather_code":2}}"#;
+
+/// 23% CPU, 40% of 16 GiB in use, and a CPU at 52.4°C listed after
+/// another sensor.
+fn pinned_stats() -> SystemStats {
+  let gib = 1 << 30;
+  SystemStats {
+    cpu: 0.23,
+    cpus: vec![0.2, 0.26],
+    memory_total: 16 * gib,
+    memory_available: 16 * gib * 3 / 5,
+    swap_total: 0,
+    swap_free: 0,
+    temperatures: vec![
+      Temperature {
+        name: String::from("acpitz temp1"),
+        celsius: 40.0,
+      },
+      Temperature {
+        name: String::from("k10temp Tctl"),
+        celsius: 52.4,
+      },
+    ],
+  }
+}
+
+#[test]
+fn the_system_bar_reads_the_weather_pictures_and_the_cpus_temperature() {
+  assert_eq!(system::parse_weather(WEATHER), Some((7.6, 2)));
+  for bad in [
+    "",
+    "not json",
+    "{}",
+    r#"{"current":{"temperature_2m":"warm","weather_code":2}}"#,
+    r#"{"current":{"temperature_2m":7.6}}"#,
+    r#"{"current":{"temperature_2m":7.6,"weather_code":-1}}"#,
+  ] {
+    assert_eq!(system::parse_weather(bad), None, "{bad:?}");
+  }
+  assert_eq!(system::weather_icon(0), "weather-clear-symbolic");
+  assert_eq!(system::weather_icon(65), "weather-showers-symbolic");
+  assert_eq!(system::weather_icon(1000), "weather-severe-alert-symbolic");
+
+  for picture in ["a.png", "B.JPG", "c.jpeg", "d.webp", "e.gif", "f.g.png"] {
+    assert!(system::is_picture(picture), "{picture}");
+  }
+  for other in ["notes.txt", "png", ".png.txt", "icon.svg", ""] {
+    assert!(!system::is_picture(other), "{other}");
+  }
+
+  let mut stats = pinned_stats();
+  assert_eq!(
+    system::cpu_temperature(&stats),
+    Some(52.4),
+    "the CPU's chip"
+  );
+  stats.temperatures.remove(1);
+  assert_eq!(
+    system::cpu_temperature(&stats),
+    Some(40.0),
+    "else the first"
+  );
+  stats.temperatures.clear();
+  assert_eq!(system::cpu_temperature(&stats), None);
 }
