@@ -246,7 +246,7 @@ pub(crate) async fn follow<D: Daemon>(shared: Rc<Shared>, daemon: Rc<D>, address
   shared.root.signal(WakeOnDispose(Rc::clone(&waker)));
   let connection = match zbus::connection::Builder::address(address).build().await {
     Ok(connection) => connection,
-    Err(error) => return tracing::info!(%error, name, "can't reach the system bus"),
+    Err(error) => return tracing::info!(%error, name, "can't reach the bus it is on"),
   };
   // Made before anything is asked, so no signal is missed.
   let mut messages = MessageStream::from(&connection);

@@ -15,6 +15,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod a11y;
 mod activation;
 mod audio;
 mod bluetooth;
@@ -67,6 +68,8 @@ use calloop::{Interest, LoopHandle, Mode, PostAction, RegistrationToken};
 use crabshell_reactive::{Owner, ReadSignal, Signal};
 use crabshell_ui::{Cx, IntoProp};
 
+#[doc(hidden)]
+pub use a11y::follow_accessibility;
 pub use audio::{Audio, AudioChannel, AudioNode, AudioStream, PeakTarget, Sink};
 pub use bluetooth::{
   Bluetooth, BluetoothAdapter, BluetoothAdapterState, BluetoothAgent, BluetoothDevice,
@@ -146,6 +149,7 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(polkit::Service::new(Rc::clone(&shared)));
   let logind = cx.provide(logind::Service::new(Rc::clone(&shared)));
   cx.provide(brightness::Service::new(Rc::clone(&shared), logind));
+  cx.provide(a11y::Service::new(Rc::clone(&shared)));
 }
 
 /// Lets the services ask the compositor for activation tokens for the
