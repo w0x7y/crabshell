@@ -135,7 +135,7 @@ impl Window {
     let mut tree = borrow(&self.tree);
     if !std::mem::replace(&mut tree.keyboard.entered, true) {
       let root = tree.root;
-      tree.access_event(|window| AccessEvent::Active(tree.access_id(window, root), true));
+      tree.node_event(root, |id| AccessEvent::Active(id, true));
     }
     let focused = tree.keyboard.focused;
     tree.show_focus(focused, true);
@@ -150,7 +150,7 @@ impl Window {
     tree.show_focus(focused, false);
     if was {
       let root = tree.root;
-      tree.access_event(|window| AccessEvent::Active(tree.access_id(window, root), false));
+      tree.node_event(root, |id| AccessEvent::Active(id, false));
     }
   }
 
@@ -245,7 +245,7 @@ impl Tree {
     } else {
       self.update_button_style(id, |button| button.focused = shown);
     }
-    self.access_event(|window| AccessEvent::Focused(self.access_id(window, id), shown));
+    self.node_event(id, |id| AccessEvent::Focused(id, shown));
   }
 
   /// Moves the focus to `id`. It shows once the window has the keyboard.

@@ -6,8 +6,8 @@ use std::task::Waker;
 
 use super::{Counter, Harness, capture_logs};
 use crate::{
-  AccessEvent, AccessRole, Accessibility, Button, Icon, Key, KeyEvent, Modifiers, Row, Slider,
-  Spacer, Style, Text, TextInput, Window,
+  AccessEvent, AccessRole, Accessibility, Button, FloatingWindow, Icon, Key, KeyEvent, Lock,
+  Modifiers, Output, Row, SessionLock, Size, Slider, Spacer, Style, Text, TextInput, Window,
 };
 
 fn tab() -> KeyEvent {
@@ -171,16 +171,186 @@ fn a_click_needs_an_enabled_shown_button() {
   shown.set(false);
   harness.frame(&window);
   assert!(!access.click(button));
-  // A hidden widget leaves its parent's children.
-  let row = access.node(row.children[1]).expect("the text").parent;
-  assert_eq!(
-    access
-      .node(row.expect("a parent"))
-      .expect("the row")
-      .children,
-    [text]
-  );
+  // A hidden widget stays among its parent's children, and doesn't show.
+  let parent = access.node(text).expect("the text").parent;
+  let row = access.node(parent.expect("a parent")).expect("the row");
+  assert_eq!(row.children, [button, text]);
+  assert!(!access.node(button).expect("the button").shown);
   assert_eq!(clicks.get(), 0);
+}
+
+#[test]
+fn showing_and_turning_a_button_on_are_heard() {
+  let (mut harness, access) = harness();
+  let (on, shown, label) = (
+    harness.cx.signal(true),
+    harness.cx.signal(true),
+    harness.cx.signal(true),
+  );
+  let panel = harness.panel().child(
+    Row::new().child(
+      Button::new(
+        Row::new()
+          .child(Text::new("mute"))
+          .child(Text::new("now").visible(move || label.get())),
+      )
+      .enabled(move || on.get())
+      .visible(move || shown.get()),
+    ),
+  );
+  let window = harness.window(panel, 300.0, 30.0);
+  let row = access
+    .node(access.windows()[0])
+    .expect("the window")
+    .children[0];
+  let button = access.node(row).expect("the row").children[0];
+  assert_eq!(access.node(button).expect("the button").name, "mute now");
+  access.listen(true);
+  on.set(false);
+  harness.frame(&window);
+  shown.set(false);
+  harness.frame(&window);
+  shown.set(true);
+  harness.frame(&window);
+  label.set(false);
+  harness.frame(&window);
+  let inner = access.node(button).expect("the button").children[0];
+  let now = access.node(inner).expect("the labels").children[1];
+  assert_eq!(
+    take(&access),
+    [
+      AccessEvent::Enabled(button, false),
+      AccessEvent::Shown(button, false),
+      AccessEvent::Shown(button, true),
+      AccessEvent::Shown(now, false),
+      AccessEvent::NameChanged(button),
+    ]
+  );
+  assert_eq!(access.node(button).expect("the button").name, "mute");
+}
+
+#[test]
+fn keyed_children_coming_and_going_are_heard_once_laid_out() {
+  let (mut harness, access) = harness();
+  let items = harness.cx.signal(vec![1, 2]);
+  let panel = harness.panel().child(Row::new().children_keyed(
+    move || items.get(),
+    |n| *n,
+    |_, n| Text::new(move || n.get().to_string()),
+  ));
+  // Built while a screen reader listens: only the window is news.
+  access.listen(true);
+  let window = harness.window(panel, 300.0, 30.0);
+  assert_eq!(take(&access), [AccessEvent::WindowsChanged]);
+  let row = access
+    .node(access.windows()[0])
+    .expect("the window")
+    .children[0];
+  let before = access.node(row).expect("the row").children;
+  items.set(vec![2, 3]);
+  harness.frame(&window);
+  let after = access.node(row).expect("the row").children;
+  assert_eq!(after[0], before[1]);
+  assert_eq!(
+    take(&access),
+    [
+      AccessEvent::Children {
+        parent: row,
+        child: before[0],
+        index: 0,
+        added: false
+      },
+      AccessEvent::Children {
+        parent: row,
+        child: after[1],
+        index: 1,
+        added: true
+      },
+    ]
+  );
+  drop(window);
+  assert_eq!(take(&access), [AccessEvent::WindowsChanged]);
+}
+
+#[test]
+fn a_floating_window_title_and_a_placeholder_rename_them() {
+  let (mut harness, access) = harness();
+  let (title, shown) = (
+    harness.cx.signal(String::from("About")),
+    harness.cx.signal(true),
+  );
+  let placeholder = harness.cx.signal(String::from("search"));
+  let window = Window::floating(
+    &harness.cx,
+    FloatingWindow::new()
+      .title(move || title.get())
+      .visible(move || shown.get())
+      .child(
+        TextInput::new(harness.cx.signal(String::new())).placeholder(move || placeholder.get()),
+      ),
+  );
+  window.set_size(Size::new(200.0, 100.0));
+  harness.frame(&window);
+  let root = access.windows()[0];
+  let field = access.node(root).expect("the window").children[0];
+  assert_eq!(access.node(root).expect("the window").name, "About");
+  access.listen(true);
+  title.set(String::from("Settings"));
+  placeholder.set(String::from("find"));
+  harness.frame(&window);
+  assert_eq!(
+    take(&access),
+    [
+      AccessEvent::NameChanged(root),
+      AccessEvent::NameChanged(field)
+    ]
+  );
+  assert_eq!(access.node(field).expect("the field").name, "find");
+  // Hidden, the window is unknown, and comes back with its parts.
+  shown.set(false);
+  harness.frame(&window);
+  assert_eq!(take(&access), [AccessEvent::WindowsChanged]);
+  assert!(access.windows().is_empty());
+  assert!(access.node(root).is_none() && access.node(field).is_none());
+  shown.set(true);
+  harness.frame(&window);
+  assert_eq!(access.windows(), [root]);
+}
+
+#[test]
+fn while_locked_only_the_lock_is_read_or_clicked() {
+  let (mut harness, access) = harness();
+  let clicks = Counter::default();
+  let window = counter(&mut harness, &clicks);
+  let panel = access.windows()[0];
+  let button = access
+    .node(access.node(panel).expect("the panel").children[0])
+    .expect("the row")
+    .children[0];
+  access.listen(true);
+  let lock = Lock::new(
+    &harness.cx,
+    SessionLock::new().surface(|_, _| Text::new("locked")),
+  );
+  let surface = lock.surface(&Output::new("DP-1")).expect("the lock lives");
+  surface.set_size(Size::new(300.0, 30.0));
+  harness.frame(&surface);
+  assert_eq!(take(&access), [AccessEvent::WindowsChanged]);
+  let listed = access.windows();
+  assert_eq!(listed.len(), 1);
+  assert_eq!(
+    access.node(listed[0]).expect("the lock").role,
+    AccessRole::Frame
+  );
+  assert!(access.node(panel).is_none() && access.node(button).is_none());
+  assert!(!access.click(button), "clicked behind the lock");
+  harness.frame(&window);
+  assert_eq!(clicks.get(), 0);
+  drop(surface);
+  assert_eq!(take(&access), [AccessEvent::WindowsChanged]);
+  assert_eq!(access.windows(), [panel]);
+  assert!(access.click(button));
+  assert_eq!(clicks.get(), 1);
 }
 
 #[test]

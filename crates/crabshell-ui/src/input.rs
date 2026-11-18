@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 use crabshell_reactive::{Signal, untrack};
 
+use crate::access::AccessEvent;
 use crate::cx::Cx;
 use crate::dnd::Incoming;
 use crate::geometry::{Point, Rect, Size};
@@ -1242,6 +1243,7 @@ impl Tree {
     if std::mem::replace(&mut button.enabled, enabled) == enabled {
       return Vec::new();
     }
+    self.node_event(id, |id| AccessEvent::Enabled(id, enabled));
     let mut calls = Vec::new();
     if !enabled {
       if self.pointer.pressed.is_some_and(|press| press.id == id) {

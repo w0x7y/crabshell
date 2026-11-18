@@ -88,6 +88,20 @@ pub enum AccessEvent {
   NameChanged(AccessId),
   /// A window's root, as its window gets or loses the keyboard.
   Active(AccessId, bool),
+  /// A widget shown or hidden.
+  Shown(AccessId, bool),
+  /// A button turned on or off.
+  Enabled(AccessId, bool),
+  /// `child` added to `parent` at `index`, or removed from there.
+  Children {
+    parent: AccessId,
+    child: AccessId,
+    index: usize,
+    added: bool,
+  },
+  /// A window opened, closed, showed or hid, or a lock came or went, so
+  /// [`Accessibility::windows`] may list others.
+  WindowsChanged,
 }
 
 impl Accessibility {
@@ -98,6 +112,9 @@ impl Accessibility {
     let mut windows = self.windows.borrow_mut();
     windows.retain(|(_, tree)| tree.strong_count() > 0);
     windows.push((id, tree));
+    if self.listening() {
+      self.push(AccessEvent::WindowsChanged);
+    }
     id
   }
 
@@ -131,31 +148,47 @@ impl Accessibility {
     std::mem::take(&mut self.events.borrow_mut())
   }
 
+  /// Window `window`'s tree, while it is listed.
   fn tree(&self, window: u32) -> Option<Rc<RefCell<Tree>>> {
+    if !self.windows().iter().any(|root| root.window == window) {
+      return None;
+    }
     let windows = self.windows.borrow();
     let (_, tree) = windows.iter().find(|(id, _)| *id == window)?;
     tree.upgrade()
   }
 
-  /// The roots of the windows shown, oldest first.
+  /// The roots of the windows shown, oldest first. While a lock surface
+  /// is up, only the lock surfaces, so nothing behind the lock is read
+  /// or clicked.
   pub fn windows(&self) -> Vec<AccessId> {
     let windows = self.windows.borrow();
-    let live = windows.iter().filter_map(|(id, tree)| {
-      let tree = tree.upgrade()?;
-      let tree = tree.try_borrow().ok()?;
-      let shown = tree
-        .floating
-        .as_ref()
-        .is_none_or(|floating| floating.shown());
-      shown.then(|| AccessId {
-        window: *id,
-        node: tree.root.into(),
+    let shown: Vec<(AccessId, bool)> = windows
+      .iter()
+      .filter_map(|(id, tree)| {
+        let tree = tree.upgrade()?;
+        let tree = tree.try_borrow().ok()?;
+        let shown = tree
+          .floating
+          .as_ref()
+          .is_none_or(|floating| floating.shown());
+        let lock = tree
+          .node(tree.root)
+          .is_some_and(|root| root.name == "SessionLock");
+        let root = AccessId {
+          window: *id,
+          node: tree.root.into(),
+        };
+        shown.then_some((root, lock))
       })
-    });
-    live.collect()
+      .collect();
+    let locked = shown.iter().any(|(_, lock)| *lock);
+    let listed = shown.into_iter().filter(|(_, lock)| *lock || !locked);
+    listed.map(|(root, _)| root).collect()
   }
 
-  /// Widget `id` as it is now, or `None` once it is gone.
+  /// Widget `id` as it is now, or `None` once it is gone or its window
+  /// isn't listed.
   pub fn node(&self, id: AccessId) -> Option<AccessNode> {
     let rc = self.tree(id.window)?;
     let tree = rc.try_borrow().ok()?;
@@ -257,6 +290,15 @@ impl Tree {
     }
   }
 
+  /// Keeps an event about widget `id`, made from its id, if a screen
+  /// reader listens and the widget was laid out, so one it can't have
+  /// seen yet makes no noise.
+  pub(crate) fn node_event(&self, id: NodeId, event: impl FnOnce(AccessId) -> AccessEvent) {
+    if self.node(id).is_some_and(|node| node.rect.is_some()) {
+      self.access_event(|window| event(self.access_id(window, id)));
+    }
+  }
+
   pub(crate) fn access_id(&self, window: u32, node: NodeId) -> AccessId {
     AccessId {
       window,
@@ -264,16 +306,28 @@ impl Tree {
     }
   }
 
-  /// Text `id` changed, which renames it and the button around it.
-  pub(crate) fn text_renamed(&self, id: NodeId) {
-    if !self
+  fn listening(&self) -> bool {
+    self
       .access
       .as_ref()
       .is_some_and(|(access, _)| access.listening())
-    {
+  }
+
+  /// Text `id` changed, which renames it and the button around it.
+  pub(crate) fn text_renamed(&self, id: NodeId) {
+    if !self.listening() {
       return;
     }
-    self.access_event(|window| AccessEvent::NameChanged(self.access_id(window, id)));
+    self.node_event(id, AccessEvent::NameChanged);
+    self.button_renamed(id);
+  }
+
+  /// Something inside a button changed what it shows, which renames the
+  /// nearest button around `id`.
+  pub(crate) fn button_renamed(&self, id: NodeId) {
+    if !self.listening() {
+      return;
+    }
     let mut at = self.taffy.parent(id);
     while let Some(parent) = at {
       if matches!(
@@ -282,7 +336,7 @@ impl Tree {
       ) {
         // A label inside a slider renames nothing more.
         if exposed(self, parent) == parent {
-          self.access_event(|window| AccessEvent::NameChanged(self.access_id(window, parent)));
+          self.node_event(parent, AccessEvent::NameChanged);
         }
         return;
       }
@@ -297,7 +351,10 @@ fn exposed(tree: &Tree, id: NodeId) -> NodeId {
   let mut found = id;
   let mut at = Some(id);
   while let Some(current) = at {
-    if tree.node(current).is_some_and(|node| node.name == "Slider") {
+    let Some(node) = tree.node(current) else {
+      break;
+    };
+    if node.name == "Slider" {
       found = current;
     }
     at = tree.taffy.parent(current);
@@ -305,13 +362,58 @@ fn exposed(tree: &Tree, id: NodeId) -> NodeId {
   found
 }
 
-/// The shown children of `id`, in Tab order.
+/// The children of `id`, in Tab order, hidden ones too: their state
+/// says they don't show.
 fn exposed_children(tree: &Tree, id: NodeId) -> Vec<NodeId> {
-  let children = tree.taffy.children(id).unwrap_or_default();
-  children
-    .into_iter()
-    .filter(|&child| tree.node(child).is_some_and(|node| node.visible))
-    .collect()
+  tree.taffy.children(id).unwrap_or_default()
+}
+
+impl Tree {
+  /// `parent`'s children before a change, when a screen reader listens
+  /// and has seen it: it was laid out and isn't inside a slider.
+  pub(crate) fn access_children(&self, parent: NodeId) -> Option<Vec<NodeId>> {
+    let seen = self.node(parent).is_some_and(|node| node.rect.is_some());
+    (self.listening()
+      && seen
+      && exposed(self, parent) == parent
+      && role(self, parent) != AccessRole::Slider)
+      // Its groups still hold children removed from taffy before.
+      .then(|| {
+        self
+          .node(parent)
+          .map(|node| node.groups.concat())
+          .unwrap_or_default()
+      })
+  }
+
+  /// Tells a screen reader which children `parent` lost and gained.
+  pub(crate) fn children_changed(&self, parent: NodeId, before: &[NodeId], after: &[NodeId]) {
+    let removed = before
+      .iter()
+      .enumerate()
+      .filter(|(_, id)| !after.contains(id));
+    let added = after
+      .iter()
+      .enumerate()
+      .filter(|(_, id)| !before.contains(id));
+    let changes = removed
+      .map(|change| (change, false))
+      .chain(added.map(|change| (change, true)));
+    for ((index, &child), added) in changes {
+      // Neither is inside a slider, and a removed child is gone from
+      // taffy, so their ids are their own.
+      let id = |window, node: NodeId| AccessId {
+        window,
+        node: node.into(),
+      };
+      self.access_event(|window| AccessEvent::Children {
+        parent: id(window, parent),
+        child: id(window, child),
+        index,
+        added,
+      });
+    }
+  }
 }
 
 fn role(tree: &Tree, id: NodeId) -> AccessRole {

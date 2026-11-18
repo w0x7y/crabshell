@@ -1024,10 +1024,15 @@ impl Tree {
           },
         );
         self.bind_opt(id, props.placeholder, "placeholder", |tree, id, value| {
+          let mut renamed = false;
           tree.update_input(id, |input| {
+            renamed = input.placeholder != value;
             input.placeholder = value;
             input.refresh();
           });
+          if renamed {
+            tree.node_event(id, crate::AccessEvent::NameChanged);
+          }
         });
         self.bind_opt(id, props.wrap, "wrap", |tree, id, value| {
           tree.update_input(id, |input| {
@@ -1221,6 +1226,7 @@ impl Tree {
   /// Replaces the nodes of one child group of `parent`, adding the group if
   /// it is the next one.
   pub(crate) fn set_group(&mut self, parent: NodeId, group: usize, nodes: Vec<NodeId>) {
+    let before = self.access_children(parent);
     let Some(node) = self.node_mut(parent) else {
       return;
     };
@@ -1235,6 +1241,9 @@ impl Tree {
       .set_children(parent, &children)
       .expect("invariant: every node in a child group is in the tree");
     self.needs_layout = true;
+    if let Some(before) = before {
+      self.children_changed(parent, &before, &children);
+    }
   }
 
   /// Removes `id` and everything under it, and repaints where it was.
@@ -1631,23 +1640,33 @@ fn set_style(tree: &mut Tree, id: NodeId, style: Style) {
   tree.update_style(id, |node| node.style = style);
 }
 
-/// Shows or hides node `id`. Hidden, it and everything in it let go of
-/// the keyboard focus and the pointer at once; the next layout frees its
-/// space and repaints where it was.
 fn set_accessible_name(tree: &mut Tree, id: NodeId, name: String) {
   let Some(node) = tree.node_mut(id) else {
     return;
   };
   if node.accessible_name.as_ref() != Some(&name) {
     node.accessible_name = Some(name);
-    tree.access_event(|window| crate::AccessEvent::NameChanged(tree.access_id(window, id)));
+    tree.node_event(id, crate::AccessEvent::NameChanged);
   }
 }
 
+/// Shows or hides node `id`. Hidden, it and everything in it let go of
+/// the keyboard focus and the pointer at once; the next layout frees its
+/// space and repaints where it was.
 fn set_visible(tree: &mut Tree, id: NodeId, visible: bool) {
+  // Seen by a screen reader if laid out, or hidden after it was, which
+  // drops its rectangle.
+  let seen = tree
+    .node(id)
+    .is_some_and(|node| node.rect.is_some() || !node.visible);
   if tree.update(id, |node| replace(&mut node.visible, visible)) == Change::None {
     return;
   }
+  if seen {
+    tree.access_event(|window| crate::AccessEvent::Shown(tree.access_id(window, id), visible));
+  }
+  // A text that shows or hides changes the name of the button around it.
+  tree.button_renamed(id);
   if visible {
     // Once the flush is over, so the fields' `focus` bindings have run.
     tree.shown_since_layout.push(id);

@@ -275,6 +275,8 @@ async fn serve(status: Rc<Status>, session: Connection, run: u64) {
 /// Sends the changes the windows keep as AT-SPI events, while run `run`
 /// lasts.
 async fn emit(status: Rc<Status>, connection: Connection, name: String, run: u64) {
+  // The windows a screen reader was last told of.
+  let mut listed = status.access.windows();
   loop {
     let events = poll_fn(|cx| {
       if !status.current(run) {
@@ -292,56 +294,105 @@ async fn emit(status: Rc<Status>, connection: Connection, name: String, run: u64
       return;
     };
     for event in events {
-      let sent = match event {
-        AccessEvent::Focused(id, on) => {
-          let body = event_body("focused", on, Variant::from(0));
-          send(&connection, id, EVENT_OBJECT, "StateChanged", body).await
+      for (path, interface, member, body) in signals(&status.access, &name, &mut listed, event) {
+        let emit = connection.emit_signal(None::<&str>, path.as_str(), interface, member, &body);
+        if let Err(error) = emit.await {
+          tracing::debug!(%error, member, "an accessibility event wasn't sent");
         }
-        AccessEvent::NameChanged(id) => {
-          let Some(node) = status.access.node(id) else {
-            continue;
-          };
-          let body = event_body("accessible-name", false, Variant::from(node.name));
-          send(&connection, id, EVENT_OBJECT, "PropertyChange", body).await
-        }
-        AccessEvent::Active(id, on) => {
-          let title = status.access.node(id).map(|node| node.name);
-          let body = event_body("", false, Variant::from(title.unwrap_or_default()));
-          let member = if on { "Activate" } else { "Deactivate" };
-          let window = send(&connection, id, EVENT_WINDOW, member, body).await;
-          let state = event_body("active", on, Variant::from(0));
-          window.and(send(&connection, id, EVENT_OBJECT, "StateChanged", state).await)
-        }
-      };
-      if let Err(error) = sent {
-        tracing::debug!(%error, name, "an accessibility event wasn't sent");
       }
     }
   }
 }
 
-/// An event's body: its detail, detail1 as 1 or 0, detail2, its data,
-/// and no properties.
-type EventBody<'a> = (
-  &'a str,
+/// An event's body: its detail, detail1, detail2, its data, and no
+/// properties.
+type EventBody = (
+  &'static str,
   i32,
   i32,
-  Variant<'a>,
-  HashMap<&'a str, Variant<'a>>,
+  Variant<'static>,
+  HashMap<&'static str, Variant<'static>>,
 );
 
-fn event_body<'a>(detail: &'a str, on: bool, data: Variant<'a>) -> EventBody<'a> {
-  (detail, i32::from(on), 0, data, HashMap::new())
+/// One signal: its path, interface, member and body.
+type Outgoing = (String, &'static str, &'static str, EventBody);
+
+fn body(detail: &'static str, detail1: i32, data: Variant<'static>) -> EventBody {
+  (detail, detail1, 0, data, HashMap::new())
 }
 
-async fn send(
-  connection: &Connection,
-  id: AccessId,
-  interface: &str,
-  member: &str,
-  body: EventBody<'_>,
-) -> zbus::Result<()> {
-  let path = server::path(id);
-  let emit = connection.emit_signal(None::<&str>, path.as_str(), interface, member, &body);
-  emit.await
+/// The signals that tell a screen reader of `event`, the ones it keeps
+/// its copy of the shell by. `listed` is the windows it was told of.
+fn signals(
+  access: &Accessibility,
+  name: &str,
+  listed: &mut Vec<AccessId>,
+  event: AccessEvent,
+) -> Vec<Outgoing> {
+  let state = |id: AccessId, states: &[&'static str], on: bool| -> Vec<Outgoing> {
+    let each = states.iter().map(|&state| {
+      let body = body(state, i32::from(on), Variant::from(0));
+      (server::path(id), EVENT_OBJECT, "StateChanged", body)
+    });
+    each.collect()
+  };
+  let child = |parent: String, child: AccessId, index: usize, added: bool| -> Outgoing {
+    let detail = if added { "add" } else { "remove" };
+    let index = i32::try_from(index).unwrap_or(-1);
+    let data = Variant::from(server::reference(name, server::path(child)));
+    (
+      parent,
+      EVENT_OBJECT,
+      "ChildrenChanged",
+      body(detail, index, data),
+    )
+  };
+  match event {
+    AccessEvent::Focused(id, on) => state(id, &["focused"], on),
+    AccessEvent::Shown(id, on) => state(id, &["showing", "visible"], on),
+    AccessEvent::Enabled(id, on) => state(id, &["enabled", "sensitive"], on),
+    AccessEvent::NameChanged(id) => match access.node(id) {
+      Some(node) => {
+        let body = body("accessible-name", 0, Variant::from(node.name));
+        vec![(server::path(id), EVENT_OBJECT, "PropertyChange", body)]
+      }
+      None => Vec::new(),
+    },
+    AccessEvent::Active(id, on) => {
+      let title = access.node(id).map(|node| node.name).unwrap_or_default();
+      let member = if on { "Activate" } else { "Deactivate" };
+      let window = (
+        server::path(id),
+        EVENT_WINDOW,
+        member,
+        body("", 0, Variant::from(title)),
+      );
+      let mut signals = vec![window];
+      signals.extend(state(id, &["active"], on));
+      signals
+    }
+    AccessEvent::Children {
+      parent,
+      child: id,
+      index,
+      added,
+    } => vec![child(server::path(parent), id, index, added)],
+    AccessEvent::WindowsChanged => {
+      let now = access.windows();
+      let gone = listed
+        .iter()
+        .enumerate()
+        .filter(|(_, id)| !now.contains(id));
+      let mut signals: Vec<Outgoing> = gone
+        .map(|(index, &id)| child(ROOT.to_owned(), id, index, false))
+        .collect();
+      let new = now
+        .iter()
+        .enumerate()
+        .filter(|(_, id)| !listed.contains(id));
+      signals.extend(new.map(|(index, &id)| child(ROOT.to_owned(), id, index, true)));
+      *listed = now;
+      signals
+    }
+  }
 }

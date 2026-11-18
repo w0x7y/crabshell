@@ -46,9 +46,9 @@ pub(crate) fn path(id: AccessId) -> String {
 }
 
 /// An AT-SPI reference: the shell's bus name and an object's path.
-type Reference = (String, ObjectPath<'static>);
+pub(super) type Reference = (String, ObjectPath<'static>);
 
-fn reference(name: &str, path: String) -> Reference {
+pub(super) fn reference(name: &str, path: String) -> Reference {
   let path = ObjectPath::try_from(path).expect("invariant: the shell's object paths are valid");
   (name.to_owned(), path)
 }

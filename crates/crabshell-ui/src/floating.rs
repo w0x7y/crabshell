@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use crabshell_reactive::{Signal, untrack};
 
+use crate::access::AccessEvent;
 use crate::cx::{Anchor, Cx};
 use crate::input::{Handler, run_isolated};
 use crate::prop::{IntoProp, Prop};
@@ -341,6 +342,7 @@ impl Window {
       let Some(handler) = handler else {
         floating.dismissed = true;
         tree.surface.changed = true;
+        tree.access_event(|_| AccessEvent::WindowsChanged);
         return;
       };
       let Some(node) = tree.node(root) else {
@@ -432,8 +434,10 @@ impl Tree {
       style,
       child: _,
     } = window;
-    self.bind_opt(root, title, "title", |tree, _, value| {
-      tree.set_floating(|f| &mut f.title, value);
+    self.bind_opt(root, title, "title", |tree, root, value| {
+      if tree.set_floating(|f| &mut f.title, value) {
+        tree.node_event(root, AccessEvent::NameChanged);
+      }
     });
     self.bind_opt(root, width, "width", |tree, _, value| {
       tree.set_floating(|f| &mut f.width, value);
@@ -455,29 +459,33 @@ impl Tree {
     });
     self.bind_opt(root, visible, "visible", |tree, _, value| {
       // Hiding forgets a close, so showing again shows.
-      if !value {
-        tree.set_floating(|f| &mut f.dismissed, false);
+      let mut changed = !value && tree.set_floating(|f| &mut f.dismissed, false);
+      changed |= tree.set_floating(|f| &mut f.visible, value);
+      if changed {
+        tree.access_event(|_| AccessEvent::WindowsChanged);
       }
-      tree.set_floating(|f| &mut f.visible, value);
     });
     self.bind_compositor_hints(hints);
     self.mount_root(style, child);
     self.surface.changed = true;
   }
 
-  /// Sets one floating setting and remembers that the settings changed.
+  /// Sets one floating setting and remembers that the settings changed,
+  /// and says whether it did.
   fn set_floating<T: PartialEq>(
     &mut self,
     field: impl FnOnce(&mut FloatingState) -> &mut T,
     value: T,
-  ) {
+  ) -> bool {
     let Some(floating) = self.floating.as_mut() else {
-      return;
+      return false;
     };
     let slot = field(floating);
-    if *slot != value {
-      *slot = value;
-      self.surface.changed = true;
+    if *slot == value {
+      return false;
     }
+    *slot = value;
+    self.surface.changed = true;
+    true
   }
 }

@@ -695,7 +695,10 @@ impl Drop for Window {
   fn drop(&mut self) {
     // A `hovered` signal owned elsewhere mustn't stay `true`, and a drag
     // on a window going away ends without running anything.
-    drop(borrow(&self.tree).leave());
+    let mut tree = borrow(&self.tree);
+    tree.access_event(|_| crate::AccessEvent::WindowsChanged);
+    drop(tree.leave());
+    drop(tree);
     self.owner.dispose();
   }
 }

@@ -432,3 +432,89 @@ fn a_panicking_click_is_logged_and_the_shell_still_answers() {
   );
   assert_eq!(name_of(&mut shell, &client, (&name, &button)), "boom");
 }
+
+#[test]
+fn what_a_screen_reader_caches_by_is_announced() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  shell.cx.provide(Accessibility::default());
+  let fakes = fakes(&mut shell, &bus, true);
+  let (on, shown) = (shell.cx.signal(true), shell.cx.signal(true));
+  let items = shell.cx.signal(vec![1]);
+  let panel = PanelWindow::new(&Output::new("DP-1")).child(
+    Row::new()
+      .child(
+        Button::new(Text::new("mute"))
+          .enabled(move || on.get())
+          .visible(move || shown.get()),
+      )
+      .children_keyed(
+        move || items.get(),
+        |n| *n,
+        |_, n| Text::new(move || n.get().to_string()),
+      ),
+  );
+  let window = Window::new(&shell.cx, panel);
+  window.set_size(Size::new(300.0, 30.0));
+  lay_out(&window);
+  follow_accessibility(&shell.cx);
+  let name = embedded(&mut shell, &fakes);
+  let heard = listen(&mut shell, &bus);
+  let client = shell.block_on(bus.connect(&[]));
+  let windows = children(&mut shell, &client, (&name, ROOT));
+  let row = children(&mut shell, &client, (&name, &windows[0]))[0].clone();
+  let button = children(&mut shell, &client, (&name, &row))[0].clone();
+  let wait = |shell: &mut Harness, what: String| {
+    let seen = Rc::clone(&heard);
+    shell.retry_until(&what.clone(), move || seen.borrow().contains(&what), |_| {});
+  };
+  on.set(false);
+  lay_out(&window);
+  wait(&mut shell, format!("StateChanged {button} enabled 0"));
+  wait(&mut shell, format!("StateChanged {button} sensitive 0"));
+  shown.set(false);
+  lay_out(&window);
+  wait(&mut shell, format!("StateChanged {button} showing 0"));
+  wait(&mut shell, format!("StateChanged {button} visible 0"));
+  items.set(vec![1, 2]);
+  lay_out(&window);
+  wait(&mut shell, format!("ChildrenChanged {row} add 2"));
+  // A second window opens, then closes.
+  let other = counter(&shell, shell.cx.signal(0));
+  wait(&mut shell, format!("ChildrenChanged {ROOT} add 1"));
+  drop(other);
+  wait(&mut shell, format!("ChildrenChanged {ROOT} remove 1"));
+}
+
+#[test]
+fn while_locked_a_panel_button_is_unknown_and_never_clicked() {
+  let bus = PrivateBus::start();
+  let (mut shell, fakes, _window, count) = shell(&bus, true);
+  let name = embedded(&mut shell, &fakes);
+  let client = shell.block_on(bus.connect(&[]));
+  let button = find_button(&mut shell, &client, &name);
+  let lock = crabshell_ui::Lock::new(
+    &shell.cx,
+    crabshell_ui::SessionLock::new().surface(|_, _| Text::new("locked")),
+  );
+  let surface = lock.surface(&Output::new("DP-1")).expect("the lock lives");
+  surface.set_size(Size::new(300.0, 30.0));
+  lay_out(&surface);
+  let clicked = call::<bool>(
+    &mut shell,
+    &client,
+    (&name, &button),
+    ("org.a11y.atspi.Action", "DoAction"),
+    (0i32,),
+  );
+  assert!(clicked.is_err(), "the button behind the lock answered");
+  assert_eq!(count.get_untracked(), 0);
+  let windows = children(&mut shell, &client, (&name, ROOT));
+  assert_eq!(windows.len(), 1);
+  assert_eq!(name_of(&mut shell, &client, (&name, &windows[0])), "");
+  let surface_children = children(&mut shell, &client, (&name, &windows[0]));
+  assert_eq!(
+    name_of(&mut shell, &client, (&name, &surface_children[0])),
+    "locked"
+  );
+}
