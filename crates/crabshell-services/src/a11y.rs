@@ -195,44 +195,15 @@ impl Daemon for Status {
 
 /// Joins the accessibility bus the launcher names, embeds the application
 /// with the registry, and answers calls until run `run` ends or the bus
-/// closes.
+/// closes. A failure to join ends the run, so the next word from the
+/// status tries again.
 async fn serve(status: Rc<Status>, session: Connection, run: u64) {
   let shared = &status.shared;
-  let call = session.call_method(Some(A11Y_BUS), A11Y_PATH, Some(A11Y_BUS), "GetAddress", &());
-  let address = match shared.timeout(CALL_TIMEOUT, call).await {
-    Ok(reply) => reply.body().deserialize::<String>(),
-    Err(error) => Err(error),
-  };
-  let address = match address {
-    Ok(address) if address.len() <= MAX_ADDRESS => address,
-    Ok(_) => return tracing::warn!("the accessibility bus address is too long; skipped"),
-    Err(error) => return tracing::warn!(%error, "couldn't ask for the accessibility bus"),
-  };
-  let built = zbus::connection::Builder::address(address.as_str()).build();
-  let connection = match built.await {
-    Ok(connection) => connection,
-    Err(error) => return tracing::warn!(%error, "couldn't join the accessibility bus"),
-  };
-  // Made before anything is asked, so no call is missed.
-  let mut messages = MessageStream::from(&connection);
-  let Some(name) = connection.unique_name().map(|name| name.to_string()) else {
-    return tracing::warn!("the accessibility bus gave no name");
-  };
-  // One argument, the plug: a struct of the name and the root's path.
-  let plug = ((
-    name.as_str(),
-    zbus::ObjectPath::from_static_str_unchecked(ROOT),
-  ),);
-  let embed = connection.call_method(Some(REGISTRY), ROOT, Some(SOCKET), "Embed", &plug);
-  let desktop = match shared.timeout(CALL_TIMEOUT, embed).await {
-    Ok(reply) => reply
-      .body()
-      .deserialize::<(String, zbus::OwnedObjectPath)>(),
-    Err(error) => Err(error),
-  };
-  let desktop = match desktop {
-    Ok(desktop) => desktop,
-    Err(error) => return tracing::warn!(%error, "the accessibility registry refused the shell"),
+  let Some((connection, mut messages, name, desktop)) = join(&status, &session).await else {
+    if status.current(run) {
+      status.stop();
+    }
+    return;
   };
   if !status.current(run) {
     return;
@@ -270,6 +241,64 @@ async fn serve(status: Rc<Status>, session: Connection, run: u64) {
   } else {
     tracing::info!("no screen reader listens now; stopped serving AT-SPI");
   }
+}
+
+/// The accessibility bus joined, read from before anything is asked, the
+/// shell's name there and the registry's root; `None`, logged, on a
+/// failure.
+async fn join(
+  status: &Status,
+  session: &Connection,
+) -> Option<(
+  Connection,
+  MessageStream,
+  String,
+  (String, zbus::OwnedObjectPath),
+)> {
+  let shared = &status.shared;
+  let call = session.call_method(Some(A11Y_BUS), A11Y_PATH, Some(A11Y_BUS), "GetAddress", &());
+  let address = match shared.timeout(CALL_TIMEOUT, call).await {
+    Ok(reply) => reply.body().deserialize::<String>(),
+    Err(error) => Err(error),
+  };
+  let address = match address {
+    Ok(address) if address.len() <= MAX_ADDRESS => address,
+    Ok(_) => {
+      tracing::warn!("the accessibility bus address is too long; skipped");
+      return None;
+    }
+    Err(error) => {
+      tracing::warn!(%error, "couldn't ask for the accessibility bus");
+      return None;
+    }
+  };
+  let built = zbus::connection::Builder::address(address.as_str()).build();
+  let connection = built
+    .await
+    .inspect_err(|error| tracing::warn!(%error, "couldn't join the accessibility bus"))
+    .ok()?;
+  // Made before anything is asked, so no call is missed.
+  let messages = MessageStream::from(&connection);
+  let Some(name) = connection.unique_name().map(|name| name.to_string()) else {
+    tracing::warn!("the accessibility bus gave no name");
+    return None;
+  };
+  // One argument, the plug: a struct of the name and the root's path.
+  let plug = ((
+    name.as_str(),
+    zbus::ObjectPath::from_static_str_unchecked(ROOT),
+  ),);
+  let embed = connection.call_method(Some(REGISTRY), ROOT, Some(SOCKET), "Embed", &plug);
+  let desktop = match shared.timeout(CALL_TIMEOUT, embed).await {
+    Ok(reply) => reply
+      .body()
+      .deserialize::<(String, zbus::OwnedObjectPath)>(),
+    Err(error) => Err(error),
+  };
+  let desktop = desktop
+    .inspect_err(|error| tracing::warn!(%error, "the accessibility registry refused the shell"))
+    .ok()?;
+  Some((connection, messages, name, desktop))
 }
 
 /// Sends the changes the windows keep as AT-SPI events, while run `run`

@@ -518,3 +518,42 @@ fn while_locked_a_panel_button_is_unknown_and_never_clicked() {
     "locked"
   );
 }
+
+#[test]
+fn a_refused_embed_is_tried_again_at_the_next_word_from_the_status() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  shell.cx.provide(Accessibility::default());
+  let fakes = fakes(&mut shell, &bus, false);
+  // The registry leaves before the screen reader comes, so Embed fails.
+  let Fakes {
+    launcher,
+    registry,
+    plugs,
+  } = fakes;
+  registry.leave(&mut shell);
+  let _window = counter(&shell, shell.cx.signal(0));
+  follow_accessibility(&shell.cx);
+  shell.settle();
+  let on = [("IsEnabled", Variant::from(true))];
+  let logs = capture_logs(|| {
+    launcher.set(&mut shell, A11Y_PATH, STATUS, &on);
+    shell.settle();
+  });
+  assert!(
+    logs.contains("the accessibility registry refused the shell"),
+    "{logs}"
+  );
+  assert!(plugs.borrow().is_empty());
+  let registry = FakeService::start(&mut shell, &bus, REGISTRY);
+  let kept = Rc::clone(&plugs);
+  registry.on("Embed", move |call| {
+    kept.borrow_mut().push(call.body().deserialize().ok()?);
+    let desktop = (REGISTRY, ObjectPath::from_static_str_unchecked(DESKTOP));
+    reply(call, &(desktop,))
+  });
+  registry.own(&mut shell);
+  launcher.set(&mut shell, A11Y_PATH, STATUS, &on);
+  let seen = Rc::clone(&plugs);
+  shell.retry_until("the second embed", || !seen.borrow().is_empty(), |_| {});
+}
