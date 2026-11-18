@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use common::{Home, PrivateBus, alive, checkout, is_compiler_error, switches, text};
+use common::{Home, PrivateBus, alive, checkout, is_compiler_error, switches, text, write_program};
 
 /// The fenced block of `language` after `heading` in the design doc.
 fn doc_block(heading: &str, language: &str) -> String {
@@ -221,8 +221,8 @@ fn a_new_config_checks_clean_and_a_mistake_fails_the_check() {
 }
 
 /// A config with no dependencies that builds in a moment. Each start
-/// appends `build` or `last-good`, its process id and the time in
-/// milliseconds to `starts` once it said `ready`. The word in `mode` picks
+/// appends `build` or `last-good`, its process id and the time it started
+/// in milliseconds to `starts` once it said `ready`. The word in `mode` picks
 /// what it does next: `crash` exits 1, `logout` exits 2 as with no
 /// compositor, `deaf` stays up and ignores the supervisor, `late` says
 /// `ready` only once a file `go` appears and then stays up, and anything
@@ -255,6 +255,9 @@ fn append(path: std::path::PathBuf, line: String) {
 }
 
 fn main() {
+  // Before `ready`, which a busy machine may let the old shell answer
+  // before this one writes its start.
+  let started = now();
   let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
   let exe = std::env::current_exe().expect("a path");
   let name = if exe.ends_with("last-good") { "last-good" } else { "build" };
@@ -282,7 +285,7 @@ fn main() {
     std::process::exit(0);
   }
   // After connecting, so a test that sees the start can reload it.
-  append(dir.join("starts"), format!("{name} {} {}\n", std::process::id(), now()));
+  append(dir.join("starts"), format!("{name} {} {started}\n", std::process::id()));
   if std::env::var_os("CRABSHELL_BESIDE").is_some_and(|value| value == "1") {
     append(dir.join("besides"), format!("{}\n", std::process::id()));
   }
@@ -343,7 +346,6 @@ impl Home {
 
   /// A `last-good` that records its start like the fake, then stays up.
   fn fake_last_good(&self) {
-    use std::os::unix::fs::PermissionsExt;
     let path = self.0.join("cache/crabshell/last-good");
     std::fs::create_dir_all(path.parent().expect("a parent")).expect("the cache");
     let starts = self.config().join("starts");
@@ -351,8 +353,7 @@ impl Home {
       "#!/bin/sh\necho \"last-good $$ $(date +%s%3N)\" >> '{}'\nexec sleep 3600\n",
       starts.display()
     );
-    std::fs::write(&path, script).expect("written");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("executable");
+    write_program(&path, &script);
   }
 
   /// Each start: which binary, its process id and when, in ms.
@@ -534,8 +535,12 @@ fn a_program_that_cant_start_counts_as_a_crash() {
   std::fs::set_permissions(&last_good, std::fs::Permissions::from_mode(0o644))
     .expect("not executable");
   let supervised = home.supervise();
-  // Long enough for the first try and the one after 1 s.
-  std::thread::sleep(Duration::from_millis(2500));
+  // The first try and the one after 1 s, however long cargo takes.
+  wait_in_log(
+    &supervised,
+    "starting it again in 2 s",
+    Duration::from_secs(60),
+  );
   supervised.signal("-TERM");
   let (code, log) = supervised.wait(Duration::from_secs(5));
   assert_eq!(code, Some(0), "{log}");
@@ -682,8 +687,11 @@ fn an_edit_starts_the_new_build_beside_the_old_shell_until_it_is_ready() {
     at >= starts[1].2,
     "the old shell ran until the new one started"
   );
-  std::thread::sleep(Duration::from_millis(300));
-  assert!(!alive(first));
+  let deadline = Instant::now() + Duration::from_secs(5);
+  while alive(first) || home.alones().len() < 2 {
+    assert!(Instant::now() < deadline, "{:?}", home.alones());
+    std::thread::sleep(Duration::from_millis(20));
+  }
   let alones = home.alones();
   assert_eq!(alones.len(), 2, "{alones:?}");
   assert_eq!(alones[0].0, first, "alone at once, with no old shell");
@@ -815,14 +823,43 @@ fn a_shell_that_ignores_save_is_killed_after_5_s() {
   let supervised = home.supervise();
   let first = home.wait_for_starts(1, Duration::from_secs(60))[0].1;
   home.edit(|code| code + "// an edit\n");
-  // A second edit while the first reload waits doesn't put off the kill.
+  // Asked after `asked_after` and by `asked_by`, however long the build
+  // took.
+  let deadline = Instant::now() + Duration::from_secs(60);
+  let mut asked_after = Instant::now();
+  loop {
+    let looked = Instant::now();
+    if supervised.log().contains("asking the shell to save") {
+      break;
+    }
+    asked_after = looked;
+    assert!(Instant::now() < deadline, "{}", supervised.log());
+    std::thread::sleep(Duration::from_millis(10));
+  }
+  let asked_by = Instant::now();
+  // A second edit while the reload waits doesn't put off the kill.
   std::thread::sleep(Duration::from_millis(2500));
   home.edit(|code| code + "// another\n");
+  // Killed after `last_alive` and by `dead_by`.
+  let mut last_alive = Instant::now();
+  loop {
+    let looked = Instant::now();
+    if !alive(first) {
+      break;
+    }
+    last_alive = looked;
+    assert!(Instant::now() < deadline, "{}", supervised.log());
+    std::thread::sleep(Duration::from_millis(10));
+  }
+  let dead_by = Instant::now();
+  // The longest and shortest the wait could have been, so a late look
+  // can't fail it.
+  let longest = dead_by - asked_after;
+  let shortest = last_alive.saturating_duration_since(asked_by);
+  assert!(longest >= Duration::from_secs(5), "{longest:?}");
+  assert!(shortest < Duration::from_millis(7500), "{shortest:?}");
   let starts = home.wait_for_starts(2, Duration::from_secs(60));
   assert_eq!(starts.len(), 2, "{starts:?}");
-  let waited = starts[1].2 - starts[0].2;
-  assert!((5000..7500).contains(&waited), "{waited} ms");
-  assert!(!alive(first));
   assert!(home.saves().is_empty());
   supervised.signal("-TERM");
   let (code, log) = supervised.wait(Duration::from_secs(5));
@@ -1175,8 +1212,6 @@ fn a_new_shell_left_alone_by_a_crash_is_never_late() {
 /// later for a new shell that never came.
 #[test]
 fn a_new_build_that_cant_start_leaves_the_old_shell_for_good() {
-  use std::os::unix::fs::PermissionsExt;
-
   let home = Home::new("cant-start");
   home.fake_config("stay");
   let bus = PrivateBus::start(&home);
@@ -1185,13 +1220,11 @@ fn a_new_build_that_cant_start_leaves_the_old_shell_for_good() {
   // A linker that writes a program whose interpreter doesn't exist, so
   // starting it fails.
   let linker = home.0.join("bad-linker");
-  std::fs::write(
+  write_program(
     &linker,
     "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = -o ] && out=$2; shift; done\n\
      printf '#!/nonexistent/crabshell-test\\n' > \"$out\"\nchmod +x \"$out\"\n",
-  )
-  .expect("written");
-  std::fs::set_permissions(&linker, std::fs::Permissions::from_mode(0o755)).expect("its mode");
+  );
   std::fs::create_dir_all(home.config().join(".cargo")).expect("a directory");
   std::fs::write(
     home.config().join(".cargo/config.toml"),

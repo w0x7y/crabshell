@@ -70,6 +70,19 @@ impl Drop for Home {
   }
 }
 
+/// Writes `script` at `path` as a program. `cp` writes it, as a write
+/// handle open here would be copied into another test's fork until that
+/// fork's exec, and running the program meanwhile fails with ETXTBSY.
+pub(crate) fn write_program(path: &Path, script: &str) {
+  use std::os::unix::fs::PermissionsExt;
+  let draft = path.with_extension("draft");
+  std::fs::write(&draft, script).expect("a program's draft");
+  std::fs::set_permissions(&draft, std::fs::Permissions::from_mode(0o755)).expect("its mode");
+  let copied = Command::new("cp").arg(&draft).arg(path).status();
+  assert!(copied.expect("cp runs").success(), "cp copied {path:?}");
+  std::fs::remove_file(&draft).expect("the draft removed");
+}
+
 pub(crate) fn text(bytes: &[u8]) -> String {
   String::from_utf8_lossy(bytes).into_owned()
 }
