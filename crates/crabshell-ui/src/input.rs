@@ -292,7 +292,7 @@ pub(crate) struct Press {
   /// Where it went down and where the pointer was last, in window
   /// coordinates.
   at: Point,
-  last: Point,
+  pub(crate) last: Point,
   /// Where it went down, in the button's own coordinates.
   start: Point,
   /// A drag started.
@@ -1152,7 +1152,7 @@ impl Tree {
       .collect()
   }
 
-  fn drag_call(
+  pub(crate) fn drag_call(
     &self,
     press: Press,
     phase: DragPhase,

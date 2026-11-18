@@ -9,7 +9,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::geometry::Point;
-use crate::input::{Action, PointerButton, run_all};
+use crate::input::{Action, DragPhase, PointerButton, run_all};
 use crate::tree::{NodeId, borrow};
 use crate::window::Window;
 
@@ -81,6 +81,21 @@ impl Window {
     tree.pointer.pressed.is_some_and(|press| press.out)
   }
 
+  /// The drag that went out moved to `at` over its own window, which
+  /// its `on_drag` hears as a `Move`.
+  pub fn drag_out_moved(&self, at: Point) {
+    let call = {
+      let mut tree = borrow(&self.tree);
+      let Some(press) = tree.pointer.pressed.as_mut().filter(|press| press.out) else {
+        return;
+      };
+      press.last = at;
+      let press = *press;
+      tree.drag_call(press, DragPhase::Move, at, None)
+    };
+    run_all(call.into_iter().collect());
+  }
+
   /// Ends the drag that went out, as a release does: the button's
   /// `on_release` runs, then `drop` with what it carries now, which says
   /// whether a target's `on_drop` ran and returned, then its `End`. A
@@ -119,6 +134,13 @@ impl Window {
     tree.pointer.incoming = Some(Incoming { at, carried });
     tree.update_drop();
     tree.pointer.drop_over.is_some()
+  }
+
+  /// Whether a button here takes the drag from elsewhere now, which a
+  /// layout or a hidden button may have changed under a still drag.
+  pub fn drag_takes(&self) -> bool {
+    let tree = borrow(&self.tree);
+    tree.pointer.incoming.is_some() && tree.pointer.drop_over.is_some()
   }
 
   /// The drag from elsewhere left the window.

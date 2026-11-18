@@ -252,3 +252,43 @@ fn a_panicking_on_drop_content_is_logged_with_its_path_and_takes_no_more() {
   assert!(!window.drag_over(Point::new(45.0, 5.0), carried));
   assert!(!hovered.get_untracked());
 }
+
+#[test]
+fn a_drag_that_went_out_still_moves_back_over_its_own_window() {
+  let mut h = Harness::new();
+  let events = Events::default();
+  let hovered = h.cx.signal(false);
+  let first = source(&events, || Some(7));
+  let window = window(&mut h, first, content_target(&events, hovered));
+  drag_to(&window, Point::new(250.0, 5.0));
+  window.take_drag_out().expect("it went out");
+  window.pointer_leave();
+  window.drag_out_moved(Point::new(60.0, 5.0));
+  window.end_drag_out(|_| false);
+  assert_eq!(
+    *events.borrow(),
+    [
+      "Start false",
+      "Move false",
+      "Move false",
+      "release",
+      "End false"
+    ]
+  );
+}
+
+#[test]
+fn a_target_hidden_under_a_still_drag_no_longer_takes_it() {
+  let mut h = Harness::new();
+  let events = Events::default();
+  let (shown, hovered) = (h.cx.signal(true), h.cx.signal(false));
+  let second = content_target(&events, hovered).visible(move || shown.get());
+  let window = window(&mut h, Button::new(square()), second);
+  assert!(!window.drag_takes(), "no drag yet");
+  window.drag_over(Point::new(45.0, 5.0), TypeId::of::<DragContent>());
+  assert!(window.drag_takes());
+  shown.set(false);
+  h.frame(&window);
+  assert!(!window.drag_takes());
+  assert!(!hovered.get_untracked());
+}
