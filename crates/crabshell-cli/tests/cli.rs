@@ -221,8 +221,8 @@ fn a_new_config_checks_clean_and_a_mistake_fails_the_check() {
 }
 
 /// A config with no dependencies that builds in a moment. Each start
-/// appends `build` or `last-good`, its process id and the time it started
-/// in milliseconds to `starts` once it said `ready`. The word in `mode` picks
+/// appends `build` or `last-good`, its process id and the time it said
+/// `ready` in milliseconds to `starts`. The word in `mode` picks
 /// what it does next: `crash` exits 1, `logout` exits 2 as with no
 /// compositor, `deaf` stays up and ignores the supervisor, `late` says
 /// `ready` only once a file `go` appears and then stays up, and anything
@@ -233,7 +233,9 @@ fn a_new_config_checks_clean_and_a_mistake_fails_the_check() {
 /// doesn't say `can-hand-off` or know `handoff`. `reload` asks for a
 /// reload on its first start. Told `alone`, it appends its process id
 /// and the time to `alones`. `stray` starts a copy of itself that
-/// connects and says `ready` in its place, and stays quiet itself.
+/// connects and says `ready` in its place, and stays quiet itself. Beside
+/// an old shell, it waits 300 ms before `ready` when a file `slow` is
+/// there.
 const FAKE_SHELL: &str = r#"
 use std::io::Write;
 
@@ -255,9 +257,6 @@ fn append(path: std::path::PathBuf, line: String) {
 }
 
 fn main() {
-  // Before `ready`, which a busy machine may let the old shell answer
-  // before this one writes its start.
-  let started = now();
   let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
   let exe = std::env::current_exe().expect("a path");
   let name = if exe.ends_with("last-good") { "last-good" } else { "build" };
@@ -277,6 +276,13 @@ fn main() {
   if mode.trim() != "old" {
     say(&mut control, b"can-hand-off\n");
   }
+  let beside = std::env::var_os("CRABSHELL_BESIDE").is_some_and(|value| value == "1");
+  if beside && dir.join("slow").exists() {
+    std::thread::sleep(std::time::Duration::from_millis(300));
+  }
+  // Stamped before `ready`, as the old shell may exit before this one
+  // writes its start.
+  let started = now();
   if mode.trim() != "late" {
     say(&mut control, b"ready\n");
   }
@@ -286,7 +292,7 @@ fn main() {
   }
   // After connecting, so a test that sees the start can reload it.
   append(dir.join("starts"), format!("{name} {} {started}\n", std::process::id()));
-  if std::env::var_os("CRABSHELL_BESIDE").is_some_and(|value| value == "1") {
+  if beside {
     append(dir.join("besides"), format!("{}\n", std::process::id()));
   }
   match mode.trim() {
@@ -672,6 +678,8 @@ impl Home {
 fn an_edit_starts_the_new_build_beside_the_old_shell_until_it_is_ready() {
   let home = Home::new("reload");
   home.fake_config("stay");
+  // An old shell told to exit before the new one is ready exits first.
+  std::fs::write(home.config().join("slow"), "").expect("written");
   let supervised = home.supervise();
   let first = home.wait_for_starts(1, Duration::from_secs(60))[0].1;
   // Two saves close together build once.

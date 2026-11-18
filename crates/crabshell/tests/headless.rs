@@ -4463,6 +4463,7 @@ fn the_motion_windows_draw_only_while_they_move() {
   // A slide's first frame draws where it starts, so it draws that and
   // where it ends however slowly a busy machine draws, about 18 at 60 Hz;
   // a jump draws once.
+  // ui's animation tests check the frames in between on a fixed clock.
   settle(&mut shell);
   let shown = shell.platform().stats().commits;
   assert!(
