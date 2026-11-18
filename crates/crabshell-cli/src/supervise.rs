@@ -352,7 +352,8 @@ impl Supervisor {
       Ok(child) => child,
       Err(error) => {
         let how = format!("{} didn't start: {error}", program.display());
-        if self.old.is_some() {
+        // An old shell told to exit can't take over again.
+        if self.old.as_ref().is_some_and(|old| old.exiting.is_none()) {
           return self.failed_reload(&how);
         }
         return self.ended(Exit::Crashed, &how);
@@ -423,14 +424,14 @@ impl Supervisor {
 
   /// Shell `pid`'s pidfd turned readable: it exited.
   fn exited(&mut self, pid: u32) {
-    // Meant for the new shell beside the old one, whichever went first.
-    let ending = self.ending.take();
     if self.old.as_ref().is_some_and(|old| old.child.id() == pid) {
       return self.old_exited();
     }
     let Some((mut child, _)) = self.shell.take_if(|(child, _)| child.id() == pid) else {
       return;
     };
+    // Meant for this shell, the new one beside the old.
+    let ending = self.ending.take();
     if let Some(timer) = self.healthy_timer.take() {
       self.handle.remove(timer);
     }
@@ -475,6 +476,15 @@ impl Supervisor {
         None => self.failed_reload(&format!("the new shell ended ({status})")),
       };
     }
+    if ending == Some(Ending::Replaced) {
+      // The old shell went first: nothing is left to save, so the newest
+      // build simply starts. Not a crash.
+      if let Some(timer) = self.ready_deadline.take() {
+        self.handle.remove(timer);
+      }
+      log("the new shell ended for a newer build, which starts now");
+      return self.start();
+    }
     // A new build that ended before `ready` didn't reload.
     self.reload_gap = None;
     match waited {
@@ -494,8 +504,11 @@ impl Supervisor {
     let Some(mut old) = self.old.take() else {
       return;
     };
-    // The new shell is the only one now, however long it takes.
-    if let Some(timer) = self.ready_deadline.take() {
+    // The new shell is the only one now, however long it takes, unless
+    // it is being replaced: then its kill stays due.
+    if self.ending != Some(Ending::Replaced)
+      && let Some(timer) = self.ready_deadline.take()
+    {
       self.handle.remove(timer);
     }
     if let Some(Some(timer)) = old.exiting {
@@ -848,6 +861,10 @@ impl Supervisor {
             TimeoutAction::Drop
           })
           .ok();
+      } else if self.ending == Some(Ending::Late) {
+        // Being killed for being late: the old shell stays, and then this
+        // edit reloads it.
+        self.reload_again = true;
       }
       return;
     }
@@ -929,6 +946,28 @@ impl Supervisor {
     self.stopping = true;
     if let Some(timer) = self.ready_deadline.take() {
       self.handle.remove(timer);
+    }
+    // A shell whose loop is stuck never acts on SIGTERM.
+    let kill = Timer::from_duration(SAVE_LIMIT);
+    let killing = self.handle.insert_source(kill, |_, _, supervisor| {
+      log(&format!(
+        "a shell didn't end within {} s of SIGTERM; killing it",
+        SAVE_LIMIT.as_secs()
+      ));
+      let old = supervisor.old.as_mut().map(|old| &mut old.child);
+      for child in supervisor
+        .shell
+        .as_mut()
+        .map(|(child, _)| child)
+        .into_iter()
+        .chain(old)
+      {
+        let _ = child.kill();
+      }
+      TimeoutAction::Drop
+    });
+    if let Err(error) = killing {
+      log(&format!("can't time the shells' end: {}", error.error));
     }
     let old = self.old.as_ref().map(|old| &old.child);
     let shells: Vec<&Child> = self

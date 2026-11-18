@@ -1213,3 +1213,59 @@ fn a_new_build_that_cant_start_leaves_the_old_shell_for_good() {
   assert!(!log.contains("wasn't ready"), "{log}");
   assert!(!log.contains("killing it"), "{log}");
 }
+
+/// A `main` that becomes a process ignoring SIGTERM, as a shell whose loop
+/// is stuck would.
+const DEAF_HANG: &str = "fn main() {\n  use std::os::unix::process::CommandExt;\n  \
+  let _ = std::process::Command::new(\"sh\").args([\"-c\", \"trap '' TERM; exec sleep 3600\"]).exec();";
+
+/// The old shell crashes while the new one, which ignores SIGTERM, is
+/// being replaced: the new one is still killed, and the newest build
+/// starts at once, not as a crash's restart.
+#[test]
+fn a_shell_being_replaced_is_killed_and_the_newest_starts_when_the_old_one_crashes() {
+  let home = Home::new("replaced-alone");
+  home.fake_config("stay");
+  let supervised = home.supervise();
+  let first = home.wait_for_starts(1, Duration::from_secs(60))[0].1;
+  home.edit(|code| code.replacen("fn main() {", DEAF_HANG, 1));
+  wait_in_log(
+    &supervised,
+    "starting the new build beside it",
+    Duration::from_secs(60),
+  );
+  home.edit(|code| code.replacen(DEAF_HANG, "fn main() {", 1));
+  wait_in_log(
+    &supervised,
+    "ending the new shell, which isn't ready yet",
+    Duration::from_secs(60),
+  );
+  let killed = std::process::Command::new("kill")
+    .args(["-KILL", &first.to_string()])
+    .status()
+    .expect("kill runs");
+  assert!(killed.success());
+  let starts = home.wait_for_starts(2, Duration::from_secs(15));
+  assert_eq!(starts.len(), 2, "{starts:?}\n{}", supervised.log());
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(5));
+  assert_eq!(code, Some(0), "{log}");
+  assert!(log.contains("which starts now"), "{log}");
+  assert!(!log.contains("starting it again in"), "not a crash: {log}");
+}
+
+/// Told to stop, the supervisor ends a shell that ignores SIGTERM 5 s
+/// later, rather than waiting on it.
+#[test]
+fn a_shell_that_ignores_sigterm_is_killed_when_run_stops() {
+  let home = Home::new("deaf-stop");
+  home.fake_config("stay");
+  home.edit(|code| code.replacen("fn main() {", DEAF_HANG, 1));
+  let supervised = home.supervise();
+  wait_in_log(&supervised, "the build took", Duration::from_secs(60));
+  std::thread::sleep(Duration::from_millis(500));
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(8));
+  assert_eq!(code, Some(0), "{log}");
+  assert!(log.contains("killing it"), "{log}");
+}
