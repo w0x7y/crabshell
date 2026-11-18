@@ -1045,3 +1045,46 @@ fn beside_the_old_shell_of_a_reload_the_agent_registers_once_alone() {
     registrations.borrow().len() == 1
   });
 }
+
+/// polkit may not have seen the old shell's agent go when the new shell
+/// goes alone: a refusal then is tried once more, 500 ms later.
+#[test]
+fn a_refusal_just_after_going_alone_is_tried_once_more() {
+  let mut polkit = Polkit::start(PASSWORD);
+  let asked = Rc::new(std::cell::Cell::new(0));
+  let (counted, registrations) = (Rc::clone(&asked), Rc::clone(&polkit.registrations));
+  polkit
+    .authority
+    .on("RegisterAuthenticationAgent", move |call| {
+      counted.set(counted.get() + 1);
+      if counted.get() == 1 {
+        let refusal = Message::error(&call.header(), FAILED);
+        return Some(refusal.build(&"an agent is registered already"));
+      }
+      let agent = call.header().sender()?.to_string();
+      registrations.borrow_mut().push(Registration {
+        agent,
+        kind: String::new(),
+        details: HashMap::new(),
+        path: String::new(),
+      });
+      reply(call, &())
+    });
+  crate::set_alone(&polkit.shell.cx, false);
+  let _agent = polkit.shell.cx.polkit_agent();
+  polkit
+    .shell
+    .run_until(Instant::now() + Duration::from_millis(100));
+  crate::set_alone(&polkit.shell.cx, true);
+  let refused = Rc::clone(&asked);
+  polkit.wait("the refusal", move || refused.get() == 1);
+  let went = Instant::now();
+  let registrations = Rc::clone(&polkit.registrations);
+  polkit.wait("the second try", move || registrations.borrow().len() == 1);
+  assert!(
+    went.elapsed() >= Duration::from_millis(400),
+    "{:?}",
+    went.elapsed()
+  );
+  assert_eq!(asked.get(), 2);
+}

@@ -83,6 +83,7 @@ pub(crate) fn untune(command: &mut Command) {
 /// [`untune`], given the shell's `GLIBC_TUNABLES`.
 fn untune_from(command: &mut Command, ours: Option<OsString>) {
   command.env_remove("CRABSHELL_CONTROL");
+  command.env_remove("CRABSHELL_BESIDE");
   command.env_remove(FIRST_START);
   // A token is spent on the window it was given for, the shell's here.
   for name in ["XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID"] {
@@ -222,6 +223,10 @@ mod tests {
       .get_envs()
       .any(|(name, value)| name == OsStr::new("CRABSHELL_CONTROL") && value.is_none());
     assert!(control, "the supervisor's socket isn't passed on");
+    let beside = command
+      .get_envs()
+      .any(|(name, value)| name == OsStr::new("CRABSHELL_BESIDE") && value.is_none());
+    assert!(beside, "a reload's overlap isn't passed on");
     let started = command
       .get_envs()
       .any(|(name, value)| name == OsStr::new(super::FIRST_START) && value.is_none());

@@ -985,7 +985,11 @@ async fn run(service: Rc<Service>, address: zbus::Address) {
     service.shared.when_alone(move || {
       if let Some(service) = weak.upgrade() {
         let shared = Rc::clone(&service.shared);
-        shared.spawn(async move { register(&service, &connection).await });
+        shared.spawn(async move {
+          if !register(&service, &connection).await {
+            register_again(&service, connection);
+          }
+        });
       }
     });
   }
@@ -1021,9 +1025,34 @@ async fn run(service: Rc<Service>, address: zbus::Address) {
   service.publish();
 }
 
+/// How long after a refusal, just as the shell went alone, the agent
+/// registers once more.
+const RETRY_AFTER: Duration = Duration::from_millis(500);
+
+/// Registers the agent once more [`RETRY_AFTER`] from now, since polkit
+/// may refuse it while it hasn't yet seen the old shell of a reload go.
+fn register_again(service: &Rc<Service>, connection: Connection) {
+  let Some(event_loop) = service.shared.event_loop() else {
+    return;
+  };
+  tracing::info!("trying the polkit agent once more, as the old shell may just have gone");
+  let (weak, mut connection) = (Rc::downgrade(service), Some(connection));
+  let tick = Box::new(move || {
+    if let (Some(service), Some(connection)) = (weak.upgrade(), connection.take()) {
+      let shared = Rc::clone(&service.shared);
+      shared.spawn(async move {
+        register(&service, &connection).await;
+      });
+    }
+    TimeoutAction::Drop
+  });
+  event_loop.insert_timer(Instant::now() + RETRY_AFTER, tick);
+}
+
 /// Registers the agent with the polkit on `connection`, which takes its
 /// calls only from the unique name that answered. A refusal is logged.
-async fn register(service: &Rc<Service>, connection: &Connection) {
+/// Returns whether polkit took it.
+async fn register(service: &Rc<Service>, connection: &Connection) -> bool {
   let session = std::env::var("XDG_SESSION_ID")
     .ok()
     .filter(|id| !id.is_empty());
@@ -1039,10 +1068,14 @@ async fn register(service: &Rc<Service>, connection: &Connection) {
   );
   let authority = match service.shared.timeout(CALL_TIMEOUT, call).await {
     Ok(reply) => reply.header().sender().map(|sender| sender.to_string()),
-    Err(error) => return tracing::warn!(%error, "polkit refused the agent, so no requests arrive"),
+    Err(error) => {
+      tracing::warn!(%error, "polkit refused the agent, so no requests arrive");
+      return false;
+    }
   };
   tracing::info!("registered as the polkit agent");
   if let Some(state) = service.state.borrow_mut().as_mut() {
     state.authority = authority;
   }
+  true
 }
