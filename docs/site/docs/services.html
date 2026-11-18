@@ -675,6 +675,57 @@ cx.effect(move || {
           <a href="windows.html#inhibit-idle"><code>inhibit_idle</code></a> set,
           yours or a video player's, holds the timeout off.
         </p>
+        <h2 id="sleep">Sleep and power</h2>
+        <p>
+          <code>cx.logind()</code> has <code>power_off()</code>,
+          <code>reboot()</code>, <code>suspend()</code> and
+          <code>hibernate()</code>, and <code>preparing_for_sleep()</code>, true
+          while the machine goes to sleep. A lock screen locks before suspend by
+          holding the sleep until its lock shows:
+        </p>
+        <pre><code class="rs">let logind = cx.logind();
+let sleeping = logind.preparing_for_sleep();
+cx.effect(move || {
+  if sleeping.get() {
+    locked.set(true);
+  }
+});
+logind.delay_sleep_until(move || shown.get());</code></pre>
+        <p>
+          <code>shown</code> is the signal
+          <a href="lock.html"><code>cx.session_lock</code></a> gives.
+        </p>
+        <h2 id="brightness">Brightness</h2>
+        <p>
+          <code>cx.brightness().devices()</code> lists the backlights, each with
+          <code>name</code>, <code>brightness</code> and
+          <code>max_brightness</code>, and follows the brightness keys.
+          <code>set(name, value)</code> goes through logind, so it needs no
+          root.
+        </p>
+        <h2 id="stats">CPU, memory and temperatures</h2>
+        <pre><code class="rs">let stats = cx.system_stats(Duration::from_secs(2));
+Text::new(move || format!("{:.0}%", stats.get().cpu * 100.0))</code></pre>
+        <p>
+          <code>SystemStats</code> has <code>cpu</code> and
+          <code>cpus</code> from 0 to 1, <code>memory_total</code>,
+          <code>memory_available</code>, <code>swap_total</code>,
+          <code>swap_free</code> and <code>temperatures</code>. It samples only
+          while the context that asked lives, so ask inside the popup that shows
+          it, once. The reads run on a thread of their own, so the first value
+          shows a moment after the bar.
+        </p>
+        <h2 id="locale">Date names</h2>
+        <pre><code class="rs">let locale = cx.locale();
+let clock = cx.clock(Precision::Minute);
+Text::new(move || locale.get().strftime(&amp;clock.get(), "%A %d %B"))</code></pre>
+        <p>
+          The names come from glibc for <code>LC_TIME</code> or
+          <code>LANG</code>. <code>months_standalone</code> is the form for a
+          calendar's header.
+        </p>
+        <h2 id="sounds">Short sounds</h2>
+        <p><code>cx.audio().play_sound(path)</code> plays a WAV file once.</p>
         <h2 id="more">More services</h2>
         <ul>
           <li>

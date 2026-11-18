@@ -16,7 +16,7 @@ Nothing from Quickshell carries over. Users write their shell as a Rust crate th
 | Styling            | Typed Rust styles only                     | Every color change is a rebuild.                                                                                                              |
 | Rendering          | Own CPU renderer, GPU later                | v0.1 had no gradients, shadows or blur. Phase 8 added gradients and shadows, and asks the compositor to blur.                                 |
 | Scope              | Everything Quickshell does, in milestones  | v0.1 is a bar with workspaces, clock, tray and volume. Notifications, launchers, lock screens, OSDs and the rest come in the phases after it. |
-| Compositors        | Sway and other wlroots compositors first   | Hyprland and the rest come after v0.1.                                                                                                        |
+| Compositors        | Sway and other wlroots compositors first   | Hyprland came in Phase 12 and niri's IPC in Phase 18.                                                                                         |
 | C libraries        | Fine when the system ships them            | Links libpulse, fontconfig, libxkbcommon and libpam at runtime. Wayland itself is pure Rust.                                                  |
 | Quickshell configs | No compatibility, no migration             | Users rewrite their configs by hand.                                                                                                          |
 | License            | MIT or Apache-2.0                          | Agents write fresh code and never translate Quickshell's LGPL-3.0 source.                                                                     |
@@ -279,7 +279,7 @@ API rules settled in Phase 12, more compositors:
 - `cx.global_shortcut(app_id, name, description)` gives a `ReadSignal<bool>`, true while the compositor's binding for it is held, as Hyprland's `bind = SUPER, D, global, crabshell:launcher`. Calls with the same app id and name share one registration.
 - While a `focus_grab` signal is true, the windows given it, with their popups, hold the keyboard and pointer, and a click elsewhere has the compositor clear the grab and write `false`. Writing `false` ends it.
 - `cx.hyprland()` gives `Hyprland`, a cheap clone, whose lists name each other by name, as `Workspace::output` does. `focus_workspace(target)` switches in the syntax Hyprland reads: Lua, with the name quoted as a Lua string, whenever its config is Lua, as it can be from 0.55 and always is from 0.57; otherwise `workspace X`, where a name with whitespace or a control character is logged and not sent. Whenever Hyprland's config is Lua, `dispatch(command)` runs a Lua expression inside the compositor, so never put window titles, classes or workspace names into it. `on_event(handler)` gets every raw event until the asking context goes.
-- `on_event` on a Hyprland or Sway handle whose context went logs that and does nothing.
+- `on_event` on a Hyprland, niri or Sway handle whose context went logs that and does nothing.
 - The prelude adds `Sway`, `SwayOutput`, `SwayEvent`, `SwayEventKind`, `WindowManager`, `Windowset`, `WindowsetProjection`, `Hyprland`, `HyprlandWorkspace`, `HyprlandMonitor`, `HyprlandToplevel` and `HyprlandEvent`.
 
 API rules settled in Phase 13, parity:
@@ -325,7 +325,7 @@ API rules settled in Phase 15, layout, pointer and views:
 - A disabled button runs no handler and shows no hover, pressed or focus style, Tab skips it, and the pointer passes through it to the button around it. `enabled` isn't inherited. Turning it off while held lets go, ending a drag with `End`, and drops the focus. `focus(...)` takes the keyboard focus whenever it turns true, unless the button is disabled or hidden.
 - A touchscreen's first finger is a left-button pointer, so a tap clicks and a moving finger drags.
 - `.displaced(transition)` after `children_keyed` takes a value or a closure, read untracked at each change of the list. When keys are added, leave once their exit ends, or move, each child whose place changes slides from where it was drawn to its new place through a translate, so it is hit where it is drawn and the window isn't laid out each frame. A new child shows in its place, a transition of 0 jumps, and other layout changes, such as a resize, still move children at once.
-- While `Button::drag_data` holds a value, the button drags as one with `on_drag` does; while it holds `None`, it clicks, so `editing.get().then_some(id)` drags only in an edit mode. `on_drop` takes drops of its type only, and `drop_hovered` is `true` while a drag carrying such a value is over it. Releasing over it runs `on_drop` with a copy of the value; releasing anywhere else drops nothing. `Drag::dropped` is true at `End` only when the target's `on_drop` ran and returned. A drag reaches only buttons in its own window.
+- While `Button::drag_data` holds a value, the button drags as one with `on_drag` does; while it holds `None`, it clicks, so `editing.get().then_some(id)` drags only in an edit mode. `on_drop` takes drops of its type only, and `drop_hovered` is `true` while a drag carrying such a value is over it. Releasing over it runs `on_drop` with a copy of the value; releasing anywhere else drops nothing. `Drag::dropped` is true at `End` only when the target's `on_drop` ran and returned. Once the pointer leaves the window, a drag carrying a value goes on as a Wayland drag that reaches buttons in the shell's other windows; the value is handed over in-process, so another program never gets it.
 - `Slider` clamps its signal to `range` (0 to 1 by default), snaps it to `step` (0, continuous, by default) and writes it only on a change. A value set from outside moves the handle, past either end it shows at that end, and NaN shows at the start. A press moves the value there and drags with no threshold. The wheel moves a step a notch, or a twentieth of the range without a step, a touchpad one step per 15 pixels, and the arrow keys the same while it has the focus. The track is 120 by 4 and the handle 16 by 16 unless their styles set a size. `dragging` turns false when the slider goes while held.
 - To bind a slider to an outside value, write the outside value into the slider's signal only while `dragging` is false, and send the signal's value out only when it differs from the outside one, so neither side loops and a held handle doesn't jump back to a late reply.
 - A horizontal `ScrollView` takes sideways wheel and touchpad input and, with no sideways input, a turned wheel. One that scrolls `both` ways moves and springs back on each axis on its own, and `both` wins over `horizontal`.
@@ -375,6 +375,23 @@ API rules settled in Phase 17, text:
 - Tab stops on each shown link of a `Text` with an `on_link`, in text order, and Enter or Space opens the focused link. A focused link gets the hover look and no ring. A focused link whose span stops being a link loses the focus, so Tab starts again from the first stop.
 - Crabshell drops the space cosmic-text 0.19 starts an elided wrapped line with, until an upgrade fixes it upstream.
 - The prelude adds `FontFeature`, `TextAlign`, `Elide`, `TextMetrics`, `TextArea`, `Span` and `parse_markup`.
+
+API rules settled in Phase 18, system and outside data:
+
+- `cx.http_get(url)` runs the system's `curl`, so nothing waits on the network. A closure fetches again when the URL it gives changes, and an empty URL fetches nothing. `body()` keeps the last whole body through a failed fetch, and a fetch that works clears `error()`. Only `http:` and `https:` go out, redirects included.
+- `cx.cover_art(url)` gives a `file://` URL's file, or an `http:` or `https:` picture downloaded into `$XDG_CACHE_HOME/crabshell/art`, and `None` while it downloads or after a failure.
+- `cx.logind()`'s `delay_sleep_until(ready)` holds a sleep delay while the asking context lives and lets it go once `ready` reads true after sleep is announced. A lock screen locks before suspend this way: an effect sets its `locked` when `preparing_for_sleep()` turns true, and `delay_sleep_until` waits on the signal `cx.session_lock` gives. A power action asked for before logind is reached is dropped and logged.
+- `cx.brightness()`'s `set` goes through logind, so it needs no root, and a value set before logind is reached is sent once it is.
+- `cx.niri()` follows niri's event stream as `cx.hyprland()` follows Hyprland's. `focus_workspace` and `focus_window` take niri's ids, and `action(json)` sends any niri action written as JSON. `crabshell::serde_json` re-exports serde_json for it.
+- `cx.clipboard()`'s `text()` follows every copy through `ext-data-control-v1`, whatever has the keyboard, and is `None` for a copy a password manager marks secret. `history()` keeps copies from its first call, newest first, at most 100 and 32 MiB, never a secret. An image entry is a `0600` file under `$XDG_RUNTIME_DIR/crabshell/clipboard`.
+- A selection in a `TextInput`, `TextArea` or selectable `Text` becomes the primary selection, except a password's, and a middle click in a field pastes it at the click.
+- `cx.folder_view(path)` lists one level, hidden entries included, sorted by name ignoring case, at most 10,000, and reads again 50 ms after a change.
+- `cx.system_stats(period)` samples every `period`, at least 250 ms, on a timer that lives with the asking context. Each call samples on its own, so call it once above `per_output`. Reads run on a thread of their own, so a value starts empty and fills a moment later, and each sample wakes the loop twice. CPU use comes from the second sample, and `cpus` lists the online CPUs by number.
+- `Icon::fallback(source)` draws when the icon's own source can't be found or loaded. `cx.icon_path(name, size)` finds a file as `Icon` does, so `.is_some()` is Quickshell's `hasThemeIcon`. It isn't reactive, but sees `cx.set_icon_theme` at once.
+- `cx.locale()` gives the date names of `LC_ALL`, else `LC_TIME`, else `LANG`, read once from glibc through `locale -k LC_TIME`, and English until then or for a locale that isn't installed. `strftime` fills `%a %A %b %h %B %p` from it, and `^` uppercases a name. `months` is the form used inside a date; a calendar header takes `months_standalone`.
+- `cx.audio().play_sound(path)` plays a PCM or float WAV file once as an event sound, and up to 4 wait for the audio connection. The shell's own sounds aren't in `streams()`.
+- `drag_content(content)` drags as `drag_data` does and, outside its window, offers text as `text/plain;charset=utf-8` or URIs as `text/uri-list` to any program. `on_drop_content` takes text and URI drops from other programs and from the shell, URIs first, and `drop_hovered` covers them. They share a slot with `drag_data` and `on_drop`. Drags copy only and show no icon. A drag's `on_drag` keeps getting `Move` over its own window and none over another.
+- The prelude adds `Http`, `HttpError`, `HttpErrorKind`, `Logind`, `Brightness`, `Backlight`, `Niri`, `NiriWorkspace`, `NiriWindow`, `NiriKeyboardLayouts`, `Clipboard`, `ClipboardEntry`, `ClipboardContent`, `FolderView`, `FolderEntry`, `SystemStats`, `Temperature`, `Locale` and `DragContent`.
 
 ## Process model and reload
 
@@ -690,6 +707,12 @@ Rules settled while building `crabshell-ui` (gaps run):
 - A screencopy view asks for its content box times `Affine::layer_zoom` of the transforms around it, so a view in a scale-up gets a frame as sharp as its layer.
 - Reports from `image_source_failed` about an image are dropped with it.
 
+Rules settled while building `crabshell-ui` (Phase 18):
+
+- A left release or a key that leaves a field or selectable text with a new selection asks the platform to offer it as the primary selection, and a finger's selection is offered at the touch's up.
+- A middle press on a field takes the focus and places the caret, with nothing selected, before the paste.
+- A held drag carrying a value goes out once the pointer passes the window's edge; a leave then doesn't end it, and the platform ends it with `on_release`, the drop, then `End`. A drop that arrives after a read lands only on a button still shown, enabled and taking its type.
+
 ## Rendering
 
 v0.1 draws on the CPU with `tiny-skia`, straight into shared-memory buffers, and repaints only what changed. For a bar that uses less memory than a GPU context. A 1920×30 bar buffer is 225 KiB.
@@ -818,6 +841,10 @@ Rules settled while building `crabshell-render` (gaps run):
 - An image looks its pictures up once a draw: later tiles of the same view, at the same size and scale, reuse what the first found while that picture is still cached. A GIF and a source that can't be loaded look up every tile.
 - A row's opacity check and the red and blue swap into an ARGB buffer work on whole 32-bit words, which vectorize: a 1080p frame's check went from about 1.5 ms to 0.2 ms, and the swap from 1.1 ms to 0.4 ms.
 - `inset_shadows@*.png`, `empty_line_selection@*.png`, `styled_field@*.png`, `fallback_decorations@*.png`, `lit_links@*.png` and `scroll_bars_both@*.png` pin the new drawing.
+
+Rules settled while building `crabshell-render` (Phase 18):
+
+- An icon with a fallback asks the cache again when its source fails, and each failure is logged once. `IconLookup` shares the renderer's theme cache with `cx.icon_path`.
 
 ## Wayland platform
 
@@ -1020,6 +1047,14 @@ Rules settled while building `crabshell-wayland` (gaps run):
 - `Platform::sync` sends `wl_display.sync` and returns a ticket. `Platform::synced(ticket)` turns true when its `done` arrives, after every event the compositor sent before. It never blocks, and the answer wakes the loop.
 - A window that has never committed holds its first frame while its draw waits for pictures being decoded. It commits once they come in, or after 250 ms on a one-shot timer that is in the loop only while the window is held. A lock surface's first commit then locks with its picture, and a wallpaper never shows its background color alone. Later frames and other windows aren't held.
 
+Rules settled while building `crabshell-wayland` (Phase 18):
+
+- `ext_data_control_manager_v1` is bound at the first clipboard watch, with a device on one seat that moves to another when its seat goes. Without it, the clipboard is read only while a shell window has the keyboard, and a set takes the latest input's serial.
+- A selection is read once per change: text first, else a PNG or JPEG while images are asked for. Text over 4 MiB and images over 8 MiB are dropped, a new selection drops a read still going, and an offer keeps 64 types but is a secret if any of its types is `x-kde-passwordManagerHint`. A secret is never read.
+- `zwp_primary_selection_device_manager_v1` is bound at startup, with a device per seat, and a selection is offered with the serial of the release or key that made it. A new paste from either selection drops one still waiting for its program.
+- A drag leaving its window calls `start_drag` with the held button's serial, on a version 3 manager only, and offers `application/x-crabshell-drag` after the text or URI types. Its source goes if its button goes first, which cancels it and lets go of the press.
+- A drop reads `text/uri-list` first, at most 1 MiB, skipping blank and `#` lines, else text up to 4 MiB, one drop at a time. The accept follows the targets each loop turn, and an offer is finished only once accepted.
+
 ## Services
 
 v0.1 had four services in `crabshell-services`, and Phase 9 added six; the phases after it add Quickshell's others (see "Beyond v0.1"). Each one owns its connection, runs on the main thread, and hands out `ReadSignal`s plus a few methods. Every service is created on first use and shared by all bars, so two outputs never mean two connections.
@@ -1028,8 +1063,9 @@ v0.1 had four services in `crabshell-services`, and Phase 9 added six; the phase
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- | ----------------------------- |
 | Workspaces        | `workspaces()` gives `Vec<Workspace>` with id, name, output, focused, visible, urgent. `focus_workspace(name)`, and since Phase 12 `outputs()`, `dispatch(command)` and `on_event(kinds, handler)`.                                                                                                                                                                                                                                                                 | Sway IPC at `$SWAYSOCK`                                                     | Own framing with `serde_json` |
 | Hyprland          | `workspaces()`, `monitors()`, `toplevels()` with focus, each monitor's workspace and urgency. `focus_workspace(target)`, `dispatch(command)`, `on_event(handler)`.                                                                                                                                                                                                                                                                                                  | Hyprland's sockets in `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/` | Own framing with `serde_json` |
+| niri              | `workspaces()`, `windows()`, `keyboard_layouts()`, `overview_open()`. `focus_workspace(id)`, `focus_window(id)`, `action(json)`, `on_event(handler)`.                                                                                                                                                                                                                                                                                                               | niri's socket at `$NIRI_SOCKET`                                             | Own framing with `serde_json` |
 | Tray              | `items()` gives `Vec<TrayItem>` with id (bus name and path), app_id, title, status, category, icon_name, icon_pixmaps, attention_icon_name, icon_theme_path, tooltip, item_is_menu and menu. `activate`, `secondary_activate`, `scroll`, `menu()`, `open_menu`, `open_submenu`, `close_menu`, `menu_event`.                                                                                                                                                         | StatusNotifierItem and `com.canonical.dbusmenu` on the session bus          | `zbus`                        |
-| Audio             | `default_sink()` gives `Option<Sink>` with name, volume_percent, muted. `change_volume(percent)`, `toggle_mute()`. Since Phase 13 each node's and stream's `volumes` and `channels`, `set_sink_volumes`, `set_source_volumes`, `set_stream_volumes` and `peaks(target)`.                                                                                                                                                                                            | PulseAudio protocol, served by pipewire-pulse on PipeWire systems           | `libpulse-binding`            |
+| Audio             | `default_sink()` gives `Option<Sink>` with name, volume_percent, muted. `change_volume(percent)`, `toggle_mute()`. Since Phase 13 each node's and stream's `volumes` and `channels`, `set_sink_volumes`, `set_source_volumes`, `set_stream_volumes` and `peaks(target)`. Since Phase 18 `play_sound(path)`.                                                                                                                                                         | PulseAudio protocol, served by pipewire-pulse on PipeWire systems           | `libpulse-binding`            |
 | Clock             | `clock(precision)` gives a `jiff::Zoned`                                                                                                                                                                                                                                                                                                                                                                                                                            | System time and time zone                                                   | `jiff`                        |
 | UPower            | `devices()`, `display_device()` give `PowerDevice`s with kind, state, percent, present, times to empty and full, energy rate. `on_battery()`.                                                                                                                                                                                                                                                                                                                       | UPower on the system bus                                                    | `zbus`                        |
 | Power profiles    | `active()`, `available()` give `PowerProfile`s, and `degradation()` why performance is held back. `set(profile)`.                                                                                                                                                                                                                                                                                                                                                   | power-profiles-daemon on the system bus                                     | `zbus`                        |
@@ -1042,7 +1078,12 @@ v0.1 had four services in `crabshell-services`, and Phase 9 added six; the phase
 | PAM               | `cx.pam(service)` gives a `Pam`: `state()` and `messages()`. `start(user)`, `respond(text)`, `abort()`.                                                                                                                                                                                                                                                                                                                                                             | libpam, a thread per attempt                                                | `nonstick`                    |
 | greetd            | `state()` and `messages()`. `create_session(user)`, `respond(answer)`, `start_session(command, env)`, `cancel()`.                                                                                                                                                                                                                                                                                                                                                   | greetd's socket at `$GREETD_SOCK`                                           | Own framing with `serde_json` |
 | polkit agent      | `request()` gives an `Option<AuthRequest>` with the action, message, icon, identities, state, info and errors. `respond(text)`, `cancel()`, `pick_identity(name)`.                                                                                                                                                                                                                                                                                                  | polkit on the system bus, and its `polkit-agent-helper-1`                   | `zbus`                        |
-| Files and sockets | `cx.file_view(path)` with `error()`, `cx.json_file(path, default)`, `cx.socket(path)` with `on_split`, `cx.socket_server(path)`.                                                                                                                                                                                                                                                                                                                                    | Files and Unix sockets                                                      | `inotify`, `serde_json`       |
+| Files and sockets | `cx.file_view(path)` with `error()`, `cx.json_file(path, default)`, `cx.socket(path)` with `on_split`, `cx.socket_server(path)`, and since Phase 18 `cx.folder_view(path)` with `entries()` and `error()`.                                                                                                                                                                                                                                                          | Files and Unix sockets                                                      | `inotify`, `serde_json`       |
+| HTTP              | `cx.http_get(url)` gives an `Http`: `body`, `error`, `loading`, `refresh`, `stopped`, `max_size`, `timeout`. `cx.cover_art(url)` gives a picture's file.                                                                                                                                                                                                                                                                                                            | The system's `curl`                                                         | none                          |
+| logind            | `preparing_for_sleep()`. `delay_sleep_until(ready)`, `power_off`, `reboot`, `suspend`, `hibernate`.                                                                                                                                                                                                                                                                                                                                                                 | logind on the system bus                                                    | `zbus`                        |
+| Brightness        | `devices()` gives `Backlight`s with name, brightness and max_brightness. `set(name, value)`.                                                                                                                                                                                                                                                                                                                                                                        | `/sys/class/backlight`, set through logind                                  | `inotify`, `zbus`             |
+| System stats      | `cx.system_stats(period)` gives CPU use, memory and temperatures.                                                                                                                                                                                                                                                                                                                                                                                                   | `/proc/stat`, `/proc/meminfo`, `/sys/class/hwmon`                           | none                          |
+| Locale            | `cx.locale()` gives month and day names and `strftime`.                                                                                                                                                                                                                                                                                                                                                                                                             | glibc, through `locale -k LC_TIME`                                          | none                          |
 
 ### Workspaces
 
@@ -1157,7 +1198,7 @@ Rules settled while building `crabshell-services` (Phase 12):
 - Hyprland: `j/status` is read once, at the first `focus_workspace`. A `configProvider` of `lua` means a switch is `hl.dsp.focus({ workspace = "…" })`, with backslash and quote escaped and control characters written as `\ddd`; `hyprlang`, or `unknown request` from Hyprland before 0.55, means `workspace …`. Any other reply is logged and read as the old syntax. Switches wait for the answer, at most 64, and go if it can't be asked.
 - Hyprland: workspace references match by id when both have one, otherwise by the `address` 0.57 added, and named workspaces sort first. A shown special workspace is active, and focused on the focused monitor. `fullscreen` is a flag in older Hyprland and a mode later, where 2 is fullscreen and 1 maximized. Hyprland 0.42 and later are supported; on 0.41 and older, from 2024, a maximized window counts as fullscreen. Urgency comes only from `urgent` events and ends on that window's `activewindowv2` or `closewindow`.
 - Hyprland: a reply over 8 MiB, or one that isn't JSON, is logged and the last list kept, and an entry that doesn't parse is left out. Texts are cut to 4 KiB at a character, at most 4096 entries per list and 4096 urgent windows are kept, and event lines past 1 MiB are dropped. A dispatch over 8 KiB isn't sent, and any reply but `ok` is logged. Handlers run after the event's reads are sent, with nothing borrowed, inside `catch_unwind`, and one that panics is logged and not called again.
-- Hyprland is tested against a fake Hyprland built from its docs and its BSD-3 source; on 2026-11-15 its IPC also passed a hand check on Hyprland 0.57.2 with a Lua config. Niri gets no service of its own, since Quickshell has none: it is reached only through the generic protocols, untested.
+- Hyprland is tested against a fake Hyprland built from its docs and its BSD-3 source; on 2026-11-15 its IPC also passed a hand check on Hyprland 0.57.2 with a Lua config.
 
 Rules settled while building `crabshell-services` (Phase 13):
 
@@ -1182,6 +1223,18 @@ Rules settled while building `crabshell-services` (Phase 17):
 - `cx.notifications().set_body_markup(true)` makes the server list `body-markup` and `body-hyperlinks` in `GetCapabilities`, so programs send the spec's markup, and keeps each body as sent, for `Text::rich(parse_markup(&body))`. It is off by default, and then tags are taken out and entities decoded. `body-images` is never listed, since an `img` shows its alt text. A change applies to notifications that arrive after it.
 - With markup on, a body is cut at 4 KiB as before, and a tag or entity the cut splits is dropped, so a half tag doesn't show as text.
 
+Rules settled while building `crabshell-services` (Phase 18):
+
+- HTTP: curl runs with `-q` first, `--globoff`, `--proto =http,https` for the URL and each redirect, at most 5 redirects, `--fail`, `--max-time` and `--max-filesize`, with the URL as one argument. The shell counts the bytes too, stops curl past the cap, and stops every running curl before it exits.
+- Cover art: a file is named by the URL's FNV-1a hash and the format its first bytes show, downloaded to a part file and renamed once whole. The cache is trimmed after each download, oldest first, to 64 MiB and 200 files. It must be the user's own directory, not a link; a wider one is tightened to `0700`, and anything else shows no remote art.
+- logind: one match rule, for `PrepareForSleep` only. A delay's inhibitor belongs to its effect, so the context going or a panic in `ready` lets it go, and one that arrives from a logind that restarted is closed and the new one asked. A refused inhibitor waits for the next resume.
+- Brightness: at most 32 backlights, listed once, each value read at most 64 bytes. Each one's `actual_brightness` is watched for `IN_MODIFY`, which the kernel sends for program writes and the firmware's changes alike.
+- niri: one connection sends `"EventStream"` and keeps the lists as niri-ipc's `EventStreamState` does. Unknown events are skipped. A stream that closes is opened once more, and lost for good if it closes again before an event past niri's opening state, or on a line over 1 MiB. Texts are cut to 4 KiB and lists to 4096. Each action is one JSON line on a connection of its own, at most 8 KiB and 64 waiting. niri is GPL, so its IPC was read as a spec only and the tests use a fake niri.
+- Folders are watched with the shared directory mask, so a write shows once its file is closed. A folder reached through a link isn't followed when its target is removed and made again, as with a file.
+- Stats are read on one thread, started with the first sampler and ended with the last, since an NVMe sensor can take 100 ms to answer. A tick while a read runs is skipped, and a panic there is logged and gives an empty sample. They read regular files only, 64 KiB each, and count guest time in user time. Sensors are listed at the first sample and again only when one goes, and a chip whose `runtime_status` is `suspended` isn't read, so a sleeping GPU stays asleep.
+- Locale: one `locale -k LC_TIME` run with `LC_ALL` set, on a thread, its output capped at 64 KiB.
+- Sound: WAV is parsed in-house, PCM U8, S16, S24, S32 and F32, 1 to 8 channels, up to 16 MiB, unknown chunks skipped. A stream plays with `media.role` `event` and goes once drained.
+
 Rules settled while building the `Tray` widget (Phase 4, step 5):
 
 - `Tray::new()` takes `icon_size` (16 by default) and `menu_style`, the menu popup's style (light text on dark gray by default). Both take a value or a closure.
@@ -1194,15 +1247,15 @@ Rules settled while building the `Tray` widget (Phase 4, step 5):
 
 One Cargo workspace with seven crates. Each crate owns one area, so an agent can work inside one without touching the others.
 
-| Crate                | Owns                                                                                                                                                                                       | Depends on           | Main external crates                                                                                                                              |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `crabshell-reactive` | Signals, memos, effects, owners, flush                                                                                                                                                     | none                 | `slotmap`                                                                                                                                         |
-| `crabshell-ui`       | `Cx`, widgets, styles, layout, text layout, hit testing, focus, invalidation                                                                                                               | reactive             | `taffy`, `cosmic-text`, `fontconfig`, `unicode-segmentation`                                                                                      |
-| `crabshell-render`   | Drawing into pixmaps, damage tracking, glyphs, icons, images                                                                                                                               | ui                   | `tiny-skia`, `resvg`, `png`, `swash`, `zune-jpeg`, `gif`, `image-webp`                                                                            |
-| `crabshell-wayland`  | Event loop, windows, popups, outputs, pointer, keyboard, text input, clipboard, shm buffers, idle, toplevels, session lock, workspaces, shortcut inhibitors, global shortcuts, focus grabs | reactive, ui, render | `smithay-client-toolkit` (with `xkbcommon`), `calloop`, `wayland-protocols`, `wayland-protocols-wlr`, `wayland-scanner`, `wayland-server` (tests) |
-| `crabshell-services` | Workspaces, tray, audio, clock, power, Bluetooth, network, media players, notifications, desktop entries, programs, files, sockets, PAM, greetd, polkit, Hyprland                          | reactive, ui         | `zbus`, `serde_json`, `libpulse-binding`, `jiff`, `calloop`, `serde`, `inotify`, `rustix`, `nonstick`, `nix`                                      |
-| `crabshell`          | Public API, `run()`, `prelude`, `cx.persist`, `cx.ipc`, `cx.quantize_colors`, `cx.toplevels`, `cx.session_lock`, `cx.exit`, `cx.window_manager`, `cx.global_shortcut`                      | all of the above     | `serde`, `serde_json`, tracing-subscriber, `signal-hook`, `wayland-server` (tests)                                                                |
-| `crabshell-cli`      | The `crabshell` binary with `init`, `run`, `check`, `ipc` and the supervisor                                                                                                               | none                 | `calloop`, `rustix`, `serde_json`, `inotify`, `zbus`                                                                                              |
+| Crate                | Owns                                                                                                                                                                                                                             | Depends on           | Main external crates                                                                                                                              |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `crabshell-reactive` | Signals, memos, effects, owners, flush                                                                                                                                                                                           | none                 | `slotmap`                                                                                                                                         |
+| `crabshell-ui`       | `Cx`, widgets, styles, layout, text layout, hit testing, focus, invalidation                                                                                                                                                     | reactive             | `taffy`, `cosmic-text`, `fontconfig`, `unicode-segmentation`                                                                                      |
+| `crabshell-render`   | Drawing into pixmaps, damage tracking, glyphs, icons, images                                                                                                                                                                     | ui                   | `tiny-skia`, `resvg`, `png`, `swash`, `zune-jpeg`, `gif`, `image-webp`                                                                            |
+| `crabshell-wayland`  | Event loop, windows, popups, outputs, pointer, keyboard, text input, clipboard, primary selection, data control, shm buffers, idle, toplevels, session lock, workspaces, shortcut inhibitors, global shortcuts, focus grabs      | reactive, ui, render | `smithay-client-toolkit` (with `xkbcommon`), `calloop`, `wayland-protocols`, `wayland-protocols-wlr`, `wayland-scanner`, `wayland-server` (tests) |
+| `crabshell-services` | Workspaces, tray, audio, clock, power, Bluetooth, network, media players, notifications, desktop entries, programs, files, folders, sockets, PAM, greetd, polkit, Hyprland, niri, logind, brightness, HTTP, system stats, locale | reactive, ui         | `zbus`, `serde_json`, `libpulse-binding`, `jiff`, `calloop`, `serde`, `inotify`, `rustix`, `nonstick`, `nix`                                      |
+| `crabshell`          | Public API, `run()`, `prelude`, `cx.persist`, `cx.ipc`, `cx.quantize_colors`, `cx.toplevels`, `cx.session_lock`, `cx.exit`, `cx.window_manager`, `cx.global_shortcut`, `cx.clipboard`, `cx.icon_path`                            | all of the above     | `serde`, `serde_json`, tracing-subscriber, `signal-hook`, `wayland-server` (tests)                                                                |
+| `crabshell-cli`      | The `crabshell` binary with `init`, `run`, `check`, `ipc` and the supervisor                                                                                                                                                     | none                 | `calloop`, `rustix`, `serde_json`, `inotify`, `zbus`                                                                                              |
 
 `Cx` lives in `crabshell-ui` and carries a map of services keyed by type. `crabshell-services` adds `cx.sway()`, `cx.audio()`, `cx.tray()`, `cx.clock()` and the services of Phases 9 to 12 through an extension trait, so `crabshell-ui` never depends on services.
 
@@ -1212,6 +1265,7 @@ One Cargo workspace with seven crates. Each crate owns one area, so an agent can
 - Add a crate only when it saves more than about 200 lines or implements a protocol or file format. Add it to the table above first.
 - `nix` 0.31.3 (MIT), with only its `user` feature, looks users up by uid through NSS with a safe `getpwuid_r`, and is the version calloop already uses. `wayland-server` (MIT) builds the fake compositor the wayland and `crabshell` tests run against, and is a dev-dependency only.
 - Rust crates must be MIT, Apache-2.0, BSD, ISC, Zlib or Unicode licensed. `cargo deny check licenses advisories` enforces this with `deny.toml`, in CI on every push, and fails on a security advisory against any dependency unless `deny.toml` ignores it with a reason.
+- HTTP goes through the system's `curl`, not a TLS crate: rustls with ring and native certificates would add 9 crates and 1.4 MiB to the counter example, and curl reads the system's certificates and proxy settings. Locale names come from glibc's `locale`, since `pure-rust-locales` kept about 0.15 MiB resident.
 - System C libraries (libpulse, fontconfig, libxkbcommon, libpam) are linked dynamically. sctk speaks the Wayland protocol in pure Rust, so libwayland-client isn't linked.
 - Use edition 2024 on the latest stable toolchain. No nightly features.
 
@@ -1221,16 +1275,16 @@ The baseline is Quickshell running the same bar, with workspaces, tray, volume a
 
 | Metric                                          | Target                                                     | Measured                                                                     | How to measure                                                                  |
 | ----------------------------------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| Idle memory (RSS), v0.1 bar on one 1080p output | 30 MB or less, and at most a quarter of Quickshell's       | 21.2 MiB, 17% of Quickshell's 125.2 MiB; the counter example 17.8 MiB        | `ps -o rss= -p <pid>` after 60 s idle                                           |
+| Idle memory (RSS), v0.1 bar on one 1080p output | 30 MB or less, and at most a quarter of Quickshell's       | 21.6 MiB, 17% of Quickshell's 125.2 MiB; the counter example 18.0 MiB        | `ps -o rss= -p <pid>` after 60 s idle                                           |
 | Idle wakeups                                    | 1 per minute with a minute clock and nothing else changing | The bar: 2 context switches at the minute boundary, none between. Counter: 0 | `perf stat -e 'syscalls:sys_exit_epoll_wait' -p <pid> -- sleep 300`             |
-| Startup to first frame                          | 100 ms or less                                             | About 14 ms for the counter, counted from the first start                    | The shell logs the time from `main` to its first committed buffer               |
-| Workspace switch to screen                      | Within one frame, 16 ms at 60 Hz                           | Median 0.5 ms, slowest 0.6 ms                                                | The shell logs the time from the IPC event to the commit                        |
-| Rebuild after a one-line edit                   | 10 s or less                                               | 0.9 s                                                                        | The supervisor logs each build's duration                                       |
-| Reload gap with nothing on screen               | 200 ms or less                                             | 16 ms                                                                        | The supervisor logs the time from the old shell's exit to the new one's `ready` |
+| Startup to first frame                          | 100 ms or less                                             | 13 to 18 ms for the counter, counted from the first start                    | The shell logs the time from `main` to its first committed buffer               |
+| Workspace switch to screen                      | Within one frame, 16 ms at 60 Hz                           | Median 0.6 ms, slowest 0.7 ms                                                | The shell logs the time from the IPC event to the commit                        |
+| Rebuild after a one-line edit                   | 10 s or less                                               | 0.8 s                                                                        | The supervisor logs each build's duration                                       |
+| Reload gap with nothing on screen               | 200 ms or less                                             | 14 ms                                                                        | The supervisor logs the time from the old shell's exit to the new one's `ready` |
 | Back after `kill -9`                            | 2 s or less                                                | 1.02 s                                                                       | `crates/crabshell-cli/tests/exit_check.rs`                                      |
-| Supervisor RSS with the shell up                | No target                                                  | 4.8 MiB                                                                      | `ps -o rss= -p <pid>`                                                           |
+| Supervisor RSS with the shell up                | No target                                                  | 5.4 MiB                                                                      | `ps -o rss= -p <pid>`                                                           |
 
-Measured on 2026-11-17 in release builds on headless Sway, except the workspace switch, measured for v0.1 on 2026-11-13. The memory, wakeup and first-frame rows come from `measure_the_counter_bar` on one 1920×1080 output at scale 1. The last four rows are the template bar under `crabshell run`, from the CLI's exit check. Phase 0 was the go/no-go gate: the spike used 13.2 MiB against Quickshell 0.3.2's 125.2 MiB for the same bar, with the full data in `spike/RESULTS.md`.
+Measured on 2026-11-18 in release builds on headless Sway. The memory, wakeup and first-frame rows come from `measure_the_counter_bar` on one 1920×1080 output at scale 1. The last four rows are the template bar under `crabshell run`, from the CLI's exit check. Phase 0 was the go/no-go gate: the spike used 13.2 MiB against Quickshell 0.3.2's 125.2 MiB for the same bar, with the full data in `spike/RESULTS.md`.
 
 This table holds the latest numbers. A change that moves one updates its row; older runs are in git history.
 
@@ -1278,19 +1332,7 @@ After v0.1, the phases bring every feature Quickshell has, so any Quickshell set
 
 Phase 13 matched Quickshell's own types, but most of what a Quickshell config draws and animates comes from Qt. On 2026-11-15 a survey counted what five public configs use: caelestia's shell, end-4's illogical-impulse, noctalia-shell 4.7.7, DankMaterialShell and the maintainer's rime, read from their QML and Qt's and Quickshell's public docs. Phases 14 to 19 bring what they use, most used first. A timer, a loop or a kinetic scroll is in the event loop only while it runs and gets an idle test, and every new callback runs inside `catch_unwind`.
 
-Phases 14 to 17 are built; see Writing a config.
-
-**Phase 18, system and outside data.**
-
-- HTTP GET off the loop thread, with size caps and timeouts, and remote cover art (MPRIS `artUrl` over https) fetched into a cache file. All five configs fetch the weather, most through curl, which `cx.process` already runs. The TLS crate's size and license are checked first.
-- A folder view on the existing inotify, for wallpaper pickers.
-- The clipboard for configs, read and written over `wl_data_device`, and its history over `ext-data-control-v1`. Drag and drop between the shell's windows and with other programs over `wl_data_device`, and the primary selection, middle-click paste, for fields and selectable text.
-- logind's `PrepareForSleep`, so a lock screen locks before suspend, and its power actions. Screen brightness, read from sysfs and set through logind's `SetBrightness`.
-- CPU, memory and temperature stats, read only while a config follows them.
-- niri's IPC event stream, which noctalia's Quickshell fork and DankMaterialShell read.
-- Icon fallbacks and a check for an icon in the theme, as `Quickshell.iconPath` with a fallback and `hasThemeIcon` give.
-- Month and day names for the locale, if a pure-Rust locale-data crate passes the license and size checks, and short sounds through the libpulse already linked.
-- Exit check: each runs against a fake, such as a local HTTP server for weather and cover art, a fake logind whose `PrepareForSleep` locks the lock example, and a fake niri socket. An idle test for each new wakeup source, and tests for the size caps.
+Phases 14 to 18 are built; see Writing a config.
 
 **Phase 19, the parity remainder.**
 
@@ -1314,41 +1356,22 @@ Left out, with the reason:
 The hand checks are tracked in [issue #2](https://github.com/w0x7y/crabshell/issues/2) and the upstream reports, with their drafts, in [issue #3](https://github.com/w0x7y/crabshell/issues/3).
 
 - Hand checks that need the desktop: the greeter example against a real greetd on a real VT, peak meters on a real PulseAudio rather than pipewire-pulse, and Phase 6's clean user account that installs Rust through rustup first.
+- Phase 18's hand checks: niri itself, which isn't installed here; the lock example locking before a laptop suspends; brightness keys and `set`; copies from Firefox and KeePassXC, middle-click paste with a terminal, and `grim - | wl-copy` as an image entry; Spotify's `https:` cover art; a real WAV; German date names; and a wallpaper folder filling as files are copied in.
+- Phase 18 limits: a temperature sensor that appears after the first sample is listed only once a listed one goes; Russian and Polish `%B` names are the in-date form; and a clipboard image file outlives a crash until the next shell's first `history()`.
 - nonstick 0.1.2 frees its own copy of a PAM answer without zeroing it, and no `pam_setcred` runs, so Kerberos tickets aren't refreshed on unlock. Crabshell's crates forbid the `unsafe` a fix of their own would need, so both wait on nonstick.
 - cosmic-text 0.19 keeps the leading space on an elided wrapped line. Crabshell works around it until an upgrade fixes it upstream.
 - ttf-parser 0.25.1, which cosmic-text 0.19 pulls in through fontdb 0.23, is marked unmaintained (RUSTSEC-2026-0192). cosmic-text's main branch already moved to fontdb 0.24, which drops it, so the advisory is ignored in `deny.toml` until a cosmic-text release does.
 - Settled limits: window views pair windows by app id and title, the most the protocols give; neither `geometry` nor `mapped_geometry` can say where a window is on its output, which Wayland doesn't tell a client; Hyprland 0.42 and later are supported; and the dashboard's 37 MiB with a 1080p wallpaper is no breach of rule 1, whose cap is for the counter bar, since a 1080p picture and its window buffer take about 16 MiB.
 - Crabshell has no wrapper widgets, since a `Stack` or `Button` with a padded style covers `WrapperItem`, `WrapperRectangle` and `WrapperMouseArea`, and `Style::clip` covers `ClippingRectangle`.
 
-### Unreleased (0.6)
+### Unreleased (0.7)
 
-Phase 17 and the fixes after it ship as 0.6. Against 0.5 they break these:
+0.6 is on crates.io. Phase 18 ships as 0.7 and mostly adds. Against 0.6:
 
-- `Font`, `Style` and `FieldState` have new public fields.
-- `cx.spring` gives an `Animation<f32>`, read with `value()`.
-- `Style` has `transition_out`, and `merge` keeps the bottom style's.
-- A `Shadow` built from its fields needs `inset`.
-- A `match` on `Precision` needs `Day`.
-- A `DesktopEntry` built from its fields needs `dbus_activatable`.
-- `ServicesExt` has `bluetooth_agent`.
-- `TextView::runs` yields `TextRun`s.
-- `CaptureRequest::size` includes the transforms' zoom.
-- `WindowInfo` has a new public `buffers` field.
-
-Behavior changes too:
-
-- `cx.leaving()` is true while an outer item leaves, an exit ends once nothing in the item moves, and `animating()` is true while a leaving child waits.
-- Large corners draw as CSS fits them, dashes are laid out per run between square corners, gradients are dithered and a sweep's start moved by a pixel.
-- The default icon theme is GTK's.
-- A tab is four spaces wide, not cosmic-text's eight.
-- `Pam::start` right after an abort may show `Busy`, and polkit no longer falls back to `$USER`.
-- The persist key `crabshell::services` is the shell's own.
-- A held scroll-bar track repeats, a handle drag counts as moving, and a scroll offset places the window rather than laying it out.
-- Tab stops on links.
-- Large images show a frame later.
-- A shell whose every `per_output` closure panics at startup exits with 1.
-- A shell started without the supervisor on glibc starts itself again with malloc's `mmap` threshold set, so code in `main` before `run` runs twice.
-- A program the shell starts waits up to 100 ms for an activation token.
+- `ServicesExt` has `niri`, `logind`, `brightness`, `http_get`, `cover_art`, `folder_view`, `system_stats` and `locale`, and `ShellExt` has `clipboard` and `icon_path`, so a type of a config's own that implements either breaks.
+- A middle click in a field pastes the primary selection.
+- `cx.audio().streams()` leaves out the shell's own sounds.
+- A directory at a `file_view` path reads as `NotAFile` at once, not 50 ms later.
 
 ## Rules for AI agents
 
@@ -1365,7 +1388,7 @@ The biggest risk is the reload loop. A rebuild per edit, 0.7 to 0.9 s for a one-
 | Tray apps bend the spec                   | Electron, Qt and Ayatana apps each implement StatusNotifierItem differently | Phase 4 gets 4-6 weeks and tests real apps                                                            |
 | Text looks worse than Qt's                | v0.1 has grayscale antialiasing only                                        | Compared side by side in Phase 0                                                                      |
 | Font loading slows startup                | Scanning every system font can blow the 100 ms target                       | Load only the files fontconfig matches                                                                |
-| Sway-first shrinks the audience           | Most Quickshell users run Hyprland or niri                                  | Hyprland came in Phase 12, niri's IPC is planned for Phase 18                                         |
+| Sway-first shrinks the audience           | Most Quickshell users run Hyprland or niri                                  | Hyprland came in Phase 12, niri's IPC in Phase 18                                                     |
 | Configs need a Rust toolchain             | A higher entry bar and a slow first build                                   | Template and README, with the full first run timed in Phase 6                                         |
 | No accessibility in v0.1                  | Screen readers can't read the shell                                         | Add AccessKit (AT-SPI) in Phase 19                                                                    |
 
@@ -1375,7 +1398,7 @@ Open questions:
 - [x] Which other wlroots compositors to test: Sway (SwayFX included) and labwc; river and Wayfire go untested and are reached through the same protocols.
 - [x] Should a reload start the new shell before stopping the old one, to remove the blink? Yes; Phase 19 builds it.
 - [x] Stay on libpulse or switch to native PipeWire? libpulse stays for volume, sinks and meters; Phase 19 adds native PipeWire only for the link graph and video nodes.
-- [x] When to add Hyprland and niri: Hyprland came in Phase 12, and niri's IPC is planned for Phase 18.
+- [x] When to add Hyprland and niri: Hyprland came in Phase 12, and niri's IPC in Phase 18.
 - [x] Should the shell exit with 1 when `f` panics for every output at startup? Yes, so the supervisor falls back to `last-good`.
 - [x] Install cargo-deny and add a deny.toml: done, and CI runs it.
 

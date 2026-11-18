@@ -114,8 +114,8 @@ Everything runs on one thread: a calloop loop dispatches ready sources, runs `ru
 - `crates/crabshell-reactive`: signals, memos, effects, owners and `flush`.
 - `crates/crabshell-ui`: `Cx`, widgets, styles, layout, text, input, focus, scrolling, animation and timers, and the damage each change records.
 - `crates/crabshell-render`: drawing with tiny-skia into shm buffers, damage history, text, icons and images with the decode worker. Goldens are in `tests/golden`.
-- `crates/crabshell-wayland`: the event loop and every Wayland protocol: windows, popups, buffers, scale, input, outputs, the session lock, workspaces, toplevels and Hyprland's protocols (generated from `protocols/hyprland`). Its headless tests and Sway helper are in `tests/`, and a fake compositor in `tests/fake`, used by `tests/protocols.rs`.
-- `crates/crabshell-services`: what configs read from other programs, from Sway, Hyprland, the tray and audio to D-Bus services, processes, files, sockets, PAM, greetd and polkit, with a fake daemon for tests in `testing.rs`.
+- `crates/crabshell-wayland`: the event loop and every Wayland protocol: windows, popups, buffers, scale, input, outputs, the session lock, workspaces, toplevels, the clipboard and Hyprland's protocols (generated from `protocols/hyprland`). Its headless tests and Sway helper are in `tests/`, and a fake compositor in `tests/fake`, used by `tests/protocols.rs`.
+- `crates/crabshell-services`: what configs read from other programs, from Sway, Hyprland, niri, the tray and audio to D-Bus services, logind, HTTP through curl, processes, files, folders, sockets, PAM, greetd and polkit, with a fake daemon for tests in `testing.rs`.
 - `crates/crabshell`: `run`, `Shell`, `ShellExt`, the prelude and the examples. Its headless tests, goldens and exit-code tests are in `tests/`.
 - `crates/crabshell-cli`: the `crabshell` command (`init`, `check`, `ipc`, and `run` with the supervisor) and the config template in `template/`, which must match the design doc's "Writing a config".
 - `spike/` and `baseline/`: the frozen Phase 0 prototype, the Quickshell bar it was measured against, and `baseline/harness.py`, which measured both.
@@ -138,4 +138,5 @@ Everything runs on one thread: a calloop loop dispatches ready sources, runs `ru
 - Load only the font files fontconfig matches into cosmic-text. `load_system_fonts` costs startup time.
 - zbus 6 runs on `calloop::futures::executor`, with no tokio.
 - Unix socket paths are capped at 108 bytes, so a private `XDG_RUNTIME_DIR` must stay short.
-- Hyprland isn't installed here and must never be started. Its IPC is tested against a fake Hyprland, and from Hyprland 0.57 its request socket reads `dispatch` as Lua.
+- Hyprland and niri aren't installed here and must never be started. Their IPC is tested against fakes, and from Hyprland 0.57 its request socket reads `dispatch` as Lua.
+- Headless example runs get a system bus address that doesn't exist, so nothing reaches the desktop's logind; a test that needs one passes a private bus.

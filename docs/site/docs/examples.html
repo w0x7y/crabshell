@@ -6,7 +6,7 @@
     <title>Examples | Crabshell docs</title>
     <meta
       name="description"
-      content="Thirteen complete Crabshell shells, each in one file: bars, a launcher, notifications, a control center, a dashboard, a lock screen and a greeter."
+      content="Fourteen complete Crabshell shells, each in one file: bars, a launcher, notifications, a control center, a dashboard, a system bar, a lock screen and a greeter."
     />
     <script>
       try {
@@ -30,7 +30,7 @@
       <article>
         <h1>Examples</h1>
         <p class="lede">
-          Thirteen complete shells, each in one file. Run one from a clone of
+          Fourteen complete shells, each in one file. Run one from a clone of
           the repository, then copy what you need into your own config.
         </p>
         <pre><code class="sh">$ git clone https://github.com/w0x7y/crabshell
@@ -101,6 +101,11 @@ $ cargo run --release -p crabshell --example counter</code></pre>
                 Notifications with markup and links, a clock, a quick note
               </td>
               <td>Text</td>
+            </tr>
+            <tr>
+              <td><a href="#system">system</a></td>
+              <td>Weather, stats, brightness, clipboard and wallpapers</td>
+              <td>Outside data, for niri or Sway</td>
             </tr>
             <tr>
               <td><a href="#overview">overview</a></td>
@@ -376,6 +381,37 @@ $ notify-send "Build finished" "&lt;b&gt;crabshell&lt;/b&gt; passed. See &lt;a h
           <code>cx.persist</code>.
           <a
             href="https://github.com/w0x7y/crabshell/blob/main/crates/crabshell/examples/notes.rs"
+            >Read the source</a
+          >.
+        </p>
+        <h2 id="system">system</h2>
+        <figure class="shot">
+          <img
+            src="../img/system.png"
+            width="580"
+            height="280"
+            alt="A dark bar showing the weather at 8°C, CPU 23%, memory 40%, 52°C, a brightness slider and the date, with a wallpaper picker open below it holding three pictures."
+          />
+        </figure>
+        <p>
+          A bar that reads the world outside the shell: niri's workspaces when
+          niri runs and Sway's otherwise, the weather fetched over HTTP, CPU,
+          memory and a temperature, a brightness slider and a localized date.
+          One popup holds the clipboard's history, and a wallpaper picker lists
+          a folder whose pictures drag out to other programs.
+        </p>
+        <pre><code class="sh">$ WALLPAPERS=~/Pictures/Wallpapers cargo run --release -p crabshell --example system</code></pre>
+        <p>
+          It shows <a href="system.html#http"><code>cx.http_get</code></a
+          >, <a href="services.html#stats"><code>cx.system_stats</code></a
+          >, <a href="services.html#brightness"><code>cx.brightness</code></a
+          >, <a href="system.html#clipboard"><code>cx.clipboard</code></a
+          >, <a href="system.html#folders"><code>cx.folder_view</code></a
+          >, <a href="compositors.html#niri"><code>cx.niri</code></a> and
+          <a href="input.html#drag-drop"><code>drag_content</code></a
+          >.
+          <a
+            href="https://github.com/w0x7y/crabshell/blob/main/crates/crabshell/examples/system.rs"
             >Read the source</a
           >.
         </p>

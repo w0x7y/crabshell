@@ -30,7 +30,8 @@
       <article>
         <h1>Compositors and windows</h1>
         <p class="lede">
-          Workspaces come three ways: Sway's IPC, Hyprland's IPC and the
+          Workspaces come four ways: Sway's IPC, Hyprland's IPC, niri's IPC and
+          the
           <code>ext-workspace-v1</code> protocol. Windows and screen pictures
           come through protocols most wlroots compositors share.
         </p>
@@ -60,6 +61,16 @@
               </td>
               <td>
                 <code>cx.hyprland().toplevels()</code> or
+                <a href="#toplevels"><code>cx.toplevels()</code></a>
+              </td>
+            </tr>
+            <tr>
+              <td>niri</td>
+              <td>
+                <a href="#niri"><code>cx.niri()</code></a>
+              </td>
+              <td>
+                <code>cx.niri().windows()</code> or
                 <a href="#toplevels"><code>cx.toplevels()</code></a>
               </td>
             </tr>
@@ -261,6 +272,30 @@ let toplevels = hyprland.toplevels();</code></pre>
           <code>$HYPRLAND_INSTANCE_SIGNATURE</code>. Without it the lists stay
           empty, which is logged once.
         </p>
+        <h2 id="niri">niri</h2>
+        <pre><code class="rs">let niri = cx.niri();
+let workspaces = niri.workspaces();
+Row::new().children_keyed(
+  move || workspaces.get(),
+  |w| w.id,
+  move |_cx, ws| {
+    let id = ws.get_untracked().id;
+    Button::new(Text::new(move || ws.get().idx.to_string()))
+      .on_click(move |cx| cx.niri().focus_workspace(id))
+  },
+)</code></pre>
+        <p>
+          <code>workspaces()</code>, <code>windows()</code>,
+          <code>keyboard_layouts()</code> and
+          <code>overview_open()</code> follow niri's event stream at
+          <code>$NIRI_SOCKET</code>. <code>focus_workspace(id)</code> and
+          <code>focus_window(id)</code> take niri's ids,
+          <code>action(json)</code> sends any niri action, and
+          <code>on_event(handler)</code> gets every raw event.
+          <code>crabshell::serde_json</code> builds the JSON.
+        </p>
+        <pre><code class="rs">use crabshell::serde_json::json;
+cx.niri().action(json!({ "Spawn": { "command": ["foot"] } }));</code></pre>
         <h2 id="window-manager">Any compositor with ext-workspace</h2>
         <p>
           <code>cx.window_manager()</code> reads workspaces through

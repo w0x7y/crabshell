@@ -2,7 +2,7 @@
 
 # crabshell
 
-a rust replacement for quickshell: your whole desktop shell is a rust crate, and everything quickshell does, crabshell will do. v0.6 is on crates.io, with bars, launchers, lock screens, notifications, animation and drawing for sway, hyprland and other wlroots compositors. [the design doc](docs/design.md) has every decision and the phases still to come, and [the site](docs/site/index.html) has the full docs
+a rust replacement for quickshell: your whole desktop shell is a rust crate, and everything quickshell does, crabshell will do. v0.6 is on crates.io, with bars, launchers, lock screens, notifications, animation and drawing for sway, hyprland and other wlroots compositors. main adds niri, the clipboard, http, logind and system stats, coming in 0.7. [the design doc](docs/design.md) has every decision and the phases still to come, and [the site](docs/site/index.html) has the full docs
 
 ### ai disclosure
 
@@ -68,7 +68,7 @@ every widget property takes a value or a closure. a closure runs again when a si
 
 ### numbers
 
-on headless sway with one 1920×1080 output, the counter example uses 17.8 MiB and draws its first frame in about 14 ms, and the v0.1 bar uses 21.2 MiB. neither wakes while idle, except the bar's clock once a minute. on a 1280×720 output, a reload rebuilds a one-line edit in 0.9 s and leaves no bar for 16 ms. quickshell drawing the [phase 0 test bar](spike/RESULTS.md) used 125 MiB and took 219 ms to its first frame. the [design doc](docs/design.md#performance-targets) has the latest numbers
+on headless sway with one 1920×1080 output, the counter example uses 18.0 MiB and draws its first frame in 13 to 18 ms, and the v0.1 bar uses 21.6 MiB. neither wakes while idle, except the bar's clock once a minute. on a 1280×720 output, a reload rebuilds a one-line edit in 0.8 s and leaves no bar for 14 ms. quickshell drawing the [phase 0 test bar](spike/RESULTS.md) used 125 MiB and took 219 ms to its first frame. the [design doc](docs/design.md#performance-targets) has the latest numbers
 
 ### crates
 

@@ -261,6 +261,63 @@ Text::new(move || text.get().unwrap_or_default().trim().to_owned())</code></pre>
 let read = move || load.set(std::fs::read_to_string("/proc/loadavg").unwrap_or_default());
 read();
 cx.interval(Duration::from_secs(5), read);</code></pre>
+        <h2 id="folders">Folders</h2>
+        <p>
+          <code>cx.folder_view(path)</code> lists one level of a folder, sorted
+          by name, and follows it as files come and go, as a wallpaper picker
+          needs.
+        </p>
+        <pre><code class="rs">let folder = cx.folder_view("/home/me/Pictures/Wallpapers");
+let pictures = cx.memo(move || {
+  folder.entries().get().into_iter()
+    .filter(|e| e.name.ends_with(".jpg") || e.name.ends_with(".png"))
+    .collect::&lt;Vec&lt;_&gt;&gt;()
+});</code></pre>
+        <p>
+          Each <code>FolderEntry</code> has <code>path</code>,
+          <code>name</code>, <code>is_dir</code>, <code>size</code> and
+          <code>modified</code>. Hidden files are included, at most 10,000
+          entries are kept, and a change is read 50 ms later.
+        </p>
+        <h2 id="http">Fetch from the web</h2>
+        <p>
+          <code>cx.http_get(url)</code> fetches through the system's
+          <code>curl</code>, so the shell never waits on the network.
+        </p>
+        <pre><code class="rs">let weather = cx.http_get("https://wttr.in/?format=%t");
+cx.interval(Duration::from_secs(600), move || weather.refresh());
+Text::new(move || weather.body().get().unwrap_or_default())</code></pre>
+        <p>
+          <code>body()</code> keeps the last good reply,
+          <code>error()</code> says why the last fetch failed, and
+          <code>loading()</code> is true while one runs. A reply is at most 4
+          MiB and 30 s unless <code>max_size</code> and <code>timeout</code> say
+          otherwise. Parse JSON with <code>crabshell::serde_json</code>.
+        </p>
+        <p>
+          <code>cx.cover_art(url)</code> turns a player's
+          <code>art_url</code> into a file for an <code>Image</code>,
+          downloading an <code>https:</code> one into
+          <code>~/.cache/crabshell/art</code>.
+        </p>
+        <pre><code class="rs">let art = cx.cover_art(move || playing.get().map(|p| p.art_url).unwrap_or_default());</code></pre>
+        <h2 id="clipboard">The clipboard</h2>
+        <pre><code class="rs">let clipboard = cx.clipboard();
+let history = clipboard.history();
+Text::new(move || clipboard.text().get().unwrap_or_default())</code></pre>
+        <p>
+          <code>text()</code> follows every copy, whatever window has the
+          keyboard, and <code>set_text(text)</code> copies.
+          <code>history()</code> keeps copies from its first call, newest first:
+          text, or an image as a file an <code>Image</code> can show, at most
+          100 entries. <code>copy(id)</code> puts one back,
+          <code>remove(id)</code> and <code>clear_history()</code> forget. A
+          password manager's copy is never shown or kept.
+        </p>
+        <p>
+          Selecting text in a field or a selectable <code>Text</code> sets the
+          primary selection, and a middle click in a field pastes it.
+        </p>
         <h2 id="json-file">Settings in a JSON file</h2>
         <p>
           <code>cx.json_file(path, default)</code> is a
@@ -443,6 +500,12 @@ Row::new().style(move || Style::new().background(accent.get()))</code></pre>
           <code>~/.config/gtk-3.0/settings.ini</code> or
           <code>gtk-4.0/settings.ini</code>, and <code>hicolor</code> when
           neither names one.
+        </p>
+        <p>
+          <code>Icon::new("spotify-client").fallback("audio-x-generic")</code>
+          draws the fallback when the first icon isn't in the theme.
+          <code>cx.icon_path(name, size)</code> gives the file a name resolves
+          to, or <code>None</code> when the theme lacks it.
         </p>
       </article>
     </main>

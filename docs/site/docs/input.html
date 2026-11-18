@@ -200,10 +200,26 @@ Button::new(thumbnail).drag_data(move || Some(window.get().id))</code></pre>
         <p>
           The source's own <code>on_drag</code> sees
           <code>drag.dropped</code> at <code>DragPhase::End</code>. A drag
-          reaches buttons in its own window only.
+          reaches buttons in all the shell's windows.
           <a href="motion.html#exit"><code>displaced</code></a> slides a
           reordered list into place.
         </p>
+        <p>
+          To drag to and from other programs, use <code>DragContent</code>, text
+          or file URIs:
+        </p>
+        <pre><code class="rs">// Drag a wallpaper into a file manager or a terminal.
+Button::new(thumb).drag_content(move || {
+  Some(DragContent::Uris(vec![format!("file://{}", path.display())]))
+})
+
+// Take files dropped from a file manager.
+Button::new(Text::new("Drop here"))
+  .on_drop_content(move |_cx, content| {
+    if let DragContent::Uris(uris) = content {
+      dropped.set(uris);
+    }
+  })</code></pre>
         <h2 id="enabled">Turning a button off</h2>
         <p>
           <code>enabled(false)</code> stops every handler and state style, and
