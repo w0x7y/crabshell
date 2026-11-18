@@ -471,7 +471,7 @@ Rules settled for the reload handoff (Phase 19):
 - The supervisor learns which shell a control connection belongs to from `SO_PEERCRED`, and writes `alone` when the old shell's connection closes after `exit`, about 1 ms after it exits. A shell started beside an old one gets `CRABSHELL_BESIDE=1`, which `cx.process` programs don't inherit, and only such a shell waits for `alone`.
 - The new shell says `ready` only once it has taken the notifications over, so none is lost or doubled. SIGTERM during a swap ends both shells, then `run`.
 - Told to stop, the supervisor sends each shell SIGTERM and SIGKILL 5 s later. If the old shell exits while the new one is being replaced, the newest build starts at once rather than as a crash's restart.
-- Programs `cx.process` started run in both shells during the overlap.
+- A program `cx.process` starts in the new shell waits for `alone` too, so the old shell's run is never doubled.
 
 Panic handling inside the shell:
 
@@ -482,7 +482,7 @@ Panic handling inside the shell:
 
 Logging goes through `tracing` to stderr. The supervisor passes the shell's stderr through to its own, so `journalctl` sees both when `crabshell run` runs as a systemd user service.
 
-During a reload's overlap a new shell's panels reserve no space and it holds nothing only one process may hold, such as the polkit agent, the IPC socket, socket servers, global shortcuts and a session lock, until `alone`. So windows stay still and nothing is refused, except for one arrangement as the old bar goes, since two programs can't hand a layer-shell zone over at once.
+During a reload's overlap a new shell's panels reserve no space and it holds nothing only one process may hold, such as the polkit agent, the IPC socket, socket servers, global shortcuts, a session lock and `cx.process` programs, until `alone`. So windows stay still and nothing is refused, except for one arrangement as the old bar goes, since two programs can't hand a layer-shell zone over at once.
 
 ## Reactive core
 
@@ -731,7 +731,7 @@ Rules settled while building `crabshell-ui` (Phase 18):
 
 Rules settled while building `crabshell-ui` (Phase 19):
 
-- A panel, floating window or lock surface is a frame and a popup a window; `Button` is a push button, `Text` a label, `TextInput` and `TextArea` entries or password text, `Slider` a slider, `Icon`, `Image`, `Canvas` and `ScreencopyView` images, and the rest fillers. Without `accessible_name`, a button is named by its text, a field by its placeholder, a panel by its namespace and a floating window by its title.
+- A panel, floating window or lock surface is a frame and a popup a window; `Button` is a push button, `Text` a label, `TextInput` and `TextArea` entries or password text, `Slider` a slider, `Icon`, `Image`, `Canvas` and `ScreencopyView` images, and the rest fillers. Without `accessible_name`, a button is named by its text, a field by its placeholder, a panel by its namespace, a floating window by its title and a tray button by its item's title.
 - A hidden widget stays among its parent's children with showing off, and a hidden floating window is unknown. While a lock surface is up only lock surfaces are listed, and other windows' widgets can't be clicked.
 - Extents are window logical pixels, all Wayland tells a client. A screen reader hears focus, showing, enabled, children and name changes, only for widgets that were laid out and only while one listens. `DoAction` clicks a shown, enabled button as Enter does.
 
@@ -1385,7 +1385,7 @@ The hand checks are tracked in [issue #2](https://github.com/w0x7y/crabshell/iss
 - Phase 18's hand checks: niri itself, which isn't installed here; the lock example locking before a laptop suspends; brightness keys and `set`; copies from Firefox and KeePassXC, middle-click paste with a terminal, and `grim - | wl-copy` as an image entry; Spotify's `https:` cover art; a real WAV; German date names; and a wallpaper folder filling as files are copied in.
 - Phase 18 limits: a temperature sensor that appears after the first sample is listed only once a listed one goes; Russian and Polish `%B` names are the in-date form; and a clipboard image file outlives a crash until the next shell's first `history()`.
 - Phase 19's hand checks: Orca reading a bar on a real session (on Sway, `gsettings set org.gnome.desktop.a11y.applications screen-reader-enabled true` may be needed); a reload of the real bar with a tiled window open, and `pkexec true` after it; `add_connection` and `update_connection` against the desktop's NetworkManager, checked with `nmcli`; a portal screen share in `screencasts()` and a camera not.
-- Phase 19 limits: fields and sliders give a screen reader no text or value, a reload's overlap runs `cx.process` programs twice for about 80 ms, and a PipeWire node's description that changes later isn't seen.
+- Phase 19 limits: fields and sliders give a screen reader no text or value, and a PipeWire node's description that changes later isn't seen.
 - nonstick 0.1.2 frees its own copy of a PAM answer without zeroing it, and no `pam_setcred` runs, so Kerberos tickets aren't refreshed on unlock. Crabshell's crates forbid the `unsafe` a fix of their own would need, so both wait on nonstick.
 - cosmic-text 0.19 keeps the leading space on an elided wrapped line. Crabshell works around it until an upgrade fixes it upstream.
 - ttf-parser 0.25.1, which cosmic-text 0.19 pulls in through fontdb 0.23, is marked unmaintained (RUSTSEC-2026-0192). cosmic-text's main branch already moved to fontdb 0.24, which drops it, so the advisory is ignored in `deny.toml` until a cosmic-text release does.
@@ -1397,7 +1397,7 @@ The hand checks are tracked in [issue #2](https://github.com/w0x7y/crabshell/iss
 Phase 19 isn't released yet. Against 0.7:
 
 - `ServicesExt` has `pipewire` and `ShellExt` has `reload`, so a type of a config's own that implements either breaks, and `NetworkDevice` has new public fields.
-- A reload starts the new shell beside the old one, so programs `cx.process` started run twice for a moment.
+- A reload starts the new shell beside the old one, whose `cx.process` programs start once the old shell is gone.
 
 ## Rules for AI agents
 

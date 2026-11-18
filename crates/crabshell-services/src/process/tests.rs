@@ -599,3 +599,19 @@ fn a_handler_that_sets_another_marker_has_the_rest_split_at_it() {
   );
   process.borrow_mut().take();
 }
+
+#[test]
+fn beside_the_old_shell_of_a_reload_a_program_starts_once_alone() {
+  let dir = Dir::new();
+  let mut shell = Harness::new(offline());
+  crate::set_alone(&shell.cx, false);
+  let marker = dir.0.join("ran");
+  let script = format!("touch '{}'", marker.display());
+  let process = shell.cx.process(move || sh(&script));
+  Runtime::current().flush();
+  shell.run_until(Instant::now() + Duration::from_millis(200));
+  assert!(!marker.exists(), "started beside the old shell");
+  crate::set_alone(&shell.cx, true);
+  finish(&mut shell, &process);
+  assert!(marker.exists(), "never started once alone");
+}

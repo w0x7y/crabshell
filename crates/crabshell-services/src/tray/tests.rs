@@ -1848,3 +1848,22 @@ fn a_tray_hides_and_shares_its_rectangle_as_every_widget_does() {
   assert_eq!(shown_children(), 1);
   cx.owner().dispose();
 }
+
+#[test]
+fn a_screen_reader_reads_a_tray_button_by_its_items_title() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let access = shell.cx.provide(crabshell_ui::Accessibility::default());
+  let mut text = TextSystem::new();
+  let window = tray_bar(&mut shell, &mut text);
+  let _app = one_item(&mut shell, &bus);
+  frame(&window, &mut text);
+  let mut names = Vec::new();
+  let mut todo = access.windows();
+  while let Some(id) = todo.pop() {
+    let node = access.node(id).expect("a node");
+    names.push(node.name);
+    todo.extend(node.children);
+  }
+  assert!(names.iter().any(|name| name == "Test"), "{names:?}");
+}

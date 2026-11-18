@@ -449,6 +449,20 @@ impl Inner {
     let Some(event_loop) = self.event_loop() else {
       return;
     };
+    // Beside the old shell of a reload, its own run of the program is still
+    // up; a second one could be refused or double what it does.
+    if let Some(shared) = self.shared()
+      && !shared.alone.get()
+    {
+      self.state.borrow_mut().starter = None;
+      let inner = Rc::downgrade(self);
+      shared.when_alone(move || {
+        if let Some(inner) = inner.upgrade() {
+          inner.spawn_pending();
+        }
+      });
+      return;
+    }
     let (command, keep_stdin, input) = {
       let mut state = self.state.borrow_mut();
       state.starter = None;

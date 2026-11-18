@@ -169,6 +169,16 @@ fn item_button(
   let middle_id = Rc::clone(&id);
   Button::new(icon)
     .style(BUTTON)
+    .accessible_name(move || {
+      item.with(|item| {
+        let name = if item.title.is_empty() {
+          &item.app_id
+        } else {
+          &item.title
+        };
+        name.clone()
+      })
+    })
     .on_click(click)
     .on_right_click(right_click)
     .on_middle_click(move |_| middle.secondary_activate(&middle_id))
