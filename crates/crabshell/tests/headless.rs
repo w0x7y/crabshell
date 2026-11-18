@@ -6030,9 +6030,12 @@ const SYSTEM_NOW: &str = "2026-11-18T09:41:00";
 /// the fixtures' theme lacks, so the bar draws its fallback.
 const WEATHER: &str = r#"{"latitude":52.52,"longitude":13.419998,"current_units":{"temperature_2m":"°C","weather_code":"wmo code"},"current":{"time":"2026-11-18T09:30","interval":900,"temperature_2m":7.6,"weather_code":2}}"#;
 
-/// How much of the screen, in logical pixels from the top, the popups'
-/// goldens hold.
+/// How much of the screen, in logical pixels from the top, the
+/// clipboard's goldens hold.
 const POPUP_ROWS: u32 = 260;
+
+/// The same for the wallpaper picker, two rows of pictures tall.
+const WALLPAPER_ROWS: u32 = 320;
 
 fn pinned_backlight() -> Backlight {
   Backlight {
@@ -6401,9 +6404,19 @@ fn the_system_bar_and_its_popups_match_their_goldens() {
     let bar = shot_matching(&sway, &name, rows(system::HEIGHT));
     check_golden(&name, &bar, rows(system::HEIGHT));
 
+    // A popup covers this point, logical 150 from the right and 100 down.
+    let inside = ((layout.0 - 150) as f32 * factor) as u32;
+    let inside = (inside, (100.0 * factor) as u32);
+    let shown = |what: &str| {
+      wait_for_shot(&sway, "HEADLESS-1", what, |shot| {
+        rgb(shot, inside.0, inside.1) != rgb(&bar, inside.0, inside.1)
+      });
+    };
+
     // The clipboard's button, second from the right.
     pointer.move_to(layout.0 - 62, 15, layout);
     pointer.click();
+    shown("the clipboard's popup");
     let name = format!("system-clipboard@{scale}x");
     check_golden(
       &name,
@@ -6422,11 +6435,12 @@ fn the_system_bar_and_its_popups_match_their_goldens() {
     // The wallpaper picker's button, at the right.
     pointer.move_to(layout.0 - 22, 15, layout);
     pointer.click();
+    shown("the wallpaper picker");
     let name = format!("system-wallpapers@{scale}x");
     check_golden(
       &name,
-      &shot_matching(&sway, &name, rows(POPUP_ROWS)),
-      rows(POPUP_ROWS),
+      &shot_matching(&sway, &name, rows(WALLPAPER_ROWS)),
+      rows(WALLPAPER_ROWS),
     );
     for copy in &mut copies {
       let _ = copy.kill();
@@ -6471,21 +6485,31 @@ fn the_system_bar_follows_niri_and_sleeps() {
   pointer.click();
   niri.wait_for_action(r#"{"Action":{"FocusWorkspace":{"reference":{"Id":1}}}}"#);
 
-  // The picker reads its folder while open, then a click on the other
-  // program closes it.
+  // The picker follows its folder while open: a new picture shows.
   pointer.move_to(1680 - 22, 15, (1680, 1050));
   pointer.click();
   wait_for_shot(&sway, "HEADLESS-1", "the picker", |shot| {
     rgb(shot, 1680 - 150, 100) != rgb(&before, 1680 - 150, 100)
   });
+  let opened = steady_shot(&sway, "HEADLESS-1");
+  let picker = |shot: &Image| top_rows(shot, WALLPAPER_ROWS);
+  small_png(&folder.join("added.png"), &[[0xa6, 0xe3, 0xa1]]);
+  wait_for_shot(&sway, "HEADLESS-1", "the new picture", |shot| {
+    golden_difference(&picker(&opened), &picker(shot)).is_some()
+  });
+  // A click on the other program closes it.
   pointer.move_to(840, 600, (1680, 1050));
   pointer.click();
   wait_for_shot(&sway, "HEADLESS-1", "the picker to close", |shot| {
     rgb(shot, 1680 - 150, 100) == rgb(&before, 1680 - 150, 100)
   });
 
+  // Closed, it follows nothing: a picture added within the idle minute
+  // wakes nothing.
   shell.wait_until_quiet();
-  let wakeups = shell.wakeups_for(Duration::from_secs(60));
+  let mut wakeups = shell.wakeups_for(Duration::from_secs(20));
+  small_png(&folder.join("later.png"), &[[0xf3, 0x8b, 0xa8]]);
+  wakeups.extend(shell.wakeups_for(Duration::from_secs(40)));
   assert!(wakeups.is_empty(), "woke while idle: {wakeups:?}");
 }
 
@@ -6563,6 +6587,32 @@ fn the_system_bar_reads_the_weather_pictures_and_the_cpus_temperature() {
   );
   stats.temperatures.clear();
   assert_eq!(system::cpu_temperature(&stats), None);
+}
+
+#[test]
+fn the_wallpaper_folder_is_absolute_against_the_current_directory() {
+  let here = std::env::current_dir().expect("a current directory");
+  let wallpapers = |folder: Option<&str>, home: Option<&str>| {
+    system::wallpapers_from(folder.map(Into::into), home.map(Into::into))
+  };
+  assert_eq!(
+    wallpapers(Some("/srv/walls"), None),
+    Path::new("/srv/walls")
+  );
+  assert_eq!(
+    wallpapers(Some("walls"), Some("/home/me")),
+    here.join("walls")
+  );
+  assert_eq!(
+    wallpapers(None, Some("/home/me")),
+    Path::new("/home/me/Pictures/Wallpapers")
+  );
+  for home in [None, Some(""), Some("me")] {
+    let expected = here
+      .join(home.unwrap_or_default())
+      .join("Pictures/Wallpapers");
+    assert_eq!(wallpapers(None, home), expected, "HOME {home:?}");
+  }
 }
 
 #[test]

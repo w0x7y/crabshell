@@ -14,6 +14,7 @@
 //! fetched at the start and every half hour. `WALLPAPERS` names the
 //! picker's folder, `~/Pictures/Wallpapers` by default.
 
+use std::ffi::OsString;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
@@ -39,7 +40,6 @@ const WS: Style = Style::new().padding(2, 8).radius(4.0);
 const WS_ACTIVE: Style = WS.background(RAISED);
 
 /// The buttons that open the popups: a 16 pixel icon in 6 of padding.
-pub const BUTTON: u32 = 28;
 const ICON_BUTTON: Style = Style::new().padding(6, 6).radius(6.0);
 const HOVER: Style = Style::new().background(SURFACE);
 
@@ -67,8 +67,14 @@ const CLIP: Style = Style::new().padding(6, 8).radius(6.0).width(CLIP_WIDTH);
 const CLIP_TEXT: Style = Style::new().width(CLIP_WIDTH - 16.0);
 /// The most clipboard entries shown; the history keeps more.
 const CLIPS_SHOWN: usize = 8;
-pub const THUMB_WIDTH: u32 = 112;
-pub const THUMB_HEIGHT: u32 = 63;
+const THUMB_WIDTH: u32 = 112;
+const THUMB_HEIGHT: u32 = 63;
+/// A picker cell: a thumbnail, its 4 of padding and its name, with
+/// `CELL_GAP` between cells.
+const CELL_GAP: u32 = 8;
+const CELL_WIDTH: u32 = THUMB_WIDTH + 8 + CELL_GAP;
+const CELL_HEIGHT: u32 = THUMB_HEIGHT + 8 + 4 + 16 + CELL_GAP;
+const SCROLL_BAR: Style = Style::new().background(RAISED).radius(2.0).width(4.0);
 const THUMB: Style = Style::new().padding(4, 4).radius(8.0);
 const PICTURE: Style = Style::new().radius(6.0).clip(true);
 const NAME: Style = Style::new().color(DIM).width(THUMB_WIDTH as f32);
@@ -93,7 +99,7 @@ pub struct Feeds {
 }
 
 /// The bar on every output, as a user runs it.
-pub fn setup(cx: &Cx) {
+fn setup(cx: &Cx) {
   let feeds = Feeds {
     now: cx.clock(Precision::Minute),
     stats: cx.system_stats(Duration::from_secs(2)),
@@ -144,7 +150,7 @@ pub fn weather_icon(code: u64) -> &'static str {
 }
 
 /// The bar on `output`.
-pub fn bar(
+fn bar(
   cx: &Cx,
   output: &Output,
   feeds: Feeds,
@@ -237,55 +243,51 @@ pub fn cpu_temperature(stats: &SystemStats) -> Option<f32> {
 }
 
 /// `output`'s workspaces, niri's when `NIRI_SOCKET` is set and Sway's
-/// otherwise. A click switches to one.
+/// otherwise, each as its id, name and whether it shows. A click switches
+/// to one.
 fn workspaces(cx: &Cx, output: String) -> Row {
-  let row = Row::new().gap(4);
-  if std::env::var_os("NIRI_SOCKET").is_some() {
+  let niri = std::env::var_os("NIRI_SOCKET").is_some();
+  let list: Box<dyn Fn() -> Vec<(u64, String, bool)>> = if niri {
     let all = cx.niri().workspaces();
-    let on = move || {
+    Box::new(move || {
+      let here = |w: &&NiriWorkspace| w.output.as_deref() == Some(output.as_str());
+      let label = |w: &NiriWorkspace| w.name.clone().unwrap_or_else(|| w.idx.to_string());
       all.with(|all| {
-        let here = all
+        all
           .iter()
-          .filter(|w| w.output.as_deref() == Some(output.as_str()));
-        here.cloned().collect::<Vec<_>>()
+          .filter(here)
+          .map(|w| (w.id, label(w), w.is_active))
+          .collect()
       })
-    };
-    row.children_keyed(
-      on,
-      |w| w.id,
-      |cx, ws| {
-        let niri = cx.niri();
-        let name = move || ws.with(|w| w.name.clone().unwrap_or_else(|| w.idx.to_string()));
-        Button::new(Text::new(name))
-          .style(move || {
-            if ws.with(|w| w.is_active) {
-              WS_ACTIVE
-            } else {
-              WS
-            }
-          })
-          .on_click(move |_| niri.focus_workspace(ws.get_untracked().id))
-      },
-    )
+    })
   } else {
     let all = cx.sway().workspaces();
-    let on = move || all.with(|all| all.iter().filter(|w| w.output == output).cloned().collect());
-    row.children_keyed(
-      on,
-      |w: &Workspace| w.id,
-      |_cx, ws| {
-        Button::new(Text::new(move || ws.get().name))
-          .style(move || {
-            if ws.with(|w| w.focused) {
-              WS_ACTIVE
-            } else {
-              WS
-            }
-          })
-          .on_click(move |cx| cx.sway().focus_workspace(&ws.get_untracked().name))
-      },
-    )
-  }
+    Box::new(move || {
+      let here = all.with(|all| {
+        all
+          .iter()
+          .filter(|w| w.output == output)
+          .cloned()
+          .collect::<Vec<_>>()
+      });
+      here
+        .into_iter()
+        .map(|w| (w.id as u64, w.name, w.focused))
+        .collect()
+    })
+  };
+  Row::new().gap(4).children_keyed(
+    list,
+    |w| w.0,
+    move |_cx, ws| {
+      Button::new(Text::new(move || ws.get().1))
+        .style(move || if ws.get().2 { WS_ACTIVE } else { WS })
+        .on_click(move |cx| match ws.get_untracked() {
+          (id, _, _) if niri => cx.niri().focus_workspace(id),
+          (_, name, _) => cx.sway().focus_workspace(&name),
+        })
+    },
+  )
 }
 
 /// A slider for the first backlight, shown while there is one.
@@ -385,11 +387,18 @@ fn clipboard_popup(clipboard: Clipboard) -> PopupWindow {
 }
 
 /// The picker's folder: `WALLPAPERS`, or `~/Pictures/Wallpapers`.
-pub fn wallpapers() -> PathBuf {
-  match std::env::var_os("WALLPAPERS") {
+fn wallpapers() -> PathBuf {
+  wallpapers_from(std::env::var_os("WALLPAPERS"), std::env::var_os("HOME"))
+}
+
+/// The picker's folder from `WALLPAPERS` and `HOME`, made absolute
+/// against the current directory, so its pictures' URIs are whole.
+pub fn wallpapers_from(folder: Option<OsString>, home: Option<OsString>) -> PathBuf {
+  let folder = match folder {
     Some(folder) => PathBuf::from(folder),
-    None => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join("Pictures/Wallpapers"),
-  }
+    None => PathBuf::from(home.unwrap_or_default()).join("Pictures/Wallpapers"),
+  };
+  std::path::absolute(&folder).unwrap_or(folder)
 }
 
 /// Whether `name` is a picture an `Image` shows.
@@ -399,26 +408,38 @@ pub fn is_picture(name: &str) -> bool {
   ["png", "jpg", "jpeg", "webp", "gif"].contains(&extension.as_str())
 }
 
-/// The pictures in `folder`, three a row, read while the popup is open.
+/// The pictures in `folder`, three a row in two rows' height, read
+/// while the popup is open. Only the rows in view are built, however many
+/// pictures the folder holds.
 fn wallpaper_popup(cx: &Cx, folder: PathBuf) -> PopupWindow {
   let entries = cx.folder_view(folder).entries();
   let pictures = move || {
     entries.with(|all| {
       let pictures = all.iter().filter(|e| !e.is_dir && is_picture(&e.name));
-      pictures.cloned().collect()
+      pictures.cloned().collect::<Vec<_>>()
     })
   };
   let none = move || entries.with(|all| !all.iter().any(|e| !e.is_dir && is_picture(&e.name)));
+  let grid = GridView::new(
+    pictures,
+    |e: &FolderEntry| e.path.clone(),
+    |_cx, picture| {
+      let gap = Style::new().padding(CELL_GAP / 2, CELL_GAP / 2);
+      Row::new()
+        .style(gap)
+        .child(thumbnail(picture.get_untracked()))
+    },
+  )
+  .cell_size(CELL_WIDTH, CELL_HEIGHT)
+  .height(2 * CELL_HEIGHT)
+  .style(Style::new().width((3 * CELL_WIDTH) as f32))
+  .scroll_bar(SCROLL_BAR);
   PopupWindow::new().style(POPUP).child(
     Column::new()
       .gap(8)
       .child(Text::new("Wallpapers").style(HEADING))
       .child(Text::new("No pictures here").style(BODY).visible(none))
-      .child(Grid::new().columns(3).gap(8).children_keyed(
-        pictures,
-        |e: &FolderEntry| e.path.clone(),
-        |_cx, picture| thumbnail(picture.get_untracked()),
-      )),
+      .child(grid),
   )
 }
 
