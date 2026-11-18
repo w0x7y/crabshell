@@ -93,6 +93,7 @@ pub mod prelude {
   };
   pub use crabshell_reactive::{Effect, Memo, ReadSignal, Signal, untrack};
   pub use crabshell_services::Locale;
+  pub use crabshell_services::Scanner;
   pub use crabshell_services::{
     AudioChannel, AudioNode, AudioStream, AuthRequest, AuthState, BatteryState, Bluetooth,
     BluetoothAdapter, BluetoothAdapterState, BluetoothAgent, BluetoothDevice, BluetoothDeviceState,

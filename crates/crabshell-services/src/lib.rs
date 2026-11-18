@@ -82,6 +82,7 @@ pub use hyprland::{Hyprland, HyprlandEvent, HyprlandMonitor, HyprlandToplevel, H
 pub use locale::Locale;
 pub use logind::Logind;
 pub use mpris::{LoopStatus, Mpris, PlaybackStatus, Player};
+pub use network::Scanner;
 pub use network::{
   ConnectionFailReason, Connectivity, Network, NetworkDevice, NetworkKind, NetworkState,
   SavedConnection, WifiMode, WifiNetwork, WifiSecurity,

@@ -6,14 +6,17 @@ mod saved;
 mod tests;
 mod write;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::sync::Once;
+use std::time::{Duration, Instant};
 
-use crabshell_reactive::{ReadSignal, Signal};
+use calloop::RegistrationToken;
+use calloop::timer::TimeoutAction;
+use crabshell_reactive::{Owner, ReadSignal, Signal};
 use crabshell_ui::Cx;
 use serde_json::Value as Json;
 use zbus::{Array, Connection, Message, ObjectPath, OwnedObjectPath, Variant};
@@ -46,6 +49,9 @@ const MAX_SSID: usize = 32;
 const LOOPBACK: u32 = 32;
 /// NetworkManager's `State` for a device it doesn't manage, left out.
 const UNMANAGED: u32 = 10;
+/// NetworkManager's `State` for a device that can't connect, as Wi-Fi
+/// that is off, which isn't asked to scan.
+const UNAVAILABLE: u32 = 20;
 const ACTIVATED: u32 = 100;
 const FAILED: u32 = 120;
 /// The `InterfaceFlags` bit for a link, from NetworkManager 1.22, which
@@ -63,6 +69,16 @@ const KEY_MGMT_OWE: u32 = 0x800 | 0x1000;
 const KEY_MGMT_SUITE_B_192: u32 = 0x2000;
 /// The most objects kept, so a flood can't take the memory.
 const MAX_OBJECTS: usize = 4096;
+/// How often a scanner asks for a scan, about as often as NetworkManager
+/// allows one.
+const SCAN_PERIOD: Duration = if cfg!(test) {
+  Duration::from_millis(200)
+} else {
+  Duration::from_secs(10)
+};
+/// The error NetworkManager answers a scan with right after another, or
+/// while the device connects.
+const NOT_ALLOWED: &str = "org.freedesktop.NetworkManager.Device.NotAllowed";
 
 /// What a network device is, from NetworkManager's `DeviceType`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -271,6 +287,8 @@ pub struct WifiNetwork {
 #[derive(Clone)]
 pub struct Network {
   service: Option<Rc<NetworkService>>,
+  /// The context that asked, which a [`Scanner`] lives as long as.
+  owner: Owner,
   wifi_enabled: ReadSignal<bool>,
   connectivity: ReadSignal<Connectivity>,
   devices: ReadSignal<Vec<NetworkDevice>>,
@@ -301,6 +319,18 @@ impl Network {
   /// NetworkManager isn't running.
   pub fn wifi_networks(&self) -> ReadSignal<Vec<WifiNetwork>> {
     self.wifi_networks
+  }
+
+  /// Asks every Wi-Fi device that is on to look for networks now and
+  /// every 10 s after, while the context that called `cx.network()` lives,
+  /// as a Wi-Fi menu that is open wants. Scanners share one timer.
+  /// NetworkManager's refusal of a scan too soon after another is logged
+  /// only at debug.
+  pub fn scanner(&self) -> Scanner {
+    if let Some(service) = self.service.as_ref().filter(|_| !self.owner.is_disposed()) {
+      service.add_scanner(self.owner);
+    }
+    Scanner { _private: () }
   }
 
   /// Turns Wi-Fi on or off.
@@ -502,6 +532,31 @@ impl Network {
   }
 }
 
+/// What [`Network::scanner`] gives: networks are scanned for while the
+/// context that asked lives. It has nothing to call.
+#[derive(Clone, Copy, Debug)]
+pub struct Scanner {
+  _private: (),
+}
+
+/// Takes a scanner away when its context goes.
+struct Unscan(Rc<NetworkService>);
+
+impl Drop for Unscan {
+  fn drop(&mut self) {
+    let service = &self.0;
+    service.scanners.set(service.scanners.get() - 1);
+    if service.scanners.get() > 0 {
+      return;
+    }
+    if let (Some(timer), Some(event_loop)) =
+      (service.scan_timer.take(), service.shared.event_loop())
+    {
+      event_loop.remove(timer);
+    }
+  }
+}
+
 /// `settings` typed for `method`, or `None`, logged by the property it
 /// stopped at, never its value.
 fn typed(settings: &Json, method: &str) -> Option<write::Typed> {
@@ -525,6 +580,7 @@ pub(crate) fn network(cx: &Cx) -> Network {
     });
     return Network {
       service: None,
+      owner: cx.owner(),
       wifi_enabled: cx.signal(false).read_only(),
       connectivity: cx.signal(Connectivity::Unknown).read_only(),
       devices: cx.signal(Vec::new()).read_only(),
@@ -532,13 +588,16 @@ pub(crate) fn network(cx: &Cx) -> Network {
       saved_connections: cx.signal(Vec::new()).read_only(),
     };
   };
-  service.start()
+  service.start(cx.owner())
 }
 
 /// NetworkManager for one shell, followed from the first ask.
 pub(crate) struct NetworkService {
   shared: Rc<Shared>,
   state: RefCell<Option<State>>,
+  /// How many scanners live, and the timer they share while any does.
+  scanners: Cell<usize>,
+  scan_timer: Cell<Option<RegistrationToken>>,
 }
 
 struct State {
@@ -557,9 +616,10 @@ struct State {
 
 impl State {
   /// The handle a config gets.
-  fn network(&self, service: &Rc<NetworkService>) -> Network {
+  fn network(&self, service: &Rc<NetworkService>, owner: Owner) -> Network {
     Network {
       service: Some(Rc::clone(service)),
+      owner,
       wifi_enabled: self.wifi_enabled.read_only(),
       connectivity: self.connectivity.read_only(),
       devices: self.devices.read_only(),
@@ -804,12 +864,14 @@ impl NetworkService {
     NetworkService {
       shared,
       state: RefCell::new(None),
+      scanners: Cell::new(0),
+      scan_timer: Cell::new(None),
     }
   }
 
-  fn start(self: &Rc<Self>) -> Network {
+  fn start(self: &Rc<Self>, owner: Owner) -> Network {
     if let Some(state) = &*self.state.borrow() {
-      return state.network(self);
+      return state.network(self, owner);
     }
     let root = &self.shared.root;
     let state = State {
@@ -822,7 +884,7 @@ impl NetworkService {
       connection: None,
       generation: 0,
     };
-    let network = state.network(self);
+    let network = state.network(self, owner);
     *self.state.borrow_mut() = Some(state);
     match self.shared.config.system_bus.clone() {
       Some(address) => {
@@ -832,6 +894,70 @@ impl NetworkService {
       None => tracing::info!("no system bus, so there is no networking"),
     }
     network
+  }
+
+  /// Adds a scanner that lives as long as `owner`, scanning at once and
+  /// starting the timer if it is the first.
+  fn add_scanner(self: &Rc<Self>, owner: Owner) {
+    if self.scanners.replace(self.scanners.get() + 1) == 0 {
+      self.scan();
+      let weak = Rc::downgrade(self);
+      let tick = Box::new(move || {
+        let Some(service) = weak.upgrade() else {
+          return TimeoutAction::Drop;
+        };
+        service.scan();
+        TimeoutAction::ToDuration(SCAN_PERIOD)
+      });
+      let event_loop = self.shared.event_loop();
+      let timer = event_loop
+        .and_then(|event_loop| event_loop.insert_timer(Instant::now() + SCAN_PERIOD, tick));
+      self.scan_timer.set(timer);
+    }
+    owner.signal(Unscan(Rc::clone(self)));
+  }
+
+  /// Asks each Wi-Fi device that is on to scan.
+  fn scan(&self) {
+    let (devices, connection) = {
+      let state = self.state.borrow();
+      let Some((state, connection)) = state
+        .as_ref()
+        .and_then(|state| Some((state, state.connection.clone()?)))
+      else {
+        return;
+      };
+      let on = |object: &Object| {
+        let device = object.device.as_ref();
+        let state = device.and_then(|device| dbus::get::<u32>(device, "State"));
+        object.wireless.is_some() && state.is_some_and(|state| state > UNAVAILABLE)
+      };
+      let devices = state.objects.iter().filter(|(_, object)| on(object));
+      (
+        devices.map(|(path, _)| path.clone()).collect::<Vec<_>>(),
+        connection,
+      )
+    };
+    for device in devices {
+      let (shared, connection) = (Rc::clone(&self.shared), connection.clone());
+      self.shared.spawn(async move {
+        let options = HashMap::<&str, Variant<'static>>::new();
+        let call = connection.call_method(
+          Some(NM),
+          device.as_str(),
+          Some(WIRELESS),
+          "RequestScan",
+          &options,
+        );
+        match shared.timeout(CALL_TIMEOUT, call).await {
+          Ok(_) => {}
+          Err(zbus::Error::MethodError(name, ..)) if name.as_str() == NOT_ALLOWED => {
+            tracing::debug!(device, "NetworkManager scans later");
+          }
+          Err(error) => tracing::warn!(%error, device, "NetworkManager refused a scan"),
+        }
+      });
+    }
   }
 
   /// Shows Wi-Fi, connectivity, the devices and the networks as they are

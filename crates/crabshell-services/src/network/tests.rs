@@ -582,6 +582,74 @@ fn methods_reach_networkmanager_and_the_password_is_never_logged() {
 }
 
 #[test]
+fn scanners_share_one_timer_that_goes_with_the_last_context() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  // A second Wi-Fi device, off, which isn't asked.
+  let off = "/org/freedesktop/NetworkManager/Devices/5";
+  let nm = fake_nm_with(&mut shell, &bus, |nm| {
+    nm.add(off, DEVICE, &device("wlan1", 2, 20, "/"));
+    nm.add(off, WIRELESS, &[("AccessPoints", paths(&[]))]);
+  });
+  let answered = Rc::new(Cell::new(0));
+  let count = Rc::clone(&answered);
+  nm.on("RequestScan", move |call| {
+    count.set(count.get() + 1);
+    let refused = match count.get() {
+      1 => "org.freedesktop.NetworkManager.Device.NotAllowed",
+      2 => "org.freedesktop.NetworkManager.PermissionDenied",
+      _ => return reply(call, &()),
+    };
+    let error = zbus::Message::error(&call.header(), refused);
+    Some(error.build(&("Scanning not allowed immediately following previous scan",)))
+  });
+  let (menu, panel) = (shell.cx.child(), shell.cx.child());
+  let devices = menu.network().devices();
+  wait_for(&mut shell, "the devices", || {
+    devices.get_untracked().len() == 3
+  });
+  assert_eq!(calls_to(&nm, "RequestScan"), 0, "nothing asked yet");
+
+  let logs = capture_logs(|| {
+    menu.network().scanner();
+    panel.network().scanner();
+    let answered = Rc::clone(&answered);
+    wait_for(&mut shell, "three scans", || answered.get() >= 3);
+  });
+  assert!(!logs.contains("NotAllowed"), "{logs}");
+  assert!(logs.contains("PermissionDenied"), "{logs}");
+  assert_eq!(logs.matches("refused a scan").count(), 1, "{logs}");
+  let calls = nm.calls.borrow().clone();
+  let scans = calls.iter().filter(|call| call.starts_with("RequestScan"));
+  assert!(
+    scans
+      .clone()
+      .all(|call| *call == format!("RequestScan {WLAN}")),
+    "{calls:?}"
+  );
+
+  // At once, then each 200 ms in a test, from one timer for both.
+  let before = calls_to(&nm, "RequestScan");
+  shell.run_until(Instant::now() + Duration::from_secs(1));
+  let scanned = calls_to(&nm, "RequestScan") - before;
+  assert!((4..=6).contains(&scanned), "{scanned} scans in 1 s");
+
+  menu.owner().dispose();
+  let before = calls_to(&nm, "RequestScan");
+  shell.run_until(Instant::now() + Duration::from_millis(500));
+  assert!(
+    calls_to(&nm, "RequestScan") > before,
+    "the panel's scanner goes on"
+  );
+
+  panel.owner().dispose();
+  shell.run_until(Instant::now() + Duration::from_millis(100));
+  let before = calls_to(&nm, "RequestScan");
+  assert_eq!(shell.run_until(Instant::now() + Duration::from_secs(2)), 1);
+  assert_eq!(calls_to(&nm, "RequestScan"), before, "no timer left");
+}
+
+#[test]
 fn the_carrier_bit_wins_over_the_old_carrier_property() {
   let bus = PrivateBus::start();
   let mut shell = Harness::new(online(&bus));
