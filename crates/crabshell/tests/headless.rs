@@ -292,28 +292,7 @@ fn check_golden(name: &str, shot: &Image, rows: u32) {
       path.display()
     )
   });
-  let golden = Image::decode(&bytes);
-  let failure = if (golden.width, golden.height) != (top.width, top.height) {
-    Some(format!(
-      "size {}x{}, golden {}x{}",
-      top.width, top.height, golden.width, golden.height
-    ))
-  } else {
-    let differing = top
-      .rgba
-      .as_chunks::<4>()
-      .0
-      .iter()
-      .zip(golden.rgba.as_chunks::<4>().0)
-      .filter(|(shot, golden)| {
-        shot
-          .iter()
-          .zip(golden.iter())
-          .any(|(a, b)| a.abs_diff(*b) > 2)
-      })
-      .count();
-    (differing > 0).then(|| format!("{differing} pixels differ by more than 2/255"))
-  };
+  let failure = golden_difference(&Image::decode(&bytes), &top);
   if let Some(failure) = failure {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("headless");
     std::fs::create_dir_all(&dir).expect("create the failure directory");
@@ -324,6 +303,31 @@ fn check_golden(name: &str, shot: &Image, rows: u32) {
       saved.display()
     );
   }
+}
+
+/// How `shot` differs from `golden`, or `None` when every pixel is within
+/// 2/255.
+fn golden_difference(golden: &Image, shot: &Image) -> Option<String> {
+  if (golden.width, golden.height) != (shot.width, shot.height) {
+    return Some(format!(
+      "size {}x{}, golden {}x{}",
+      shot.width, shot.height, golden.width, golden.height
+    ));
+  }
+  let differing = shot
+    .rgba
+    .as_chunks::<4>()
+    .0
+    .iter()
+    .zip(golden.rgba.as_chunks::<4>().0)
+    .filter(|(shot, golden)| {
+      shot
+        .iter()
+        .zip(golden.iter())
+        .any(|(a, b)| a.abs_diff(*b) > 2)
+    })
+    .count();
+  (differing > 0).then(|| format!("{differing} pixels differ by more than 2/255"))
 }
 
 #[test]
@@ -1694,6 +1698,14 @@ fn run_as_child() {
       dashboard::shell(cx, feeds);
       cx.set_icon_theme(FIXTURE_ICONS);
     }),
+    // The system example with its clock, stats and backlight pinned, and
+    // its clipboard history logged.
+    Ok("system") => crabshell::run(|cx| {
+      let backlight = cx.signal(vec![pinned_backlight()]).read_only();
+      run_system(cx, backlight);
+    }),
+    // The same with the machine's own backlights, if any.
+    Ok("system idle") => crabshell::run(|cx| run_system(cx, cx.brightness().devices())),
     // `cx.icon_path` after `cx.set_icon_theme` in one closure, and in a
     // binding that reads the theme's name as the docs say.
     Ok("icon path") => crabshell::run(|cx| {
@@ -4956,7 +4968,8 @@ fn pinned_battery() -> PowerDevice {
   }
 }
 
-/// A player playing a track whose art is the file at `art`.
+/// A player playing a track whose art is the file at `art`, or the URL
+/// `art`.
 fn pinned_player(art: &str) -> Player {
   Player {
     id: String::from("org.mpris.MediaPlayer2.test"),
@@ -4966,7 +4979,11 @@ fn pinned_player(art: &str) -> Player {
     title: String::from("Northern Lights"),
     artists: vec![String::from("The Exit Checks")],
     album: String::from("Phase 16"),
-    art_url: format!("file://{art}"),
+    art_url: if art.contains("://") {
+      art.to_owned()
+    } else {
+      format!("file://{art}")
+    },
     length: Some(Duration::from_secs(215)),
     can_play: true,
     can_pause: true,
@@ -5974,9 +5991,30 @@ fn a_panicking_link_in_the_notes_panel_is_logged_with_its_path_and_the_shell_run
   );
 }
 
+/// The system example's output: 1680 by 1050 is a whole number of logical
+/// pixels at every scale from 1 to 2 in quarters, and wide enough for the
+/// bar at 2.
+const SYSTEM_MODE: &str = "1680x1050";
+
+/// The time the system example's tests pin: Wednesday 18 November 2026,
+/// 09:41.
+const SYSTEM_NOW: &str = "2026-11-18T09:41:00";
+
 /// Open-Meteo's reply for 7.6°C and partly cloudy, code 2, whose icon
 /// the fixtures' theme lacks, so the bar draws its fallback.
 const WEATHER: &str = r#"{"latitude":52.52,"longitude":13.419998,"current_units":{"temperature_2m":"°C","weather_code":"wmo code"},"current":{"time":"2026-11-18T09:30","interval":900,"temperature_2m":7.6,"weather_code":2}}"#;
+
+/// How much of the screen, in logical pixels from the top, the popups'
+/// goldens hold.
+const POPUP_ROWS: u32 = 260;
+
+fn pinned_backlight() -> Backlight {
+  Backlight {
+    name: String::from("crabshell_backlight"),
+    brightness: 60,
+    max_brightness: 100,
+  }
+}
 
 /// 23% CPU, 40% of 16 GiB in use, and a CPU at 52.4°C listed after
 /// another sensor.
@@ -6000,6 +6038,465 @@ fn pinned_stats() -> SystemStats {
       },
     ],
   }
+}
+
+/// The system example with its clock and stats pinned and `backlights`,
+/// its icons from the fixtures' theme, logging its clipboard history.
+fn run_system(cx: &Cx, backlights: ReadSignal<Vec<Backlight>>) {
+  let now: crabshell::jiff::civil::DateTime = SYSTEM_NOW.parse().expect("a time");
+  let now = now
+    .to_zoned(crabshell::jiff::tz::TimeZone::UTC)
+    .expect("a time in UTC");
+  let feeds = system::Feeds {
+    now: cx.signal(now).read_only(),
+    stats: cx.signal(pinned_stats()).read_only(),
+    backlights,
+  };
+  system::shell(cx, feeds);
+  cx.set_icon_theme(FIXTURE_ICONS);
+  let history = cx.clipboard().history();
+  cx.effect(move || {
+    let top = history.with(|all| match all.first().map(|entry| &entry.content) {
+      Some(ClipboardContent::Text(text)) => text.clone(),
+      Some(ClipboardContent::Image(_)) => String::from("<image>"),
+      None => String::new(),
+    });
+    eprintln!(
+      "clipboard: {} entries, {top} on top",
+      history.with(Vec::len)
+    );
+  });
+}
+
+/// A plain HTTP server on a free local port, on a thread of its own,
+/// answering each GET with the page for its path, or 404.
+struct LocalServer {
+  port: u16,
+  served: Arc<Mutex<Vec<String>>>,
+}
+
+impl LocalServer {
+  fn start(pages: Vec<(&'static str, Vec<u8>)>) -> LocalServer {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a local port");
+    let port = listener.local_addr().expect("its address").port();
+    let served = Arc::<Mutex<Vec<String>>>::default();
+    let log = Arc::clone(&served);
+    std::thread::spawn(move || {
+      for stream in listener.incoming() {
+        let Ok(mut stream) = stream else { return };
+        let mut request = Vec::new();
+        let mut buffer = [0; 1024];
+        while !request.windows(4).any(|end| end == b"\r\n\r\n") {
+          match stream.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => request.extend_from_slice(&buffer[..read]),
+          }
+        }
+        let request = String::from_utf8_lossy(&request);
+        let path = request.split_whitespace().nth(1).unwrap_or_default();
+        let page = pages.iter().find(|(name, _)| *name == path);
+        let (status, body) = match page {
+          Some((_, body)) => ("200 OK", body.as_slice()),
+          None => ("404 Not Found", &[][..]),
+        };
+        let head = format!(
+          "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+          body.len()
+        );
+        let _ = stream.write_all(head.as_bytes());
+        let _ = stream.write_all(body);
+        log.lock().expect("the log").push(path.to_owned());
+      }
+    });
+    LocalServer { port, served }
+  }
+
+  fn url(&self, path: &str) -> String {
+    format!("http://127.0.0.1:{}{path}", self.port)
+  }
+
+  /// Waits until `path` was served.
+  fn wait_for(&self, path: &str) {
+    let deadline = Instant::now() + TIMEOUT;
+    while !self.served().iter().any(|served| served == path) {
+      assert!(Instant::now() < deadline, "{path} was never asked for");
+      std::thread::sleep(Duration::from_millis(20));
+    }
+  }
+
+  fn served(&self) -> Vec<String> {
+    self.served.lock().expect("the log").clone()
+  }
+}
+
+/// A stand-in for niri: its socket in the private Sway's runtime
+/// directory, answered on a thread of its own. niri itself is never
+/// started.
+struct FakeNiri {
+  path: PathBuf,
+  actions: Arc<Mutex<Vec<String>>>,
+  events: Arc<Mutex<Option<std::os::unix::net::UnixStream>>>,
+}
+
+impl FakeNiri {
+  /// HEADLESS-1 shows workspace 1, which has the focus, and holds `web`;
+  /// DP-9, which the private Sway lacks, shows 3.
+  const STATE: &str = concat!(
+    r#"{"WorkspacesChanged":{"workspaces":["#,
+    r#"{"id":1,"idx":1,"name":null,"output":"HEADLESS-1","is_urgent":false,"is_active":true,"is_focused":true,"active_window_id":null},"#,
+    r#"{"id":2,"idx":2,"name":"web","output":"HEADLESS-1","is_urgent":false,"is_active":false,"is_focused":false,"active_window_id":null},"#,
+    r#"{"id":3,"idx":1,"name":null,"output":"DP-9","is_urgent":false,"is_active":true,"is_focused":false,"active_window_id":null}]}}"#,
+    "\n",
+    r#"{"WindowsChanged":{"windows":[]}}"#,
+    "\n",
+    r#"{"KeyboardLayoutsChanged":{"keyboard_layouts":{"names":["English (US)"],"current_idx":0}}}"#,
+    "\n",
+    r#"{"OverviewOpenedOrClosed":{"is_open":false}}"#,
+    "\n",
+    r#"{"ConfigLoaded":{"failed":false}}"#,
+    "\n",
+  );
+
+  fn start(sway: &Sway) -> FakeNiri {
+    use std::io::Write;
+    let path = sway.runtime_dir().join("niri.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&path).expect("niri's socket");
+    let fake = FakeNiri {
+      path,
+      actions: Arc::default(),
+      events: Arc::default(),
+    };
+    let (actions, events) = (Arc::clone(&fake.actions), Arc::clone(&fake.events));
+    std::thread::spawn(move || {
+      for stream in listener.incoming() {
+        let Ok(mut stream) = stream else { return };
+        let mut request = String::new();
+        if BufReader::new(&stream).read_line(&mut request).is_err() {
+          continue;
+        }
+        let handled = "{\"Ok\":\"Handled\"}\n";
+        if request == "\"EventStream\"\n" {
+          let _ = stream.write_all(format!("{handled}{}", Self::STATE).as_bytes());
+          *events.lock().expect("the event stream") = Some(stream);
+        } else {
+          let _ = stream.write_all(handled.as_bytes());
+          let action = request.trim_end().to_owned();
+          actions.lock().expect("the actions").push(action);
+        }
+      }
+    });
+    fake
+  }
+
+  /// Sends `event` on the event stream, once the shell opened it.
+  fn send(&self, event: &str) {
+    use std::io::Write;
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+      if let Some(stream) = self.events.lock().expect("the event stream").as_mut() {
+        stream
+          .write_all(format!("{event}\n").as_bytes())
+          .expect("an event sent");
+        return;
+      }
+      assert!(Instant::now() < deadline, "the shell never followed niri");
+      std::thread::sleep(Duration::from_millis(20));
+    }
+  }
+
+  /// Waits until the shell sent `action`.
+  fn wait_for_action(&self, action: &str) {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+      let actions = self.actions.lock().expect("the actions").clone();
+      if actions.iter().any(|sent| sent == action) {
+        return;
+      }
+      assert!(Instant::now() < deadline, "no {action} in {actions:?}");
+      std::thread::sleep(Duration::from_millis(20));
+    }
+  }
+}
+
+/// The wallpaper picker's folder, in the private Sway's runtime
+/// directory: three pictures, a text file and a folder, which it leaves
+/// out.
+fn wallpaper_folder(sway: &Sway) -> PathBuf {
+  let folder = sway.runtime_dir().join("wallpapers");
+  std::fs::create_dir_all(folder.join("old")).expect("the folder");
+  gradient_png(
+    &folder.join("dunes.png"),
+    [0xfa, 0xb3, 0x87],
+    [0x8c, 0x4a, 0x2f],
+  );
+  pattern_png(&folder.join("lake.png"), 160, 90, |x, y| {
+    if y > 50 + x / 20 {
+      [0x1e, 0x66, 0xf5]
+    } else {
+      [0x89, 0xdc, 0xeb]
+    }
+  });
+  pattern_png(&folder.join("Night Sky.PNG"), 64, 36, |x, y| {
+    if (x * 7 + y * 13) % 29 == 0 {
+      [0xf9, 0xe2, 0xaf]
+    } else {
+      [0x11, 0x11, 0x1b]
+    }
+  });
+  std::fs::write(folder.join("notes.txt"), "not a picture").expect("a text file");
+  folder
+}
+
+/// The environment the system example's child runs in, as `mode`.
+fn system_env(
+  niri: &FakeNiri,
+  server: &LocalServer,
+  folder: &Path,
+  mode: &str,
+) -> Vec<(&'static str, String)> {
+  let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+  vec![
+    (CHILD, mode.to_owned()),
+    ("NIRI_SOCKET", niri.path.display().to_string()),
+    ("WEATHER_URL", server.url("/weather")),
+    ("WALLPAPERS", folder.display().to_string()),
+    ("XDG_DATA_DIRS", fixtures.display().to_string()),
+  ]
+}
+
+/// The system example, run as this test binary for `test`, on one test
+/// thread, so libtest never wakes it to say the test runs long.
+fn start_system(sway: &Sway, test: &str, env: &[(&'static str, String)]) -> ExampleBar {
+  let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+  let mut command = this_as_shell(test);
+  command.arg("--test-threads=1");
+  ExampleBar::spawn(sway, command, &env)
+}
+
+/// Copies two texts and a picture with `wl-copy`, each once the shell
+/// has the one before in its history. Returns the copies, which serve
+/// their selection until killed.
+fn fill_clipboard(sway: &Sway, shell: &ExampleBar, picture: &Path) -> Vec<Child> {
+  let copy = |args: &[&str], stdin: Stdio| {
+    sway
+      .client("wl-copy")
+      .arg("--foreground")
+      .args(args)
+      .stdin(stdin)
+      .spawn()
+      .expect("wl-copy runs")
+  };
+  let first = copy(
+    &["cargo run --release -p crabshell --example system"],
+    Stdio::null(),
+  );
+  shell.wait_for("clipboard: 1 entries");
+  let file = std::fs::File::open(picture).expect("the picture");
+  let second = copy(&["--type", "image/png"], Stdio::from(file));
+  shell.wait_for("clipboard: 2 entries, <image> on top");
+  let line =
+    "A line long enough that the clipboard's popup cuts it off at its edge\nand a second line";
+  let third = copy(&[line], Stdio::null());
+  shell.wait_for("clipboard: 3 entries");
+  vec![first, second, third]
+}
+
+/// Whether `wl-copy` runs here.
+fn has_wl_copy() -> bool {
+  Command::new("wl-copy")
+    .arg("--version")
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .is_ok_and(|status| status.success())
+}
+
+/// The top `rows` of `shot`.
+fn top_rows(shot: &Image, rows: u32) -> Image {
+  Image {
+    rgba: shot.rgba[..shot.width as usize * rows as usize * 4].to_vec(),
+    width: shot.width,
+    height: rows,
+  }
+}
+
+/// A screenshot of HEADLESS-1 whose top `rows` match the golden `name`,
+/// waiting for what arrives off the loop, such as a fetched reply or a
+/// decoded picture. Without a golden, while blessing, or once it times
+/// out, a steady one, which `check_golden` then judges.
+fn shot_matching(sway: &Sway, name: &str, rows: u32) -> Image {
+  let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/golden/{name}.png"));
+  if let (None, Ok(bytes)) = (std::env::var_os("CRABSHELL_BLESS"), std::fs::read(&path)) {
+    let golden = Image::decode(&bytes);
+    let deadline = Instant::now() + TIMEOUT;
+    while Instant::now() < deadline {
+      let shot = sway.screenshot("HEADLESS-1");
+      if golden_difference(&golden, &top_rows(&shot, rows)).is_none() {
+        return shot;
+      }
+      std::thread::sleep(Duration::from_millis(50));
+    }
+  }
+  steady_shot(sway, "HEADLESS-1")
+}
+
+/// Phase 18's exit check: the system example, with workspaces from a
+/// fake niri, the weather from a local HTTP server, its clipboard filled
+/// by `wl-copy` and its pictures in a temporary folder, matches its
+/// goldens at all five scales: the bar, the clipboard's popup, and the
+/// wallpaper picker. A click on the clipboard's picture puts it back on
+/// top and closes the popup.
+#[test]
+#[ignore = "needs headless Sway and wl-clipboard"]
+fn the_system_bar_and_its_popups_match_their_goldens() {
+  const TEST: &str = "the_system_bar_and_its_popups_match_their_goldens";
+  run_as_child();
+  if !has_wl_copy() {
+    eprintln!("skipped: wl-copy from wl-clipboard isn't installed");
+    return;
+  }
+  for scale in ["1", "1.25", "1.5", "1.75", "2"] {
+    let factor: f32 = scale.parse().expect("a scale");
+    let rows = |logical: u32| (logical as f32 * factor) as u32;
+    let layout = ((1680.0 / factor) as u32, (1050.0 / factor) as u32);
+    let sway = Sway::start();
+    sway.msg(&["output", "HEADLESS-1", "mode", SYSTEM_MODE, "scale", scale]);
+    let niri = FakeNiri::start(&sway);
+    let server = LocalServer::start(vec![("/weather", WEATHER.as_bytes().to_vec())]);
+    let folder = wallpaper_folder(&sway);
+    let mut pointer = VirtualPointer::new(&sway);
+    let shell = start_system(&sway, TEST, &system_env(&niri, &server, &folder, "system"));
+    shell.wait_for(FIRST_FRAME);
+    server.wait_for("/weather");
+    let mut copies = fill_clipboard(&sway, &shell, &folder.join("lake.png"));
+
+    let name = format!("system@{scale}x");
+    let bar = shot_matching(&sway, &name, rows(system::HEIGHT));
+    check_golden(&name, &bar, rows(system::HEIGHT));
+
+    // The clipboard's button, second from the right.
+    pointer.move_to(layout.0 - 62, 15, layout);
+    pointer.click();
+    let name = format!("system-clipboard@{scale}x");
+    check_golden(
+      &name,
+      &shot_matching(&sway, &name, rows(POPUP_ROWS)),
+      rows(POPUP_ROWS),
+    );
+    // The picture, the second entry.
+    pointer.move_to(layout.0 - 150, 120, layout);
+    pointer.click();
+    shell.wait_for("clipboard: 3 entries, <image> on top");
+    wait_for_shot(&sway, "HEADLESS-1", "the popup to close", |shot| {
+      let below = |shot: &Image| top_rows(shot, rows(POPUP_ROWS));
+      golden_difference(&below(&bar), &below(shot)).is_none()
+    });
+
+    // The wallpaper picker's button, at the right.
+    pointer.move_to(layout.0 - 22, 15, layout);
+    pointer.click();
+    let name = format!("system-wallpapers@{scale}x");
+    check_golden(
+      &name,
+      &shot_matching(&sway, &name, rows(POPUP_ROWS)),
+      rows(POPUP_ROWS),
+    );
+    for copy in &mut copies {
+      let _ = copy.kill();
+      let _ = copy.wait();
+    }
+  }
+}
+
+/// Part of Phase 18's exit check: the system bar follows a workspace
+/// switch niri announces, asks niri for a workspace on a click, follows
+/// its wallpaper folder only while the picker is open, and then, with its
+/// clock and stats pinned, wakes for nothing in a minute: not the niri
+/// stream, the weather's half-hourly fetch, the clipboard, the
+/// backlights, or the folder.
+#[test]
+#[ignore = "needs headless Sway"]
+fn the_system_bar_follows_niri_and_sleeps() {
+  const TEST: &str = "the_system_bar_follows_niri_and_sleeps";
+  run_as_child();
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", SYSTEM_MODE, "scale", "1"]);
+  let niri = FakeNiri::start(&sway);
+  let server = LocalServer::start(vec![("/weather", WEATHER.as_bytes().to_vec())]);
+  let folder = wallpaper_folder(&sway);
+  let mut pointer = VirtualPointer::new(&sway);
+  let env = system_env(&niri, &server, &folder, "system idle");
+  let shell = start_system(&sway, TEST, &env);
+  shell.wait_for(FIRST_FRAME);
+  server.wait_for("/weather");
+  // Another program's window, whose click closes a popup.
+  let _app = AppWindow::new(&sway, "org.example.App", "another program");
+  let before = steady_shot(&sway, "HEADLESS-1");
+  let bar = |shot: &Image| top_rows(shot, system::HEIGHT);
+
+  // niri switches to `web` and says so; the bar follows.
+  niri.send(r#"{"WorkspaceActivated":{"id":2,"focused":true}}"#);
+  wait_for_shot(&sway, "HEADLESS-1", "web shown", |shot| {
+    golden_difference(&bar(&before), &bar(shot)).is_some()
+  });
+  // Workspace 1's button, at the left, asks niri for it.
+  pointer.move_to(8 + 11, 15, (1680, 1050));
+  pointer.click();
+  niri.wait_for_action(r#"{"Action":{"FocusWorkspace":{"reference":{"Id":1}}}}"#);
+
+  // The picker reads its folder while open, then a click on the other
+  // program closes it.
+  pointer.move_to(1680 - 22, 15, (1680, 1050));
+  pointer.click();
+  wait_for_shot(&sway, "HEADLESS-1", "the picker", |shot| {
+    rgb(shot, 1680 - 150, 100) != rgb(&before, 1680 - 150, 100)
+  });
+  pointer.move_to(840, 600, (1680, 1050));
+  pointer.click();
+  wait_for_shot(&sway, "HEADLESS-1", "the picker to close", |shot| {
+    rgb(shot, 1680 - 150, 100) == rgb(&before, 1680 - 150, 100)
+  });
+
+  shell.wait_until_quiet();
+  let wakeups = shell.wakeups_for(Duration::from_secs(60));
+  assert!(wakeups.is_empty(), "woke while idle: {wakeups:?}");
+}
+
+/// Part of Phase 18's exit check: the dashboard shows album art from a
+/// plain `http:` URL on a local server, fetched once through
+/// `cx.cover_art` into the cache, exactly as it shows the same picture
+/// from a file.
+#[test]
+#[ignore = "needs headless Sway"]
+fn the_dashboard_shows_cover_art_from_an_http_server() {
+  const TEST: &str = "the_dashboard_shows_cover_art_from_an_http_server";
+  run_as_child();
+  let files = DashboardFiles::new();
+  let art = std::fs::read(files.path("art.png")).expect("the art");
+  let server = LocalServer::start(vec![("/covers/northern-lights", art)]);
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", DASHBOARD_MODE, "scale", "1"]);
+  let cache = sway.runtime_dir().join("cache");
+  let mut env = files.env();
+  env.retain(|(name, _)| *name != "DASHBOARD_ART");
+  env.push(("DASHBOARD_ART", server.url("/covers/northern-lights")));
+  env.push(("XDG_CACHE_HOME", cache.display().to_string()));
+  let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+  let shell = ExampleBar::spawn(&sway, this_as_shell(TEST), &env);
+  shell.wait_for(FIRST_FRAME);
+  wait_for_shot(&sway, "HEADLESS-1", "the album art", |shot| {
+    let [r, g, b] = rgb(shot, 70, 200);
+    r.abs_diff(0xf3) <= 6 && g.abs_diff(0x8b) <= 6 && b.abs_diff(0xa8) <= 6
+  });
+  wait_for_decoded_pictures(&sway, "1");
+  let shot = steady_shot(&sway, "HEADLESS-1");
+  check_golden("dashboard@1x", &shot, shot.height);
+  assert_eq!(server.served(), ["/covers/northern-lights"]);
+  let kept = std::fs::read_dir(cache.join("crabshell/art"))
+    .expect("the art cache")
+    .count();
+  assert_eq!(kept, 1, "one picture in the cache");
 }
 
 #[test]

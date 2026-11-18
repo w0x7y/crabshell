@@ -1,5 +1,5 @@
-# The few symbolic icons the dashboard's goldens draw, under a name no
-# machine's own theme shadows.
+# The few symbolic icons the dashboard's and the system bar's goldens
+# draw, under a name no machine's own theme shadows.
 [Icon Theme]
 Name=crabshell-fixtures
 Directories=symbolic
