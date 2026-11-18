@@ -149,14 +149,19 @@
           <li>
             If it succeeds, the shell writes every
             <a href="system.html#persist"><code>cx.persist</code></a> value to a
-            file and exits.
+            file and keeps running.
           </li>
-          <li>The new shell starts, reads the saved values and draws.</li>
+          <li>
+            The new shell starts beside it, reads the saved values and draws
+            over the old bar. Once it is ready, the old shell exits. If the new
+            one fails or isn't ready within 10 s, the old one stays.
+          </li>
         </ol>
         <p>
-          For a one-line edit to the template bar, the build takes 0.7 s and the
-          screen is without a bar for 13 to 19 ms. A build that produces the
-          same program as before doesn't reload.
+          For a one-line edit to the template bar, the build takes 1.0 s and the
+          bar never leaves the screen. A build that produces the same program as
+          before doesn't reload. A config can ask for a reload itself with
+          <code>cx.reload()</code>.
         </p>
         <h3 id="crash">On a crash</h3>
         <p>

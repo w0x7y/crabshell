@@ -502,6 +502,19 @@ Region::rect(0, 0, 400, 300).subtract(Region::rect(100, 100, 200, 100))</code></
         </p>
         <pre><code class="rs">let awake = cx.signal(false);
 PanelWindow::new(output).inhibit_idle(move || awake.get())</code></pre>
+        <h2 id="screen-reader">Screen readers</h2>
+        <p>
+          When a screen reader such as Orca is on, the shell tells it about
+          every window and widget: buttons by their text, fields by their
+          placeholder, and Enter-like clicks through it. Give a button that
+          shows only an icon a name:
+        </p>
+        <pre><code class="rs">Button::new(Icon::new("audio-volume-high-symbolic"))
+  .accessible_name("Volume")</code></pre>
+        <p>
+          With no screen reader on, the shell holds no accessibility connection.
+          <code>NO_AT_BRIDGE=1</code> turns it off entirely.
+        </p>
         <h2 id="show-hide">Showing and hiding</h2>
         <table>
           <thead>

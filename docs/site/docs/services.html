@@ -529,6 +529,25 @@ Text::new(move || {
               </td>
               <td>Deletes a saved connection, or only its password.</td>
             </tr>
+            <tr>
+              <td>
+                <code>add_connection(&amp;settings)</code>,
+                <code>update_connection(uuid, &amp;settings)</code>
+              </td>
+              <td>
+                Saves a new connection, or replaces a saved one's settings, in
+                the JSON form <code>saved_connections()</code> reads. An SSID
+                may be text.
+              </td>
+            </tr>
+            <tr>
+              <td><code>scanner()</code></td>
+              <td>
+                Scans every 10 s while the context that called
+                <code>cx.network()</code> lives, so call it inside the popup
+                that lists networks.
+              </td>
+            </tr>
           </tbody>
         </table>
         <p>
@@ -674,6 +693,21 @@ cx.effect(move || {
           waits. A window with
           <a href="windows.html#inhibit-idle"><code>inhibit_idle</code></a> set,
           yours or a video player's, holds the timeout off.
+        </p>
+        <h2 id="pipewire">PipeWire's graph</h2>
+        <p>
+          <code>cx.pipewire()</code> follows what PipeWire connects to what:
+          <code>nodes()</code>, <code>links()</code> with their
+          <code>state</code>, <code>link_groups()</code> per pair of nodes, and
+          <code>screencasts()</code>, the screens being shared right now.
+        </p>
+        <pre><code class="rs">let sharing = cx.pipewire().screencasts();
+Text::new(move || if sharing.get().is_empty() { "" } else { "sharing" }.to_owned())</code></pre>
+        <p>
+          <code>node_links(node)</code> gives the links to or from one node;
+          call <code>cx.pipewire()</code> inside the row that shows it. Volume
+          and sinks stay with <a href="#audio"><code>cx.audio()</code></a
+          >.
         </p>
         <h2 id="sleep">Sleep and power</h2>
         <p>
