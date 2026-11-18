@@ -1398,3 +1398,64 @@ fn a_burst_while_taking_over_is_held_and_then_answered() {
   assert_eq!(list_ids(&new_notes).len(), 101);
   drop(old_notes);
 }
+
+/// The new shell of a reload took the notifications and is replaced; the
+/// old one saves again while it still waits for the name back. It names
+/// itself as the owner, and the name coming back doesn't disarm that save,
+/// so the next shell takes the notifications from it.
+#[test]
+fn a_save_after_handing_over_still_names_the_shell_for_the_next() {
+  let bus = PrivateBus::start();
+  let (mut shell, notifications, _) = serve(&bus, online(&bus));
+  let server = service(&notifications);
+  let unique = server.state.borrow().as_ref().and_then(|state| {
+    let connection = state.connection.as_ref()?;
+    Some(connection.unique_name()?.to_string())
+  });
+  let unique = unique.expect("the shell's name on the bus");
+  crate::save_state(&shell.cx).expect("something to keep");
+  let take_name = |shell: &mut Harness| {
+    let taker = shell.block_on(bus.connect(&[]));
+    let asked = taker.clone();
+    shell
+      .block_on(async move {
+        let flags = zbus::fdo::RequestNameFlags::REPLACE_EXISTING;
+        asked.request_name_with_flags(NOTIFICATIONS, flags).await
+      })
+      .expect("the name");
+    taker
+  };
+  let take = |shell: &mut Harness, taker: &Connection| {
+    let (taker, unique) = (taker.clone(), unique.clone());
+    shell.block_on(async move {
+      let call = taker.call_method(
+        Some(unique.as_str()),
+        NOTIFICATIONS_PATH,
+        Some(super::HANDOFF),
+        "Take",
+        &(),
+      );
+      call.await.map(|_| ()).map_err(|error| error.to_string())
+    })
+  };
+  let replaced = take_name(&mut shell);
+  wait_for(&mut shell, "the shell to step back", || !server.serving());
+  assert_eq!(take(&mut shell, &replaced), Ok(()));
+  let saved = crate::save_state(&shell.cx).expect("something to keep");
+  assert_eq!(
+    saved["notifications"]["owner"].as_str(),
+    Some(unique.as_str()),
+    "still the owner, for the next shell"
+  );
+  shell
+    .block_on(replaced.close())
+    .expect("the new shell goes");
+  wait_for(&mut shell, "the name back", || server.serving());
+  let next = take_name(&mut shell);
+  wait_for(&mut shell, "the shell to step back", || !server.serving());
+  assert_eq!(
+    take(&mut shell, &next),
+    Ok(()),
+    "the second save stays armed"
+  );
+}

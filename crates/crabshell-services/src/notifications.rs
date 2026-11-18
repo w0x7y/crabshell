@@ -311,6 +311,13 @@ pub(crate) struct Service {
   /// Saved for a reload while serving: the next shell may `Take` what
   /// this one kept, once.
   handing_off: Cell<bool>,
+  /// It answered a `Take` since the name last moved: the shell that took
+  /// over may have failed, and the bus may hand the name back before
+  /// this one hears so, so a save then still names this shell.
+  handed_over: Cell<bool>,
+  /// It saved since it last lost the name: the save came after a new
+  /// shell failed, for the next one, which `NameAcquired` mustn't disarm.
+  saved_since_lost: Cell<bool>,
   /// The old shell's name on the bus, until this one has taken the
   /// notifications over from it.
   taking_from: RefCell<Option<String>>,
@@ -472,6 +479,8 @@ impl Service {
       saved: RefCell::new(None),
       held: Cell::new(false),
       handing_off: Cell::new(false),
+      handed_over: Cell::new(false),
+      saved_since_lost: Cell::new(false),
       taking_from: RefCell::new(None),
     }
   }
@@ -497,6 +506,7 @@ impl Service {
   pub(crate) fn save(&self) -> Option<serde_json::Value> {
     let saved = self.kept()?;
     self.handing_off.set(saved.owner.is_some());
+    self.saved_since_lost.set(true);
     serde_json::to_value(saved)
       .inspect_err(|error| tracing::warn!(%error, "the notifications couldn't be kept"))
       .ok()
@@ -515,7 +525,7 @@ impl Service {
         left.map(|left| u64::try_from(left).unwrap_or(u64::MAX)),
       )
     });
-    let owner = state.connection.as_ref().filter(|_| state.serving);
+    let owner = (state.connection.as_ref()).filter(|_| state.serving || self.handed_over.get());
     let owner = owner.and_then(|connection| connection.unique_name());
     Some(Saved {
       next_id: state.next_id,
@@ -544,6 +554,7 @@ impl Service {
       return None;
     }
     tracing::info!("handing the notifications over to the new shell");
+    self.handed_over.set(true);
     serde_json::to_string(&self.kept()?).ok()
   }
 
@@ -929,12 +940,18 @@ impl Service {
     let serving = match header.member().map(|member| member.as_str()) {
       Some("NameAcquired") => {
         tracing::info!("serving notifications");
-        // Back from a new shell that failed: no one is to take them now.
-        self.handing_off.set(false);
+        // Back from a new shell that failed: no one is to take them now,
+        // unless this shell saved again since, for the next one.
+        if !self.saved_since_lost.get() {
+          self.handing_off.set(false);
+        }
+        self.handed_over.set(false);
         true
       }
       Some("NameLost") => {
         tracing::info!("another program took over notifications; waiting for it to leave");
+        self.handed_over.set(false);
+        self.saved_since_lost.set(false);
         false
       }
       _ => return,

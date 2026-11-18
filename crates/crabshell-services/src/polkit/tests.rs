@@ -302,6 +302,8 @@ fn a_refused_registration_is_logged_and_nothing_arrives() {
   assert!(logs.contains("polkit refused the agent"), "{logs}");
   let woke = shell.run_until(Instant::now() + Duration::from_secs(1));
   assert_eq!(woke, 1, "a refused agent sleeps");
+  // Started alone, there is no old shell to wait out: no second try.
+  assert_eq!(registrations.borrow().len(), 1);
 
   let mut shell = Harness::new(offline());
   let logs = capture_logs(|| {
