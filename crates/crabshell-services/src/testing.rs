@@ -112,7 +112,7 @@ impl Harness {
 }
 
 /// A config with no system parts: the system zone through jiff, and no
-/// bus, Sway, Hyprland, niri or audio server.
+/// bus, Sway, Hyprland, niri, PipeWire or audio server.
 pub(crate) fn offline() -> Config {
   Config {
     localtime: None,
@@ -121,6 +121,7 @@ pub(crate) fn offline() -> Config {
     sway: None,
     hyprland: None,
     niri: None,
+    pipewire: None,
     audio: None,
     popup_timeout: crate::notifications::POPUP_TIMEOUT,
     greetd: None,

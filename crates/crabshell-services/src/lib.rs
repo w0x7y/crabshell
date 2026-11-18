@@ -35,6 +35,7 @@ mod network;
 mod niri;
 mod notifications;
 mod pam;
+mod pipewire;
 mod polkit;
 mod power;
 mod process;
@@ -90,6 +91,7 @@ pub use network::{
 pub use niri::{Niri, NiriKeyboardLayouts, NiriWindow, NiriWorkspace};
 pub use notifications::{CloseReason, Notification, Notifications, Timeout, Urgency};
 pub use pam::{Pam, PamError, PamMessage, PamResult, PamState};
+pub use pipewire::{PipeWire, PwLink, PwLinkGroup, PwLinkState, PwNode};
 pub use polkit::{AuthRequest, AuthState, PolkitAgent};
 pub use power::{
   BatteryState, DeviceKind, PerformanceDegradation, PowerDevice, PowerProfile, PowerProfiles,
@@ -123,6 +125,7 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(sway::Service::new(Rc::clone(&shared)));
   cx.provide(hyprland::Service::new(Rc::clone(&shared)));
   cx.provide(niri::Service::new(Rc::clone(&shared)));
+  cx.provide(pipewire::Service::new(Rc::clone(&shared)));
   cx.provide(audio::AudioService::new(Rc::clone(&shared)));
   cx.provide(tray::Service::new(Rc::clone(&shared)));
   cx.provide(power::UPowerService::new(Rc::clone(&shared)));
@@ -264,6 +267,18 @@ pub trait ServicesExt {
   /// again; otherwise the lists empty and nothing reconnects. While
   /// connected, it wakes the shell only when niri sends something.
   fn niri(&self) -> Niri;
+
+  /// PipeWire's nodes and the links between them, over its native
+  /// protocol on `pipewire-0` in `$PIPEWIRE_RUNTIME_DIR`, else
+  /// `$XDG_RUNTIME_DIR`. Every caller shares one connection, made on the
+  /// first call, so a shell that never asks pays nothing.
+  ///
+  /// The lists are empty while PipeWire isn't there, which is logged
+  /// once, and the service never wakes the shell. When PipeWire closes
+  /// the connection while its socket is still there, the shell connects
+  /// once again; otherwise the lists empty and nothing reconnects. While
+  /// connected, it wakes the shell only when the graph changes.
+  fn pipewire(&self) -> PipeWire;
 
   /// The audio server's default sink, with its volume and mute. Every
   /// caller shares one connection, which starts on the loop's next turn
@@ -501,6 +516,10 @@ impl ServicesExt for Cx {
 
   fn niri(&self) -> Niri {
     niri::niri(self)
+  }
+
+  fn pipewire(&self) -> PipeWire {
+    pipewire::pipewire(self)
   }
 
   fn audio(&self) -> Audio {
@@ -904,6 +923,9 @@ struct Config {
   hyprland: Option<PathBuf>,
   /// niri's IPC socket, from `NIRI_SOCKET`. `None` when that is unset.
   niri: Option<PathBuf>,
+  /// PipeWire's socket, `pipewire-0` in `PIPEWIRE_RUNTIME_DIR`, else
+  /// `XDG_RUNTIME_DIR`. `None` when both are unset.
+  pipewire: Option<PathBuf>,
   /// The audio server. `None` for none, so a test never reaches the
   /// user's.
   audio: Option<audio::Server>,
@@ -970,6 +992,10 @@ impl Config {
       niri: std::env::var_os("NIRI_SOCKET")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from),
+      pipewire: ["PIPEWIRE_RUNTIME_DIR", "XDG_RUNTIME_DIR"]
+        .into_iter()
+        .find_map(|name| std::env::var_os(name).filter(|dir| !dir.is_empty()))
+        .map(|dir| PathBuf::from(dir).join("pipewire-0")),
       audio: Some(audio::Server {
         address: None,
         retry: audio::RETRY,
