@@ -216,7 +216,8 @@ fn stats_are_sampled_at_once_then_every_period_until_the_context_goes() {
   run(&mut shell, 100);
   assert_eq!(stats.get_untracked().memory_total, 2048);
   write(&dir.path().join("proc"), "meminfo", "MemTotal: 3 kB\n");
-  run(&mut shell, 300);
+  // The tick, its answer and the run's deadline.
+  assert_eq!(run(&mut shell, 300), 3);
   assert_eq!(stats.get_untracked().memory_total, 3072);
 
   child.owner().dispose();
@@ -261,6 +262,22 @@ fn a_slow_sensor_never_holds_up_the_loop() {
     longest < Duration::from_millis(200),
     "the loop was held {longest:?}"
   );
+}
+
+#[test]
+fn a_panic_while_reading_gives_an_empty_sample_and_the_next_reads() {
+  let dir = TempDir::new();
+  let config = Config {
+    stats_panic: true,
+    ..fake(&dir)
+  };
+  let mut shell = Harness::new(config);
+  let stats = shell.cx.system_stats(Duration::from_millis(250));
+  run(&mut shell, 100);
+  assert_eq!(stats.get_untracked(), SystemStats::default());
+  assert_eq!(requests(&shell), 1);
+  run(&mut shell, 300);
+  assert_eq!(stats.get_untracked().memory_total, 2048);
 }
 
 #[test]

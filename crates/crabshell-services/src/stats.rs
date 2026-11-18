@@ -10,6 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::io::Read;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Once, mpsc};
@@ -23,6 +24,7 @@ use crabshell_ui::Cx;
 
 use crate::Shared;
 use crate::file::{FileError, FileErrorKind, open_file, set};
+use crate::lines::panic_message;
 
 /// The shortest period, so stats can't keep the shell busy.
 const MIN_PERIOD: Duration = Duration::from_millis(250);
@@ -77,6 +79,9 @@ pub(crate) struct Service {
   live: RefCell<HashMap<u64, Live>>,
   next: Cell<u64>,
   worker: RefCell<Option<Worker>>,
+  /// Whether the worker couldn't start, so samples are read on the loop
+  /// thread instead.
+  inline: Cell<bool>,
   /// How many samples were asked for, for the tests.
   #[cfg(test)]
   requests: Cell<usize>,
@@ -110,6 +115,7 @@ impl Service {
       live: RefCell::default(),
       next: Cell::new(0),
       worker: RefCell::new(None),
+      inline: Cell::new(false),
       #[cfg(test)]
       requests: Cell::new(0),
       #[cfg(test)]
@@ -130,9 +136,15 @@ impl Service {
     };
     #[cfg(test)]
     self.requests.set(self.requests.get() + 1);
-    if self.worker.borrow().is_none() {
+    if self.worker.borrow().is_none() && !self.inline.get() {
       let worker = self.start();
+      self.inline.set(worker.is_none());
       self.worker.replace(worker);
+    }
+    if self.inline.get() {
+      let mut sampler = sampler;
+      let stats = sample_caught(&mut sampler);
+      return self.answered(id, sampler, stats);
     }
     let unsent = match self.worker.borrow().as_ref() {
       Some(worker) => worker
@@ -150,7 +162,7 @@ impl Service {
   }
 
   /// The worker, answering on a channel in the loop. `None`, logged, if
-  /// either couldn't start.
+  /// either couldn't start; samples are read on the loop thread then.
   fn start(self: &Rc<Self>) -> Option<Worker> {
     let (answers, channel) = calloop::channel::channel::<Answer>();
     let weak = Rc::downgrade(self);
@@ -167,7 +179,7 @@ impl Service {
       .spawn(move || {
         // Ends once the requests' sender or the loop's channel is gone.
         for (id, mut sampler) in received {
-          let stats = sampler.sample();
+          let stats = sample_caught(&mut sampler);
           if answers.send((id, sampler, stats)).is_err() {
             break;
           }
@@ -180,7 +192,7 @@ impl Service {
         thread,
       }),
       Err(error) => {
-        tracing::warn!(%error, "couldn't start the stats' thread, so they stand still");
+        tracing::warn!(%error, "couldn't start the stats' thread, so they are read on the loop thread");
         event_loop.remove(token);
         None
       }
@@ -237,6 +249,7 @@ pub(crate) fn system_stats(cx: &Cx, period: Duration) -> ReadSignal<SystemStats>
   #[cfg(test)]
   {
     sampler.delay = config.stats_delay;
+    sampler.panic_once = config.stats_panic;
   }
   let live = Live {
     stats,
@@ -247,14 +260,26 @@ pub(crate) fn system_stats(cx: &Cx, period: Duration) -> ReadSignal<SystemStats>
   let period = period.clamp(MIN_PERIOD, MAX_PERIOD);
   let weak = Rc::downgrade(&service);
   let tick = Box::new(move || {
-    if let Some(service) = weak.upgrade() {
-      service.request(id);
-    }
+    let Some(service) = weak.upgrade() else {
+      return TimeoutAction::Drop;
+    };
+    service.request(id);
     TimeoutAction::ToDuration(period)
   });
   let timer = event_loop.insert_timer(Instant::now() + period, tick);
   cx.owner().signal(Unschedule { service, id, timer });
   stats.read_only()
+}
+
+/// Reads a sample. A bug in the reading gives an empty one, logged once,
+/// rather than taking the sampler and freezing the stats.
+fn sample_caught(sampler: &mut Sampler) -> SystemStats {
+  panic::catch_unwind(AssertUnwindSafe(|| sampler.sample())).unwrap_or_else(|payload| {
+    static LOGGED: Once = Once::new();
+    let message = panic_message(payload.as_ref());
+    LOGGED.call_once(|| tracing::error!("reading the system stats panicked: {message}"));
+    SystemStats::default()
+  })
 }
 
 /// Takes a call's timer out of the loop when its context goes, and the
@@ -311,6 +336,9 @@ pub(crate) struct Sampler {
   /// A pause before each read, so a test's sensors can be slow.
   #[cfg(test)]
   delay: Duration,
+  /// Whether the next read panics, as a bug would.
+  #[cfg(test)]
+  panic_once: bool,
 }
 
 impl Sampler {
@@ -323,12 +351,20 @@ impl Sampler {
       logged: HashSet::new(),
       #[cfg(test)]
       delay: Duration::ZERO,
+      #[cfg(test)]
+      panic_once: false,
     }
   }
 
   fn sample(&mut self) -> SystemStats {
     #[cfg(test)]
-    std::thread::sleep(self.delay);
+    {
+      std::thread::sleep(self.delay);
+      assert!(
+        !std::mem::take(&mut self.panic_once),
+        "a test's sensor panicked"
+      );
+    }
     let mut stats = SystemStats::default();
     self.cpu(&mut stats);
     self.memory(&mut stats);

@@ -400,7 +400,8 @@ pub trait ServicesExt {
   /// Call it once, above `per_output`, and share the signal. The signal
   /// starts empty and fills when the first sample, asked for at once,
   /// comes back from the thread the reads run on, so a slow sensor never
-  /// holds up a frame. A tick while a read still runs is skipped.
+  /// holds up a frame. A tick while a read still runs is skipped. Each
+  /// sample wakes the shell twice: at the tick and when the answer comes.
   fn system_stats(&self, period: Duration) -> ReadSignal<SystemStats>;
 
   /// greetd, for a greeter: makes a session for a user, answers its
@@ -938,6 +939,9 @@ struct Config {
   /// A pause before each stats read, so tests can make sensors slow.
   #[cfg(test)]
   stats_delay: Duration,
+  /// Whether the first stats read panics, as a bug would.
+  #[cfg(test)]
+  stats_panic: bool,
 }
 
 impl Config {
@@ -987,6 +991,8 @@ impl Config {
       sys: PathBuf::from("/sys"),
       #[cfg(test)]
       stats_delay: Duration::ZERO,
+      #[cfg(test)]
+      stats_panic: false,
     }
   }
 }
