@@ -43,7 +43,14 @@ fn init_writes_the_template_once_and_never_overwrites() {
   // Published on crates.io, so the plain init has nothing to warn about.
   assert!(done.stderr.is_empty(), "{}", text(&done.stderr));
   let manifest = std::fs::read_to_string(home.config().join("Cargo.toml")).expect("written");
-  assert!(manifest.contains("crabshell = \"0.6\""), "{manifest}");
+  let release = concat!(
+    "crabshell = \"",
+    env!("CARGO_PKG_VERSION_MAJOR"),
+    ".",
+    env!("CARGO_PKG_VERSION_MINOR"),
+    "\""
+  );
+  assert!(manifest.contains(release), "{manifest}");
   let main = std::fs::read_to_string(home.config().join("src/main.rs")).expect("written");
   assert!(main.contains("crabshell::run(|cx| cx.per_output(bar));"));
 
