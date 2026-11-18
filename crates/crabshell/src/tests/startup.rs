@@ -149,11 +149,6 @@ fn told_to_hand_off_the_shell_saves_says_so_and_runs_on() {
   assert_eq!(said_until(&mut shell, &mut supervisor, "saved"), "saved\n");
   let saved = crate::persist::load(&file);
   assert_eq!(saved.get("clicks"), Some(&serde_json::json!(4)));
-  assert_eq!(
-    saved.get(crate::persist::HANDOFF_KEY),
-    Some(&serde_json::json!(true)),
-    "the next shell runs beside this one"
-  );
   let _ = std::fs::remove_dir_all(&dir);
   // Still running: it goes on dispatching.
   shell
@@ -173,21 +168,19 @@ fn reload_asks_the_supervisor_and_without_one_is_logged() {
   assert!(said.starts_with("can-hand-off\n"), "{said}");
 }
 
-/// A shell started from values saved for a handoff runs beside the old
-/// one: it registers no global shortcut, which Hyprland would refuse by
-/// ending its connection, until the supervisor says `alone`.
+/// A shell the supervisor starts beside the old one of a reload registers
+/// no global shortcut, which Hyprland would refuse by ending its
+/// connection, until the supervisor says `alone`.
 #[test]
-fn a_shell_saved_for_a_handoff_waits_for_alone() {
+fn a_shell_beside_the_old_one_waits_for_alone() {
   use std::io::Write;
 
   let (_fake, stream) = Fake::start(Globals::default());
   let connection = Connection::from_socket(stream).expect("a connection");
   let event_loop = EventLoop::with_connection(connection).expect("the platform starts");
-  let mut saved = serde_json::Map::new();
-  saved.insert(crate::persist::HANDOFF_KEY.to_owned(), true.into());
   let mut shell = None;
   let logs = super::capture_logs(|| {
-    let built = Shell::build(event_loop, saved, None, |cx| {
+    let built = Shell::build(event_loop, serde_json::Map::new(), None, true, |cx| {
       let _ = cx.global_shortcut("crabshell", "launcher", "Show the launcher");
       cx.per_output(|_: &Cx, _: &Output| Vec::new());
     });

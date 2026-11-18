@@ -40,6 +40,11 @@ pub const EXIT_ROOT_PANICKED: i32 = 1;
 /// to it is lost, as at logout.
 pub const EXIT_NO_COMPOSITOR: i32 = 2;
 
+/// The variable the supervisor sets to `1` on a shell it starts beside the
+/// old shell of a reload: it waits for `alone` before it takes what only
+/// one process can hold.
+const BESIDE: &str = "CRABSHELL_BESIDE";
+
 /// Starts the shell: connects to the compositor, calls `root` with the
 /// root context, usually to call [`ShellExt::per_output`], and runs the
 /// event loop. It never returns. The process exits with:
@@ -94,7 +99,9 @@ pub fn run(root: impl FnOnce(&Cx)) -> ! {
     std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
     std::env::var_os("WAYLAND_DISPLAY").as_deref(),
   );
-  let mut shell = match Shell::build(event_loop, saved, ipc, root) {
+  // The supervisor started this one beside the old shell of a reload.
+  let beside = std::env::var_os(BESIDE).is_some_and(|value| value == "1");
+  let mut shell = match Shell::build(event_loop, saved, ipc, beside, root) {
     Ok(shell) => shell,
     Err(error) => {
       tracing::error!(%error, "the shell couldn't start");
@@ -203,15 +210,17 @@ impl Shell {
   ///
   /// If `root` panics. The panic is logged too.
   pub fn new(event_loop: EventLoop, root: impl FnOnce(&Cx)) -> Result<Shell, Error> {
-    Shell::build(event_loop, serde_json::Map::new(), None, root)
+    Shell::build(event_loop, serde_json::Map::new(), None, false, root)
   }
 
   /// [`new`](Self::new), with `cx.persist` values starting from `saved`,
-  /// and `cx.ipc` handlers served at `ipc`.
+  /// `cx.ipc` handlers served at `ipc`, and `beside` the old shell of a
+  /// reload until the supervisor says `alone`.
   pub(crate) fn build(
     mut event_loop: EventLoop,
     mut saved: serde_json::Map<String, serde_json::Value>,
     ipc: Option<std::path::PathBuf>,
+    beside: bool,
     root: impl FnOnce(&Cx),
   ) -> Result<Shell, Error> {
     let runtime = Runtime::current();
@@ -221,9 +230,6 @@ impl Shell {
     if let Some(state) = saved.remove(persist::SERVICES_KEY) {
       crabshell_services::restore_state(&cx, state);
     }
-    // Saved for a handoff: the old shell runs until the supervisor says
-    // `alone`.
-    let beside = saved.remove(persist::HANDOFF_KEY).is_some();
     if event_loop.platform().offers_activation() {
       let (idle, signal) = (idle_inserter(&event_loop), event_loop.signal());
       crabshell_services::provide_activation_tokens(&cx, move |app_id, done| {
@@ -268,6 +274,9 @@ impl Shell {
     if beside {
       event_loop.platform().set_alone(false);
       crabshell_services::set_alone(&cx, false);
+      if let Some(service) = cx.service::<Service>() {
+        service.ipc.set_alone(false);
+      }
     }
     event_loop.platform().on_event(move |platform, event| {
       // First, so a per_output closure finds its output listed.
@@ -378,13 +387,10 @@ impl Shell {
       Err(error) => tracing::warn!(%error, "can't answer the supervisor"),
     }
     let cx = self.cx.clone();
-    let save = move |cx: &Cx, handoff: bool| {
+    let save = move |cx: &Cx| {
       let mut values = service.persisted.save();
       if let Some(state) = crabshell_services::save_state(cx) {
         values.insert(persist::SERVICES_KEY.to_owned(), state);
-      }
-      if handoff {
-        values.insert(persist::HANDOFF_KEY.to_owned(), true.into());
       }
       if let Some(file) = &file
         && let Err(error) = persist::write(file, &values)
@@ -395,7 +401,7 @@ impl Shell {
     control::listen(&self.event_loop.handle(), stream, move |command| {
       match command {
         control::Command::Handoff => {
-          save(&cx, true);
+          save(&cx);
           if let Some(service) = cx.service::<Service>()
             && let Some(writer) = service.control.get()
           {
@@ -412,7 +418,7 @@ impl Shell {
         }
         control::Command::Save => {
           stop_services(&cx);
-          save(&cx, false);
+          save(&cx);
           tracing::info!("the supervisor asked for a reload; exiting");
         }
         control::Command::Exit => {
@@ -635,6 +641,7 @@ impl Service {
     tracing::info!("the old shell is gone; running alone");
     self.with_platform("going alone", |platform| platform.set_alone(true));
     crabshell_services::set_alone(cx, true);
+    self.ipc.set_alone(true);
     let waiting = self.until_alone.take();
     for (what, f) in waiting {
       self.with_platform(what, f);

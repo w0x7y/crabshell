@@ -126,6 +126,10 @@ pub(crate) struct Ipc<D> {
   pub(crate) open: Cell<usize>,
   /// The listener's source, to turn back on after it backed off.
   listener: Cell<Option<RegistrationToken>>,
+  /// False beside the old shell of a reload, whose socket stays until it
+  /// exits: the first registration's place, binding once alone.
+  alone: Cell<bool>,
+  waiting: Cell<Option<&'static Location<'static>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -162,7 +166,19 @@ impl<D: 'static> Ipc<D> {
       socket: Cell::new(Socket::Unbound),
       open: Cell::new(0),
       listener: Cell::new(None),
+      alone: Cell::new(true),
+      waiting: Cell::new(None),
     })
+  }
+
+  /// Says whether the shell runs alone. Beside the old shell of a reload,
+  /// nothing binds, so a new shell that fails neither takes nor removes
+  /// the old one's socket; going alone binds if a handler is registered.
+  pub(crate) fn set_alone(self: &Rc<Self>, alone: bool) {
+    self.alone.set(alone);
+    if alone && let Some(at) = self.waiting.take() {
+      self.listen(at);
+    }
   }
 
   /// Serves `f` as `target function` while `cx`'s owner lives, binding
@@ -218,7 +234,11 @@ impl<D: 'static> Ipc<D> {
     }
     if let Socket::Unbound = self.socket.get() {
       self.socket.set(Socket::Off);
-      self.listen(at);
+      if self.alone.get() {
+        self.listen(at);
+      } else {
+        self.waiting.set(Some(at));
+      }
     }
   }
 
@@ -250,8 +270,8 @@ impl<D: 'static> Ipc<D> {
     if let Some(dir) = path.parent() {
       persist::private_dir(dir)?;
     }
-    // A reload runs the new shell beside the old one for a moment; with
-    // two shells running at once, the newer one wins.
+    // One a crashed shell left is replaced; with two shells running at
+    // once, the newer one wins.
     match std::fs::remove_file(path) {
       Ok(()) => tracing::info!(path = %path.display(), "replaced the IPC socket that was there"),
       Err(error) if error.kind() == ErrorKind::NotFound => {}

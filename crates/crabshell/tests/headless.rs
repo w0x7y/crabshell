@@ -2302,7 +2302,10 @@ fn notifications_sent_through_a_handoff_all_reach_the_new_shell() {
   std::thread::sleep(Duration::from_millis(300));
   old.write_all(b"handoff\n").expect("told to hand off");
   said(&mut old, b"saved\n");
-  let mut second = ExampleBar::start(&sway, "desktop", true, &env);
+  // As the supervisor starts it: beside the old one until `alone`.
+  let mut beside = env.clone();
+  beside.push(("CRABSHELL_BESIDE", "1"));
+  let mut second = ExampleBar::start(&sway, "desktop", true, &beside);
   let mut new = accept_ready(&listener);
   old.write_all(b"exit\n").expect("told to exit");
   assert_eq!(first.exit_status().and_then(|s| s.code()), Some(0));

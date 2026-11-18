@@ -523,3 +523,28 @@ fn a_replaced_handler_whose_drop_panics_is_logged() {
   assert!(logs.contains("panicked: touchy drop"), "{logs}");
   assert_eq!(server.ask(&call("bar", "hide")), ok("newer"));
 }
+
+/// Beside the old shell of a reload, whose socket stays until it exits,
+/// nothing binds: a new shell that fails neither takes nor removes it.
+/// Going alone binds.
+#[test]
+fn beside_the_old_shell_the_socket_binds_only_once_alone() {
+  let mut failed = server("beside");
+  failed.ipc.set_alone(false);
+  std::fs::create_dir_all(failed.path.parent().expect("a directory")).expect("made");
+  let _old = std::os::unix::net::UnixListener::bind(&failed.path).expect("the old shell's");
+  let inode = std::fs::metadata(&failed.path).expect("its file").ino();
+  failed.register("bar", "toggle", says("toggled"));
+  failed.turn();
+  failed.ipc.remove_socket();
+  let now = std::fs::metadata(&failed.path).expect("still there").ino();
+  assert_eq!(now, inode, "the old shell's socket is left alone");
+
+  let mut new = server("alone");
+  new.ipc.set_alone(false);
+  new.register("bar", "toggle", says("toggled"));
+  new.turn();
+  assert!(!new.path.exists(), "nothing bound beside the old shell");
+  new.ipc.set_alone(true);
+  assert_eq!(new.ask(&call("bar", "toggle")), ok("toggled"));
+}
