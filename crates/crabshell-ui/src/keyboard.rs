@@ -310,6 +310,8 @@ impl Tree {
   fn input_key(&mut self, event: &KeyEvent) -> Option<Typed> {
     let id = self.keyboard.focused?;
     let view = self.page_height(id);
+    // The key changes the field before `update_input` sees it.
+    let before = self.field_before(id);
     let input = match &mut self.node_mut(id)?.kind {
       NodeKind::Input(input) => input,
       NodeKind::Text(text) => return copy_key(text, event).map(Typed::Clipboard),
@@ -362,6 +364,7 @@ impl Tree {
       self.update_input(id, |input| {
         input.refresh();
       });
+      self.field_changed(id, before);
     }
     if let Some(text) = primary {
       self.primary = Some(Clipboard::Copy(text));

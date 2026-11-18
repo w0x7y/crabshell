@@ -414,6 +414,36 @@ fn signals(
       index,
       added,
     } => vec![child(server::path(parent), id, index, added)],
+    AccessEvent::TextChanged {
+      id,
+      start,
+      text,
+      inserted,
+    } => {
+      let detail = if inserted { "insert" } else { "delete" };
+      let offset = |n: usize| i32::try_from(n).unwrap_or(i32::MAX);
+      let length = offset(text.chars().count());
+      let body = (
+        detail,
+        offset(start),
+        length,
+        Variant::from(text),
+        HashMap::new(),
+      );
+      vec![(server::path(id), EVENT_OBJECT, "TextChanged", body)]
+    }
+    AccessEvent::CaretMoved(id, at) => {
+      let at = i32::try_from(at).unwrap_or(i32::MAX);
+      let body = body("", at, Variant::from(0));
+      vec![(server::path(id), EVENT_OBJECT, "TextCaretMoved", body)]
+    }
+    AccessEvent::ValueChanged(id) => match access.node(id).and_then(|node| node.value) {
+      Some(value) => {
+        let body = body("accessible-value", 0, Variant::from(value.current));
+        vec![(server::path(id), EVENT_OBJECT, "PropertyChange", body)]
+      }
+      None => Vec::new(),
+    },
     AccessEvent::WindowsChanged => {
       let now = access.windows();
       let gone = listed

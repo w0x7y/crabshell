@@ -6,16 +6,28 @@ use std::task::Waker;
 
 use super::{Counter, Harness, capture_logs};
 use crate::{
-  AccessEvent, AccessRole, Accessibility, Button, FloatingWindow, Icon, Key, KeyEvent, Lock,
-  Modifiers, Output, Row, SessionLock, Size, Slider, Spacer, Style, Text, TextInput, Window,
+  AccessEvent, AccessRole, AccessText, AccessValue, Accessibility, Button, Column, FloatingWindow,
+  Icon, Key, KeyEvent, Lock, Modifiers, Output, Row, SessionLock, Size, Slider, Spacer, Style,
+  Text, TextArea, TextInput, Window,
 };
 
-fn tab() -> KeyEvent {
+fn key(key: Key) -> KeyEvent {
   KeyEvent {
-    key: Key::Tab,
+    key,
     text: None,
     modifiers: Modifiers::default(),
     repeat: false,
+  }
+}
+
+fn tab() -> KeyEvent {
+  key(Key::Tab)
+}
+
+fn typed(text: &str) -> KeyEvent {
+  KeyEvent {
+    text: Some(text.to_owned()),
+    ..key(Key::Character(text.chars().next().unwrap_or(' ')))
   }
 }
 
@@ -461,4 +473,235 @@ fn a_panicking_accessible_name_is_logged_with_its_path() {
     ),
     "{logs}"
   );
+}
+
+/// A window's widgets in a column, as a screen reader finds them.
+fn widgets(access: &Accessibility) -> Vec<crate::AccessId> {
+  let root = access.node(access.windows()[0]).expect("the window");
+  access.node(root.children[0]).expect("the column").children
+}
+
+#[test]
+fn a_field_reads_its_text_and_caret_and_a_password_only_its_length() {
+  let (mut harness, access) = harness();
+  let panel = harness.panel().child(
+    Column::new()
+      .child(TextInput::new(harness.cx.signal("héllo wörld".to_owned())))
+      .child(TextInput::new(harness.cx.signal("s3cret".to_owned())).password(true))
+      .child(TextArea::new(harness.cx.signal("one\ntwo".to_owned()))),
+  );
+  let _window = harness.window(panel, 300.0, 200.0);
+  let [field, password, area] = widgets(&access)[..] else {
+    panic!("three widgets");
+  };
+  let field = access
+    .node(field)
+    .expect("the field")
+    .text
+    .expect("its text");
+  assert_eq!(
+    field,
+    AccessText {
+      text: "héllo wörld".to_owned(),
+      caret: 11,
+      selection: None,
+    }
+  );
+  assert_eq!(field.segment(2, 1), Some((0, 5)), "a word");
+  assert_eq!(
+    field.segment(11, 0),
+    Some((11, 11)),
+    "no character past the end"
+  );
+  assert_eq!(field.segment(11, 3), Some((0, 11)), "the line at the end");
+  assert_eq!(field.segment(0, 9), None);
+  let password = access.node(password).expect("the password");
+  assert_eq!(password.role, AccessRole::PasswordText);
+  let dots = password.text.expect("its length");
+  assert_eq!((dots.text.as_str(), dots.caret), ("••••••", 6));
+  let area = access.node(area).expect("the area").text.expect("its text");
+  assert_eq!(area.segment(5, 3), Some((4, 7)), "the second line");
+  assert_eq!(
+    area.segment(1, 3),
+    Some((0, 4)),
+    "the first, with its break"
+  );
+}
+
+#[test]
+fn typing_moving_and_setting_a_field_are_heard_and_a_password_as_dots() {
+  let (mut harness, access) = harness();
+  let text = harness.cx.signal("hello".to_owned());
+  let panel = harness.panel().child(
+    Column::new()
+      .child(TextInput::new(text))
+      .child(TextInput::new(harness.cx.signal(String::new())).password(true)),
+  );
+  let window = harness.window(panel, 300.0, 100.0);
+  let [field, password] = widgets(&access)[..] else {
+    panic!("two widgets");
+  };
+  window.keyboard_enter();
+  window.key(&tab());
+  window.key(&typed("x"));
+  assert!(take(&access).is_empty(), "kept while nobody listens");
+  access.listen(true);
+  window.key(&typed("y"));
+  let inserted = |start, text: &str| AccessEvent::TextChanged {
+    id: field,
+    start,
+    text: text.to_owned(),
+    inserted: true,
+  };
+  assert_eq!(
+    take(&access),
+    [inserted(6, "y"), AccessEvent::CaretMoved(field, 7)]
+  );
+  window.key(&key(Key::Backspace));
+  assert_eq!(
+    take(&access),
+    [
+      AccessEvent::TextChanged {
+        id: field,
+        start: 6,
+        text: "y".to_owned(),
+        inserted: false,
+      },
+      AccessEvent::CaretMoved(field, 6)
+    ]
+  );
+  window.key(&key(Key::Left));
+  assert_eq!(take(&access), [AccessEvent::CaretMoved(field, 5)]);
+  harness.frame(&window);
+  take(&access);
+  // From outside, the text is replaced; the caret goes to its end.
+  text.set("help".to_owned());
+  harness.frame(&window);
+  assert_eq!(
+    take(&access),
+    [
+      AccessEvent::TextChanged {
+        id: field,
+        start: 3,
+        text: "lox".to_owned(),
+        inserted: false,
+      },
+      inserted(3, "p"),
+      AccessEvent::CaretMoved(field, 4)
+    ]
+  );
+  window.key(&tab());
+  take(&access);
+  window.key(&typed("z"));
+  assert_eq!(
+    take(&access),
+    [
+      AccessEvent::TextChanged {
+        id: password,
+        start: 0,
+        text: "•".to_owned(),
+        inserted: true,
+      },
+      AccessEvent::CaretMoved(password, 1)
+    ]
+  );
+  // A field without the focus has no caret to follow.
+  text.set("hi".to_owned());
+  harness.frame(&window);
+  assert_eq!(
+    take(&access),
+    [
+      AccessEvent::TextChanged {
+        id: field,
+        start: 1,
+        text: "elp".to_owned(),
+        inserted: false,
+      },
+      inserted(1, "i")
+    ]
+  );
+}
+
+#[test]
+fn a_slider_reads_and_writes_its_value_and_refuses_when_off() {
+  let (mut harness, access) = harness();
+  let value = harness.cx.signal(4.0);
+  let on = harness.cx.signal(true);
+  let panel = harness.panel().child(
+    Column::new().child(
+      Slider::new(value)
+        .range(0.0, 10.0)
+        .step(2.0)
+        .enabled(move || on.get()),
+    ),
+  );
+  let window = harness.window(panel, 300.0, 100.0);
+  let slider = widgets(&access)[0];
+  let read = |access: &Accessibility| access.node(slider).expect("the slider").value;
+  assert_eq!(
+    read(&access),
+    Some(AccessValue {
+      min: 0.0,
+      max: 10.0,
+      current: 4.0,
+      increment: 2.0,
+    })
+  );
+  access.listen(true);
+  assert!(access.set_value(slider, 7.3), "on a step");
+  harness.frame(&window);
+  assert_eq!(value.get_untracked(), 8.0);
+  assert_eq!(take(&access), [AccessEvent::ValueChanged(slider)]);
+  assert!(access.set_value(slider, 50.0), "within the range");
+  assert!(!access.set_value(slider, f64::NAN));
+  harness.frame(&window);
+  assert_eq!(value.get_untracked(), 10.0);
+  assert!(!access.set_value(access.windows()[0], 1.0), "not a slider");
+  on.set(false);
+  harness.frame(&window);
+  take(&access);
+  let node = access.node(slider).expect("the slider");
+  assert!(!node.enabled && !node.focusable);
+  assert!(!access.set_value(slider, 2.0), "a slider that is off");
+  harness.frame(&window);
+  assert_eq!(value.get_untracked(), 10.0);
+  assert!(take(&access).is_empty());
+}
+
+#[test]
+fn a_panicking_slider_range_read_by_a_screen_reader_is_logged() {
+  let (mut harness, access) = harness();
+  let boom = harness.cx.signal(false);
+  let panel = harness.panel().child(
+    Column::new()
+      .child(Slider::new(harness.cx.signal(4.0)).range(0.0, move || {
+        if boom.get() {
+          panic!("no end");
+        }
+        10.0
+      }))
+      .child(Slider::new(harness.cx.signal(4.0)).range(2.0, || -> f32 { panic!("never") })),
+  );
+  let window = harness.window(panel, 300.0, 100.0);
+  let [slider, never] = widgets(&access)[..] else {
+    panic!("two sliders");
+  };
+  // One whose end never had a value holds only its start.
+  let value = access
+    .node(never)
+    .expect("the slider")
+    .value
+    .expect("its value");
+  assert_eq!((value.min, value.max, value.current), (2.0, 2.0, 2.0));
+  boom.set(true);
+  let logs = capture_logs(|| {
+    let value = access.node(slider).expect("the slider").value;
+    assert_eq!(value.map(|value| value.max), Some(10.0), "the last end");
+  });
+  assert!(
+    logs.contains("in PanelWindow[DP-1]/Column/Slider[0] panicked and is disabled: no end"),
+    "{logs}"
+  );
+  harness.frame(&window);
+  assert!(access.set_value(slider, 3.0));
 }

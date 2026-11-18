@@ -235,6 +235,8 @@ pub(crate) struct ButtonProps {
   pub(crate) drag_data: Option<Prop<Option<DragValue>>>,
   pub(crate) drop_hovered: Option<Signal<bool>>,
   pub(crate) handlers: Handlers,
+  /// Set by a slider on its body, for a screen reader.
+  pub(crate) value: Option<crate::slider::Range>,
 }
 
 /// How a [`Row`] or [`Column`] places children across its direction: up and
@@ -1076,7 +1078,7 @@ impl Widget for Icon {
 /// on the main thread and receive the button's [`Cx`]. A handler that panics
 /// is logged and never called again.
 pub struct Button {
-  button: ButtonProps,
+  pub(crate) button: ButtonProps,
   common: Common,
   child: Box<dyn Widget>,
 }
@@ -1098,6 +1100,7 @@ impl Button {
         drag_data: None,
         drop_hovered: None,
         handlers: Handlers::default(),
+        value: None,
       },
       common: Common::default(),
     }

@@ -180,8 +180,8 @@ impl Widget for Slider {
 
 /// Where a slider is and how it moves, shared by its handlers.
 #[derive(Clone, Copy)]
-struct Range {
-  value: Signal<f32>,
+pub(crate) struct Range {
+  pub(crate) value: Signal<f32>,
   min: Memo<f32>,
   max: Memo<f32>,
   step: Memo<f32>,
@@ -189,11 +189,25 @@ struct Range {
 
 impl Range {
   /// The start and end, the end never below the start. A bound that
-  /// isn't a number is 0.
+  /// isn't a number, or whose closure panicked first, is 0.
   fn bounds(self) -> (f32, f32) {
-    let number = |n: f32| if n.is_nan() { 0.0 } else { n };
-    let min = number(self.min.get());
-    (min, number(self.max.get()).max(min))
+    let number = |n: Option<f32>| n.filter(|n| !n.is_nan()).unwrap_or(0.0);
+    let min = number(self.min.try_get());
+    (min, number(self.max.try_get()).max(min))
+  }
+
+  /// The range and value as a screen reader reads them, the value within
+  /// the range.
+  pub(crate) fn access(self) -> crate::access::AccessValue {
+    untrack(|| {
+      let (min, max) = self.bounds();
+      crate::access::AccessValue {
+        min: f64::from(min),
+        max: f64::from(max),
+        current: f64::from(self.now().clamp(min, max)),
+        increment: f64::from(self.unit()),
+      }
+    })
   }
 
   /// How far along the value is, from 0 to 1.
@@ -227,7 +241,7 @@ impl Range {
   }
 
   /// Writes `value`, within the range and on a step, if that changes it.
-  fn write(self, value: f32) {
+  pub(crate) fn write(self, value: f32) {
     untrack(|| {
       let (min, max) = self.bounds();
       let mut value = if value.is_nan() { min } else { value };
@@ -370,6 +384,7 @@ fn build(cx: &Cx, props: SliderProps) -> Button {
   if let Some(enabled) = enabled {
     button = button.enabled(enabled);
   }
+  button.button.value = Some(range);
   button
 }
 

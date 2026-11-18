@@ -96,7 +96,9 @@ mod window;
 mod tests;
 
 #[doc(hidden)]
-pub use access::{AccessEvent, AccessId, AccessNode, AccessRole, Accessibility};
+pub use access::{
+  AccessEvent, AccessId, AccessNode, AccessRole, AccessText, AccessValue, Accessibility,
+};
 pub use animation::{
   Animate, Animation, Easing, Spring, Transition, advance_animations, animating,
 };

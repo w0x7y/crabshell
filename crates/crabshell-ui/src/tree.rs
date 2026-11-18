@@ -364,6 +364,8 @@ pub(crate) struct ButtonNode {
   pub(crate) drag_data: Option<Signal<Option<DragValue>>>,
   /// Written while a drag it would take a drop from is over it.
   pub(crate) drop_hovered: Option<Signal<bool>>,
+  /// The range of the slider it is the body of.
+  pub(crate) value: Option<crate::slider::Range>,
   /// Off, the pointer passes through it and Tab skips it.
   pub(crate) enabled: bool,
   /// The cursor over it.
@@ -897,6 +899,7 @@ impl Tree {
           .take()
           .map(|data| drag_data_signal(&cx, &path, data)),
         drop_hovered: props.drop_hovered,
+        value: props.value,
         enabled: true,
         cursor: CursorShape::Pointer,
         long_press: None,
@@ -1139,6 +1142,12 @@ impl Tree {
             button.cursor = value;
           }
         });
+        if let Some(range) = props.value {
+          let value = move || range.value.try_get();
+          self.bind(id, value.into_prop(), "value", |tree, id, _| {
+            tree.node_event(id, crate::AccessEvent::ValueChanged);
+          });
+        }
         // Before `focus`, so a button made disabled never takes it.
         if let Some(enabled) = props.enabled {
           self.bind_enabled(id, enabled);
@@ -1546,6 +1555,7 @@ impl Tree {
   /// Changes a field; anything about it may move the caret, so it is laid
   /// out again, and a focused one's caret is shown.
   pub(crate) fn update_input(&mut self, id: NodeId, f: impl FnOnce(&mut InputNode)) {
+    let before = self.field_before(id);
     let change = self.update(id, |node| match &mut node.kind {
       NodeKind::Input(input) => {
         f(input);
@@ -1556,6 +1566,7 @@ impl Tree {
     if change == Change::Layout && self.keyboard.focused == Some(id) {
       self.reveal = Some(id);
     }
+    self.field_changed(id, before);
   }
 
   pub(crate) fn update_image(&mut self, id: NodeId, f: impl FnOnce(&mut ImageNode) -> Change) {

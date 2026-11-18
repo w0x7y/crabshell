@@ -7,7 +7,10 @@ use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 use std::task::Waker;
 
+use unicode_segmentation::UnicodeSegmentation;
+
 use crate::geometry::Rect;
+use crate::slider::Range;
 use crate::tree::{NodeId, NodeKind, Tree};
 
 /// Every window's tree, for a screen reader. The shell provides one in
@@ -77,11 +80,67 @@ pub struct AccessNode {
   pub multi_line: bool,
   /// It clicks, as a button does.
   pub clickable: bool,
+  /// A field's text, caret and selection.
+  pub text: Option<AccessText>,
+  /// A slider's value.
+  pub value: Option<AccessValue>,
+}
+
+/// A field's text as a screen reader reads it: a password's is one dot a
+/// character, so only its length shows. Offsets count characters.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AccessText {
+  pub text: String,
+  pub caret: usize,
+  /// The selected characters, start first.
+  pub selection: Option<(usize, usize)>,
+}
+
+impl AccessText {
+  /// The character offsets of the character, word, sentence, or line or
+  /// paragraph around character `at`, by AT-SPI's granularity from 0 to
+  /// 4; at the end, the last one, or nothing for a character.
+  pub fn segment(&self, at: usize, granularity: u32) -> Option<(usize, usize)> {
+    let text = self.text.as_str();
+    let pieces: Vec<&str> = match granularity {
+      0 => text.split_inclusive(|_| true).collect(),
+      1 => text.split_word_bounds().collect(),
+      2 => text.split_sentence_bounds().collect(),
+      3 | 4 => text.split_inclusive('\n').collect(),
+      _ => return None,
+    };
+    let mut start = 0;
+    let mut last = (0, 0);
+    for piece in pieces {
+      let end = start + piece.chars().count();
+      if at < end {
+        return Some((start, end));
+      }
+      last = (start, end);
+      start = end;
+    }
+    Some(if granularity == 0 {
+      (start, start)
+    } else {
+      last
+    })
+  }
+}
+
+/// A slider's range and value. `increment` is what a key moves it by.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AccessValue {
+  pub min: f64,
+  pub max: f64,
+  pub current: f64,
+  pub increment: f64,
 }
 
 /// A change a screen reader hears of.
 #[doc(hidden)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AccessEvent {
   /// A widget shows the keyboard focus, or stops.
   Focused(AccessId, bool),
@@ -102,6 +161,18 @@ pub enum AccessEvent {
   /// A window opened, closed, showed or hid, or a lock came or went, so
   /// [`Accessibility::windows`] may list others.
   WindowsChanged,
+  /// A field's `text` inserted at character `start`, or deleted from
+  /// there; a password's as its dots.
+  TextChanged {
+    id: AccessId,
+    start: usize,
+    text: String,
+    inserted: bool,
+  },
+  /// The focused field's caret moved to this character.
+  CaretMoved(AccessId, usize),
+  /// A slider's value changed.
+  ValueChanged(AccessId),
 }
 
 impl Accessibility {
@@ -215,39 +286,79 @@ impl Accessibility {
     let role = role(&tree, node_id);
     let focused = tree.keyboard.entered
       && tree.keyboard.focused.map(|focused| exposed(&tree, focused)) == Some(node_id);
-    let (enabled, clickable) = match &node.kind {
-      NodeKind::Button(button) => (button.enabled, button.enabled),
+    let slider = (role == AccessRole::Slider)
+      .then(|| slider_button(&tree, node_id))
+      .flatten();
+    let (enabled, clickable) = match (&node.kind, slider) {
+      (_, Some((enabled, _))) => (enabled, false),
+      (NodeKind::Button(button), None) => (button.enabled, button.enabled),
       _ => (true, false),
     };
-    let (editable, multi_line) = match &node.kind {
-      NodeKind::Input(input) => (true, input.edit.multiline),
-      _ => (false, false),
+    let (editable, multi_line, text) = match &node.kind {
+      NodeKind::Input(input) => (true, input.edit.multiline, Some(input.access_text())),
+      _ => (false, false, None),
     };
     let focusable = match role {
-      AccessRole::Button => enabled,
-      AccessRole::Entry | AccessRole::PasswordText | AccessRole::Slider => true,
+      AccessRole::Button | AccessRole::Slider => enabled,
+      AccessRole::Entry | AccessRole::PasswordText => true,
       _ => false,
     };
     let children = match role {
       AccessRole::Slider => Vec::new(),
       _ => exposed_children(&tree, node_id),
     };
+    let name = name(&tree, node_id);
+    let rect = node.rect.unwrap_or_default();
+    let (children, shown, active) = (
+      children.into_iter().map(at).collect(),
+      tree.shown(node_id),
+      is_root && tree.keyboard.entered,
+    );
+    // Read with the tree released: a dirty range runs the config's closure.
+    drop(tree);
+    let value = slider.and_then(|(_, range)| range).map(Range::access);
     Some(AccessNode {
       role,
-      name: name(&tree, node_id),
+      name,
       parent,
-      children: children.into_iter().map(at).collect(),
+      children,
       index,
-      rect: node.rect.unwrap_or_default(),
+      rect,
       focusable,
       focused,
       enabled,
-      shown: tree.shown(node_id),
-      active: is_root && tree.keyboard.entered,
+      shown,
+      active,
       editable,
       multi_line,
       clickable,
+      text,
+      value,
     })
+  }
+
+  /// Writes `value` to slider `id`, within its range and on a step, as a
+  /// drag does, and says whether it was a shown, enabled slider.
+  pub fn set_value(&self, id: AccessId, value: f64) -> bool {
+    let Some(rc) = self.tree(id.window).filter(|_| !value.is_nan()) else {
+      return false;
+    };
+    let range = {
+      let Ok(tree) = rc.try_borrow() else {
+        return false;
+      };
+      let node_id = NodeId::from(id.node);
+      if role(&tree, node_id) != AccessRole::Slider || !tree.shown(node_id) {
+        return false;
+      }
+      match slider_button(&tree, node_id) {
+        Some((true, Some(range))) => range,
+        _ => return false,
+      }
+    };
+    drop(rc);
+    range.write(value as f32);
+    true
   }
 
   /// Clicks button `id`, as Enter on it does, and says whether it was a
@@ -313,6 +424,52 @@ impl Tree {
       .is_some_and(|(access, _)| access.listening())
   }
 
+  /// Field `id`'s text and caret before a change, while a screen reader
+  /// listens and has seen it.
+  pub(crate) fn field_before(&self, id: NodeId) -> Option<AccessText> {
+    match &self.node(id)?.kind {
+      NodeKind::Input(input) if self.listening() && self.node(id)?.rect.is_some() => {
+        Some(input.access_text())
+      }
+      _ => None,
+    }
+  }
+
+  /// Tells a screen reader what field `id` lost and gained since
+  /// `before`, and where its caret went if it has the focus.
+  pub(crate) fn field_changed(&self, id: NodeId, before: Option<AccessText>) {
+    let (Some(before), Some(NodeKind::Input(input))) = (before, self.node(id).map(|n| &n.kind))
+    else {
+      return;
+    };
+    let after = input.access_text();
+    let (old, new): (Vec<char>, Vec<char>) =
+      (before.text.chars().collect(), after.text.chars().collect());
+    let start = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+    let end = old[start..]
+      .iter()
+      .rev()
+      .zip(new[start..].iter().rev())
+      .take_while(|(a, b)| a == b)
+      .count();
+    let changes = [
+      (&old[start..old.len() - end], false),
+      (&new[start..new.len() - end], true),
+    ];
+    for (text, inserted) in changes.into_iter().filter(|(text, _)| !text.is_empty()) {
+      let text = text.iter().collect();
+      self.access_event(|window| AccessEvent::TextChanged {
+        id: self.access_id(window, id),
+        start,
+        text,
+        inserted,
+      });
+    }
+    if after.caret != before.caret && self.keyboard.focused == Some(id) {
+      self.access_event(|window| AccessEvent::CaretMoved(self.access_id(window, id), after.caret));
+    }
+  }
+
   /// Text `id` changed, which renames it and the button around it.
   pub(crate) fn text_renamed(&self, id: NodeId) {
     if !self.listening() {
@@ -360,6 +517,19 @@ fn exposed(tree: &Tree, id: NodeId) -> NodeId {
     at = tree.taffy.parent(current);
   }
   found
+}
+
+/// Whether slider `id`'s button is on, and the range it moves.
+fn slider_button(tree: &Tree, id: NodeId) -> Option<(bool, Option<Range>)> {
+  tree
+    .taffy
+    .children(id)
+    .ok()?
+    .into_iter()
+    .find_map(|child| match &tree.node(child)?.kind {
+      NodeKind::Button(button) => Some((button.enabled, button.value)),
+      _ => None,
+    })
 }
 
 /// The children of `id`, in Tab order, hidden ones too: their state

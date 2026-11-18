@@ -346,6 +346,27 @@ impl InputNode {
     }
   }
 
+  /// What a screen reader reads of the field: its text, or a password's
+  /// dots, with the caret and selection in characters of that.
+  pub(crate) fn access_text(&self) -> crate::access::AccessText {
+    let text = &self.edit.text;
+    let at = |byte: usize| match self.password {
+      true => graphemes_before(text, byte),
+      false => text[..byte].chars().count(),
+    };
+    crate::access::AccessText {
+      text: match self.password {
+        true => DOT.to_string().repeat(at(text.len())),
+        false => text.clone(),
+      },
+      caret: at(self.edit.cursor),
+      selection: self
+        .edit
+        .selection()
+        .map(|range| (at(range.start), at(range.end))),
+    }
+  }
+
   /// Whether the placeholder is what shows.
   pub(crate) fn showing_placeholder(&self) -> bool {
     self.edit.text.is_empty() && self.preedit.is_none()

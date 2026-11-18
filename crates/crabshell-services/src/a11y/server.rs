@@ -56,7 +56,8 @@ pub(super) fn reference(name: &str, path: String) -> Reference {
 /// What a path names: the application, or a widget as it is now.
 enum Object {
   App,
-  Node(AccessId, AccessNode),
+  // Boxed: a node is far larger than the application.
+  Node(AccessId, Box<AccessNode>),
 }
 
 fn object(access: &Accessibility, path: &str) -> Option<Object> {
@@ -68,7 +69,7 @@ fn object(access: &Accessibility, path: &str) -> Option<Object> {
     window: window.parse().ok()?,
     node: node.parse().ok()?,
   };
-  Some(Object::Node(id, access.node(id)?))
+  Some(Object::Node(id, Box::new(access.node(id)?)))
 }
 
 /// AT-SPI's number and name for a role.
@@ -215,7 +216,7 @@ fn reply(
   let reply = Message::method_return(header);
   let body = call.body();
   let node = match &object {
-    Object::Node(id, node) => Some((*id, node)),
+    Object::Node(id, node) => Some((*id, &**node)),
     Object::App => None,
   };
   match (interface, member) {
