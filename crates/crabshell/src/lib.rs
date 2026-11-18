@@ -110,6 +110,7 @@ pub mod prelude {
     WifiNetwork, WifiSecurity, Workspace,
   };
   pub use crabshell_services::{Backlight, Brightness, Logind};
+  pub use crabshell_services::{PipeWire, PwLink, PwLinkGroup, PwLinkState, PwNode};
   pub use crabshell_ui::{
     Adjust, Align, Anchors, Animate, Animation, Border, Button, Canvas, Cap, CaptureSource, Color,
     Column, CursorShape, Cx, Drag, DragContent, DragPhase, Easing, Edge, Elide, Fit,

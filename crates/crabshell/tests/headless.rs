@@ -881,6 +881,50 @@ fn measure_the_counter_bar() {
     measure_without_idle(&bundled)
   );
   drop(bundled);
+  // Then the counter bar following PipeWire's graph over the native
+  // protocol, against one following the default sink through libpulse,
+  // on one private server, run as this test binary as above.
+  let server = PrivateServer::start("measure-graph");
+  let socket = server.pipewire_socket();
+  let runtime = socket.parent().expect("the runtime directory");
+  let runtime = runtime.display().to_string();
+  for (child, connected, what) in [
+    (
+      "pipewire counter",
+      "the graph has",
+      "following PipeWire's graph natively",
+    ),
+    (
+      "audio counter",
+      "the default sink is",
+      "following the default sink through libpulse",
+    ),
+  ] {
+    let env = [
+      (CHILD, child),
+      ("PIPEWIRE_RUNTIME_DIR", runtime.as_str()),
+      ("PULSE_SERVER", &server.address()),
+    ];
+    let bar = ExampleBar::spawn(&sway, this_as_shell("measure_the_counter_bar"), &env);
+    // Its service may connect before the first frame or after it.
+    let (mut first_frame_ms, mut seen) = (None, false);
+    while first_frame_ms.is_none() || !seen {
+      let line = bar.wait_for("");
+      seen |= line.contains(connected);
+      if line.contains(FIRST_FRAME) {
+        first_frame_ms = Some(ms_after(&line, FIRST_FRAME));
+      }
+    }
+    std::thread::sleep(Duration::from_secs(60));
+    let rss = bar.rss_kib();
+    report += &format!(
+      "counter bar {what}, run from {build}, one 1920x1080 headless output at scale 1: \
+       first frame {:.1} ms after run(), RSS {rss} KiB ({:.1} MiB) after 60 s\n",
+      first_frame_ms.expect("seen above"),
+      rss as f64 / 1024.0
+    );
+  }
+  drop(server);
   // Then the v0.1 bar, on workspace 1, then switching between 1 and 2. Its
   // tray runs the watcher on a private session bus.
   let server = PrivateServer::start("measure");
@@ -1707,6 +1751,26 @@ fn run_as_child() {
     Ok("notes") => crabshell::run(|cx| notes::shell(cx, |_, _| panic!("no browser"))),
     // The counter bar in a font bundled from bytes, as `include_bytes!`
     // gives them: fontconfig never starts.
+    // The counter bar with a service connected, for its RSS.
+    Ok("pipewire counter") => crabshell::run(|cx| {
+      let nodes = cx.pipewire().nodes();
+      cx.effect(move || {
+        let count = nodes.with(Vec::len);
+        if count > 0 {
+          eprintln!("the graph has {count} nodes");
+        }
+      });
+      cx.per_output(counter::bar);
+    }),
+    Ok("audio counter") => crabshell::run(|cx| {
+      let sink = cx.audio().default_sink();
+      cx.effect(move || {
+        if let Some(sink) = sink.get() {
+          eprintln!("the default sink is {}", sink.name);
+        }
+      });
+      cx.per_output(counter::bar);
+    }),
     Ok("bundled counter") => crabshell::run(|cx| {
       let bytes = std::fs::read(BUNDLED_FONT).expect("DejaVu Sans is installed");
       cx.add_font(Box::leak(bytes.into_boxed_slice()));
