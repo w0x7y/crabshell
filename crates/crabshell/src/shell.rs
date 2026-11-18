@@ -105,6 +105,7 @@ pub fn run(root: impl FnOnce(&Cx)) -> ! {
     shell.follow_supervisor(stream, file);
   }
   shell.follow_signals();
+  shell.accessibility = true;
   shell.run()
 }
 
@@ -170,6 +171,9 @@ pub struct Shell {
   control: Option<UnixStream>,
   /// Whether the config showed anything at startup.
   pub(crate) startup: Startup,
+  /// Follow the accessibility status once the first frame is shown, so
+  /// the session bus never delays it.
+  accessibility: bool,
   cx: Cx,
 }
 
@@ -234,6 +238,8 @@ impl Shell {
     cx.provide(event_loop.platform().text_system().clone());
     // `cx.icon_path` finds icons as windows draw them.
     cx.provide(event_loop.platform().icon_lookup());
+    // Every window registers its tree, for a screen reader to read.
+    cx.provide(crabshell_ui::Accessibility::default());
     let state = Rc::new(RefCell::new(PerOutput::new()));
     let outputs = cx.signal(event_loop.platform().outputs().cloned().collect::<Vec<_>>());
     cx.provide(Service {
@@ -281,6 +287,7 @@ impl Shell {
       switches: SwitchLog::default(),
       control: None,
       startup: Startup::Waiting,
+      accessibility: false,
       cx,
     };
     if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| root(&shell.cx))) {
@@ -311,6 +318,9 @@ impl Shell {
         "first frame committed {:.1} ms after the shell started",
         elapsed.as_secs_f64() * 1000.0
       );
+      if self.accessibility {
+        crabshell_services::follow_accessibility(&self.cx);
+      }
     }
     self.judge_startup();
     self.log_switch(commits);
