@@ -7,10 +7,13 @@ use std::time::{Duration, Instant};
 
 use crabshell_reactive::Runtime;
 
-use super::pod::{self, Bad, Builder, Fields, HEADER, Pod};
-use super::{PipeWire, PwLink, PwLinkGroup, PwLinkState, PwNode};
-use crate::testing::{Harness, offline};
+use super::pod::{self, Bad, Builder, Fields, HEADER, MAX_MESSAGE, Pod};
+use super::{MAX_OBJECTS, PipeWire, PwLink, PwLinkGroup, PwLinkState, PwNode};
+use crate::hyprland::MAX_TEXT;
+use crate::testing::{Harness, capture_logs, offline};
 use crate::{Config, ServicesExt};
+
+mod real;
 
 /// A POD of `kind` holding `body`, padded to 8, as PipeWire writes it.
 fn raw(kind: u32, body: &[u8]) -> Vec<u8> {
@@ -211,6 +214,11 @@ struct Peer {
   requests: Vec<(u32, u8)>,
   binds: Vec<u32>,
   pongs: Vec<i32>,
+  /// Whether to read nothing, as a stuck server.
+  deaf: bool,
+  /// Whether to answer binds with nothing, so only the shell's own
+  /// writes are left for it to wait on.
+  mute: bool,
 }
 
 impl Peer {
@@ -227,6 +235,8 @@ impl Peer {
       requests: Vec::new(),
       binds: Vec::new(),
       pongs: Vec::new(),
+      deaf: false,
+      mute: false,
     }
   }
 
@@ -251,6 +261,9 @@ impl Peer {
   /// Reads and answers what the shell sent.
   fn pump(&mut self) {
     self.flush();
+    if self.deaf {
+      return;
+    }
     let mut chunk = [0; 64 * 1024];
     loop {
       match self.stream.read(&mut chunk) {
@@ -301,7 +314,9 @@ impl Peer {
         let proxy = fields.uint().unwrap();
         self.binds.push(proxy);
         self.bound.insert(proxy, global);
-        self.info(proxy);
+        if !self.mute {
+          self.info(proxy);
+        }
       }
       _ => {}
     }
@@ -625,4 +640,223 @@ fn a_program_s_captured_video_source_is_a_screencast() {
   peer.remove(71);
   run(&mut shell, &mut peer);
   assert!(pipewire.screencasts().get_untracked().is_empty());
+}
+
+#[test]
+fn past_the_object_cap_globals_are_skipped_and_held_back_binds_still_go() {
+  let fake = FakePipeWire::new();
+  let mut shell = Harness::new(fake.config());
+  let pipewire = shell.cx.pipewire();
+  let mut peer = fake.accept().expect("the shell connected");
+  for id in 0..MAX_OBJECTS as u32 + 2 {
+    peer.link(1000 + id, (1, 1), (2, 2), 4);
+  }
+  let logs = capture_logs(|| {
+    // More binds than the socket holds: the registry is answered, then
+    // nothing is read until the shell has queued them all, and nothing
+    // comes back to read after.
+    peer.pump();
+    (peer.deaf, peer.mute) = (true, true);
+    run_for(&mut shell, &mut peer, Duration::from_millis(300));
+    peer.deaf = false;
+    let give_up = Instant::now() + Duration::from_secs(10);
+    while peer.binds.len() < MAX_OBJECTS {
+      assert!(Instant::now() < give_up, "not every bind after 10 s");
+      run(&mut shell, &mut peer);
+    }
+    peer.mute = false;
+    for id in 0..MAX_OBJECTS as u32 {
+      peer.set_state(1000 + id, 4);
+    }
+    while pipewire.links().get_untracked().len() < MAX_OBJECTS {
+      assert!(Instant::now() < give_up, "not every link after 10 s");
+      run(&mut shell, &mut peer);
+    }
+  });
+  assert_eq!(
+    logs.matches("more nodes and links than").count(),
+    1,
+    "{logs}"
+  );
+  assert_eq!(
+    peer.binds.len(),
+    MAX_OBJECTS,
+    "a bind each, past a full socket"
+  );
+  assert_eq!(pipewire.link_groups().get_untracked().len(), 1);
+}
+
+#[test]
+fn long_texts_are_cut_at_a_character() {
+  let fake = FakePipeWire::new();
+  let long = "é".repeat(MAX_TEXT);
+  let (_shell, pipewire, _peer) = connect(&fake, |peer| {
+    peer.node(30, &[("node.name", &long), ("media.class", "Audio/Sink")]);
+  });
+  let nodes = pipewire.nodes().get_untracked();
+  assert_eq!(nodes[0].name.len(), MAX_TEXT);
+  assert_eq!(
+    nodes[0].description, nodes[0].name,
+    "the name, as no description came"
+  );
+}
+
+#[test]
+fn a_bad_message_is_logged_and_the_rest_read() {
+  let fake = FakePipeWire::new();
+  let (mut shell, pipewire, mut peer) = connect(&fake, graph);
+  let logs = capture_logs(|| {
+    peer.set_state(50, 9);
+    peer.send(2, 0, &int(1));
+    peer.set_state(51, 3);
+    run(&mut shell, &mut peer);
+  });
+  assert!(
+    logs.contains("a link state PipeWire doesn't have"),
+    "{logs}"
+  );
+  assert!(logs.contains("a message that isn't a struct"), "{logs}");
+  let states: Vec<_> = (pipewire.links().get_untracked().iter())
+    .map(|link| link.state)
+    .collect();
+  assert_eq!(
+    states,
+    [
+      PwLinkState::Active,
+      PwLinkState::Paused,
+      PwLinkState::Paused
+    ]
+  );
+}
+
+#[test]
+fn a_message_over_the_cap_loses_the_connection_for_good() {
+  let fake = FakePipeWire::new();
+  let (mut shell, pipewire, mut peer) = connect(&fake, graph);
+  let logs = capture_logs(|| {
+    let header = [2u32, MAX_MESSAGE as u32 + 1, 0, 0];
+    let header: Vec<u8> = header.iter().flat_map(|word| word.to_ne_bytes()).collect();
+    peer.stream.write_all(&header).expect("a header");
+    run(&mut shell, &mut peer);
+  });
+  assert!(logs.contains("a message over 1 MiB"), "{logs}");
+  assert!(pipewire.nodes().get_untracked().is_empty());
+  assert!(fake.accept().is_none(), "nothing reconnects");
+}
+
+#[test]
+fn a_closed_connection_is_made_again_once() {
+  let fake = FakePipeWire::new();
+  let (mut shell, pipewire, mut peer) = connect(&fake, graph);
+  // Something past the graph, so the close is worth a reconnect.
+  peer.set_state(51, 4);
+  run(&mut shell, &mut peer);
+  drop(peer);
+  shell.run_until(Instant::now() + Duration::from_millis(50));
+  let mut again = fake.accept().expect("connected again");
+  assert_eq!(pipewire.nodes().get_untracked().len(), 3, "kept meanwhile");
+  again.node(33, &[("node.name", "new"), ("media.class", "Audio/Sink")]);
+  run(&mut shell, &mut again);
+  let ids: Vec<_> = (pipewire.nodes().get_untracked().iter())
+    .map(|node| node.id)
+    .collect();
+  assert_eq!(ids, [33], "the new graph replaced the old");
+  // Past the graph again, so the next close is worth a reconnect too.
+  again.node(34, &[("node.name", "later"), ("media.class", "Audio/Sink")]);
+  run(&mut shell, &mut again);
+  drop(again);
+  shell.run_until(Instant::now() + Duration::from_millis(50));
+  let mut third = fake.accept().expect("connected again");
+  run(&mut shell, &mut third);
+  // Closed again before anything past the graph: lost.
+  drop(third);
+  let logs = capture_logs(|| {
+    shell.run_until(Instant::now() + Duration::from_millis(50));
+  });
+  assert!(logs.contains("lost PipeWire"), "{logs}");
+  assert!(fake.accept().is_none(), "nothing reconnects");
+  assert!(pipewire.nodes().get_untracked().is_empty());
+}
+
+#[test]
+fn a_connection_whose_socket_went_is_lost() {
+  let fake = FakePipeWire::new();
+  let (mut shell, pipewire, mut peer) = connect(&fake, graph);
+  peer.set_state(51, 4);
+  run(&mut shell, &mut peer);
+  std::fs::remove_file(fake.dir.join("pipewire-0")).expect("the socket");
+  drop(peer);
+  shell.run_until(Instant::now() + Duration::from_millis(50));
+  assert!(pipewire.nodes().get_untracked().is_empty());
+}
+
+#[test]
+fn a_server_that_reads_nothing_is_lost() {
+  let fake = FakePipeWire::new();
+  let (mut shell, pipewire, mut peer) = connect(&fake, graph);
+  peer.deaf = true;
+  let logs = capture_logs(|| {
+    // Each ping's pong waits, until over 1 MiB of them.
+    let pings: Vec<u8> = (0..60_000)
+      .flat_map(|seq| {
+        let mut message = Vec::new();
+        pod::message(&mut message, 0, 2, 0, &structure(&[int(0), int(seq)]));
+        message
+      })
+      .collect();
+    let writer = peer.stream.try_clone().expect("a second handle");
+    writer.set_nonblocking(false).expect("a blocking stream");
+    let sent = std::thread::spawn(move || {
+      let _ = (&writer).write_all(&pings);
+    });
+    let give_up = Instant::now() + Duration::from_secs(10);
+    while !pipewire.nodes().get_untracked().is_empty() {
+      assert!(Instant::now() < give_up, "still connected after 10 s");
+      shell.run_until(Instant::now() + Duration::from_millis(10));
+    }
+    drop(peer);
+    sent.join().expect("the pings went");
+  });
+  assert!(logs.contains("reads nothing the shell sends"), "{logs}");
+}
+
+#[test]
+fn without_pipewire_the_lists_stay_empty_and_nothing_wakes() {
+  let shell = Harness::new(offline());
+  let logs = capture_logs(|| {
+    shell.cx.pipewire();
+  });
+  assert!(logs.contains("no runtime directory"), "{logs}");
+
+  let fake = FakePipeWire::new();
+  let config = fake.config();
+  drop(fake);
+  let mut shell = Harness::new(config);
+  let logs = capture_logs(|| {
+    let pipewire = shell.cx.pipewire();
+    assert!(pipewire.nodes().get_untracked().is_empty());
+  });
+  assert!(logs.contains("can't connect to PipeWire"), "{logs}");
+  let logs = capture_logs(|| {
+    shell.cx.pipewire();
+  });
+  assert!(logs.is_empty(), "{logs}");
+  let wakeups = shell.run_until(Instant::now() + Duration::from_millis(300));
+  assert_eq!(wakeups, 1, "nothing retries");
+}
+
+#[test]
+fn a_shell_that_never_asks_never_connects() {
+  let fake = FakePipeWire::new();
+  let mut shell = Harness::new(fake.config());
+  shell.run_until(Instant::now() + Duration::from_millis(50));
+  assert!(fake.accept().is_none());
+}
+
+#[test]
+fn a_quiet_graph_wakes_nothing() {
+  let fake = FakePipeWire::new();
+  let (mut shell, _pipewire, _peer) = connect(&fake, graph);
+  let wakeups = shell.run_until(Instant::now() + Duration::from_millis(500));
+  assert_eq!(wakeups, 1, "only the run's own deadline");
 }

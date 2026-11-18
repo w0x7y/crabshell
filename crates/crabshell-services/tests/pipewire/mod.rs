@@ -185,9 +185,15 @@ impl PrivateServer {
     }
   }
 
+  /// The PipeWire daemon's own socket.
+  #[allow(dead_code, reason = "only the graph's tests use it")]
+  pub fn pipewire_socket(&self) -> PathBuf {
+    self.runtime.join("pipewire-0")
+  }
+
   /// Runs a PipeWire tool, such as `pw-dump`, against this daemon only,
   /// and returns what it printed.
-  fn pipewire_tool(&self, tool: &str, args: &[&str]) -> String {
+  pub fn pipewire_tool(&self, tool: &str, args: &[&str]) -> String {
     let output = Command::new(tool)
       .args(args)
       .env_clear()
