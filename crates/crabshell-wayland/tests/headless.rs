@@ -806,6 +806,46 @@ fn margins_move_the_bar_and_count_in_its_zone() {
   assert_ne!(pixel(960, 38), bar, "below the bar");
 }
 
+/// A shell a reload starts beside the old one lays its bar over the old
+/// bar, taking no space, so no other window moves, and takes its zone
+/// once it runs alone.
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_shell_not_alone_takes_no_space_until_it_is() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let mut old = Shell::new(&sway);
+  old.wait_for_bar("HEADLESS-1");
+  assert_eq!(workspace_top(&sway, "HEADLESS-1"), 30);
+  let mut new = sway.connect();
+  new.platform().set_alone(false);
+  let cx = Cx::new(Runtime::current().new_owner());
+  let bar = PanelWindow::new(&Output::new("HEADLESS-1"))
+    .anchors(Edge::Top | Edge::Left | Edge::Right)
+    .height(30)
+    .exclusive_zone(30)
+    .style(Style::new().background(MAGENTA))
+    .child(Text::new("new"));
+  let id = new.platform().add_window(Window::new(&cx, bar));
+  run_until(&mut new, "the new bar", |platform| {
+    platform
+      .window_info(id)
+      .is_some_and(|info| info.commits > 0)
+  });
+  settle(&mut new);
+  assert_eq!(workspace_top(&sway, "HEADLESS-1"), 30, "no window moves");
+  let shot = sway.screenshot("HEADLESS-1");
+  let at = ((5 * shot.width + 960) * 4) as usize;
+  assert_eq!(
+    shot.rgba[at..at + 3],
+    [0xff, 0x00, 0xff],
+    "over the old bar"
+  );
+  new.platform().set_alone(true);
+  settle(&mut new);
+  assert_eq!(workspace_top(&sway, "HEADLESS-1"), 60, "its own zone");
+}
+
 #[test]
 #[ignore = "needs headless Sway"]
 fn a_mask_lets_clicks_through_until_it_changes() {
@@ -4598,6 +4638,28 @@ fn a_locked_session_wakes_nothing_while_nothing_changes() {
   let after = shell.event_loop.platform().stats();
   assert_eq!(after.commits, before.commits, "frames");
   assert_eq!(after.wayland_wakeups, before.wayland_wakeups, "events");
+}
+
+/// A shell beside the old one of a reload, which may hold the session,
+/// asks for no lock until it runs alone.
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_shell_not_alone_locks_only_once_it_is() {
+  let sway = Sway::start();
+  let mut event_loop = sway.connect();
+  event_loop.platform().set_alone(false);
+  let cx = Cx::new(Runtime::current().new_owner());
+  let locker = add_locker(&mut event_loop, &cx);
+  locker.on.set(true);
+  settle(&mut event_loop);
+  assert!(
+    !locker.locked.get_untracked(),
+    "not locked beside the old shell"
+  );
+  event_loop.platform().set_alone(true);
+  wait_locked(&mut event_loop, locker, true);
+  locker.on.set(false);
+  wait_locked(&mut event_loop, locker, false);
 }
 
 #[test]

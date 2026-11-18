@@ -603,6 +603,16 @@ pub(crate) fn size_problem(config: &SurfaceConfig) -> Option<&'static str> {
   }
 }
 
+/// `config` as a shell sends it while it isn't alone: a positive
+/// exclusive zone becomes -1, so the panel takes no space beside the old
+/// shell's.
+pub(crate) fn beside(mut config: SurfaceConfig, alone: bool) -> SurfaceConfig {
+  if !alone && config.exclusive_zone > 0 {
+    config.exclusive_zone = -1;
+  }
+  config
+}
+
 /// Whether `config` changes a layer-shell setting `sent` didn't have.
 /// The mask goes with a frame, and the namespace is read once.
 pub(crate) fn layer_changed(sent: &SurfaceConfig, config: &SurfaceConfig) -> bool {

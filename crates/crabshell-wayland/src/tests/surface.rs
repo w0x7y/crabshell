@@ -322,3 +322,19 @@ fn a_namespace_with_a_nul_byte_falls_back_to_the_default() {
   assert_eq!(namespace("bar"), "bar");
   assert_eq!(namespace("bar\0x"), "crabshell");
 }
+
+#[test]
+fn beside_the_old_shell_a_positive_zone_is_minus_one() {
+  use crabshell_ui::SurfaceConfig;
+
+  use crate::surface::beside;
+
+  let zone = |exclusive_zone| SurfaceConfig {
+    exclusive_zone,
+    ..SurfaceConfig::default()
+  };
+  assert_eq!(beside(zone(30), false).exclusive_zone, -1);
+  assert_eq!(beside(zone(30), true).exclusive_zone, 30);
+  assert_eq!(beside(zone(0), false).exclusive_zone, 0);
+  assert_eq!(beside(zone(-1), false).exclusive_zone, -1);
+}

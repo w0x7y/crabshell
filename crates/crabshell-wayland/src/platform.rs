@@ -349,6 +349,9 @@ pub struct Platform {
   pub(crate) shortcuts_inhibit: ShortcutsInhibit,
   /// The shortcuts the compositor binds, and their watches.
   pub(crate) global_shortcuts: GlobalShortcuts,
+  /// False while the shell runs beside the one a reload replaces: see
+  /// [`set_alone`](Platform::set_alone).
+  pub(crate) alone: bool,
   /// The windows' focus grabs.
   pub(crate) focus_grabs: FocusGrabs,
   /// Hyprland's surface manager, once a window asks.
@@ -485,6 +488,7 @@ impl Platform {
       idle,
       shortcuts_inhibit,
       global_shortcuts,
+      alone: true,
       focus_grabs,
       hyprland_surfaces: HyprlandSurfaces::default(),
       foreign: Foreign::default(),
@@ -954,11 +958,12 @@ impl Platform {
       idle,
       shortcuts_inhibit,
       seats,
+      alone,
       ..
     } = self;
     for entry in windows.entries.iter_mut() {
       if entry.surface.is_some() && entry.window.take_surface_changed() {
-        let config = entry.window.surface();
+        let config = surface::beside(entry.window.surface(), *alone);
         if entry.window.is_popup() {
           // A popup's settings are its hints, which a frame commits.
           if let Some(surface) = &mut entry.surface {
@@ -1083,7 +1088,7 @@ impl Platform {
         }
         continue;
       };
-      let config = entry.window.surface();
+      let config = surface::beside(entry.window.surface(), self.alone);
       if refused(entry, &config) {
         continue;
       }
@@ -1163,6 +1168,32 @@ fn listener_slot(platform: &mut Platform) -> &mut Option<Listener<Platform>> {
 
 /// Whether layer-shell would refuse `config`. A refusal is logged once,
 /// until the window's settings are good again.
+impl Platform {
+  /// Says whether this shell runs alone. A shell a reload starts beside
+  /// the old one isn't, until the old one has exited: meanwhile its panels
+  /// with a positive exclusive zone ask for -1, so they lie over the old
+  /// shell's instead of below them and no other window moves, and no
+  /// session lock is asked for, since the old shell may hold the session.
+  /// Going alone sends the panels' real zones, and locks if a lock wants
+  /// to. A shell is alone until told otherwise.
+  pub fn set_alone(&mut self, alone: bool) {
+    if std::mem::replace(&mut self.alone, alone) == alone {
+      return;
+    }
+    for entry in self.windows.entries.iter_mut() {
+      if entry.surface.is_none() || entry.window.is_popup() {
+        continue;
+      }
+      let config = surface::beside(entry.window.surface(), alone);
+      if !refused(entry, &config)
+        && let Some(surface) = &mut entry.surface
+      {
+        surface.reconfigure(&config);
+      }
+    }
+  }
+}
+
 fn refused(entry: &mut Entry<Surface, WlOutput>, config: &crabshell_ui::SurfaceConfig) -> bool {
   match surface::size_problem(config) {
     Some(problem) => {

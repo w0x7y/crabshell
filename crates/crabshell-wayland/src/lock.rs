@@ -149,7 +149,8 @@ impl Platform {
         (State::Unlocked { refused: true }, false) => {
           held.state = State::Unlocked { refused: false };
         }
-        (State::Unlocked { refused: false }, true) => {
+        // Beside the old shell of a reload, which may hold the session.
+        (State::Unlocked { refused: false }, true) if self.alone => {
           self.lock_session(index);
           acted = true;
         }
