@@ -1436,6 +1436,94 @@ fn forget_and_clear_secrets_find_the_connection_by_its_uuid() {
 }
 
 #[test]
+fn added_and_updated_settings_reach_networkmanager_typed_and_secrets_are_never_logged() {
+  type Settings = HashMap<String, HashMap<String, OwnedVariant>>;
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let nm = fake_nm(&mut shell, &bus);
+  let _saved = saved(&nm);
+  let bodies = Rc::new(RefCell::new(Vec::new()));
+  // What came, as the psk and the SSID's type, never kept past the test.
+  let note = |sink: &Rc<RefCell<Vec<String>>>, call: &zbus::Message| {
+    let settings: Settings = call.body().deserialize().ok()?;
+    let psk = settings.get("802-11-wireless-security")?.get("psk")?;
+    let ssid = settings.get("802-11-wireless")?.get("ssid")?;
+    let (path, signature) = (call.header().path()?.to_string(), ssid.value_signature());
+    let psk = <&str>::try_from(&**psk).ok()?;
+    sink
+      .borrow_mut()
+      .push(format!("{} {path} {psk} {signature}", named(call)));
+    Some(())
+  };
+  let sink = Rc::clone(&bodies);
+  nm.on("AddConnection", move |call| {
+    note(&sink, call)?;
+    reply(
+      call,
+      &ObjectPath::try_from("/org/freedesktop/NetworkManager/Settings/12").ok()?,
+    )
+  });
+  let sink = Rc::clone(&bodies);
+  nm.on("Update", move |call| {
+    note(&sink, call)?;
+    let name = "org.freedesktop.NetworkManager.Settings.Connection.InvalidProperty";
+    let error = zbus::Message::error(&call.header(), name);
+    Some(error.build(&("802-11-wireless-security.psk: property is invalid",)))
+  });
+  let network = shell.cx.network();
+  let devices = network.devices();
+  wait_for(&mut shell, "the devices", || {
+    !devices.get_untracked().is_empty()
+  });
+  let cafe = serde_json::json!({
+    "connection": { "id": "cafe", "type": "802-11-wireless" },
+    "802-11-wireless": { "ssid": [99, 97, 102, 233] },
+    "802-11-wireless-security": { "key-mgmt": "wpa-psk", "psk": SECRET },
+  });
+  let mut wrong = cafe.clone();
+  wrong["ipv4"] = serde_json::json!({ "dns": [-1] });
+
+  let logs = capture_logs_from(tracing::Level::TRACE, || {
+    network.add_connection(&cafe);
+    network.update_connection(HOME_UUID, &cafe);
+    network.add_connection(&wrong);
+    network.update_connection(HOME_UUID, &serde_json::json!([SECRET]));
+    let calls = Rc::clone(&nm.calls);
+    wait_for(&mut shell, "every call", || calls.borrow().len() == 3);
+    // The refusal's reply, after the call.
+    shell.run_until(Instant::now() + Duration::from_millis(100));
+  });
+  let mut calls = nm.calls.borrow().clone();
+  calls.sort();
+  assert_eq!(
+    calls,
+    [
+      format!("AddConnection {SETTINGS_PATH}"),
+      format!("GetConnectionByUuid {SETTINGS_PATH}"),
+      format!("Update {HOME_SAVED}"),
+    ]
+  );
+  assert_eq!(
+    *bodies.borrow(),
+    [
+      format!("{SETTINGS}.AddConnection {SETTINGS_PATH} {SECRET} ay"),
+      format!("{SAVED}.Update {HOME_SAVED} {SECRET} ay"),
+    ]
+  );
+  assert!(logs.contains("InvalidProperty"), "{logs}");
+  assert!(
+    logs.contains("ipv4.dns: an array with an item of another type"),
+    "{logs}"
+  );
+  assert!(
+    logs.contains("settings aren't an object of groups"),
+    "{logs}"
+  );
+  assert_eq!(logs.matches("nothing sent").count(), 2, "{logs}");
+  assert!(!logs.contains(SECRET), "{logs}");
+}
+
+#[test]
 fn at_most_256_saved_connections_are_read_the_first_by_number() {
   let bus = PrivateBus::start();
   let mut shell = Harness::new(online(&bus));

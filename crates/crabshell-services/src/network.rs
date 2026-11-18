@@ -4,6 +4,7 @@
 mod saved;
 #[cfg(test)]
 mod tests;
+mod write;
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -14,6 +15,7 @@ use std::sync::Once;
 
 use crabshell_reactive::{ReadSignal, Signal};
 use crabshell_ui::Cx;
+use serde_json::Value as Json;
 use zbus::{Array, Connection, Message, ObjectPath, OwnedObjectPath, Variant};
 
 pub use saved::SavedConnection;
@@ -413,19 +415,43 @@ impl Network {
   /// Deletes the saved connection `uuid` names, so NetworkManager
   /// forgets that network. A refusal is logged.
   pub fn forget(&self, uuid: &str) {
-    self.call_saved(uuid, "Delete");
+    self.call_saved(uuid, "Delete", ());
   }
 
   /// Takes the secrets, such as a Wi-Fi password, out of the saved
   /// connection `uuid` names, so NetworkManager asks for them next time.
   /// A refusal is logged.
   pub fn clear_secrets(&self, uuid: &str) {
-    self.call_saved(uuid, "ClearSecrets");
+    self.call_saved(uuid, "ClearSecrets", ());
   }
 
-  /// Calls `method` on the saved connection `uuid` names, and logs a
-  /// refusal.
-  fn call_saved(&self, uuid: &str, method: &'static str) {
+  /// Saves a new connection with `settings`, by group and name as
+  /// [`SavedConnection::settings`] holds them, such as
+  /// `json!({"connection": {"id": "cafe", "type": "802-11-wireless"}, ...})`.
+  /// Secrets such as a Wi-Fi `psk` may come too. A value of a shape
+  /// NetworkManager has no type for, or a refusal, is logged, never the
+  /// settings.
+  pub fn add_connection(&self, settings: &Json) {
+    if let Some(settings) = typed(settings, "AddConnection") {
+      self.call(SETTINGS_PATH, SETTINGS, "AddConnection", settings);
+    }
+  }
+
+  /// Replaces the settings of the saved connection `uuid` names with
+  /// `settings`, as [`add_connection`](Self::add_connection) takes them.
+  /// Those left out go back to NetworkManager's defaults.
+  pub fn update_connection(&self, uuid: &str, settings: &Json) {
+    if let Some(settings) = typed(settings, "Update") {
+      self.call_saved(uuid, "Update", settings);
+    }
+  }
+
+  /// Calls `method` with `body` on the saved connection `uuid` names, and
+  /// logs a refusal, without the body.
+  fn call_saved<B>(&self, uuid: &str, method: &'static str, body: B)
+  where
+    B: serde::Serialize + zbus::DynamicType + 'static,
+  {
     let Some((shared, connection)) = self.bus(method) else {
       return;
     };
@@ -436,7 +462,7 @@ impl Network {
         let call = connection.call_method(Some(NM), SETTINGS_PATH, Some(SETTINGS), find, &uuid);
         let reply = shared.timeout(CALL_TIMEOUT, call).await?;
         let path = reply.body().deserialize::<OwnedObjectPath>()?;
-        let call = connection.call_method(Some(NM), path.as_str(), Some(SAVED), method, &());
+        let call = connection.call_method(Some(NM), path.as_str(), Some(SAVED), method, &body);
         shared.timeout(CALL_TIMEOUT, call).await.map(drop)
       };
       if let Err(error) = called.await {
@@ -474,6 +500,20 @@ impl Network {
     };
     Some((Rc::clone(&service.shared), connection))
   }
+}
+
+/// `settings` typed for `method`, or `None`, logged by the property it
+/// stopped at, never its value.
+fn typed(settings: &Json, method: &str) -> Option<write::Typed> {
+  write::typed(settings)
+    .inspect_err(|error| {
+      tracing::warn!(
+        error,
+        method,
+        "settings NetworkManager can't take; nothing sent"
+      )
+    })
+    .ok()
 }
 
 /// `cx.network()`.
