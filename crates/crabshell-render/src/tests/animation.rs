@@ -684,8 +684,9 @@ fn gifs_decoded_off_the_thread_together_keep_their_frames_within_the_budget() {
       icons.wake_when_decoded(Box::new(move || {
         let _ = sender.send(());
       }));
+      // A debug build takes 20 s over both idle, and minutes when busy.
       woken
-        .recv_timeout(Duration::from_secs(60))
+        .recv_timeout(Duration::from_secs(300))
         .expect("the worker wakes the loop");
       icons.take_decoded();
     }
