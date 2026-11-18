@@ -3,7 +3,10 @@
 //! shell keeps what they send.
 //!
 //! The shell queues for the name, so it serves while no other daemon,
-//! such as mako or dunst, does, and takes over when that one leaves.
+//! such as mako or dunst, does, and takes over when that one leaves. On a
+//! reload the new shell takes the name from the old one and asks it, by
+//! `Take` on [`HANDOFF`], for what it kept, so nothing sent during the
+//! swap is lost.
 //! zbus has no object server here, so the calls are answered by hand on
 //! the main thread, in [`server`]. One stream reads every message the bus
 //! sends this connection, and one loop timer runs only while a popup
@@ -33,12 +36,22 @@ use zbus::message::Type as Kind;
 use zbus::{Connection, Message, MessageStream};
 
 use crate::Shared;
-use crate::dbus::BUS;
 use crate::dbus::set_changed;
+use crate::dbus::{BUS, BUS_PATH};
 use crate::lines::panic_message;
 
 const NOTIFICATIONS: &str = "org.freedesktop.Notifications";
 const NOTIFICATIONS_PATH: &str = "/org/freedesktop/Notifications";
+/// The interface the shell before a reload hands its notifications over
+/// on.
+const HANDOFF: &str = "dev.crabshell.Handoff";
+
+/// How long the new shell waits for the old one's notifications.
+const HANDOFF_LIMIT: Duration = Duration::from_secs(2);
+
+/// The most bytes of notifications the old shell may hand over: past the
+/// history's own caps, so a full history fits.
+const MAX_HANDOFF: usize = 16 * 1024 * 1024;
 
 /// How long a popup shows when its app leaves that to the server.
 pub(crate) const POPUP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -290,6 +303,12 @@ pub(crate) struct Service {
   /// Whether expiries wait for the bus to answer the name request, so a
   /// popup that expired during a reload is told to its app.
   held: Cell<bool>,
+  /// Saved for a reload while serving: the next shell may `Take` what
+  /// this one kept, once.
+  handing_off: Cell<bool>,
+  /// The old shell's name on the bus, until this one has taken the
+  /// notifications over from it.
+  taking_from: RefCell<Option<String>>,
 }
 
 /// What a reload keeps of the server: the history, the popups showing and
@@ -301,6 +320,10 @@ struct Saved {
   /// The ids showing as popups, newest first, each with the milliseconds
   /// left until it expires, `None` for never.
   showing: Vec<(u32, Option<u64>)>,
+  /// The shell's name on the bus while it served, so the next one takes
+  /// the name over and asks it for what came after the save.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  owner: Option<String>,
 }
 
 /// A notification as a reload keeps it: all but pixels, which fall back
@@ -443,19 +466,40 @@ impl Service {
       body_markup: Cell::new(false),
       saved: RefCell::new(None),
       held: Cell::new(false),
+      handing_off: Cell::new(false),
+      taking_from: RefCell::new(None),
     }
   }
 
-  /// Lets expiries run, now that the name request was answered or never
-  /// will be.
+  /// Lets expiries run, now that the name request was answered and any
+  /// takeover done, or never will be.
   fn release(self: &Rc<Self>) {
+    self.taking_from.take();
     if self.held.replace(false) {
       self.schedule();
     }
   }
 
-  /// What a reload keeps, or `None` when the server never started.
+  /// Whether this shell is still taking the notifications over from the
+  /// one before a reload.
+  pub(crate) fn taking_over(&self) -> bool {
+    self.taking_from.borrow().is_some()
+  }
+
+  /// What a reload keeps, or `None` when the server never started. While
+  /// serving, the next shell may then `Take` the notifications that come
+  /// after this.
   pub(crate) fn save(&self) -> Option<serde_json::Value> {
+    let saved = self.kept()?;
+    self.handing_off.set(saved.owner.is_some());
+    serde_json::to_value(saved)
+      .inspect_err(|error| tracing::warn!(%error, "the notifications couldn't be kept"))
+      .ok()
+  }
+
+  /// The history, popups and next id as a reload keeps them, with this
+  /// shell's name on the bus while it serves.
+  fn kept(&self) -> Option<Saved> {
     let state = self.state.borrow();
     let state = state.as_ref()?;
     let now = Instant::now();
@@ -466,14 +510,68 @@ impl Service {
         left.map(|left| u64::try_from(left).unwrap_or(u64::MAX)),
       )
     });
-    let saved = Saved {
+    let owner = state.connection.as_ref().filter(|_| state.serving);
+    let owner = owner.and_then(|connection| connection.unique_name());
+    Some(Saved {
       next_id: state.next_id,
       history: state.history.iter().map(Kept::new).collect(),
       showing: showing.collect(),
+      owner: owner.map(|name| name.to_string()),
+    })
+  }
+
+  /// The old shell's answer to `Take`: what it kept, as JSON, once, and
+  /// only to the shell that took the name from it. `None` refuses.
+  async fn hand_over(&self, connection: &Connection, caller: Option<&str>) -> Option<String> {
+    if !self.handing_off.get() {
+      return None;
+    }
+    let ask = connection.call_method(
+      Some(BUS),
+      BUS_PATH,
+      Some(BUS),
+      "GetNameOwner",
+      &NOTIFICATIONS,
+    );
+    let owner = ask.await.ok()?.body().deserialize::<String>().ok()?;
+    if caller != Some(owner.as_str()) || !self.handing_off.replace(false) {
+      return None;
+    }
+    tracing::info!("handing the notifications over to the new shell");
+    serde_json::to_string(&self.kept()?).ok()
+  }
+
+  /// The new shell's side: takes what the old shell `from` kept, in place
+  /// of what it saved earlier, so what came during the swap is there.
+  async fn take_over(self: &Rc<Self>, connection: &Connection, from: &str) {
+    let ask = connection.call_method(Some(from), NOTIFICATIONS_PATH, Some(HANDOFF), "Take", &());
+    let answer = self.shared.timeout(HANDOFF_LIMIT, ask).await;
+    let text = match answer.and_then(|answer| answer.body().deserialize::<String>()) {
+      Ok(text) if text.len() <= MAX_HANDOFF => text,
+      Ok(text) => {
+        return tracing::warn!(
+          bytes = text.len(),
+          "the old shell's notifications are too big; keeping what it saved"
+        );
+      }
+      Err(error) => {
+        return tracing::warn!(%error, "the old shell didn't hand its notifications over; keeping what it saved");
+      }
     };
-    serde_json::to_value(saved)
-      .inspect_err(|error| tracing::warn!(%error, "the notifications couldn't be kept"))
-      .ok()
+    let saved = match serde_json::from_str::<Saved>(&text) {
+      Ok(saved) => saved,
+      Err(error) => {
+        return tracing::warn!(%error, "the old shell's notifications don't fit; keeping what it saved");
+      }
+    };
+    let (history, showing, next_id) = restored(saved, Instant::now());
+    if let Some(state) = self.state.borrow_mut().as_mut() {
+      state.history = history;
+      state.showing = showing;
+      state.next_id = next_id;
+    }
+    tracing::info!("took the notifications over from the old shell");
+    self.changed();
   }
 
   /// Starts from what the shell before a reload kept, once a config asks
@@ -491,7 +589,9 @@ impl Service {
     if let Some(state) = &*self.state.borrow() {
       return (state.list.read_only(), state.popups.read_only());
     }
-    let (history, showing, next_id) = self.saved.take().map_or_else(
+    let saved = self.saved.take();
+    let from = saved.as_ref().and_then(|saved| saved.owner.clone());
+    let (history, showing, next_id) = saved.map_or_else(
       || (Vec::new(), Vec::new(), 1),
       |saved| restored(saved, Instant::now()),
     );
@@ -516,6 +616,9 @@ impl Service {
       next_listener: 0,
     });
     self.held.set(self.shared.config.session_bus.is_some());
+    if self.held.get() {
+      *self.taking_from.borrow_mut() = from;
+    }
     self.schedule();
     match self.shared.config.session_bus.clone() {
       Some(address) => self.shared.spawn(run(Rc::clone(self), address)),
@@ -851,16 +954,27 @@ async fn run(service: Rc<Service>, address: zbus::Address) {
     state.connection = Some(connection.clone());
   }
   // Queued rather than refused, so the bus hands the name over when the
-  // daemon that has it leaves. NameAcquired says so, in `on_signal`.
-  let flags = RequestNameFlags::ALLOW_REPLACEMENT;
+  // daemon that has it leaves. NameAcquired says so, in `on_signal`. On a
+  // reload the name is taken from the old shell, which allows that.
+  let from = service.taking_from.borrow().clone();
+  let mut flags = RequestNameFlags::ALLOW_REPLACEMENT;
+  if from.is_some() {
+    flags |= RequestNameFlags::REPLACE_EXISTING;
+  }
   let requested = connection
     .request_name_with_flags(NOTIFICATIONS, flags)
     .await;
-  if let Ok(RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner) = requested
-    && let Some(state) = service.state.borrow_mut().as_mut()
-  {
+  let owner = matches!(
+    requested,
+    Ok(RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner)
+  );
+  if owner && let Some(state) = service.state.borrow_mut().as_mut() {
     // As NameAcquired says too, so expiries held till now reach the apps.
     state.serving = true;
+  }
+  // Calls that arrive meanwhile wait in `messages`, so ids don't clash.
+  if owner && let Some(from) = from {
+    service.take_over(&connection, &from).await;
   }
   service.release();
   match requested {

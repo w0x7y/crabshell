@@ -1150,3 +1150,136 @@ fn a_restored_popup_that_expired_in_the_swap_tells_its_app() {
   wait_for(&mut shell, "its signal", || !heard.borrow().is_empty());
   assert_eq!(*heard.borrow(), ["NotificationClosed 1 1"]);
 }
+
+/// The list's ids, oldest first.
+fn list_ids(notifications: &Notifications) -> Vec<u32> {
+  ids(notifications.list())
+}
+
+/// Two shells on one bus, as in a reload: the old one saves and runs on,
+/// the new one starts from that and takes the name over, while an app
+/// on its own thread sends a notification every few milliseconds. Each
+/// one sent reaches the new shell's list, with the id the app was given.
+#[test]
+fn notifications_sent_through_a_reload_all_reach_the_new_shell() {
+  use std::sync::Arc;
+  use std::sync::atomic::{AtomicBool, Ordering};
+
+  let bus = PrivateBus::start();
+  let (mut old, old_notes, _) = serve(&bus, online(&bus));
+  let stop = Arc::new(AtomicBool::new(false));
+  let app = std::thread::spawn({
+    let (stop, address) = (Arc::clone(&stop), bus.address.clone());
+    move || {
+      let mut shell = Harness::new(offline());
+      let builder = zbus::connection::Builder::address(address.as_str());
+      let app = shell
+        .block_on(async move { builder.build().await })
+        .expect("the app's connection");
+      let mut sent = Vec::new();
+      while !stop.load(Ordering::Relaxed) {
+        let summary = format!("note {}", sent.len());
+        sent.push(notify(&mut shell, &app, note(&summary)).expect("every call is answered"));
+        std::thread::sleep(Duration::from_millis(3));
+      }
+      sent
+    }
+  });
+  wait_for(&mut old, "the first notifications", || {
+    list_ids(&old_notes).len() >= 5
+  });
+  let saved = crate::save_state(&old.cx).expect("something to keep");
+  let saved: serde_json::Value = serde_json::from_str(&saved.to_string()).expect("JSON");
+  let at_save = list_ids(&old_notes).len();
+  // The app goes on calling the old shell while the new one starts.
+  old.run_until(Instant::now() + Duration::from_millis(50));
+
+  let mut new = Harness::new(online(&bus));
+  crate::restore_state(&new.cx, saved);
+  let mut logs = String::new();
+  let new_notes = new.cx.notifications();
+  let give_up = Instant::now() + Duration::from_secs(5);
+  // Both loops run, as two shells' do.
+  let both = |old: &mut Harness, new: &mut Harness| {
+    old.run_until(Instant::now() + Duration::from_millis(3));
+    new.run_until(Instant::now() + Duration::from_millis(3));
+  };
+  logs += &capture_logs(|| {
+    while crate::taking_over(&new.cx) {
+      assert!(Instant::now() < give_up, "no takeover after 5 s");
+      both(&mut old, &mut new);
+    }
+    for _ in 0..10 {
+      both(&mut old, &mut new);
+    }
+  });
+  assert!(
+    list_ids(&old_notes).len() > at_save,
+    "the old shell got some after its save"
+  );
+  assert!(
+    logs.contains("handing the notifications over to the new shell")
+      && logs.contains("took the notifications over from the old shell"),
+    "{logs}"
+  );
+  // The old shell exits.
+  old.cx.owner().dispose();
+  drop(old);
+  new.run_until(Instant::now() + Duration::from_millis(100));
+  stop.store(true, Ordering::Relaxed);
+  while !app.is_finished() {
+    new.run_until(Instant::now() + Duration::from_millis(5));
+  }
+  let sent = app.join().expect("the app ran");
+  assert!(sent.len() < MAX_KEPT, "{} sent", sent.len());
+  assert_eq!(list_ids(&new_notes), sent);
+}
+
+#[test]
+fn only_the_shell_that_took_the_name_can_take_the_notifications() {
+  let bus = PrivateBus::start();
+  let (mut shell, notifications, app) = serve(&bus, online(&bus));
+  notify(&mut shell, &app, note("kept")).expect("an id");
+  let unique = service(&notifications)
+    .state
+    .borrow()
+    .as_ref()
+    .and_then(|state| {
+      let connection = state.connection.as_ref()?;
+      Some(connection.unique_name()?.to_string())
+    });
+  let unique = unique.expect("the shell's name on the bus");
+  let take = |shell: &mut Harness, app: &Connection| {
+    let (app, unique) = (app.clone(), unique.clone());
+    shell.block_on(async move {
+      let call = app.call_method(
+        Some(unique.as_str()),
+        NOTIFICATIONS_PATH,
+        Some(super::HANDOFF),
+        "Take",
+        &(),
+      );
+      call.await.map(|_| ()).map_err(|error| error.to_string())
+    })
+  };
+  let refused = take(&mut shell, &app).expect_err("not saved for a reload");
+  assert!(refused.contains("nothing to hand over"), "{refused}");
+  crate::save_state(&shell.cx).expect("something to keep");
+  // Saved, but this app doesn't own the name.
+  let refused = take(&mut shell, &app).expect_err("not the name's owner");
+  assert!(refused.contains("nothing to hand over"), "{refused}");
+  let taker = shell.block_on(bus.connect(&[]));
+  let replaced = taker.clone();
+  shell
+    .block_on(async move {
+      let flags = zbus::fdo::RequestNameFlags::REPLACE_EXISTING;
+      replaced.request_name_with_flags(NOTIFICATIONS, flags).await
+    })
+    .expect("the name");
+  wait_for(&mut shell, "the shell to step back", || {
+    !service(&notifications).serving()
+  });
+  assert_eq!(take(&mut shell, &taker), Ok(()), "the new owner takes them");
+  let refused = take(&mut shell, &taker).expect_err("only once");
+  assert!(refused.contains("nothing to hand over"), "{refused}");
+}

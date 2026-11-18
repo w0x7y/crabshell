@@ -190,6 +190,16 @@ pub fn save_state(cx: &Cx) -> Option<serde_json::Value> {
   Some(serde_json::json!({ "notifications": notifications }))
 }
 
+/// Whether the notification server is still taking over from the shell
+/// before a reload, which the shell waits for before it says `ready`, so
+/// the old shell isn't told to exit before it handed its notifications
+/// over.
+#[doc(hidden)]
+pub fn taking_over(cx: &Cx) -> bool {
+  cx.service::<notifications::Service>()
+    .is_some_and(|service| service.taking_over())
+}
+
 /// Hands the services what [`save_state`] gave the shell before a reload.
 /// The shell calls it before the root closure runs.
 #[doc(hidden)]

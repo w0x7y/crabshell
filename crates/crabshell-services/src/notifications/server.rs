@@ -13,7 +13,7 @@ use serde::de::{Deserialize, Deserializer, IgnoredAny, SeqAccess, Visitor};
 use zbus::message::Flags;
 use zbus::{Connection, Message, Signature, Type};
 
-use super::{CloseReason, NOTIFICATIONS_PATH, Notification, Service, Timeout, Urgency};
+use super::{CloseReason, HANDOFF, NOTIFICATIONS_PATH, Notification, Service, Timeout, Urgency};
 
 /// The most bytes kept of a summary and of a body. With every other
 /// cap, 256 notifications stay within a few MiB however apps fill them.
@@ -75,6 +75,7 @@ const INTROSPECTION: &str = r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS 
 "#;
 
 const INVALID_ARGS: &str = "org.freedesktop.DBus.Error.InvalidArgs";
+const ACCESS_DENIED: &str = "org.freedesktop.DBus.Error.AccessDenied";
 const UNKNOWN_METHOD: &str = "org.freedesktop.DBus.Error.UnknownMethod";
 
 /// Answers one method call to this connection, while it serves. Anything
@@ -87,7 +88,19 @@ pub(super) async fn answer(service: &Rc<Service>, connection: &Connection, call:
   let body = call.body();
   let reply = Message::method_return(&header);
   let refuse = |error: &str, why: &str| Message::error(&header, error).build(&why);
+  let interface = header.interface().map(|interface| interface.as_str());
+  let taken = match (interface, path, member) {
+    (Some(HANDOFF), Some(NOTIFICATIONS_PATH), "Take") => {
+      let caller = header.sender().map(|sender| sender.as_str());
+      Some(service.hand_over(connection, caller).await)
+    }
+    _ => None,
+  };
   let answer = match (path, member) {
+    _ if taken.is_some() => match taken.flatten() {
+      Some(kept) => reply.build(&kept),
+      None => refuse(ACCESS_DENIED, "nothing to hand over"),
+    },
     _ if !service.serving() => refuse(UNKNOWN_METHOD, "not serving notifications"),
     (Some(NOTIFICATIONS_PATH), "Notify") => match body.deserialize::<NotifyArgs<'_>>() {
       Ok(args) => {
