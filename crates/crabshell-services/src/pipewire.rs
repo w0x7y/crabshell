@@ -7,22 +7,24 @@ mod pod;
 #[cfg(test)]
 mod tests;
 
-use std::cell::{RefCell, RefMut};
+use std::cell::{OnceCell, RefCell, RefMut};
 use std::collections::{BTreeMap, HashMap};
 use std::io::{ErrorKind, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
+use std::panic::{self, AssertUnwindSafe, Location};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Once;
 
 use calloop::{Interest, RegistrationToken};
 use crabshell_reactive::{Memo, Owner, ReadSignal, Signal};
-use crabshell_ui::Cx;
+use crabshell_ui::{Cx, IntoProp};
 
 use crate::Shared;
 use crate::dbus::set_changed;
 use crate::hyprland::{cut, open};
+use crate::lines::panic_message;
 use pod::{Bad, Builder, Entry, Fields, HEADER, MAX_MESSAGE};
 
 /// The most nodes and links kept together; the rest are left out.
@@ -34,9 +36,10 @@ const CORE: u32 = 0;
 const CLIENT: u32 = 1;
 const REGISTRY: u32 = 2;
 
-/// The versions spoken: the protocol's, and the registry's and links'
-/// interfaces'.
-const PROTOCOL_VERSION: i32 = 3;
+/// The interfaces' versions spoken: the core's, sent in its hello, and
+/// the registry's and links'. Core 4 only adds an event this client
+/// doesn't read.
+const CORE_VERSION: i32 = 3;
 const REGISTRY_VERSION: i32 = 3;
 const LINK_VERSION: u32 = 3;
 
@@ -119,6 +122,8 @@ pub struct PipeWire {
   links: ReadSignal<Vec<PwLink>>,
   link_groups: ReadSignal<Vec<PwLinkGroup>>,
   screencasts: ReadSignal<Vec<PwNode>>,
+  /// Empty and never set, for a tracker on a context that went.
+  no_links: Memo<Vec<PwLinkGroup>>,
 }
 
 impl PipeWire {
@@ -137,12 +142,37 @@ impl PipeWire {
     self.link_groups
   }
 
-  /// The link groups to or from the node `node`, as a memo of the
-  /// context `cx.pipewire()` was called on. Called on a handle whose
-  /// context went, it panics, as `cx.memo` does.
-  pub fn node_links(&self, node: u32) -> Memo<Vec<PwLinkGroup>> {
-    let groups = self.link_groups;
+  /// The link groups to or from `node`, as Quickshell's
+  /// `PwNodeLinkTracker`. `node` takes an id or a closure returning one,
+  /// so one tracker follows a changing node.
+  ///
+  /// The memo belongs to the context `cx.pipewire()` was called on, so
+  /// call `cx.pipewire()` inside the row that shows it, and the memo goes
+  /// with the row. A panic in the closure is logged with where
+  /// `node_links` was called and gives no groups until what it read
+  /// changes. Called on a handle whose context went, it logs that and
+  /// gives no groups.
+  #[track_caller]
+  pub fn node_links(&self, node: impl IntoProp<u32>) -> Memo<Vec<PwLinkGroup>> {
+    let at = Location::caller();
+    if self.owner.is_disposed() {
+      tracing::warn!(
+        "cx.pipewire().node_links (called at {at}) on a context that is gone gives nothing"
+      );
+      return self.no_links;
+    }
+    let (groups, node) = (self.link_groups, node.into_prop().shared());
     self.owner.memo(move || {
+      let node = match panic::catch_unwind(AssertUnwindSafe(|| node())) {
+        Ok(node) => node,
+        Err(payload) => {
+          let message = panic_message(payload.as_ref());
+          tracing::error!(
+            "cx.pipewire().node_links (called at {at}) panicked choosing its node: {message}"
+          );
+          return Vec::new();
+        }
+      };
       groups.with(|groups| {
         let touches = |group: &&PwLinkGroup| group.output_node == node || group.input_node == node;
         groups.iter().filter(touches).copied().collect()
@@ -171,15 +201,20 @@ pub(crate) fn pipewire(cx: &Cx) -> PipeWire {
       links: cx.signal(Vec::new()).read_only(),
       link_groups: cx.signal(Vec::new()).read_only(),
       screencasts: cx.signal(Vec::new()).read_only(),
+      no_links: cx.memo(Vec::new),
     };
   };
   let signals = service.start();
+  let no_links = *service
+    .no_links
+    .get_or_init(|| service.shared.root.memo(Vec::new));
   PipeWire {
     owner: cx.owner(),
     nodes: signals.nodes.read_only(),
     links: signals.links.read_only(),
     link_groups: signals.link_groups.read_only(),
     screencasts: signals.screencasts.read_only(),
+    no_links,
   }
 }
 
@@ -195,6 +230,8 @@ struct Signals {
 pub(crate) struct Service {
   shared: Rc<Shared>,
   state: RefCell<Option<State>>,
+  /// What a tracker on a context that went gives, made with the signals.
+  no_links: OnceCell<Memo<Vec<PwLinkGroup>>>,
 }
 
 struct State {
@@ -256,6 +293,7 @@ impl Service {
     Service {
       shared,
       state: RefCell::new(None),
+      no_links: OnceCell::new(),
     }
   }
 
@@ -324,7 +362,7 @@ impl Service {
       opening: Opening::Open,
       full: false,
     };
-    connection.send(CORE, 1, Builder::default().int(PROTOCOL_VERSION));
+    connection.send(CORE, 1, Builder::default().int(CORE_VERSION));
     let name = Builder::default()
       .int(1)
       .string("application.name")

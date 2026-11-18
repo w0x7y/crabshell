@@ -562,6 +562,68 @@ fn node_links_follows_the_groups_to_and_from_one_node() {
 }
 
 #[test]
+fn one_tracker_follows_a_changing_node() {
+  let fake = FakePipeWire::new();
+  let (shell, _pipewire, _peer) = connect(&fake, graph);
+  let runtime = Runtime::current();
+  let before = runtime.node_count();
+  let row = shell.cx.child();
+  let node = row.signal(31);
+  let links = row.pipewire().node_links(move || node.get());
+  assert_eq!(links.get(), vec![group(31, 30, PwLinkState::Active)]);
+  node.set(32);
+  assert_eq!(links.get(), vec![group(30, 32, PwLinkState::Paused)]);
+  row.owner().dispose();
+  assert_eq!(
+    runtime.node_count(),
+    before,
+    "the tracker went with its row"
+  );
+}
+
+#[test]
+fn a_panicking_node_closure_is_logged_with_where_and_the_rest_runs() {
+  let fake = FakePipeWire::new();
+  let (shell, pipewire, _peer) = connect(&fake, graph);
+  let broken = shell.cx.signal(true);
+  let mut line = 0;
+  let logs = capture_logs(|| {
+    line = line!() + 1;
+    let links = pipewire.node_links(move || {
+      assert!(!broken.get(), "no node yet");
+      31
+    });
+    assert_eq!(links.get(), vec![]);
+    let other = pipewire.node_links(30);
+    assert_eq!(other.get().len(), 2, "the other tracker still runs");
+    broken.set(false);
+    assert_eq!(links.get(), vec![group(31, 30, PwLinkState::Active)]);
+  });
+  let at = format!("cx.pipewire().node_links (called at {}:{line}", file!());
+  assert!(logs.contains(&at), "{logs}");
+  assert!(
+    logs.contains("panicked choosing its node: no node yet"),
+    "{logs}"
+  );
+}
+
+#[test]
+fn a_tracker_asked_on_a_context_that_went_gives_nothing() {
+  let fake = FakePipeWire::new();
+  let (shell, _pipewire, _peer) = connect(&fake, graph);
+  let row = shell.cx.child();
+  let pipewire = row.pipewire();
+  row.owner().dispose();
+  let logs = capture_logs(|| {
+    assert_eq!(pipewire.node_links(31).get(), vec![]);
+  });
+  assert!(
+    logs.contains("on a context that is gone gives nothing"),
+    "{logs}"
+  );
+}
+
+#[test]
 fn a_link_changes_state_and_a_removed_ones_id_is_reused() {
   let fake = FakePipeWire::new();
   let (mut shell, pipewire, mut peer) = connect(&fake, graph);
