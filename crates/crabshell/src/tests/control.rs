@@ -34,12 +34,19 @@ fn commands_reach_the_shell_and_anything_else_is_skipped() {
     supervisor.write_all(b"ve\nreload\n").expect("written");
     run(&mut event_loop);
     // And a command after the junk one still counts.
-    supervisor.write_all(b"handoff\nexit\n").expect("written");
+    supervisor
+      .write_all(b"handoff\nexit\nalone\n")
+      .expect("written");
     run(&mut event_loop);
   });
   assert_eq!(
     *heard.borrow(),
-    [Command::Save, Command::Handoff, Command::Exit]
+    [
+      Command::Save,
+      Command::Handoff,
+      Command::Exit,
+      Command::Alone
+    ]
   );
   assert!(
     logs.contains("the supervisor sent something unknown"),
@@ -51,7 +58,7 @@ fn commands_reach_the_shell_and_anything_else_is_skipped() {
   drop(supervisor);
   let logs = capture_logs(|| run(&mut event_loop));
   assert!(logs.contains("the supervisor hung up"), "{logs}");
-  assert_eq!(heard.borrow().len(), 3);
+  assert_eq!(heard.borrow().len(), 4);
 }
 
 #[test]

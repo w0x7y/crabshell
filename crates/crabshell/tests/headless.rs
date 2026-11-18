@@ -2306,6 +2306,7 @@ fn notifications_sent_through_a_handoff_all_reach_the_new_shell() {
   let mut new = accept_ready(&listener);
   old.write_all(b"exit\n").expect("told to exit");
   assert_eq!(first.exit_status().and_then(|s| s.code()), Some(0));
+  new.write_all(b"alone\n").expect("told it runs alone");
   std::thread::sleep(Duration::from_millis(300));
   stop.store(true, Ordering::Relaxed);
   let sent = app.join().expect("the app ran");

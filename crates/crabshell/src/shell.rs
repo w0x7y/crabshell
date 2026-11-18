@@ -221,6 +221,9 @@ impl Shell {
     if let Some(state) = saved.remove(persist::SERVICES_KEY) {
       crabshell_services::restore_state(&cx, state);
     }
+    // Saved for a handoff: the old shell runs until the supervisor says
+    // `alone`.
+    let beside = saved.remove(persist::HANDOFF_KEY).is_some();
     if event_loop.platform().offers_activation() {
       let (idle, signal) = (idle_inserter(&event_loop), event_loop.signal());
       crabshell_services::provide_activation_tokens(&cx, move |app_id, done| {
@@ -259,7 +262,13 @@ impl Shell {
       window_manager: Cell::new(None),
       clipboard: Cell::new(None),
       control: OnceCell::new(),
+      alone: Cell::new(!beside),
+      until_alone: RefCell::default(),
     });
+    if beside {
+      event_loop.platform().set_alone(false);
+      crabshell_services::set_alone(&cx, false);
+    }
     event_loop.platform().on_event(move |platform, event| {
       // First, so a per_output closure finds its output listed.
       set_if_changed(outputs, &platform.outputs().cloned().collect::<Vec<_>>());
@@ -369,10 +378,13 @@ impl Shell {
       Err(error) => tracing::warn!(%error, "can't answer the supervisor"),
     }
     let cx = self.cx.clone();
-    let save = move |cx: &Cx| {
+    let save = move |cx: &Cx, handoff: bool| {
       let mut values = service.persisted.save();
       if let Some(state) = crabshell_services::save_state(cx) {
         values.insert(persist::SERVICES_KEY.to_owned(), state);
+      }
+      if handoff {
+        values.insert(persist::HANDOFF_KEY.to_owned(), true.into());
       }
       if let Some(file) = &file
         && let Err(error) = persist::write(file, &values)
@@ -383,7 +395,7 @@ impl Shell {
     control::listen(&self.event_loop.handle(), stream, move |command| {
       match command {
         control::Command::Handoff => {
-          save(&cx);
+          save(&cx, true);
           if let Some(service) = cx.service::<Service>()
             && let Some(writer) = service.control.get()
           {
@@ -392,9 +404,15 @@ impl Shell {
           tracing::info!("saved for a reload; running on until the new shell is ready");
           return;
         }
+        control::Command::Alone => {
+          if let Some(service) = cx.service::<Service>() {
+            service.go_alone(&cx);
+          }
+          return;
+        }
         control::Command::Save => {
           stop_services(&cx);
-          save(&cx);
+          save(&cx, false);
           tracing::info!("the supervisor asked for a reload; exiting");
         }
         control::Command::Exit => {
@@ -552,6 +570,9 @@ impl Drop for Shell {
   }
 }
 
+/// A request that waits to run on the platform.
+type PlatformCall = Box<dyn FnOnce(&mut Platform)>;
+
 /// What the shell keeps in the root context's services, so `cx` can reach
 /// the platform from anywhere.
 struct Service {
@@ -582,6 +603,12 @@ struct Service {
   clipboard: Cell<Option<Clipboard>>,
   /// The supervisor's socket, to write to, under `crabshell run`.
   control: OnceCell<UnixStream>,
+  /// False while the shell runs beside the one a reload replaces, until
+  /// the supervisor says `alone`.
+  alone: Cell<bool>,
+  /// What only one process can hold, waiting for that: Hyprland's global
+  /// shortcuts.
+  until_alone: RefCell<Vec<(&'static str, PlatformCall)>>,
 }
 
 impl Service {
@@ -589,6 +616,29 @@ impl Service {
   /// panic in it is logged; it doesn't end the shell.
   fn with_platform(&self, what: &'static str, f: impl FnOnce(&mut Platform) + 'static) {
     schedule(&self.idle, &self.signal, what, f);
+  }
+
+  /// [`with_platform`](Self::with_platform), once the shell runs alone.
+  fn when_alone(&self, what: &'static str, f: impl FnOnce(&mut Platform) + 'static) {
+    if self.alone.get() {
+      self.with_platform(what, f);
+    } else {
+      self.until_alone.borrow_mut().push((what, Box::new(f)));
+    }
+  }
+
+  /// The supervisor says the old shell is gone: what waited starts.
+  fn go_alone(&self, cx: &Cx) {
+    if self.alone.replace(true) {
+      return;
+    }
+    tracing::info!("the old shell is gone; running alone");
+    self.with_platform("going alone", |platform| platform.set_alone(true));
+    crabshell_services::set_alone(cx, true);
+    let waiting = self.until_alone.take();
+    for (what, f) in waiting {
+      self.with_platform(what, f);
+    }
   }
 
   /// How a handle shared by every caller reaches the loop: under the root
@@ -776,7 +826,6 @@ pub(crate) fn request(
   }
 }
 
-/// Removes the clipboard history's image files, as the shell exits.
 /// Removes the IPC socket and stops the programs the config started,
 /// before the shell exits.
 fn stop_services(cx: &Cx) {
@@ -787,6 +836,7 @@ fn stop_services(cx: &Cx) {
   crabshell_services::stop_programs(cx);
 }
 
+/// Removes the clipboard history's image files, as the shell exits.
 fn remove_clipboard_files(cx: &Cx) {
   if let Some(clipboard) = cx
     .service::<Service>()
@@ -1198,6 +1248,7 @@ impl ShellExt for Cx {
   fn idle_monitor(&self, timeout: Duration) -> ReadSignal<bool> {
     watch_flag(
       self,
+      false,
       ["cx.idle_monitor", "cx.idle_monitor's cleanup"],
       move |platform, idle| {
         platform.watch_idle(timeout, move |now| {
@@ -1210,8 +1261,10 @@ impl ShellExt for Cx {
 
   fn global_shortcut(&self, app_id: &str, name: &str, description: &str) -> ReadSignal<bool> {
     let [app_id, name, description] = [app_id, name, description].map(str::to_owned);
+    // Hyprland ends the connection of a second program registering one.
     watch_flag(
       self,
+      true,
       ["cx.global_shortcut", "cx.global_shortcut's cleanup"],
       move |platform, held| {
         platform.watch_shortcut(&app_id, &name, &description, move |now| {
@@ -1439,6 +1492,7 @@ impl ShellExt for Cx {
 /// owner goes. `what` names the start and the end in logs.
 fn watch_flag<W: 'static>(
   cx: &Cx,
+  alone: bool,
   [what, cleanup]: [&'static str; 2],
   start: impl FnOnce(&mut Platform, Signal<bool>) -> Option<W> + 'static,
   stop: fn(&mut Platform, W),
@@ -1464,9 +1518,17 @@ fn watch_flag<W: 'static>(
   })));
   // The signal above was made, so the owner is there.
   cx.owner().signal(gone);
-  service.with_platform(what, move |platform| {
-    watch.set(start(platform, flag));
-  });
+  let begin = move |platform: &mut Platform| {
+    // Its context may have gone while it waited to run alone.
+    if flag.try_with(|_| ()).is_some() {
+      watch.set(start(platform, flag));
+    }
+  };
+  if alone {
+    service.when_alone(what, begin);
+  } else {
+    service.with_platform(what, begin);
+  }
   flag.read_only()
 }
 

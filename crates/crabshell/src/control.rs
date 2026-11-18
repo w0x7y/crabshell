@@ -3,7 +3,9 @@
 //! `ready` once each of its windows has drawn a frame. Told `handoff`, it
 //! saves its persisted values and says `saved`, and runs on until the new
 //! shell is ready and it is told `exit`. Told `save`, as a supervisor
-//! from before the handoff says, it saves and exits at once.
+//! from before the handoff says, it saves and exits at once. Told
+//! `alone`, it takes what only one process can hold, which a shell saved
+//! for a handoff waits for.
 //! `cx.reload()` says `reload`.
 
 use std::io::{ErrorKind, Read, Write};
@@ -40,6 +42,8 @@ pub(crate) enum Command {
   Handoff,
   /// Exit, now that the new shell is ready.
   Exit,
+  /// The old shell is gone: take what only one process can hold.
+  Alone,
 }
 
 /// Whether the shell is ready: every panel it shows has drawn a frame,
@@ -110,6 +114,7 @@ pub(crate) fn listen<D: 'static>(
               b"save" => on_command(Command::Save),
               b"handoff" => on_command(Command::Handoff),
               b"exit" => on_command(Command::Exit),
+              b"alone" => on_command(Command::Alone),
               other => tracing::warn!(
                 command = %String::from_utf8_lossy(other),
                 "the supervisor sent something unknown"

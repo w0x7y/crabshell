@@ -149,6 +149,11 @@ fn told_to_hand_off_the_shell_saves_says_so_and_runs_on() {
   assert_eq!(said_until(&mut shell, &mut supervisor, "saved"), "saved\n");
   let saved = crate::persist::load(&file);
   assert_eq!(saved.get("clicks"), Some(&serde_json::json!(4)));
+  assert_eq!(
+    saved.get(crate::persist::HANDOFF_KEY),
+    Some(&serde_json::json!(true)),
+    "the next shell runs beside this one"
+  );
   let _ = std::fs::remove_dir_all(&dir);
   // Still running: it goes on dispatching.
   shell
@@ -166,4 +171,48 @@ fn reload_asks_the_supervisor_and_without_one_is_logged() {
   shell.cx().reload();
   let said = said_until(&mut shell, &mut supervisor, "reload");
   assert!(said.starts_with("can-hand-off\n"), "{said}");
+}
+
+/// A shell started from values saved for a handoff runs beside the old
+/// one: it registers no global shortcut, which Hyprland would refuse by
+/// ending its connection, until the supervisor says `alone`.
+#[test]
+fn a_shell_saved_for_a_handoff_waits_for_alone() {
+  use std::io::Write;
+
+  let (_fake, stream) = Fake::start(Globals::default());
+  let connection = Connection::from_socket(stream).expect("a connection");
+  let event_loop = EventLoop::with_connection(connection).expect("the platform starts");
+  let mut saved = serde_json::Map::new();
+  saved.insert(crate::persist::HANDOFF_KEY.to_owned(), true.into());
+  let mut shell = None;
+  let logs = super::capture_logs(|| {
+    let built = Shell::build(event_loop, saved, None, |cx| {
+      let _ = cx.global_shortcut("crabshell", "launcher", "Show the launcher");
+      cx.per_output(|_: &Cx, _: &Output| Vec::new());
+    });
+    let mut built = built.expect("root runs");
+    judge(&mut built);
+    shell = Some(built);
+  });
+  let mut shell = shell.expect("the shell");
+  assert!(
+    !logs.contains("global shortcuts are never pressed"),
+    "{logs}"
+  );
+  let (mut supervisor, ours) = UnixStream::pair().expect("a socket pair");
+  shell.follow_supervisor(ours, None);
+  supervisor.write_all(b"alone\n").expect("written");
+  let logs = super::capture_logs(|| {
+    for _ in 0..10 {
+      shell
+        .dispatch(Some(Duration::from_millis(5)))
+        .expect("the connection works");
+    }
+  });
+  assert!(logs.contains("running alone"), "{logs}");
+  assert!(
+    logs.contains("global shortcuts are never pressed"),
+    "{logs}"
+  );
 }

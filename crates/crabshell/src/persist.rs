@@ -18,6 +18,10 @@ use serde_json::{Map, Value};
 /// values, such as the notifications kept.
 pub(crate) const SERVICES_KEY: &str = "crabshell::services";
 
+/// The key that says the values were saved for a handoff: the old shell
+/// runs on beside the next one until it exits.
+pub(crate) const HANDOFF_KEY: &str = "crabshell::handoff";
+
 /// A saved value of one key, as JSON.
 type Saver = Rc<dyn Fn() -> Option<Value>>;
 
