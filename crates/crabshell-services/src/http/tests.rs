@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use crabshell_reactive::Runtime;
 
 use super::{Http, HttpErrorKind};
-use crate::testing::{Harness, TempDir, capture_logs, offline};
+use crate::testing::{Harness, TempDir, capture_logs, offline, write_program};
 use crate::{Config, ServicesExt};
 
 /// The first bytes of a PNG, all `cx.cover_art` looks at.
@@ -114,6 +114,13 @@ fn run_until(shell: &mut Harness, what: &str, done: impl Fn() -> bool) {
   }
 }
 
+/// The pids the fake curls wrote to `path`, one per line. The file is
+/// there before its first line is.
+fn pids(path: &Path) -> Vec<String> {
+  let text = std::fs::read_to_string(path).unwrap_or_default();
+  text.lines().map(str::to_owned).collect()
+}
+
 fn finish(shell: &mut Harness, http: Http) {
   run_until(shell, "end", move || !http.loading().get_untracked());
 }
@@ -124,10 +131,8 @@ fn kind(http: Http) -> Option<HttpErrorKind> {
 
 /// A `curl` that is a script of the test's own.
 fn fake_curl(dir: &TempDir, script: &str) -> Config {
-  use std::os::unix::fs::PermissionsExt;
   let path = dir.path().join("curl");
-  std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).expect("the script");
-  std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("executable");
+  write_program(&path, &format!("#!/bin/sh\n{script}\n"));
   Config {
     curl: path,
     ..offline()
@@ -278,10 +283,9 @@ fn the_context_going_stops_curl() {
   let mut shell = Harness::new(config);
   let child = shell.cx.child();
   let http = child.http_get("https://example.com/");
-  run_until(&mut shell, "curl", || pid.exists());
+  run_until(&mut shell, "curl", || pids(&pid).len() == 1);
   assert!(http.loading().get_untracked());
-  let pid = std::fs::read_to_string(&pid).expect("its pid");
-  let proc = PathBuf::from(format!("/proc/{}", pid.trim()));
+  let proc = PathBuf::from(format!("/proc/{}", pids(&pid)[0]));
   child.owner().dispose();
   run_until(&mut shell, "curl reaped", move || !proc.exists());
 }
@@ -312,16 +316,14 @@ fn refresh_fetches_again_and_stopped_waits_for_it() {
 #[test]
 fn a_refresh_stops_the_fetch_still_running() {
   let dir = TempDir::new();
-  let pids = dir.path().join("pids");
-  let script = format!("echo $$ >> '{}'; exec sleep 30", pids.display());
+  let written = dir.path().join("pids");
+  let script = format!("echo $$ >> '{}'; exec sleep 30", written.display());
   let mut shell = Harness::new(fake_curl(&dir, &script));
   let http = shell.cx.http_get("https://example.com/");
-  run_until(&mut shell, "curl", || pids.exists());
+  run_until(&mut shell, "curl", || pids(&written).len() == 1);
   http.refresh();
-  let read = || std::fs::read_to_string(&pids).unwrap_or_default();
-  run_until(&mut shell, "another curl", || read().lines().count() == 2);
-  let first = read().lines().next().unwrap().to_owned();
-  let proc = PathBuf::from(format!("/proc/{first}"));
+  run_until(&mut shell, "another curl", || pids(&written).len() == 2);
+  let proc = PathBuf::from(format!("/proc/{}", pids(&written)[0]));
   run_until(&mut shell, "the first curl reaped", move || !proc.exists());
   assert!(http.loading().get_untracked(), "the second still runs");
 }
@@ -543,9 +545,8 @@ fn stop_programs_stops_curl_before_the_shell_exits() {
   );
   let mut shell = Harness::new(config);
   let _http = shell.cx.http_get("https://example.com/");
-  run_until(&mut shell, "curl", || pid.exists());
-  let pid = std::fs::read_to_string(&pid).expect("its pid");
-  let proc = PathBuf::from(format!("/proc/{}", pid.trim()));
+  run_until(&mut shell, "curl", || pids(&pid).len() == 1);
+  let proc = PathBuf::from(format!("/proc/{}", pids(&pid)[0]));
   crate::stop_programs(&shell.cx);
   run_until(&mut shell, "curl reaped", move || !proc.exists());
 }

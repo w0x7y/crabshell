@@ -1,11 +1,12 @@
 use std::cell::RefCell;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use super::{DesktopEntries, Service, Sources, object_path};
-use crate::testing::{FakeService, Harness, PrivateBus, TempDir, capture_logs, offline, reply};
+use crate::testing::{
+  FakeService, Harness, PrivateBus, TempDir, capture_logs, offline, reply, write_program,
+};
 use crate::{Config, ServicesExt};
 
 /// A user's and a system's `applications` directory, and a `bin` for
@@ -45,13 +46,10 @@ impl Dirs {
   /// arguments, a line each, to `<name>.out` beside it.
   fn recorder(&self, name: &str) -> (PathBuf, PathBuf) {
     let program = self.bin().join(name);
-    std::fs::write(
+    write_program(
       &program,
       "#!/bin/sh\n{ echo $$; pwd; printf '%s\\n' \"$@\"; } > \"$0.tmp\" && mv \"$0.tmp\" \"$0.out\"\n",
-    )
-    .expect("a program");
-    let mode = std::fs::Permissions::from_mode(0o755);
-    std::fs::set_permissions(&program, mode).expect("its mode");
+    );
     let out = self.bin().join(format!("{name}.out"));
     (program, out)
   }
@@ -253,7 +251,7 @@ fn an_idle_list_wakes_nothing() {
   write(&dirs.user(), "a.desktop", &app("A", "a", ""));
   write(&dirs.user(), "sub/b.desktop", &app("B", "b", ""));
   let (mut shell, entries) = shell(dirs.sources());
-  run(&mut shell, 50);
+  shell.settle();
   assert_eq!(ids(&entries), ["a", "sub-b"]);
   // The one wakeup is the end of the run.
   assert!(run(&mut shell, 2000) <= 1);
@@ -661,8 +659,7 @@ fn a_launched_program_gets_the_activation_token_and_nothing_stays_in_the_loop() 
     tokens.display()
   );
   let program = dirs.bin().join("tokened");
-  std::fs::write(&program, script).expect("a program");
-  std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("its mode");
+  write_program(&program, &script);
   let exec = format!("\"{}\"", program.display());
   write(&dirs.user(), "tokened.desktop", &app("Tokened", &exec, ""));
   let (mut shell, entries) = shell(dirs.sources());
@@ -712,19 +709,21 @@ fn a_d_bus_application_gets_the_activation_token_in_its_platform_data() {
   run(&mut shell, 50);
 
   type Data = std::collections::HashMap<String, zbus::OwnedVariant>;
-  let data: Rc<RefCell<Vec<Data>>> = Rc::default();
+  // Each call's token, the one it should carry first: the two calls may
+  // reach the bus in either order.
+  let data: Rc<RefCell<Vec<(&str, Data)>>> = Rc::default();
   let fake = FakeService::start(&mut shell, &bus, "org.example.Notes");
   let into = Rc::clone(&data);
   fake.on("Activate", move |call| {
     let (platform_data,): (Data,) = call.body().deserialize().expect("(a{sv})");
-    into.borrow_mut().push(platform_data);
+    into.borrow_mut().push(("token-1", platform_data));
     reply(call, &())
   });
   let into = Rc::clone(&data);
   fake.on("ActivateAction", move |call| {
     type Body = (String, Vec<zbus::OwnedVariant>, Data);
     let (_, _, platform_data): Body = call.body().deserialize().expect("(sava{sv})");
-    into.borrow_mut().push(platform_data);
+    into.borrow_mut().push(("token-2", platform_data));
     reply(call, &())
   });
   fake.own(&mut shell);
@@ -734,10 +733,10 @@ fn a_d_bus_application_gets_the_activation_token_in_its_platform_data() {
   entries.launch_action("org.example.Notes", "new-window");
   answer(&asked, "org.example.Notes", "token-2");
   shell.retry_until("both calls", || data.borrow().len() == 2, |_| {});
-  for (platform_data, token) in data.borrow().iter().zip(["token-1", "token-2"]) {
+  for (token, platform_data) in data.borrow().iter() {
     for key in ["activation-token", "desktop-startup-id"] {
       let value = platform_data.get(key).expect("the token");
-      assert_eq!(<&str>::try_from(&**value).ok(), Some(token), "{key}");
+      assert_eq!(<&str>::try_from(&**value).ok(), Some(*token), "{key}");
     }
   }
 }

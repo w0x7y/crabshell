@@ -47,18 +47,20 @@ impl Harness {
   /// times it woke.
   pub(crate) fn run_until(&mut self, deadline: Instant) -> usize {
     let mut wakeups = 0;
-    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
-      if left.is_zero() {
-        break;
-      }
+    // At least once, so what is ready is handled even when a busy machine
+    // ran this thread past the deadline.
+    loop {
+      let left = deadline.saturating_duration_since(Instant::now());
       self
         .event_loop
         .dispatch(Some(left), &mut ())
         .expect("the loop runs");
       Runtime::current().flush();
       wakeups += 1;
+      if Instant::now() >= deadline {
+        return wakeups;
+      }
     }
-    wakeups
   }
 
   /// Starts `future` on the loop, alongside the shell, and returns at once.
@@ -307,6 +309,19 @@ fn private_bus_config() -> std::path::PathBuf {
   )
   .expect("the bus's config");
   path
+}
+
+/// Writes `script` at `path` as a program. `cp` writes it, as a write
+/// handle open here would be copied into another test's fork until that
+/// fork's exec, and running the program meanwhile fails with ETXTBSY.
+pub(crate) fn write_program(path: &Path, script: &str) {
+  use std::os::unix::fs::PermissionsExt;
+  let draft = path.with_extension("draft");
+  std::fs::write(&draft, script).expect("a program's draft");
+  std::fs::set_permissions(&draft, std::fs::Permissions::from_mode(0o755)).expect("its mode");
+  let copied = Command::new("cp").arg(&draft).arg(path).status();
+  assert!(copied.expect("cp runs").success(), "cp copied {path:?}");
+  std::fs::remove_file(&draft).expect("the draft removed");
 }
 
 /// Runs `f` and returns everything it logged through `tracing` on this

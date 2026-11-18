@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -422,8 +422,13 @@ fn assert_over_the_cap_is_lost(
 ) {
   let mut stream = stream;
   let writer = std::thread::spawn(move || {
-    // The shell hangs up partway, so the write fails.
+    // The shell hangs up partway, so the write fails, or once it has read
+    // the last of it.
     let _ = stream.write_all(&vec![b' '; MAX_LINE + 1]);
+    // Done at the hang-up.
+    while matches!(stream.read(&mut [0; 1]), Err(error)
+      if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut))
+    {}
   });
   let logs = capture_logs(|| {
     shell.retry_until("the writer done", || writer.is_finished(), |_| {});

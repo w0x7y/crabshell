@@ -318,12 +318,19 @@ fn a_client_that_hangs_up_ends_its_connection_at_once() {
   let mut shell = Harness::new(offline());
   let (_server, held) = keeping(&shell, &dir.join("s"));
   drop(client(&dir.join("s")));
-  run(&mut shell, 50);
+  // Accepted, read and closed within a few dispatches that don't wait,
+  // well before the 300 ms cap.
+  for _ in 0..5 {
+    run(&mut shell, 0);
+  }
   assert_eq!(held.borrow()[0].connected().try_get(), None);
 
   let peer = client(&dir.join("s"));
   peer.shutdown(std::net::Shutdown::Write).unwrap();
-  run(&mut shell, 50);
+  // Accepted, then its end read, a dispatch each, well within the 300 ms
+  // a quiet half-closed client gets.
+  run(&mut shell, 0);
+  run(&mut shell, 0);
   drop(peer);
   let socket = held.borrow()[1].clone();
   socket.write("too late\n");
@@ -338,7 +345,9 @@ fn a_client_that_hangs_up_after_it_stopped_sending_ends_its_connection_at_once()
   let (_server, held) = keeping(&shell, &dir.join("s"));
   let peer = client(&dir.join("s"));
   peer.shutdown(std::net::Shutdown::Write).unwrap();
-  run(&mut shell, 50);
+  // Accepted, then its end read, a dispatch each.
+  run(&mut shell, 0);
+  run(&mut shell, 0);
   let socket = held.borrow()[0].clone();
   assert_eq!(socket.connected().try_get(), Some(true), "open for a reply");
   assert!(run(&mut shell, 100) <= 1, "nothing spins meanwhile");

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use crabshell_reactive::Runtime;
 use serde::{Deserialize, Deserializer, Serialize};
 
-use super::{FileErrorKind, FileView, MAX_FILE};
+use super::{FileErrorKind, FileView, MAX_FILE, WRITING};
 use crate::ServicesExt;
 use crate::testing::{Harness, capture_logs, offline};
 
@@ -393,12 +393,23 @@ fn a_file_still_being_written_is_read_once_its_writes_pause() {
     .append(true)
     .open(&path)
     .unwrap();
+  let writes = Instant::now();
   file.write_all(b" two").unwrap();
   run(&mut shell, 20);
   file.write_all(b" three").unwrap();
   run(&mut shell, 20);
-  assert_eq!(seen.borrow().len(), 1, "not read at each write");
-  assert_eq!(run(&mut shell, 60), 2, "one timer, then the run's deadline");
+  // Only a machine that ran this thread on time wrote both within one
+  // wait; on a busy one the read may have come between them.
+  if writes.elapsed() < WRITING {
+    assert_eq!(seen.borrow().len(), 1, "not read at each write");
+    assert_eq!(
+      run(&mut shell, 300),
+      2,
+      "one timer, then the run's deadline"
+    );
+  } else {
+    shell.retry_until("the read", || seen.borrow().len() == 2, |_| {});
+  }
   let shown = |text: &str| Some(String::from(text));
   assert_eq!(*seen.borrow(), [shown("one"), shown("one two three")]);
   assert_eq!(run(&mut shell, 300), 1, "no timer left");

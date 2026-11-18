@@ -1,6 +1,5 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -14,6 +13,7 @@ use super::{
 };
 use crate::testing::{
   FakeService, Harness, PrivateBus, TempDir, capture_logs, capture_logs_from, offline, reply,
+  write_program,
 };
 use crate::{Config, ServicesExt};
 
@@ -65,9 +65,7 @@ impl Polkit {
     let script = format!(
       "#!/bin/sh\nread -r cookie\necho \"$1 $cookie\" >> \"$0.runs\"\necho $$ > \"$0.pid\"\n{conversation}"
     );
-    std::fs::write(&helper, script).expect("the fake helper");
-    let mode = std::fs::Permissions::from_mode(0o755);
-    std::fs::set_permissions(&helper, mode).expect("its mode");
+    write_program(&helper, &script);
     let mut shell = Harness::new(config(Config {
       system_bus: Some(bus.address.parse().expect("dbus-daemon's address")),
       polkit_helpers: vec![helper],
