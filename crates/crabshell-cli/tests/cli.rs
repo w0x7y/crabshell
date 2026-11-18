@@ -226,35 +226,52 @@ fn a_new_config_checks_clean_and_a_mistake_fails_the_check() {
 /// what it does next: `crash` exits 1, `logout` exits 2 as with no
 /// compositor, `deaf` stays up and ignores the supervisor, `late` says
 /// `ready` only once a file `go` appears and then stays up, and anything
-/// else stays up until told to save, when it appends its process id to
-/// `saves` and exits 0.
+/// else stays up and follows the supervisor. Told `handoff`, it appends
+/// its process id to `saves` and says `saved`; told `exit`, it appends its
+/// process id and the time to `exits` and exits 0; told `save`, it appends
+/// to `saves` and exits 0. `old` is a shell from before the handoff: it
+/// doesn't say `can-hand-off` or know `handoff`. `reload` asks for a
+/// reload on its first start.
 const FAKE_SHELL: &str = r#"
 use std::io::Write;
+
+fn now() -> u128 {
+  std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .expect("after 1970")
+    .as_millis()
+}
+
+fn append(path: std::path::PathBuf, line: String) {
+  let mut file = std::fs::OpenOptions::new()
+    .append(true)
+    .create(true)
+    .open(path)
+    .expect("a record");
+  // One write, so a reader never sees half a line.
+  file.write_all(line.as_bytes()).expect("written");
+}
 
 fn main() {
   let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
   let exe = std::env::current_exe().expect("a path");
   let name = if exe.ends_with("last-good") { "last-good" } else { "build" };
-  let now = std::time::SystemTime::now()
-    .duration_since(std::time::UNIX_EPOCH)
-    .expect("after 1970")
-    .as_millis();
   let mode = std::fs::read_to_string(dir.join("mode")).unwrap_or_default();
+  let first = !dir.join("starts").exists();
   let mut control = std::env::var_os("CRABSHELL_CONTROL").map(|path| {
     std::os::unix::net::UnixStream::connect(path).expect("the supervisor")
   });
+  let say = |control: &mut Option<std::os::unix::net::UnixStream>, line: &[u8]| {
+    control.iter_mut().for_each(|stream| stream.write_all(line).expect("said"));
+  };
+  if mode.trim() != "old" {
+    say(&mut control, b"can-hand-off\n");
+  }
   if mode.trim() != "late" {
-    control.iter_mut().for_each(|stream| stream.write_all(b"ready\n").expect("ready"));
+    say(&mut control, b"ready\n");
   }
   // After connecting, so a test that sees the start can reload it.
-  let mut starts = std::fs::OpenOptions::new()
-    .append(true)
-    .create(true)
-    .open(dir.join("starts"))
-    .expect("starts");
-  // One write, so a reader never sees half a line.
-  let line = format!("{name} {} {now}\n", std::process::id());
-  starts.write_all(line.as_bytes()).expect("written");
+  append(dir.join("starts"), format!("{name} {} {}\n", std::process::id(), now()));
   match mode.trim() {
     "crash" => std::process::exit(1),
     "logout" => std::process::exit(2),
@@ -263,19 +280,30 @@ fn main() {
       while !dir.join("go").exists() {
         std::thread::sleep(std::time::Duration::from_millis(50));
       }
-      control.iter_mut().for_each(|stream| stream.write_all(b"ready\n").expect("ready"));
+      say(&mut control, b"ready\n");
     }
     _ => {
       use std::io::BufRead;
-      for line in control.iter().flat_map(|stream| std::io::BufReader::new(stream).lines()) {
-        if line.as_deref().ok() == Some("save") {
-          let mut saves = std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(dir.join("saves"))
-            .expect("saves");
-          saves.write_all(format!("{}\n", std::process::id()).as_bytes()).expect("written");
-          std::process::exit(0);
+      if mode.trim() == "reload" && first {
+        say(&mut control, b"reload\n");
+      }
+      let reader = control.as_ref().map(|stream| stream.try_clone().expect("a reader"));
+      for line in reader.iter().flat_map(|stream| std::io::BufReader::new(stream).lines()) {
+        let pid = std::process::id();
+        match line.as_deref().unwrap_or_default() {
+          "save" => {
+            append(dir.join("saves"), format!("{pid}\n"));
+            std::process::exit(0);
+          }
+          "handoff" if mode.trim() != "old" => {
+            append(dir.join("saves"), format!("{pid}\n"));
+            say(&mut control, b"saved\n");
+          }
+          "exit" => {
+            append(dir.join("exits"), format!("{pid} {}\n", now()));
+            std::process::exit(0);
+          }
+          _ => {}
         }
       }
     }
@@ -584,10 +612,25 @@ impl Home {
       .map(|line| line.parse().expect("a pid"))
       .collect()
   }
+
+  /// Waits up to `limit` for the fake told to exit to write its process
+  /// id and the time in ms.
+  fn wait_for_exit(&self, limit: Duration) -> (u32, u128) {
+    let deadline = Instant::now() + limit;
+    loop {
+      let text = std::fs::read_to_string(self.config().join("exits")).unwrap_or_default();
+      if let Some(line) = text.lines().next() {
+        let (pid, at) = line.split_once(' ').expect("a pid and a time");
+        return (pid.parse().expect("a pid"), at.parse().expect("a time"));
+      }
+      assert!(Instant::now() < deadline, "no exit within {limit:?}");
+      std::thread::sleep(Duration::from_millis(20));
+    }
+  }
 }
 
 #[test]
-fn an_edit_saves_the_old_shell_and_starts_the_new_build() {
+fn an_edit_starts_the_new_build_beside_the_old_shell_until_it_is_ready() {
   let home = Home::new("reload");
   home.fake_config("stay");
   let supervised = home.supervise();
@@ -599,6 +642,38 @@ fn an_edit_saves_the_old_shell_and_starts_the_new_build() {
   let starts = home.wait_for_starts(2, Duration::from_secs(60));
   assert_eq!(starts.len(), 2, "{starts:?}");
   assert_eq!(starts[1].0, "build");
+  let (exited, at) = home.wait_for_exit(Duration::from_secs(5));
+  assert_eq!((home.saves(), exited), (vec![first], first));
+  assert!(
+    at >= starts[1].2,
+    "the old shell ran until the new one started"
+  );
+  std::thread::sleep(Duration::from_millis(300));
+  assert!(!alive(first));
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(5));
+  assert_eq!(code, Some(0), "{log}");
+  assert!(
+    log.contains("asking the shell to save for a reload"),
+    "{log}"
+  );
+  assert_eq!(log.matches("the build took").count(), 2, "{log}");
+  assert!(log.contains("reloaded with no gap"), "{log}");
+  assert!(
+    log.contains("the old shell ended (exit status: 0)"),
+    "{log}"
+  );
+}
+
+#[test]
+fn a_shell_from_before_the_handoff_saves_and_exits_first() {
+  let home = Home::new("reload-old");
+  home.fake_config("old");
+  let supervised = home.supervise();
+  let first = home.wait_for_starts(1, Duration::from_secs(60))[0].1;
+  home.edit(|code| code + "// an edit\n");
+  let starts = home.wait_for_starts(2, Duration::from_secs(60));
+  assert_eq!(starts.len(), 2, "{starts:?}");
   assert_eq!(home.saves(), [first], "the old shell saved");
   assert!(!alive(first));
   std::thread::sleep(Duration::from_millis(300));
@@ -606,8 +681,30 @@ fn an_edit_saves_the_old_shell_and_starts_the_new_build() {
   let (code, log) = supervised.wait(Duration::from_secs(5));
   assert_eq!(code, Some(0), "{log}");
   assert!(log.contains("asking the shell to save and exit"), "{log}");
-  assert_eq!(log.matches("the build took").count(), 2, "{log}");
   assert!(log.contains("reloaded with"), "{log}");
+  assert!(!log.contains("reloaded with no gap"), "{log}");
+}
+
+#[test]
+fn a_reload_the_shell_asks_for_starts_the_same_build_again() {
+  let home = Home::new("asked-reload");
+  home.fake_config("reload");
+  let supervised = home.supervise();
+  let starts = home.wait_for_starts(2, Duration::from_secs(60));
+  assert_eq!(starts.len(), 2, "{starts:?}");
+  let (exited, _) = home.wait_for_exit(Duration::from_secs(5));
+  assert_eq!((home.saves(), exited), (vec![starts[0].1], starts[0].1));
+  std::thread::sleep(Duration::from_millis(300));
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(5));
+  assert_eq!(code, Some(0), "{log}");
+  assert!(log.contains("the shell asked for a reload"), "{log}");
+  assert!(
+    log.contains("nothing in the build changed; starting it again"),
+    "{log}"
+  );
+  assert!(log.contains("reloaded with no gap"), "{log}");
+  assert_eq!(home.starts().len(), 2, "asked once");
 }
 
 #[test]
@@ -730,7 +827,7 @@ fn a_reload_never_keeps_the_new_build_before_it_runs() {
   let old = std::fs::read(&program).expect("built");
   std::thread::sleep(Duration::from_secs(57));
   // A change to the program's bytes, which a comment wouldn't make.
-  home.edit(|code| code.replace("expect(\"starts\")", "expect(\"the starts file\")"));
+  home.edit(|code| code.replace("expect(\"a record\")", "expect(\"the record\")"));
   let starts = home.wait_for_starts(2, Duration::from_secs(60));
   assert_eq!(starts.len(), 2, "{starts:?}");
   let kept = std::fs::read(home.0.join("cache/crabshell/last-good")).expect("kept");
@@ -811,23 +908,59 @@ fn an_edit_during_the_first_build_rebuilds() {
 }
 
 #[test]
-fn a_new_build_that_crashes_before_ready_isnt_a_reload() {
+fn a_new_build_that_crashes_before_ready_leaves_the_old_shell_running() {
   let home = Home::new("crash-before-ready");
   home.fake_config("stay");
-  let supervised = home.supervise();
-  home.wait_for_starts(1, Duration::from_secs(60));
+  let bus = PrivateBus::start(&home);
+  let supervised = home.supervise_on(Some(&bus));
+  let first = home.wait_for_starts(1, Duration::from_secs(60))[0].1;
   let crash = "fn main() {\n  std::process::exit(3);";
   home.edit(|code| code.replacen("fn main() {", crash, 1));
-  // The old shell saves, the new build exits 3 before `ready`, and its
-  // restart waits 1 s; the fix starts at once.
-  std::thread::sleep(Duration::from_millis(1500));
+  let notes = bus.wait_for(1, Duration::from_secs(60));
+  assert_eq!(notes.len(), 1, "{notes:?}");
+  assert_eq!(notes[0].0, "Your Crabshell config didn't start");
+  assert!(notes[0].1.contains("exit status: 3"), "{notes:?}");
+  assert!(alive(first), "the old shell runs on");
+  assert_eq!(home.saves(), [first]);
+  // The fix reloads the old shell, which was still the running one.
   home.edit(|code| code.replacen(crash, "fn main() {", 1));
   let starts = home.wait_for_starts(2, Duration::from_secs(60));
   assert_eq!(starts.len(), 2, "{starts:?}");
+  assert_eq!(home.wait_for_exit(Duration::from_secs(5)).0, first);
   std::thread::sleep(Duration::from_millis(300));
   supervised.signal("-TERM");
   let (code, log) = supervised.wait(Duration::from_secs(5));
   assert_eq!(code, Some(0), "{log}");
-  assert!(log.contains("exit status: 3"), "{log}");
-  assert!(!log.contains("reloaded with"), "{log}");
+  assert!(log.contains("so the old shell stays"), "{log}");
+  assert_eq!(log.matches("reloaded with no gap").count(), 1, "{log}");
+}
+
+#[test]
+fn stopping_while_the_new_shell_starts_ends_both() {
+  let home = Home::new("stop-swap");
+  home.fake_config("stay");
+  let supervised = home.supervise();
+  let first = home.wait_for_starts(1, Duration::from_secs(60))[0].1;
+  // The new build never says ready, so the old one stays beside it.
+  let hang = "fn main() {\n  std::thread::sleep(std::time::Duration::from_secs(3600));";
+  home.edit(|code| code.replacen("fn main() {", hang, 1));
+  let deadline = Instant::now() + Duration::from_secs(60);
+  while home.saves().is_empty() {
+    assert!(Instant::now() < deadline, "no save");
+    std::thread::sleep(Duration::from_millis(50));
+  }
+  std::thread::sleep(Duration::from_millis(300));
+  let pid = supervised.pid();
+  let children = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+    .expect("the supervisor's children");
+  let children: Vec<u32> = children
+    .split_whitespace()
+    .map(|child| child.parse().expect("a pid"))
+    .collect();
+  assert_eq!(children.len(), 2, "both shells run: {children:?}");
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(5));
+  assert_eq!(code, Some(0), "{log}");
+  assert!(!alive(first), "{log}");
+  assert!(children.iter().all(|&child| !alive(child)), "{log}");
 }

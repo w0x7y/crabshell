@@ -1,8 +1,10 @@
 //! `crabshell run`: builds the config, starts the shell and starts it again
 //! when it crashes, falling back to `last-good` when a new build keeps
-//! crashing. An edit to the config rebuilds it and swaps the shell. One
-//! thread, on a calloop loop that sleeps until the shell exits or talks,
-//! a file changes or a timer is due.
+//! crashing. An edit to the config, or `cx.reload()`, rebuilds it and
+//! swaps the shell: the old one saves and runs on beside the new one
+//! until that one is ready, so no frame goes without a bar. One thread,
+//! on a calloop loop that sleeps until a shell exits or talks, a file
+//! changes or a timer is due.
 
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -33,11 +35,28 @@ const STOP_SIGNALS: [Signal; 2] = [Signal::SIGINT, Signal::SIGTERM];
 /// save that writes several files builds once.
 const DEBOUNCE: Duration = Duration::from_millis(300);
 
-/// How long the old shell gets to save and exit before it is killed.
+/// How long the old shell gets to save, and to exit once told, before
+/// it is killed.
 const SAVE_LIMIT: Duration = Duration::from_secs(5);
 
 /// The notification's title when the config doesn't build.
 const DIDNT_BUILD: &str = "Your Crabshell config didn't build";
+
+/// The notification's title when a new shell ends before it is ready.
+const DIDNT_START: &str = "Your Crabshell config didn't start";
+
+/// The shell a reload replaces, running beside the new one until that
+/// one is ready.
+struct Old {
+  child: Child,
+  started: Instant,
+  control: Option<UnixStream>,
+  /// When it said `saved`.
+  saved: Instant,
+  /// It was told to exit, since the new shell is ready; the timer kills
+  /// it if it takes too long.
+  exiting: Option<Option<RegistrationToken>>,
+}
 
 /// The longest line read from the shell; a longer one is cut.
 const MAX_LINE: usize = 256;
@@ -63,14 +82,22 @@ struct Supervisor {
   shell: Option<(Child, Instant)>,
   /// The running shell's end of the control socket, once it connects.
   control: Option<UnixStream>,
+  /// The running shell said `can-hand-off`: a reload asks it to save and
+  /// run on, rather than to save and exit.
+  can_hand_off: bool,
+  /// The shell being replaced, while the new one starts.
+  old: Option<Old>,
+  /// An edit or `cx.reload()` came while a new shell started beside the
+  /// old one: another reload follows.
+  reload_again: bool,
   /// The timer that marks the running shell healthy.
   healthy_timer: Option<RegistrationToken>,
   /// The timer that starts the shell again after a crash.
   restart_timer: Option<RegistrationToken>,
   /// The timer that rebuilds once the files are quiet.
   debounce_timer: Option<RegistrationToken>,
-  /// A new build waits for the old shell to end; the timer kills it if
-  /// it takes too long.
+  /// A new build waits for the old shell to save, or with `save`, to
+  /// end; the timer kills it if it takes too long.
   reloading: Option<RegistrationToken>,
   /// When the old shell ended in a reload, until the new one is ready.
   reload_gap: Option<Instant>,
@@ -84,7 +111,14 @@ impl Drop for Supervisor {
   /// `run` is ending with the shell still up, as after a loop error: the
   /// shell goes too, rather than run on unsupervised.
   fn drop(&mut self) {
-    if let Some((mut child, _)) = self.shell.take() {
+    let old = self.old.take().map(|old| old.child);
+    for mut child in self
+      .shell
+      .take()
+      .map(|(child, _)| child)
+      .into_iter()
+      .chain(old)
+    {
       let _ = child.kill();
       let _ = child.wait();
     }
@@ -212,6 +246,9 @@ pub(crate) fn run(config: &Path, target: &Path) -> Result<(), String> {
     watcher,
     shell: None,
     control: None,
+    can_hand_off: false,
+    old: None,
+    reload_again: false,
     healthy_timer: None,
     restart_timer: None,
     debounce_timer: None,
@@ -271,12 +308,14 @@ impl Supervisor {
     let mut child = match spawned {
       Ok(child) => child,
       Err(error) => {
-        return self.ended(
-          Exit::Crashed,
-          &format!("{} didn't start: {error}", program.display()),
-        );
+        let how = format!("{} didn't start: {error}", program.display());
+        if self.old.is_some() {
+          return self.failed_reload(&how);
+        }
+        return self.ended(Exit::Crashed, &how);
       }
     };
+    let pid = child.id();
     // A pidfd turns readable when the process exits, so the loop sleeps
     // until then. It can't name another process: the child isn't reaped
     // until `exited`.
@@ -287,8 +326,8 @@ impl Supervisor {
           .handle
           .insert_source(
             Generic::new(pidfd, Interest::READ, Mode::Level),
-            |_, _, supervisor| {
-              supervisor.exited();
+            move |_, _, supervisor| {
+              supervisor.exited(pid);
               Ok(PostAction::Remove)
             },
           )
@@ -332,20 +371,31 @@ impl Supervisor {
     }
   }
 
-  /// The shell's pidfd turned readable: it exited.
-  fn exited(&mut self) {
-    let Some((mut child, _)) = self.shell.take() else {
+  /// Whether `pid`, a connection's shell, is the running shell.
+  fn is_current(&self, pid: Option<u32>) -> bool {
+    let running = self.shell.as_ref().map(|(child, _)| child.id());
+    pid.is_some() && running == pid
+  }
+
+  /// Shell `pid`'s pidfd turned readable: it exited.
+  fn exited(&mut self, pid: u32) {
+    if self.old.as_ref().is_some_and(|old| old.child.id() == pid) {
+      return self.old_exited();
+    }
+    let Some((mut child, _)) = self.shell.take_if(|(child, _)| child.id() == pid) else {
       return;
     };
     if let Some(timer) = self.healthy_timer.take() {
       self.handle.remove(timer);
     }
     self.control = None;
+    self.can_hand_off = false;
+    let waited = child.wait();
+    let status = waited
+      .as_ref()
+      .map_or_else(|error| error.to_string(), |status| status.to_string());
     if let Some(timer) = self.reloading.take() {
       self.handle.remove(timer);
-      let status = child
-        .wait()
-        .map_or_else(|error| error.to_string(), |status| status.to_string());
       log(&format!(
         "the old shell ended ({status}); starting the new build"
       ));
@@ -357,9 +407,18 @@ impl Supervisor {
       }
       return;
     }
+    if self.stopping {
+      if self.old.is_none() {
+        self.result = Some(Ok(()));
+      }
+      return;
+    }
+    if self.old.as_ref().is_some_and(|old| old.exiting.is_none()) {
+      return self.failed_reload(&format!("the new shell ended ({status})"));
+    }
     // A new build that ended before `ready` didn't reload.
     self.reload_gap = None;
-    match child.wait() {
+    match waited {
       Ok(status) => self.ended(
         Exit::from_code(status.code()),
         &format!("the shell ended ({status})"),
@@ -368,6 +427,54 @@ impl Supervisor {
         Exit::Crashed,
         &format!("can't read how the shell ended: {error}"),
       ),
+    }
+  }
+
+  /// The shell a reload replaced exited.
+  fn old_exited(&mut self) {
+    let Some(mut old) = self.old.take() else {
+      return;
+    };
+    if let Some(Some(timer)) = old.exiting {
+      self.handle.remove(timer);
+    }
+    let status = old
+      .child
+      .wait()
+      .map_or_else(|error| error.to_string(), |status| status.to_string());
+    log(&format!("the old shell ended ({status})"));
+    if self.stopping {
+      if self.shell.is_none() {
+        self.result = Some(Ok(()));
+      }
+    } else if std::mem::take(&mut self.reload_again) {
+      self.reload();
+    }
+  }
+
+  /// The new shell ended, or didn't start, before it was ready, as `how`
+  /// says: the old one runs on, as after a build that failed.
+  fn failed_reload(&mut self, how: &str) {
+    let Some(old) = self.old.take() else {
+      return;
+    };
+    log(&format!(
+      "{how} before it was ready, so the old shell stays"
+    ));
+    notify::send(
+      &self.handle,
+      &self.scheduler,
+      DIDNT_START,
+      &format!("{how} before it was ready; the shell before it runs on"),
+    );
+    self.shell = Some((old.child, old.started));
+    self.control = old.control;
+    self.can_hand_off = true;
+    // Its next crash starts the newest build afresh, whose crashes then
+    // count toward last-good.
+    self.policy.new_build();
+    if std::mem::take(&mut self.reload_again) {
+      self.reload();
     }
   }
 
@@ -423,9 +530,12 @@ impl Supervisor {
     }
   }
 
-  /// The shell said `ready`: it counts as healthy [`HEALTHY_AFTER`] from
-  /// now.
-  fn ready(&mut self) {
+  /// Shell `pid` said `ready`: it counts as healthy [`HEALTHY_AFTER`]
+  /// from now, and the shell it replaces is told to exit.
+  fn ready(&mut self, pid: Option<u32>) {
+    if !self.is_current(pid) {
+      return;
+    }
     let Some((_, started)) = &self.shell else {
       return;
     };
@@ -438,6 +548,34 @@ impl Supervisor {
         "reloaded with {} ms between the old shell's exit and the new one's ready",
         ended.elapsed().as_millis()
       ));
+    }
+    if let Some(old) = self.old.as_mut().filter(|old| old.exiting.is_none()) {
+      log(&format!(
+        "reloaded with no gap: the new shell was ready {} ms after the old one saved; \
+         telling the old one to exit",
+        old.saved.elapsed().as_millis()
+      ));
+      let told = old
+        .control
+        .as_mut()
+        .is_some_and(|stream| stream.write_all(b"exit\n").is_ok());
+      if !told {
+        let pid = Pid::from_child(&old.child);
+        let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
+      }
+      let timer = Timer::from_duration(SAVE_LIMIT);
+      let timer = self.handle.insert_source(timer, |_, _, supervisor| {
+        if let Some(old) = supervisor.old.as_mut() {
+          log(&format!(
+            "the old shell didn't exit within {} s; killing it",
+            SAVE_LIMIT.as_secs()
+          ));
+          old.exiting = Some(None);
+          let _ = old.child.kill();
+        }
+        TimeoutAction::Drop
+      });
+      old.exiting = Some(timer.ok());
     }
     let Some(due) = self.policy.ready(Instant::now()) else {
       return;
@@ -468,7 +606,7 @@ impl Supervisor {
       .handle
       .insert_source(Timer::from_duration(DEBOUNCE), |_, _, supervisor| {
         supervisor.debounce_timer = None;
-        supervisor.rebuild();
+        supervisor.rebuild(false);
         TimeoutAction::Drop
       })
       .map_err(|error| {
@@ -480,13 +618,26 @@ impl Supervisor {
       .ok();
   }
 
-  /// Builds the edited config. A failed build leaves the shell running and
-  /// says why in a notification; a new program replaces the shell.
-  fn rebuild(&mut self) {
+  /// Shell `pid` asked for a reload, through `cx.reload()`.
+  fn asked_reload(&mut self, pid: Option<u32>) {
+    if self.is_current(pid) {
+      self.rebuild(true);
+    }
+  }
+
+  /// Builds the edited config, or with `asked`, the config the shell asked
+  /// to reload. A failed build leaves the shell running and says why in a
+  /// notification; a new program replaces the shell, and so does the
+  /// same one when asked.
+  fn rebuild(&mut self, asked: bool) {
     if self.stopping {
       return;
     }
-    log("the config changed; building it");
+    log(if asked {
+      "the shell asked for a reload; building the config"
+    } else {
+      "the config changed; building it"
+    });
     match timed_build(&self.config, &self.target) {
       Err(problem) => {
         log(&format!(
@@ -495,7 +646,12 @@ impl Supervisor {
         notify::send(&self.handle, &self.scheduler, DIDNT_BUILD, &problem);
       }
       Ok(built) if built.fresh && self.build.as_ref() == Some(&built.program) => {
-        log("nothing in the build changed; the shell keeps running");
+        if asked {
+          log("nothing in the build changed; starting it again");
+          self.reload();
+        } else {
+          log("nothing in the build changed; the shell keeps running");
+        }
       }
       Ok(built) => {
         self.build = Some(built.program);
@@ -505,13 +661,19 @@ impl Supervisor {
     }
   }
 
-  /// Swaps the running shell for the new build: asks it to save and exit,
-  /// and starts the build when it has. One waiting to restart is
+  /// Swaps the running shell for the new build: asks it to save, starts
+  /// the build beside it once it has, and tells it to exit once the new
+  /// one is ready. A shell from before the handoff is asked to save and
+  /// exit, and the build starts when it has. One waiting to restart is
   /// replaced at once.
   fn reload(&mut self) {
-    // Already asked: the newest build starts when the old shell ends, and
-    // the kill stays due when it was.
+    // Already asked: the newest build starts when the old shell has saved
+    // or ended, and the kill stays due when it was.
     if self.reloading.is_some() {
+      return;
+    }
+    if self.old.is_some() {
+      self.reload_again = true;
       return;
     }
     let Some((child, _)) = &self.shell else {
@@ -521,11 +683,18 @@ impl Supervisor {
       return self.start();
     };
     let pid = Pid::from_child(child);
+    let command: &[u8] = if self.can_hand_off {
+      b"handoff\n"
+    } else {
+      b"save\n"
+    };
     let asked = self
       .control
       .as_mut()
-      .is_some_and(|stream| stream.write_all(b"save\n").is_ok());
-    if asked {
+      .is_some_and(|stream| stream.write_all(command).is_ok());
+    if asked && self.can_hand_off {
+      log("asking the shell to save for a reload");
+    } else if asked {
       log("asking the shell to save and exit");
     } else {
       log("the shell isn't connected, so it ends without saving");
@@ -553,16 +722,47 @@ impl Supervisor {
     }
   }
 
-  /// SIGINT or SIGTERM: ends the shell, then `run`.
+  /// The running shell said `saved`: the new build starts beside it.
+  fn saved(&mut self, pid: Option<u32>) {
+    if !self.is_current(pid) || !self.can_hand_off || self.stopping {
+      return;
+    }
+    let Some(timer) = self.reloading.take() else {
+      return;
+    };
+    self.handle.remove(timer);
+    if let Some(timer) = self.healthy_timer.take() {
+      self.handle.remove(timer);
+    }
+    let (child, started) = self.shell.take().expect("is_current saw the shell");
+    log("the old shell saved; starting the new build beside it");
+    self.old = Some(Old {
+      child,
+      started,
+      control: self.control.take(),
+      saved: Instant::now(),
+      exiting: None,
+    });
+    self.can_hand_off = false;
+    self.start();
+  }
+
+  /// SIGINT or SIGTERM: ends the shells, then `run`.
   fn stop(&mut self) {
     self.stopping = true;
-    match &self.shell {
-      Some((child, _)) => {
-        let _ =
-          rustix::process::kill_process(Pid::from_child(child), rustix::process::Signal::TERM);
-      }
-      // Waiting to restart: nothing to end.
-      None => self.result = Some(Ok(())),
+    let old = self.old.as_ref().map(|old| &old.child);
+    let shells: Vec<&Child> = self
+      .shell
+      .iter()
+      .map(|(child, _)| child)
+      .chain(old)
+      .collect();
+    for child in &shells {
+      let _ = rustix::process::kill_process(Pid::from_child(child), rustix::process::Signal::TERM);
+    }
+    // Waiting to restart: nothing to end.
+    if shells.is_empty() {
+      self.result = Some(Ok(()));
     }
   }
 }
@@ -577,8 +777,12 @@ fn listen(
   if let Err(error) = stream.set_nonblocking(true) {
     return log(&format!("can't read from the shell: {error}"));
   }
+  // The newest shell started is the one connecting: the old one of a
+  // reload connected before it.
+  let pid = supervisor.shell.as_ref().map(|(child, _)| child.id());
   match stream.try_clone() {
-    Ok(copy) => supervisor.control = Some(copy),
+    Ok(copy) if pid.is_some() => supervisor.control = Some(copy),
+    Ok(_) => {}
     Err(error) => log(&format!("can't write to the shell: {error}")),
   }
   let mut line = Vec::new();
@@ -599,7 +803,11 @@ fn listen(
                 continue;
               }
               match line.as_slice() {
-                b"ready" => supervisor.ready(),
+                b"ready" => supervisor.ready(pid),
+                b"saved" => supervisor.saved(pid),
+                b"reload" => supervisor.asked_reload(pid),
+                b"can-hand-off" if supervisor.is_current(pid) => supervisor.can_hand_off = true,
+                b"can-hand-off" => {}
                 other => log(&format!(
                   "the shell sent something unknown: {}",
                   String::from_utf8_lossy(other)
