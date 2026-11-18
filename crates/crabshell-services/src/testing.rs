@@ -329,6 +329,10 @@ pub(crate) fn capture_logs_from(level: tracing::Level, f: impl FnOnce()) -> Stri
     }
   }
 
+  static GLOBAL: std::sync::Once = std::sync::Once::new();
+  GLOBAL.call_once(|| {
+    let _ = tracing::subscriber::set_global_default(Undecided);
+  });
   let buffer = Buffer::default();
   let writer = buffer.clone();
   let subscriber = tracing_subscriber::fmt()
@@ -338,6 +342,44 @@ pub(crate) fn capture_logs_from(level: tracing::Level, f: impl FnOnce()) -> Stri
   tracing::subscriber::with_default(subscriber, f);
   let bytes = buffer.0.lock().expect("log lock").clone();
   String::from_utf8(bytes).expect("UTF-8 logs")
+}
+
+/// The global subscriber while tests capture logs: it takes nothing, and
+/// answers every callsite with "sometimes". tracing caches each callsite's
+/// interest, and while it counts one subscriber it asks the thread that
+/// first hits the callsite, so a thread capturing nothing could otherwise
+/// turn a log line off for another thread's capture.
+struct Undecided;
+
+impl tracing::Subscriber for Undecided {
+  fn register_callsite(
+    &self,
+    _: &'static tracing::Metadata<'static>,
+  ) -> tracing::subscriber::Interest {
+    tracing::subscriber::Interest::sometimes()
+  }
+
+  fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+    Some(tracing::level_filters::LevelFilter::TRACE)
+  }
+
+  fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+    false
+  }
+
+  fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+    tracing::span::Id::from_u64(1)
+  }
+
+  fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+
+  fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+
+  fn event(&self, _: &tracing::Event<'_>) {}
+
+  fn enter(&self, _: &tracing::span::Id) {}
+
+  fn exit(&self, _: &tracing::span::Id) {}
 }
 
 /// What a fake answers a method with: a reply built for the call, or
