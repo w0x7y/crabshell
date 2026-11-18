@@ -506,8 +506,9 @@ PanelWindow::new(output).inhibit_idle(move || awake.get())</code></pre>
         <p>
           When a screen reader such as Orca is on, the shell tells it about
           every window and widget: buttons by their text, fields by their
-          placeholder, and Enter-like clicks through it. Give a button that
-          shows only an icon a name:
+          placeholder, and Enter-like clicks through it. It reads a field's text
+          as you type, a password field only as dots, and a slider's value,
+          which it can also set. Give a button that shows only an icon a name:
         </p>
         <pre><code class="rs">Button::new(Icon::new("audio-volume-high-symbolic"))
   .accessible_name("Volume")</code></pre>
