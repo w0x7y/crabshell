@@ -544,6 +544,7 @@ fn a_sync_is_done_after_every_event_sent_before_it() {
 fn dnd_bars(build: impl FnOnce(&Cx) -> (Button, Button)) -> (Fake, EventLoop, Cx) {
   let (fake, mut event_loop) = connect(Globals {
     pointer: true,
+    touch: true,
     data_device: true,
     ..Globals::default()
   });
@@ -730,7 +731,7 @@ fn a_drag_leaving_its_window_offers_its_text_and_ends_when_taken() {
   });
   fake.run(|state| state.press_out(0, (10.0, 10.0), (10.0, -20.0)));
   let started = format!(
-    "start_drag {} application/x-crabshell-drag,text/plain;charset=utf-8,UTF8_STRING",
+    "start_drag {} text/plain;charset=utf-8,UTF8_STRING,application/x-crabshell-drag",
     press_serial(&fake, &mut event_loop)
   );
   logged(&fake, &mut event_loop, &started);
@@ -753,6 +754,16 @@ fn a_drag_leaving_its_window_offers_its_text_and_ends_when_taken() {
 
 #[test]
 fn a_typed_drag_crosses_from_one_window_to_a_button_in_another() {
+  typed_drag_across(false);
+}
+
+/// The source's `dnd_drop_performed` may come before the target's drop.
+#[test]
+fn a_typed_drag_crosses_whichever_drop_event_comes_first() {
+  typed_drag_across(true);
+}
+
+fn typed_drag_across(source_first: bool) {
   let ends: Rc<RefCell<Vec<bool>>> = Rc::default();
   let drops: Rc<RefCell<Vec<u32>>> = Rc::default();
   let mut hovered = None;
@@ -789,7 +800,10 @@ fn a_typed_drag_crosses_from_one_window_to_a_button_in_another() {
     "accept application/x-crabshell-drag",
   );
   assert!(hovered.get());
-  fake.run(|state| state.drag_drop());
+  fake.run(move |state| match source_first {
+    true => state.drag_drop_source_first(),
+    false => state.drag_drop(),
+  });
   wait(&mut event_loop, "the drop", |_| !drops.borrow().is_empty());
   assert_eq!(*drops.borrow(), [7]);
   assert_eq!(*ends.borrow(), [true]);
@@ -799,15 +813,57 @@ fn a_typed_drag_crosses_from_one_window_to_a_button_in_another() {
   cx.owner().dispose();
 }
 
+/// A source removed mid-drag cancels the drag, and the finger the
+/// compositor's drag took is let go, so the next tap clicks.
 #[test]
 fn a_source_removed_mid_drag_cancels_the_drag() {
-  let mut shown = None;
+  let mut knobs = None;
   let (fake, mut event_loop, cx) = dnd_bars(|cx| {
-    let on = cx.signal(true);
-    shown = Some(on);
+    let (on, clicks) = (cx.signal(true), cx.signal(0_u32));
+    knobs = Some((on, clicks));
     let source = Button::new(Text::new("drag"))
       .drag_data(Some(7_u32))
+      .on_click(move |_| clicks.update(|n| *n += 1))
       .visible(move || on.get());
+    (source, Button::new(Text::new("other")))
+  });
+  let (shown, clicks) = knobs.expect("built");
+  for touch in [false, true] {
+    fake.clear();
+    shown.set(true);
+    frames_any(&mut event_loop);
+    fake.run(move |state| match touch {
+      true => state.touch_out(0, (10.0, 10.0), (10.0, 40.0)),
+      false => state.press_out(0, (10.0, 10.0), (10.0, 40.0)),
+    });
+    let started = format!(
+      "start_drag {} application/x-crabshell-drag",
+      press_serial(&fake, &mut event_loop)
+    );
+    logged(&fake, &mut event_loop, &started);
+    shown.set(false);
+    logged(&fake, &mut event_loop, "source destroyed");
+  }
+  shown.set(true);
+  frames_any(&mut event_loop);
+  fake.run(|state| state.tap((10.0, 10.0), 0.0, false));
+  wait(&mut event_loop, "the tap's click", |_| clicks.get() == 1);
+  cx.owner().dispose();
+}
+
+/// Lets a change reach the windows.
+fn frames_any(event_loop: &mut EventLoop) {
+  run_for(event_loop, Duration::from_millis(30));
+}
+
+#[test]
+fn a_drag_back_over_its_own_window_still_moves_its_button() {
+  let moves: Rc<RefCell<Vec<(DragPhase, f32)>>> = Rc::default();
+  let (fake, mut event_loop, cx) = dnd_bars(|_| {
+    let moves = Rc::clone(&moves);
+    let source = Button::new(Text::new("drag"))
+      .drag_data(Some(7_u32))
+      .on_drag(move |_, drag| moves.borrow_mut().push((drag.phase, drag.position.x)));
     (source, Button::new(Text::new("other")))
   });
   fake.run(|state| state.press_out(0, (10.0, 10.0), (10.0, 40.0)));
@@ -816,7 +872,120 @@ fn a_source_removed_mid_drag_cancels_the_drag() {
     press_serial(&fake, &mut event_loop)
   );
   logged(&fake, &mut event_loop, &started);
-  shown.expect("built").set(false);
-  logged(&fake, &mut event_loop, "source destroyed");
+  moves.borrow_mut().clear();
+  fake.run(|state| {
+    state.pointer_leave(0);
+    state.drag_enter(0, (60.0, 10.0), None);
+    state.drag_motion((80.0, 10.0));
+  });
+  wait(&mut event_loop, "the moves back", |_| {
+    moves.borrow().len() == 2
+  });
+  assert_eq!(
+    *moves.borrow(),
+    [(DragPhase::Move, 60.0), (DragPhase::Move, 80.0)]
+  );
+  fake.run(|state| state.drag_drop());
+  logged(&fake, &mut event_loop, "cancel");
+  wait(&mut event_loop, "the end", |_| moves.borrow().len() == 3);
+  assert_eq!(moves.borrow()[2], (DragPhase::End, 80.0));
+  cx.owner().dispose();
+}
+
+#[test]
+fn a_drop_from_a_program_that_never_closes_its_pipe_goes_at_the_next_drop() {
+  let dropped = Dropped::default();
+  let (fake, mut event_loop, cx) = dnd_bars(|cx| {
+    let target = content_target(&dropped, cx.signal(false));
+    (target, Button::new(Text::new("other")))
+  });
+  fake.run(|state| state.stuck_drag_enter(0, (50.0, 10.0), "UTF8_STRING", b"stuck".to_vec()));
+  logged(&fake, &mut event_loop, "accept UTF8_STRING");
+  fake.run(|state| state.drag_drop());
+  logged(&fake, &mut event_loop, "receive UTF8_STRING");
+  run_for(&mut event_loop, Duration::from_millis(30));
+  assert!(dropped.borrow().is_empty(), "the pipe never ended");
+
+  fake.clear();
+  fake.run(|state| {
+    let types: &[&str] = &["UTF8_STRING"];
+    state.drag_enter(0, (50.0, 10.0), Some((types, b"hi".to_vec())));
+  });
+  logged(&fake, &mut event_loop, "accept UTF8_STRING");
+  fake.run(|state| state.drag_drop());
+  wait(&mut event_loop, "the text", |_| {
+    !dropped.borrow().is_empty()
+  });
+  assert_eq!(*dropped.borrow(), [DragContent::Text(String::from("hi"))]);
+  let (sent, received) = std::sync::mpsc::channel();
+  fake.run(move |state| {
+    sent
+      .send(state.stuck_pipe_closed())
+      .expect("the test waits")
+  });
+  assert!(
+    received.recv().expect("an answer"),
+    "the stuck read was let go"
+  );
+  cx.owner().dispose();
+}
+
+#[test]
+fn a_target_hidden_under_a_still_drag_withdraws_the_accept() {
+  let dropped = Dropped::default();
+  let mut knobs = None;
+  let (fake, mut event_loop, cx) = dnd_bars(|cx| {
+    let (on, lit) = (cx.signal(true), cx.signal(false));
+    knobs = Some((on, lit));
+    let target = content_target(&dropped, lit).visible(move || on.get());
+    (target, Button::new(Text::new("other")))
+  });
+  let (shown, hovered) = knobs.expect("built");
+  fake.run(|state| {
+    let types: &[&str] = &["text/uri-list"];
+    state.drag_enter(0, (50.0, 10.0), Some((types, b"file:///a".to_vec())));
+  });
+  logged(&fake, &mut event_loop, "accept text/uri-list");
+  assert!(hovered.get());
+  shown.set(false);
+  logged(&fake, &mut event_loop, "accept none");
+  assert!(!hovered.get());
+  fake.run(|state| state.drag_drop());
+  logged(&fake, &mut event_loop, "cancel");
+  run_for(&mut event_loop, Duration::from_millis(30));
+  assert!(dropped.borrow().is_empty());
+  cx.owner().dispose();
+}
+
+/// A drag of the shell's dropped on a program that never finishes
+/// doesn't make the next drag offering the private type count as its own.
+#[test]
+fn a_private_type_drag_after_a_drop_never_finished_is_another_programs() {
+  let dropped = Dropped::default();
+  let (fake, mut event_loop, cx) = dnd_bars(|cx| {
+    let source = Button::new(Text::new("drag")).drag_data(Some(7_u32));
+    (source, content_target(&dropped, cx.signal(false)))
+  });
+  fake.run(|state| state.press_out(0, (10.0, 10.0), (10.0, 40.0)));
+  let started = format!(
+    "start_drag {} application/x-crabshell-drag",
+    press_serial(&fake, &mut event_loop)
+  );
+  logged(&fake, &mut event_loop, &started);
+  fake.run(|state| {
+    state.pointer_leave(0);
+    state.drop_started();
+    let types: &[&str] = &["application/x-crabshell-drag", "UTF8_STRING"];
+    state.drag_enter(1, (50.0, 10.0), Some((types, b"other".to_vec())));
+  });
+  logged(&fake, &mut event_loop, "accept UTF8_STRING");
+  fake.run(|state| state.drag_drop());
+  wait(&mut event_loop, "the text", |_| {
+    !dropped.borrow().is_empty()
+  });
+  assert_eq!(
+    *dropped.borrow(),
+    [DragContent::Text(String::from("other"))]
+  );
   cx.owner().dispose();
 }

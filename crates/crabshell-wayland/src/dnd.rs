@@ -9,6 +9,7 @@ use std::any::{Any, TypeId};
 use std::os::fd::OwnedFd;
 use std::rc::Rc;
 
+use calloop::RegistrationToken;
 use crabshell_ui::{DragContent, DropSpot, Point};
 use smithay_client_toolkit::data_device_manager::data_offer::DragOffer;
 use smithay_client_toolkit::data_device_manager::data_source::DragSource;
@@ -37,6 +38,8 @@ pub(crate) const MAX_TEXT: usize = 4 * 1024 * 1024;
 pub(crate) struct Drags {
   out: Option<Outgoing>,
   over: Option<Over>,
+  /// The drop being read from another program, and its offer.
+  dropping: Option<(RegistrationToken, DragOffer)>,
 }
 
 /// A button's drag gone out of its window. Dropping it cancels the drag.
@@ -81,8 +84,11 @@ impl Platform {
         .get(out.window)
         .is_some_and(|entry| entry.window.dragging_out())
     {
+      // Dropping the source cancels the drag, which took the release.
       self.drags.out = None;
+      self.released_unseen();
     }
+    self.sync_accept();
     // A drag needs the held button's serial and version 3's drop events.
     let (Some(manager), Some((seat, serial)), true) = (
       &self.data_devices_manager,
@@ -109,7 +115,9 @@ impl Platform {
         Some(DragContent::Uris(uris)) => (&[URI_LIST], Some(uri_list(&uris))),
         None => (&[], None),
       };
-      let types = [PRIVATE].into_iter().chain(types.iter().copied());
+      // The private type last, so a program that takes the first it knows
+      // gets the text or URIs.
+      let types = types.iter().copied().chain([PRIVATE]);
       let source = manager.create_drag_and_drop_source(&self.qh, types, DndAction::Copy);
       source.start_drag(device, surface.wl_surface(), None, *serial);
       self.drags.out = Some(Outgoing {
@@ -160,6 +168,11 @@ impl Platform {
     let window = out.window;
     if taken {
       out.dropped = true;
+      // Dropped on the shell's own window, whose drop ends it, before or
+      // after this.
+      if matches!(&self.drags.over, Some(over) if matches!(over.kind, Kind::Ours(_))) {
+        return true;
+      }
     } else {
       self.drags.out = None;
     }
@@ -210,7 +223,7 @@ impl Platform {
     let types = offer.with_mime_types(<[String]>::to_vec);
     let has = |kind: &str| types.iter().any(|offered| offered == kind);
     let kind = match &self.drags.out {
-      Some(out) if has(PRIVATE) => Kind::Ours(out.carried),
+      Some(out) if has(PRIVATE) && !out.dropped => Kind::Ours(out.carried),
       _ if has(URI_LIST) => Kind::Content(URI_LIST),
       _ => match TEXT_TYPES.into_iter().find(|kind| has(kind)) {
         Some(kind) => Kind::Content(kind),
@@ -242,17 +255,43 @@ impl Platform {
     let Some(entry) = self.windows.get(over.window) else {
       return;
     };
-    let at = Point::new(x as f32, y as f32);
-    let takes = (x.is_finite() && y.is_finite()) && entry.window.drag_over(at, carried);
-    if takes == over.accepted {
+    if !(x.is_finite() && y.is_finite()) {
       return;
     }
-    over.accepted = takes;
+    let at = Point::new(x as f32, y as f32);
+    // The shell's own drag back over its window moves its button there.
+    if matches!(over.kind, Kind::Ours(_))
+      && self
+        .drags
+        .out
+        .as_ref()
+        .is_some_and(|out| out.window == over.window)
+    {
+      entry.window.drag_out_moved(at);
+    }
+    entry.window.drag_over(at, carried);
+    self.sync_accept();
+  }
+
+  /// Tells the program whether a button under its drag takes it, when
+  /// that changed: on a motion, or a layout under a still drag.
+  fn sync_accept(&mut self) {
+    let Some(over) = &mut self.drags.over else {
+      return;
+    };
     let mime = match over.kind {
       Kind::Ours(_) => PRIVATE,
       Kind::Content(mime) => mime,
       Kind::Nothing => return,
     };
+    let takes = self
+      .windows
+      .get(over.window)
+      .is_some_and(|entry| entry.window.drag_takes());
+    if takes == over.accepted {
+      return;
+    }
+    over.accepted = takes;
     if let Some(offer) = drag_offer(&over.device) {
       offer.accept_mime_type(offer.serial, takes.then(|| mime.to_owned()));
     }
@@ -316,8 +355,15 @@ impl Platform {
         return;
       }
     };
+    // A drop still waiting on a program that never closes its pipe goes.
+    if let Some((token, old)) = self.drags.dropping.take() {
+      self.loop_handle().remove(token);
+      done(&old, true);
+    }
     let cap = if mime == URI_LIST { MAX_URIS } else { MAX_TEXT };
-    self.read_pipe(pipe.into(), cap, move |platform, read| {
+    let kept = offer.clone();
+    let token = self.read_pipe(pipe.into(), cap, move |platform, read| {
+      platform.drags.dropping = None;
       done(&offer, true);
       let content = match read {
         Received::Done(bytes) => content(mime, &bytes),
@@ -333,6 +379,7 @@ impl Platform {
         entry.window.drop_into(spot, Rc::new(content));
       }
     });
+    self.drags.dropping = token.map(|token| (token, kept));
   }
 }
 
