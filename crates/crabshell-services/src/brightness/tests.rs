@@ -78,7 +78,7 @@ fn an_idle_backlight_wakes_nothing() {
   backlight(sysfs.path(), "intel_backlight", "400\n", "1000\n");
   let mut shell = Harness::new(with_sysfs(&sysfs));
   let devices = shell.cx.brightness().devices();
-  run(&mut shell, 100);
+  shell.settle();
   assert_eq!(run(&mut shell, 2000), 1);
   assert_eq!(devices.get_untracked().len(), 1);
 }

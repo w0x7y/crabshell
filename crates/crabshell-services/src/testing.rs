@@ -85,6 +85,15 @@ impl Harness {
     }
   }
 
+  /// Runs the loop until 200 ms pass with no wakeup but the run's own
+  /// deadline, so what a test started has landed. Gives up after 5 s.
+  pub(crate) fn settle(&mut self) {
+    let give_up = Instant::now() + Duration::from_secs(5);
+    while self.run_until(Instant::now() + Duration::from_millis(200)) > 1 {
+      assert!(Instant::now() < give_up, "still waking after 5 s");
+    }
+  }
+
   /// Does `act`, then runs the loop for 100 ms, until `done`. Gives up
   /// after 5 s.
   pub(crate) fn retry_until(
