@@ -10,6 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
+use std::panic::Location;
 use std::rc::Rc;
 use std::sync::Once;
 use std::time::{Duration, Instant};
@@ -72,11 +73,23 @@ const KEY_MGMT_SUITE_B_192: u32 = 0x2000;
 const MAX_OBJECTS: usize = 4096;
 /// How often a scanner asks for a scan, about as often as NetworkManager
 /// allows one.
-const SCAN_PERIOD: Duration = if cfg!(test) {
-  Duration::from_millis(200)
-} else {
-  Duration::from_secs(10)
-};
+const SCAN_PERIOD: Duration = Duration::from_secs(10);
+
+#[cfg(test)]
+thread_local! {
+  /// A test's own period, so it needn't wait 10 s for each scan.
+  static TEST_SCAN_PERIOD: Cell<Duration> = const { Cell::new(SCAN_PERIOD) };
+}
+
+#[cfg(not(test))]
+fn scan_period() -> Duration {
+  SCAN_PERIOD
+}
+
+#[cfg(test)]
+fn scan_period() -> Duration {
+  TEST_SCAN_PERIOD.with(Cell::get)
+}
 /// The error NetworkManager answers a scan with right after another, or
 /// while the device connects.
 const NOT_ALLOWED: &str = "org.freedesktop.NetworkManager.Device.NotAllowed";
@@ -336,11 +349,15 @@ impl Network {
 
   /// Asks every Wi-Fi device that is on to look for networks now and
   /// every 10 s after, while the context that called `cx.network()` lives,
-  /// as a Wi-Fi menu that is open wants. Scanners share one timer.
-  /// NetworkManager's refusal of a scan too soon after another is logged
-  /// only at debug.
+  /// so call it inside the popup that shows the networks. Scanners share
+  /// one timer. NetworkManager's refusal of a scan too soon after another
+  /// is logged only at debug.
+  #[track_caller]
   pub fn scanner(&self) -> Scanner {
-    if let Some(service) = self.service.as_ref().filter(|_| !self.owner.is_disposed()) {
+    if self.owner.is_disposed() {
+      let at = Location::caller();
+      tracing::warn!("Network::scanner (called at {at}) on a context that is gone does nothing");
+    } else if let Some(service) = &self.service {
       service.add_scanner(self.owner);
     }
     Scanner { _private: () }
@@ -469,11 +486,21 @@ impl Network {
   }
 
   /// Saves a new connection with `settings`, by group and name as
-  /// [`SavedConnection::settings`] holds them, such as
-  /// `json!({"connection": {"id": "cafe", "type": "802-11-wireless"}, ...})`.
-  /// Secrets such as a Wi-Fi `psk` may come too. A value of a shape
-  /// NetworkManager has no type for, or a refusal, is logged, never the
-  /// settings.
+  /// [`SavedConnection::settings`] holds them. Secrets such as a Wi-Fi
+  /// `psk` may come too. An SSID or a hardware address may come as text.
+  /// A value of a shape NetworkManager has no type for, or a refusal, is
+  /// logged, never the settings.
+  ///
+  /// ```no_run
+  /// # use crabshell_services::Network;
+  /// fn save_cafe(network: &Network, password: &str) {
+  ///   network.add_connection(&serde_json::json!({
+  ///     "connection": { "id": "cafe", "type": "802-11-wireless" },
+  ///     "802-11-wireless": { "ssid": "cafe" },
+  ///     "802-11-wireless-security": { "key-mgmt": "wpa-psk", "psk": password },
+  ///   }));
+  /// }
+  /// ```
   pub fn add_connection(&self, settings: &Json) {
     if let Some(settings) = typed(settings, "AddConnection") {
       self.call(SETTINGS_PATH, SETTINGS, "AddConnection", settings);
@@ -482,7 +509,10 @@ impl Network {
 
   /// Replaces the settings of the saved connection `uuid` names with
   /// `settings`, as [`add_connection`](Self::add_connection) takes them.
-  /// Those left out go back to NetworkManager's defaults.
+  /// Those left out go back to NetworkManager's defaults. NetworkManager
+  /// keeps the saved secrets when `settings` carries none, and drops them
+  /// all once it carries any, so a new `psk` alone on an 802.1X connection
+  /// drops its other passwords.
   pub fn update_connection(&self, uuid: &str, settings: &Json) {
     if let Some(settings) = typed(settings, "Update") {
       self.call_saved(uuid, "Update", settings);
@@ -946,11 +976,11 @@ impl NetworkService {
           return TimeoutAction::Drop;
         };
         service.scan();
-        TimeoutAction::ToDuration(SCAN_PERIOD)
+        TimeoutAction::ToDuration(scan_period())
       });
       let event_loop = self.shared.event_loop();
       let timer = event_loop
-        .and_then(|event_loop| event_loop.insert_timer(Instant::now() + SCAN_PERIOD, tick));
+        .and_then(|event_loop| event_loop.insert_timer(Instant::now() + scan_period(), tick));
       self.scan_timer.set(timer);
     }
     owner.signal(Unscan(Rc::clone(self)));
@@ -1136,6 +1166,11 @@ impl Daemon for NetworkService {
       state.connection = Some(connection);
     }
     self.publish();
+    // A scanner made before NetworkManager was read scans now, not a
+    // period later.
+    if self.scanners.get() > 0 {
+      self.scan();
+    }
   }
 
   fn signal(self: &Rc<Self>, _: &Connection, message: &Message) {

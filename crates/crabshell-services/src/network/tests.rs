@@ -686,6 +686,7 @@ fn methods_reach_networkmanager_and_the_password_is_never_logged() {
 
 #[test]
 fn scanners_share_one_timer_that_goes_with_the_last_context() {
+  super::TEST_SCAN_PERIOD.with(|period| period.set(Duration::from_millis(200)));
   let bus = PrivateBus::start();
   let mut shell = Harness::new(online(&bus));
   // A second Wi-Fi device, off, which isn't asked.
@@ -750,6 +751,54 @@ fn scanners_share_one_timer_that_goes_with_the_last_context() {
   let before = calls_to(&nm, "RequestScan");
   assert_eq!(shell.run_until(Instant::now() + Duration::from_secs(2)), 1);
   assert_eq!(calls_to(&nm, "RequestScan"), before, "no timer left");
+}
+
+#[test]
+fn a_scanner_made_before_networkmanager_is_read_scans_once_it_is() {
+  // NetworkManager's own period of 10 s, past `wait_for`'s 5 s, so only
+  // the read can bring the scan.
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let network = shell.cx.network();
+  network.scanner();
+  shell.run_until(Instant::now() + Duration::from_millis(100));
+  let nm = fake_nm_with(&mut shell, &bus, |nm| {
+    nm.on("RequestScan", |call| reply(call, &()));
+  });
+  let calls = Rc::clone(&nm.calls);
+  wait_for(&mut shell, "a scan", || {
+    calls.borrow().contains(&format!("RequestScan {WLAN}"))
+  });
+}
+
+#[test]
+fn a_scanner_on_a_context_that_is_gone_does_nothing_and_says_so() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let nm = fake_nm(&mut shell, &bus);
+  let menu = shell.cx.child();
+  let network = menu.network();
+  let devices = network.devices();
+  wait_for(&mut shell, "the devices", || {
+    !devices.get_untracked().is_empty()
+  });
+  menu.owner().dispose();
+  let logs = capture_logs(|| {
+    network.scanner();
+  });
+  assert!(
+    logs.contains("Network::scanner (called at crates/crabshell-services/src/network/tests.rs:"),
+    "{logs}"
+  );
+  assert!(
+    logs.contains("on a context that is gone does nothing"),
+    "{logs}"
+  );
+  assert_eq!(
+    shell.run_until(Instant::now() + Duration::from_millis(300)),
+    1
+  );
+  assert_eq!(calls_to(&nm, "RequestScan"), 0);
 }
 
 #[test]
