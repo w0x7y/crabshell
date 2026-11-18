@@ -1749,8 +1749,6 @@ fn run_as_child() {
     }),
     // The notes example, whose links panic instead of opening.
     Ok("notes") => crabshell::run(|cx| notes::shell(cx, |_, _| panic!("no browser"))),
-    // The counter bar in a font bundled from bytes, as `include_bytes!`
-    // gives them: fontconfig never starts.
     // The counter bar with a service connected, for its RSS.
     Ok("pipewire counter") => crabshell::run(|cx| {
       let nodes = cx.pipewire().nodes();
@@ -1771,6 +1769,8 @@ fn run_as_child() {
       });
       cx.per_output(counter::bar);
     }),
+    // The counter bar in a font bundled from bytes, as `include_bytes!`
+    // gives them: fontconfig never starts.
     Ok("bundled counter") => crabshell::run(|cx| {
       let bytes = std::fs::read(BUNDLED_FONT).expect("DejaVu Sans is installed");
       cx.add_font(Box::leak(bytes.into_boxed_slice()));
