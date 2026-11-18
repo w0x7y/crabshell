@@ -20,9 +20,10 @@ mod tests;
 use std::cell::{Cell, RefCell};
 use std::future::poll_fn;
 use std::panic::{self, AssertUnwindSafe, Location};
-use std::pin::Pin;
+use std::pin::{Pin, pin};
 use std::rc::Rc;
 use std::sync::Once;
+use std::task::Poll;
 use std::time::{Duration, Instant, SystemTime};
 
 use calloop::RegistrationToken;
@@ -48,6 +49,10 @@ const HANDOFF: &str = "dev.crabshell.Handoff";
 
 /// How long the new shell waits for the old one's notifications.
 const HANDOFF_LIMIT: Duration = Duration::from_secs(2);
+
+/// The most calls held while the old shell hands its notifications over;
+/// past it they wait in zbus's queue, and the takeover may time out.
+const MAX_HELD: usize = 256;
 
 /// The most bytes of notifications the old shell may hand over: past the
 /// history's own caps, so a full history fits.
@@ -533,7 +538,8 @@ impl Service {
       "GetNameOwner",
       &NOTIFICATIONS,
     );
-    let owner = ask.await.ok()?.body().deserialize::<String>().ok()?;
+    let owner = self.shared.timeout(HANDOFF_LIMIT, ask).await.ok()?;
+    let owner = owner.body().deserialize::<String>().ok()?;
     if caller != Some(owner.as_str()) || !self.handing_off.replace(false) {
       return None;
     }
@@ -923,6 +929,8 @@ impl Service {
     let serving = match header.member().map(|member| member.as_str()) {
       Some("NameAcquired") => {
         tracing::info!("serving notifications");
+        // Back from a new shell that failed: no one is to take them now.
+        self.handing_off.set(false);
         true
       }
       Some("NameLost") => {
@@ -972,11 +980,29 @@ async fn run(service: Rc<Service>, address: zbus::Address) {
     // As NameAcquired says too, so expiries held till now reach the apps.
     state.serving = true;
   }
-  // Calls that arrive meanwhile wait in `messages`, so ids don't clash.
+  // Calls that arrive meanwhile are held, so ids don't clash. They are
+  // read off the connection meanwhile: past zbus's queue of 64 its reader
+  // would wait, and the old shell's answer with it.
+  let mut held = Vec::new();
   if owner && let Some(from) = from {
-    service.take_over(&connection, &from).await;
+    let mut take = pin!(service.take_over(&connection, &from));
+    poll_fn(|cx| {
+      while held.len() < MAX_HELD
+        && let Poll::Ready(Some(message)) = Pin::new(&mut messages).poll_next(cx)
+      {
+        held.push(message);
+      }
+      take.as_mut().poll(cx)
+    })
+    .await;
   }
   service.release();
+  for message in held {
+    match message {
+      Ok(message) => service.on_message(&connection, &message).await,
+      Err(error) => tracing::warn!(%error, "a bad message on the session bus"),
+    }
+  }
   match requested {
     Ok(RequestNameReply::InQueue) => {
       tracing::info!("another program serves notifications; waiting for it to leave");

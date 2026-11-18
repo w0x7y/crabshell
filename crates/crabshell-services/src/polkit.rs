@@ -976,7 +976,19 @@ async fn run(service: Rc<Service>, address: zbus::Address) {
   if let Some(state) = service.state.borrow_mut().as_mut() {
     state.connection = Some(connection.clone());
   }
-  register(&service, &connection).await;
+  if service.shared.alone.get() {
+    register(&service, &connection).await;
+  } else {
+    // polkit takes one agent per session, which the old shell of a
+    // reload holds until it exits.
+    let (weak, connection) = (Rc::downgrade(&service), connection.clone());
+    service.shared.when_alone(move || {
+      if let Some(service) = weak.upgrade() {
+        let shared = Rc::clone(&service.shared);
+        shared.spawn(async move { register(&service, &connection).await });
+      }
+    });
+  }
   loop {
     let next = poll_fn(|cx| Pin::new(&mut messages).poll_next(cx)).await;
     if !service.alive() {

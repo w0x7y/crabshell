@@ -64,7 +64,10 @@ struct Inner {
   /// away.
   listener: RefCell<Option<UnixListener>>,
   /// The socket file's device and inode, so only ours is ever removed.
-  file: Option<(u64, u64)>,
+  file: Cell<Option<(u64, u64)>>,
+  /// Closed, so a bind that waited for the shell to run alone doesn't
+  /// happen.
+  stopped: Cell<bool>,
   /// The loop source that waits for clients, or the timer that brings it
   /// back after a back-off.
   source: Cell<Option<RegistrationToken>>,
@@ -82,29 +85,29 @@ pub(crate) fn socket_server(cx: &Cx, path: PathBuf) -> SocketServer {
       tracing::warn!("cx.socket_server() needs the services the shell provides; it never listens");
     });
   }
-  let bound = shared.as_ref().and_then(|_| {
-    bind(&path)
-      .inspect_err(|error| {
-        let path = path.display();
-        tracing::warn!(%path, %error, "can't listen on the socket");
-      })
-      .ok()
-  });
-  let (listener, file) = bound.unzip();
   let cx = cx.child();
   let inner = Rc::new(Inner {
-    shared,
+    shared: shared.clone(),
     path,
     cx: cx.clone(),
-    listener: RefCell::new(listener),
-    file,
+    listener: RefCell::new(None),
+    file: Cell::new(None),
+    stopped: Cell::new(false),
     source: Cell::new(None),
     open: Rc::default(),
     on_connection: RefCell::new(None),
   });
   // Dropped with the server's context, which stops it.
   cx.owner().signal(StopOnDrop(Rc::clone(&inner)));
-  inner.listen();
+  // The old shell of a reload listens there until it exits.
+  let weak = Rc::downgrade(&inner);
+  if let Some(shared) = shared {
+    shared.when_alone(move || {
+      if let Some(inner) = weak.upgrade().filter(|inner| !inner.stopped.get()) {
+        inner.bind();
+      }
+    });
+  }
   SocketServer { inner }
 }
 
@@ -182,6 +185,21 @@ impl SocketServer {
 impl Inner {
   fn event_loop(&self) -> Option<Box<dyn crate::EventLoop>> {
     self.shared.as_ref()?.event_loop()
+  }
+
+  /// Takes the socket and waits for clients. A failure is logged.
+  fn bind(self: &Rc<Self>) {
+    match bind(&self.path) {
+      Ok((listener, file)) => {
+        *self.listener.borrow_mut() = Some(listener);
+        self.file.set(Some(file));
+        self.listen();
+      }
+      Err(error) => {
+        let path = self.path.display();
+        tracing::warn!(%path, %error, "can't listen on the socket");
+      }
+    }
   }
 
   /// Waits for clients, unless the server stopped.
@@ -285,11 +303,12 @@ impl Inner {
 
   /// Stops listening and removes the socket file if it is still ours.
   fn stop(&self) {
+    self.stopped.set(true);
     if let (Some(token), Some(event_loop)) = (self.source.take(), self.event_loop()) {
       event_loop.remove(token);
     }
     let listener = self.listener.borrow_mut().take();
-    if let (Some(_), Some((dev, ino))) = (listener, self.file) {
+    if let (Some(_), Some((dev, ino))) = (listener, self.file.get()) {
       let ours = std::fs::symlink_metadata(&self.path)
         .is_ok_and(|meta| (meta.dev(), meta.ino()) == (dev, ino));
       if ours {

@@ -427,3 +427,28 @@ fn a_handler_may_close_its_server_and_open_another_at_the_same_path() {
   server.borrow_mut().take();
   newer.borrow_mut().take();
 }
+
+/// The old shell of a reload listens on the path until it exits: the new
+/// one's server binds once it runs alone, and one closed before that
+/// never does.
+#[test]
+fn beside_the_old_shell_of_a_reload_a_server_listens_once_alone() {
+  let dir = Dir::new();
+  let mut shell = Harness::new(offline());
+  crate::set_alone(&shell.cx, false);
+  let old = UnixListener::bind(dir.join("shared")).unwrap();
+  let child = shell.cx.child();
+  let mut servers = Vec::new();
+  let logs = capture_logs(|| {
+    servers.push(shell.cx.socket_server(dir.join("shared")));
+    child.socket_server(dir.join("gone"));
+    run(&mut shell, 20);
+  });
+  assert!(!logs.contains("can't listen"), "{logs}");
+  child.owner().dispose();
+  // The old shell exits, leaving its file.
+  drop(old);
+  crate::set_alone(&shell.cx, true);
+  let _peer = client(&dir.join("shared"));
+  assert!(!dir.join("gone").exists(), "closed before it could bind");
+}

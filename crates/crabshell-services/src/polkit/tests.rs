@@ -1027,3 +1027,21 @@ fn lookups_that_never_return_cap_the_threads_left_waiting() {
   agent.respond("hunter2");
   assert_eq!(polkit.answered(&answer), Ok(()));
 }
+
+/// polkit takes one agent per session, which the old shell of a reload
+/// holds until it exits: the new one registers once it runs alone.
+#[test]
+fn beside_the_old_shell_of_a_reload_the_agent_registers_once_alone() {
+  let mut polkit = Polkit::start(PASSWORD);
+  crate::set_alone(&polkit.shell.cx, false);
+  let _agent = polkit.shell.cx.polkit_agent();
+  polkit
+    .shell
+    .run_until(Instant::now() + Duration::from_millis(300));
+  assert!(polkit.registrations.borrow().is_empty(), "not beside it");
+  crate::set_alone(&polkit.shell.cx, true);
+  let registrations = Rc::clone(&polkit.registrations);
+  polkit.wait("the registration", move || {
+    registrations.borrow().len() == 1
+  });
+}

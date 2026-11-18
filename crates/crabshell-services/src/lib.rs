@@ -124,6 +124,7 @@ pub fn provide<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>) {
 /// [`provide`] with the system's parts swapped for a test's.
 fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Config) {
   let shared = Rc::new(Shared::new(cx.owner(), handle, config));
+  cx.provide(Alone(Rc::clone(&shared)));
   cx.provide(clock::Clocks::new(Rc::clone(&shared)));
   cx.provide(sway::Service::new(Rc::clone(&shared)));
   cx.provide(hyprland::Service::new(Rc::clone(&shared)));
@@ -198,6 +199,26 @@ pub fn save_state(cx: &Cx) -> Option<serde_json::Value> {
 pub fn taking_over(cx: &Cx) -> bool {
   cx.service::<notifications::Service>()
     .is_some_and(|service| service.taking_over())
+}
+
+/// Says whether the shell runs alone. A shell a reload starts beside the
+/// old one isn't, until the old one has exited: meanwhile what only one
+/// process can hold, the polkit agent and socket servers, waits, and
+/// starts when this turns true. A shell is alone until told otherwise.
+#[doc(hidden)]
+pub fn set_alone(cx: &Cx, alone: bool) {
+  let Some(handle) = cx.service::<Alone>() else {
+    return;
+  };
+  let shared = &handle.0;
+  shared.alone.set(alone);
+  if alone {
+    // Taken first: a start may add another.
+    let waiting = shared.until_alone.take();
+    for start in waiting {
+      start();
+    }
+  }
 }
 
 /// Hands the services what [`save_state`] gave the shell before a reload.
@@ -665,7 +686,14 @@ struct Shared {
   /// The programs waiting for their activation token.
   waiting: activation::Waiting,
   config: Config,
+  /// Whether the shell runs alone; see [`set_alone`].
+  alone: Cell<bool>,
+  /// What starts once it does.
+  until_alone: RefCell<Vec<Box<dyn FnOnce()>>>,
 }
+
+/// The services' [`Shared`], for [`set_alone`].
+struct Alone(Rc<Shared>);
 
 impl Shared {
   fn new<D: 'static>(root: Owner, handle: &LoopHandle<'static, D>, config: Config) -> Shared {
@@ -682,6 +710,17 @@ impl Shared {
       activation: OnceCell::new(),
       waiting: activation::Waiting::default(),
       config,
+      alone: Cell::new(true),
+      until_alone: RefCell::default(),
+    }
+  }
+
+  /// Runs `start` now if the shell runs alone, else once it does.
+  fn when_alone(&self, start: impl FnOnce() + 'static) {
+    if self.alone.get() {
+      start();
+    } else {
+      self.until_alone.borrow_mut().push(Box::new(start));
     }
   }
 

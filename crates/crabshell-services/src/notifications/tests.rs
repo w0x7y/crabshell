@@ -1283,3 +1283,118 @@ fn only_the_shell_that_took_the_name_can_take_the_notifications() {
   let refused = take(&mut shell, &taker).expect_err("only once");
   assert!(refused.contains("nothing to hand over"), "{refused}");
 }
+
+/// A shell that got the name back, as when the new shell of a reload
+/// failed, hands nothing over to whoever takes it next.
+#[test]
+fn a_shell_that_got_the_name_back_hands_nothing_over() {
+  let bus = PrivateBus::start();
+  let (mut shell, notifications, _) = serve(&bus, online(&bus));
+  let server = service(&notifications);
+  let unique = server.state.borrow().as_ref().and_then(|state| {
+    let connection = state.connection.as_ref()?;
+    Some(connection.unique_name()?.to_string())
+  });
+  let unique = unique.expect("the shell's name on the bus");
+  crate::save_state(&shell.cx).expect("something to keep");
+  let take_name = |shell: &mut Harness| {
+    let taker = shell.block_on(bus.connect(&[]));
+    let asked = taker.clone();
+    shell
+      .block_on(async move {
+        let flags = zbus::fdo::RequestNameFlags::REPLACE_EXISTING;
+        asked.request_name_with_flags(NOTIFICATIONS, flags).await
+      })
+      .expect("the name");
+    taker
+  };
+  let failed = take_name(&mut shell);
+  wait_for(&mut shell, "the shell to step back", || !server.serving());
+  shell.block_on(failed.close()).expect("the new shell fails");
+  wait_for(&mut shell, "the name back", || server.serving());
+  let next = take_name(&mut shell);
+  wait_for(&mut shell, "the shell to step back", || !server.serving());
+  let refused = shell.block_on(async move {
+    let call = next.call_method(
+      Some(unique.as_str()),
+      NOTIFICATIONS_PATH,
+      Some(super::HANDOFF),
+      "Take",
+      &(),
+    );
+    call.await.map(|_| ()).map_err(|error| error.to_string())
+  });
+  let refused = refused.expect_err("disarmed when the name came back");
+  assert!(refused.contains("nothing to hand over"), "{refused}");
+}
+
+/// More calls than zbus queues, 64, while the old shell is slow to hand
+/// over: they are read off meanwhile, so its answer still gets through,
+/// and then each is answered.
+#[test]
+fn a_burst_while_taking_over_is_held_and_then_answered() {
+  let bus = PrivateBus::start();
+  let (mut old, old_notes, app) = serve(&bus, online(&bus));
+  notify(&mut old, &app, note("before")).expect("an id");
+  let saved = crate::save_state(&old.cx).expect("something to keep");
+  let mut new = Harness::new(online(&bus));
+  crate::restore_state(&new.cx, saved);
+  let new_notes = new.cx.notifications();
+  let server = service(&new_notes);
+  // Only the new shell runs, so the old one doesn't answer yet.
+  wait_for(&mut new, "the name", || server.serving());
+  let address = bus.address.clone();
+  let burst = std::thread::spawn(move || {
+    let mut shell = Harness::new(offline());
+    let builder = zbus::connection::Builder::address(address.as_str());
+    let app = shell
+      .block_on(async move { builder.build().await })
+      .expect("the app's connection");
+    let answered = Rc::new(Cell::new(0));
+    for n in 0..100 {
+      let (app, answered) = (app.clone(), Rc::clone(&answered));
+      shell.spawn(async move {
+        let hints: HashMap<&str, Variant<'_>> = HashMap::new();
+        let body = (
+          "burst",
+          0_u32,
+          "",
+          format!("n{n}"),
+          "",
+          Vec::<&str>::new(),
+          hints,
+          -1,
+        );
+        let call = app.call_method(
+          Some(NOTIFICATIONS),
+          NOTIFICATIONS_PATH,
+          Some(NOTIFICATIONS),
+          "Notify",
+          &body,
+        );
+        if call.await.is_ok() {
+          answered.set(answered.get() + 1);
+        }
+      });
+    }
+    let give_up = Instant::now() + Duration::from_secs(10);
+    while answered.get() < 100 && Instant::now() < give_up {
+      shell.run_until(Instant::now() + Duration::from_millis(10));
+    }
+    answered.get()
+  });
+  new.run_until(Instant::now() + Duration::from_millis(300));
+  let logs = capture_logs(|| {
+    while crate::taking_over(&new.cx) || !burst.is_finished() {
+      old.run_until(Instant::now() + Duration::from_millis(3));
+      new.run_until(Instant::now() + Duration::from_millis(3));
+    }
+  });
+  assert_eq!(burst.join().expect("the burst ran"), 100);
+  assert!(
+    logs.contains("took the notifications over from the old shell"),
+    "{logs}"
+  );
+  assert_eq!(list_ids(&new_notes).len(), 101);
+  drop(old_notes);
+}
