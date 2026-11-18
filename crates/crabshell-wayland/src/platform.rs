@@ -1166,8 +1166,6 @@ fn listener_slot(platform: &mut Platform) -> &mut Option<Listener<Platform>> {
   &mut platform.listener
 }
 
-/// Whether layer-shell would refuse `config`. A refusal is logged once,
-/// until the window's settings are good again.
 impl Platform {
   /// Says whether this shell runs alone. A shell a reload starts beside
   /// the old one isn't, until the old one has exited: meanwhile its panels
@@ -1194,6 +1192,8 @@ impl Platform {
   }
 }
 
+/// Whether layer-shell would refuse `config`. A refusal is logged once,
+/// until the window's settings are good again.
 fn refused(entry: &mut Entry<Surface, WlOutput>, config: &crabshell_ui::SurfaceConfig) -> bool {
   match surface::size_problem(config) {
     Some(problem) => {
