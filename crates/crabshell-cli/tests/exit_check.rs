@@ -91,15 +91,27 @@ fn kill_shell(supervised: &Supervised) -> Instant {
 /// The template bar's background, `#1e1e2e`.
 const BAR: [u8; 3] = [0x1e, 0x1e, 0x2e];
 
-/// Takes screenshots of the top strip of the headless output back to back
-/// until `stop`, and returns when each was taken and whether the bar
-/// showed in it: its background across the strip's row 1, above the
-/// widgets.
-fn screenshots(dir: PathBuf, display: String, stop: Arc<AtomicBool>) -> Vec<(Instant, bool)> {
+/// One screenshot of the top strip, and the workspace's top as Sway
+/// reported it just after.
+struct Shot {
+  at: Instant,
+  /// The bar's background across row 1, above the widgets.
+  bar: bool,
+  /// The bar's background across row 35, just below its 30 px: a second
+  /// bar stacked below the first would show there.
+  stacked: bool,
+  /// Where the space for other windows starts: the bars' zones.
+  top: u32,
+}
+
+/// Takes screenshots of the top 40 px of the headless output back to
+/// back until `stop`, each with the workspace's top from Sway's IPC at
+/// `socket`.
+fn screenshots(dir: PathBuf, display: String, socket: PathBuf, stop: Arc<AtomicBool>) -> Vec<Shot> {
   let mut shots = Vec::new();
   while !stop.load(Ordering::Relaxed) {
     let shot = std::process::Command::new("grim")
-      .args(["-g", "0,0 400x4", "-"])
+      .args(["-g", "0,0 400x40", "-"])
       .env_clear()
       .env("PATH", std::env::var_os("PATH").unwrap_or_default())
       .env("XDG_RUNTIME_DIR", &dir)
@@ -108,16 +120,48 @@ fn screenshots(dir: PathBuf, display: String, stop: Arc<AtomicBool>) -> Vec<(Ins
       .expect("grim is installed");
     assert!(shot.status.success(), "grim failed");
     let image = sway::Image::decode(&shot.stdout);
-    let row = &image.rgba[image.width as usize * 4..image.width as usize * 8];
-    let bar = row.chunks(4).all(|pixel| {
-      pixel[..3]
-        .iter()
-        .zip(BAR)
-        .all(|(&got, want)| got.abs_diff(want) <= 2)
+    let width = image.width as usize * 4;
+    let is_bar = |y: usize| {
+      image.rgba[width * y..width * (y + 1)]
+        .chunks(4)
+        .all(|pixel| {
+          pixel[..3]
+            .iter()
+            .zip(BAR)
+            .all(|(&got, want)| got.abs_diff(want) <= 2)
+        })
+    };
+    let (at, bar, stacked) = (Instant::now(), is_bar(1), is_bar(35));
+    shots.push(Shot {
+      at,
+      bar,
+      stacked,
+      top: workspace_top(&socket),
     });
-    shots.push((Instant::now(), bar));
   }
   shots
+}
+
+/// `rect.y` of the workspace on HEADLESS-1, from `swaymsg` on `socket`.
+fn workspace_top(socket: &std::path::Path) -> u32 {
+  let output = std::process::Command::new("swaymsg")
+    .arg("-s")
+    .arg(socket)
+    .args(["-t", "get_workspaces"])
+    .output()
+    .expect("swaymsg runs");
+  let json: String = String::from_utf8_lossy(&output.stdout)
+    .split_whitespace()
+    .collect();
+  // Sway writes each workspace's rect before its output.
+  let before = &json[..json.find("\"output\":\"HEADLESS-1\"").expect("a workspace")];
+  let rect = &before[before.rfind("\"rect\":").expect("a rect")..];
+  rect
+    .split("\"y\":")
+    .nth(1)
+    .and_then(|rest| rest.split([',', '}']).next())
+    .and_then(|y| y.trim().parse().ok())
+    .expect("rect.y")
 }
 
 /// The resident memory of `pid`, in KiB, while it runs.
@@ -206,8 +250,8 @@ fn phase_5_exit_check() {
   let stop = Arc::new(AtomicBool::new(false));
   let shooting = std::thread::spawn({
     let (dir, display) = (sway.runtime_dir().to_owned(), sway.display().to_owned());
-    let stop = Arc::clone(&stop);
-    move || screenshots(dir, display, stop)
+    let (socket, stop) = (sway.socket(), Arc::clone(&stop));
+    move || screenshots(dir, display, socket, stop)
   });
   edit(&|code| code.replace("fn broken() {\n", ""));
   let built = wait_for_line(&supervised, "the build took", 3, Duration::from_secs(300));
@@ -249,9 +293,19 @@ fn phase_5_exit_check() {
     "the new shell was ready {after_build:?} after the build"
   );
   assert!(!alive(first), "the old shell is gone");
-  let missing = shots.iter().filter(|(_, bar)| !bar).count();
+  let missing = shots.iter().filter(|shot| !shot.bar).count();
+  let stacked = shots.iter().filter(|shot| shot.stacked).count();
+  // Two programs can't hand a zone over at once: between the old bar's
+  // going and the new one taking its zone, Sway arranges once without
+  // either, so the workspace's top may dip right at the old shell's exit.
+  let moved: Vec<&Shot> = shots.iter().filter(|shot| shot.top != 30).collect();
+  let dip = moved
+    .iter()
+    .map(|shot| shot.at.saturating_duration_since(ready))
+    .max()
+    .unwrap_or_default();
   let during = |from: Instant, to: Instant| {
-    let shots = shots.iter().filter(|(at, _)| (from..to).contains(at));
+    let shots = shots.iter().filter(|shot| (from..to).contains(&shot.at));
     shots.count()
   };
   let (swap, after_exit) = (
@@ -260,7 +314,7 @@ fn phase_5_exit_check() {
   );
   let spacing = shots
     .windows(2)
-    .map(|pair| pair[1].0 - pair[0].0)
+    .map(|pair| pair[1].at - pair[0].at)
     .max()
     .unwrap_or_default();
   assert_eq!(
@@ -272,6 +326,16 @@ fn phase_5_exit_check() {
   assert!(
     swap >= 1 && after_exit >= 5,
     "{swap} during the swap, {after_exit} after"
+  );
+  assert_eq!(stacked, 0, "{stacked} screenshots had a second bar below");
+  assert!(
+    moved.iter().all(|shot| shot.at >= ready && shot.top == 0),
+    "the workspace's top moved during the swap: {:?}",
+    moved.iter().map(|shot| shot.top).collect::<Vec<_>>()
+  );
+  assert!(
+    dip <= Duration::from_millis(50),
+    "it moved {dip:?} after the old shell was told to exit"
   );
 
   // 3. After `kill -9` the shell is back within 2 s.
@@ -364,7 +428,9 @@ fn phase_5_exit_check() {
      the new shell ready after the old one saved: {overlap} ms\n\
      the old shell gone after the new one was ready: {} ms\n\
      RSS of the two shells while both ran: {both:?} KiB\n\
-     screenshots through the reload: {}, none without the bar, at most {} ms apart, \
+     screenshots through the reload: {}, none without the bar or with a second one below, \
+     the workspace's top at 30 px through the swap and at 0 in {} of them, the last {} ms \
+     after the old shell was told to exit, at most {} ms apart, \
      {swap} while both shells ran and {after_exit} in the 500 ms after the old one ended\n\
      back after kill -9: {} ms\n\
      crash of the old shell to last-good ready after three startup panics: {:.1} s\n\
@@ -373,6 +439,8 @@ fn phase_5_exit_check() {
     after_build.as_millis(),
     (ended - ready).as_millis(),
     shots.len(),
+    moved.len(),
+    dip.as_millis(),
     spacing.as_millis(),
     back.as_millis(),
     fallback.as_secs_f64(),

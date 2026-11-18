@@ -231,7 +231,9 @@ fn a_new_config_checks_clean_and_a_mistake_fails_the_check() {
 /// process id and the time to `exits` and exits 0; told `save`, it appends
 /// to `saves` and exits 0. `old` is a shell from before the handoff: it
 /// doesn't say `can-hand-off` or know `handoff`. `reload` asks for a
-/// reload on its first start.
+/// reload on its first start. Told `alone`, it appends its process id
+/// and the time to `alones`. `stray` starts a copy of itself that
+/// connects and says `ready` in its place, and stays quiet itself.
 const FAKE_SHELL: &str = r#"
 use std::io::Write;
 
@@ -258,6 +260,11 @@ fn main() {
   let name = if exe.ends_with("last-good") { "last-good" } else { "build" };
   let mode = std::fs::read_to_string(dir.join("mode")).unwrap_or_default();
   let first = !dir.join("starts").exists();
+  if mode.trim() == "stray" && std::env::var_os("STRAY").is_none() {
+    // Not the shell: a program it started, which outlives a few seconds.
+    std::process::Command::new(&exe).env("STRAY", "1").spawn().expect("the copy");
+    std::thread::sleep(std::time::Duration::from_secs(3600));
+  }
   let mut control = std::env::var_os("CRABSHELL_CONTROL").map(|path| {
     std::os::unix::net::UnixStream::connect(path).expect("the supervisor")
   });
@@ -269,6 +276,10 @@ fn main() {
   }
   if mode.trim() != "late" {
     say(&mut control, b"ready\n");
+  }
+  if std::env::var_os("STRAY").is_some() {
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    std::process::exit(0);
   }
   // After connecting, so a test that sees the start can reload it.
   append(dir.join("starts"), format!("{name} {} {}\n", std::process::id(), now()));
@@ -303,6 +314,7 @@ fn main() {
             append(dir.join("exits"), format!("{pid} {}\n", now()));
             std::process::exit(0);
           }
+          "alone" => append(dir.join("alones"), format!("{pid} {}\n", now())),
           _ => {}
         }
       }
@@ -613,6 +625,16 @@ impl Home {
       .collect()
   }
 
+  /// Each `alone` the fakes heard: the process id and the time in ms.
+  fn alones(&self) -> Vec<(u32, u128)> {
+    let text = std::fs::read_to_string(self.config().join("alones")).unwrap_or_default();
+    let line = |line: &str| {
+      let (pid, at) = line.split_once(' ').expect("a pid and a time");
+      (pid.parse().expect("a pid"), at.parse().expect("a time"))
+    };
+    text.lines().map(line).collect()
+  }
+
   /// Waits up to `limit` for the fake told to exit to write its process
   /// id and the time in ms.
   fn wait_for_exit(&self, limit: Duration) -> (u32, u128) {
@@ -650,6 +672,11 @@ fn an_edit_starts_the_new_build_beside_the_old_shell_until_it_is_ready() {
   );
   std::thread::sleep(Duration::from_millis(300));
   assert!(!alive(first));
+  let alones = home.alones();
+  assert_eq!(alones.len(), 2, "{alones:?}");
+  assert_eq!(alones[0].0, first, "alone at once, with no old shell");
+  assert_eq!(alones[1].0, starts[1].1);
+  assert!(alones[1].1 >= at, "alone once the old shell exited");
   supervised.signal("-TERM");
   let (code, log) = supervised.wait(Duration::from_secs(5));
   assert_eq!(code, Some(0), "{log}");
@@ -963,4 +990,124 @@ fn stopping_while_the_new_shell_starts_ends_both() {
   assert_eq!(code, Some(0), "{log}");
   assert!(!alive(first), "{log}");
   assert!(children.iter().all(|&child| !alive(child)), "{log}");
+}
+
+/// Waits up to `limit` for `needle` in the supervisor's log.
+fn wait_in_log(supervised: &common::Supervised, needle: &str, limit: Duration) {
+  let deadline = Instant::now() + limit;
+  while !supervised.log().contains(needle) {
+    assert!(
+      Instant::now() < deadline,
+      "no {needle:?}: {}",
+      supervised.log()
+    );
+    std::thread::sleep(Duration::from_millis(50));
+  }
+}
+
+/// A `main` that sleeps before it connects, so the build never says ready.
+const HANG: &str = "fn main() {\n  std::thread::sleep(std::time::Duration::from_secs(3600));";
+
+#[test]
+fn a_new_build_never_ready_is_killed_after_10_s_and_the_old_shell_stays() {
+  let home = Home::new("never-ready");
+  home.fake_config("stay");
+  let bus = PrivateBus::start(&home);
+  let supervised = home.supervise_on(Some(&bus));
+  let first = home.wait_for_starts(1, Duration::from_secs(60))[0].1;
+  home.edit(|code| code.replacen("fn main() {", HANG, 1));
+  wait_in_log(
+    &supervised,
+    "starting the new build beside it",
+    Duration::from_secs(60),
+  );
+  let started = Instant::now();
+  let notes = bus.wait_for(1, Duration::from_secs(30));
+  let waited = started.elapsed();
+  assert!(
+    (Duration::from_secs(9)..Duration::from_secs(13)).contains(&waited),
+    "{waited:?}"
+  );
+  assert_eq!(notes[0].0, "Your Crabshell config didn't start");
+  assert!(notes[0].1.contains("wasn't ready within 10 s"), "{notes:?}");
+  assert!(alive(first), "the old shell runs on");
+  // A fix reloads it as usual.
+  home.edit(|code| code.replacen(HANG, "fn main() {", 1));
+  let starts = home.wait_for_starts(2, Duration::from_secs(60));
+  assert_eq!(starts.len(), 2, "{starts:?}");
+  assert_eq!(home.wait_for_exit(Duration::from_secs(5)).0, first);
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(5));
+  assert_eq!(code, Some(0), "{log}");
+  assert!(log.contains("killing it"), "{log}");
+}
+
+#[test]
+fn an_edit_while_the_new_shell_starts_replaces_it_beside_the_old_one() {
+  let home = Home::new("replace-starting");
+  home.fake_config("stay");
+  let supervised = home.supervise();
+  let first = home.wait_for_starts(1, Duration::from_secs(60))[0].1;
+  home.edit(|code| code.replacen("fn main() {", HANG, 1));
+  wait_in_log(
+    &supervised,
+    "starting the new build beside it",
+    Duration::from_secs(60),
+  );
+  home.edit(|code| code.replacen(HANG, "fn main() {", 1));
+  let starts = home.wait_for_starts(2, Duration::from_secs(60));
+  assert_eq!(starts.len(), 2, "{starts:?}");
+  assert_eq!(home.wait_for_exit(Duration::from_secs(5)).0, first);
+  std::thread::sleep(Duration::from_millis(300));
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(5));
+  assert_eq!(code, Some(0), "{log}");
+  assert!(
+    log.contains("ending the new shell, which isn't ready yet"),
+    "{log}"
+  );
+  assert!(log.contains("ended for a newer build"), "{log}");
+  assert!(!log.contains("so the old shell stays"), "{log}");
+  assert_eq!(home.saves(), [first], "the old shell saved once");
+}
+
+/// A program the shell started connects and says `ready` in its place:
+/// the kernel says who connected, so it doesn't count.
+#[test]
+fn a_connection_from_another_process_isnt_the_shells() {
+  let home = Home::new("stray");
+  home.fake_config("stray");
+  let supervised = home.supervise();
+  wait_in_log(&supervised, "the build took", Duration::from_secs(60));
+  std::thread::sleep(Duration::from_millis(1500));
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(5));
+  assert_eq!(code, Some(0), "{log}");
+  assert!(!log.contains("the shell is ready"), "{log}");
+}
+
+#[test]
+fn a_new_build_that_dies_right_after_connecting_leaves_the_old_shell() {
+  let home = Home::new("dies-connected");
+  home.fake_config("stay");
+  let supervised = home.supervise();
+  let first = home.wait_for_starts(1, Duration::from_secs(60))[0].1;
+  let late = "  if mode.trim() != \"late\" {";
+  let dies = "  std::process::exit(4);\n  if mode.trim() != \"late\" {";
+  home.edit(|code| code.replacen(late, dies, 1));
+  wait_in_log(
+    &supervised,
+    "so the old shell stays",
+    Duration::from_secs(60),
+  );
+  assert!(alive(first), "the old shell runs on");
+  // The old shell's connection is still its own: a fix reloads it.
+  home.edit(|code| code.replacen(dies, late, 1));
+  let starts = home.wait_for_starts(2, Duration::from_secs(60));
+  assert_eq!(starts.len(), 2, "{starts:?}");
+  assert_eq!(home.wait_for_exit(Duration::from_secs(5)).0, first);
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(5));
+  assert_eq!(code, Some(0), "{log}");
+  assert!(log.contains("exit status: 4"), "{log}");
 }
