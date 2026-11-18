@@ -115,7 +115,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-crabshell = "0.6"
+crabshell = "0.7"
 
 [profile.dev]
 opt-level = 1
@@ -1364,9 +1364,9 @@ The hand checks are tracked in [issue #2](https://github.com/w0x7y/crabshell/iss
 - Settled limits: window views pair windows by app id and title, the most the protocols give; neither `geometry` nor `mapped_geometry` can say where a window is on its output, which Wayland doesn't tell a client; Hyprland 0.42 and later are supported; and the dashboard's 37 MiB with a 1080p wallpaper is no breach of rule 1, whose cap is for the counter bar, since a 1080p picture and its window buffer take about 16 MiB.
 - Crabshell has no wrapper widgets, since a `Stack` or `Button` with a padded style covers `WrapperItem`, `WrapperRectangle` and `WrapperMouseArea`, and `Style::clip` covers `ClippingRectangle`.
 
-### Unreleased (0.7)
+### Breaking changes in 0.7
 
-0.6 is on crates.io. Phase 18 ships as 0.7 and mostly adds. Against 0.6:
+Phase 18 shipped as 0.7 and mostly adds. Against 0.6:
 
 - `ServicesExt` has `niri`, `logind`, `brightness`, `http_get`, `cover_art`, `folder_view`, `system_stats` and `locale`, and `ShellExt` has `clipboard` and `icon_path`, so a type of a config's own that implements either breaks.
 - A middle click in a field pastes the primary selection.
