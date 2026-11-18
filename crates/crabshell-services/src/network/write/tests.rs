@@ -100,7 +100,24 @@ fn networkmanagers() -> Vec<(&'static str, Vec<(&'static str, Variant<'static>)>
     ("spoof-check", Variant::from(true)),
     ("vlans", Variant::from(vec![vf_vlan])),
   ]);
+  let action = dict(vec![
+    ("kind", Variant::from("simple")),
+    ("sdata", Variant::from(b"Hello\0".to_vec())),
+  ]);
+  let tfilter = dict(vec![
+    ("kind", Variant::from("matchall")),
+    ("parent", Variant::from(0x10000u32)),
+    ("action", Variant::from(action)),
+  ]);
   vec![
+    ("tc", vec![("tfilters", Variant::from(vec![tfilter]))]),
+    (
+      "802-3-ethernet",
+      vec![(
+        "mac-address",
+        Variant::from(vec![0x52u8, 0x54, 0, 0x12, 0x34, 0x56]),
+      )],
+    ),
     (
       "connection",
       vec![
@@ -261,12 +278,20 @@ fn shapes_networkmanager_has_no_type_for_are_refused_by_name() {
       "x.y: a number out of its range",
     ),
     (
-      json!({ "x": { "y": [{ "z": {} }] } }),
-      "x.y: an object NetworkManager has no type for",
+      json!({ "x": { "y": [{ "z": [[1]] }] } }),
+      "x.y: an array NetworkManager has no type for",
+    ),
+    (
+      json!({ "x": { "y": [{ "z": { "z": { "z": { "z": { "z": 1 } } } } }] } }),
+      "x.y: objects nested too deep",
+    ),
+    (
+      json!({ "bridge": { "mac-address": "52:54:00:12:34:5" } }),
+      "bridge.mac-address: a hardware address that isn't hex bytes split by colons",
     ),
     (
       json!({ "x": { "y": [{ "z": [{ "z": [{ "z": [{ "z": [{}] }] }] }] }] } }),
-      "x.y: arrays of objects nested too deep",
+      "x.y: objects nested too deep",
     ),
   ];
   for (settings, expected) in refused {
@@ -279,4 +304,38 @@ fn shapes_networkmanager_has_no_type_for_are_refused_by_name() {
   // Three deep is fine.
   let fine = json!({ "x": { "y": [{ "z": [{ "z": [{ "z": [{}] }] }] }] } });
   assert!(typed(&fine).is_ok());
+}
+
+#[test]
+fn ssids_and_hardware_addresses_may_come_as_text() {
+  let shown = typed(&json!({
+    "802-11-wireless": {
+      "ssid": "café",
+      "bssid": "A0:B1:C2:D3:E4:F5",
+      "cloned-mac-address": "a0-b1-c2-d3-e4-f5",
+      "mode": "infrastructure",
+    },
+    "802-3-ethernet": { "mac-address": [82, 84, 0, 18, 52, 86] },
+  }))
+  .expect("typed");
+  let wifi = &shown["802-11-wireless"];
+  assert_eq!(
+    deep(&wifi["ssid"]),
+    deep(&Variant::from("café".as_bytes().to_vec()))
+  );
+  let address = deep(&Variant::from(vec![0xa0u8, 0xb1, 0xc2, 0xd3, 0xe4, 0xf5]));
+  assert_eq!(deep(&wifi["bssid"]), address);
+  assert_eq!(deep(&wifi["cloned-mac-address"]), address);
+  assert_eq!(
+    deep(&wifi["mode"]),
+    "s:\"infrastructure\"",
+    "other text stays text"
+  );
+  let wired = &shown["802-3-ethernet"]["mac-address"];
+  assert_eq!(wired.value_signature().to_string(), "ay");
+
+  for refused in ["", "52:54:00:12:34:5", "52:54:00:12:34:+5", "random"] {
+    let settings = json!({ "802-3-ethernet": { "mac-address": refused } });
+    assert!(typed(&settings).is_err(), "{refused:?}");
+  }
 }

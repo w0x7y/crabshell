@@ -26,7 +26,27 @@ const U32_ARRAYS: [(&str, &str); 7] = [
   ("dcb", "priority-traffic-class"),
 ];
 
-/// How deep arrays of objects may nest, as SR-IOV's VLANs inside its VFs.
+/// The byte arrays a config may give as text, sent as its UTF-8 bytes.
+const SSIDS: [(&str, &str); 2] = [("802-11-wireless", "ssid"), ("802-11-olpc-mesh", "ssid")];
+
+/// The byte arrays a config may give as a hardware address, such as
+/// `52:54:00:12:34:56`, sent as the bytes it spells.
+const HARDWARE_ADDRESSES: [(&str, &str); 11] = [
+  ("802-3-ethernet", "mac-address"),
+  ("802-3-ethernet", "cloned-mac-address"),
+  ("802-11-wireless", "mac-address"),
+  ("802-11-wireless", "cloned-mac-address"),
+  ("802-11-wireless", "bssid"),
+  ("802-11-olpc-mesh", "dhcp-anycast-address"),
+  ("bluetooth", "bdaddr"),
+  ("bridge", "mac-address"),
+  ("bridge", "group-address"),
+  ("infiniband", "mac-address"),
+  ("wimax", "mac-address"),
+];
+
+/// How deep objects may nest inside a property, as SR-IOV's VLANs inside
+/// its VFs, or a traffic filter's action.
 const MAX_DEPTH: usize = 4;
 
 /// `settings`, an object of groups of properties, typed for
@@ -81,6 +101,11 @@ fn property(
     Json::Array(items) if items.is_empty() => return Ok(None),
     Json::Object(entries) if entries.is_empty() => return Ok(None),
     Json::Bool(b) => Variant::from(*b),
+    Json::String(text) if SSIDS.contains(&(group, name)) => Variant::from(text.as_bytes().to_vec()),
+    Json::String(text) if HARDWARE_ADDRESSES.contains(&(group, name)) => {
+      let bytes = hardware_address(text);
+      Variant::from(bytes.ok_or("a hardware address that isn't hex bytes split by colons")?)
+    }
     Json::String(text) => Variant::from(text.clone()),
     // NetworkManager converts a number to the type a property has.
     Json::Number(n) => number(n),
@@ -138,45 +163,64 @@ fn bytes(items: &[Json]) -> Result<Vec<u8>, &'static str> {
   all(items, |item| u8::try_from(item.as_u64()?).ok())
 }
 
+/// The bytes `text` spells as two hex digits each, split by `:` or `-`.
+fn hardware_address(text: &str) -> Option<Vec<u8>> {
+  let byte = |pair: &str| {
+    let hex = pair.len() == 2 && pair.bytes().all(|digit| digit.is_ascii_hexdigit());
+    hex.then(|| u8::from_str_radix(pair, 16).ok()).flatten()
+  };
+  text.split([':', '-']).map(byte).collect()
+}
+
 /// An array of objects, `aa{sv}`, as IP's address and route data.
 fn dicts(
   items: &[Json],
   depth: usize,
 ) -> Result<Vec<HashMap<String, Variant<'static>>>, &'static str> {
-  if depth == MAX_DEPTH {
-    return Err("arrays of objects nested too deep");
-  }
-  let mut dicts = Vec::with_capacity(items.len());
-  for item in items {
-    let Json::Object(entries) = item else {
-      return Err("an array with an item of another type or out of range");
-    };
-    let mut dict = HashMap::new();
-    for (key, value) in entries {
-      if let Some(value) = entry(key, value, depth)? {
-        dict.insert(key.clone(), value);
-      }
-    }
-    dicts.push(dict);
-  }
-  Ok(dicts)
+  let dict = |item: &Json| match item {
+    Json::Object(entries) => dict(entries, depth),
+    _ => Err("an array with an item of another type or out of range"),
+  };
+  items.iter().map(dict).collect()
 }
 
-/// A value inside an array of objects. NetworkManager checks these types
-/// exactly, so the keys it gives another type than `u` get it here.
+/// An object inside a property, `a{sv}`.
+fn dict(
+  entries: &Map<String, Json>,
+  depth: usize,
+) -> Result<HashMap<String, Variant<'static>>, &'static str> {
+  if depth == MAX_DEPTH {
+    return Err("objects nested too deep");
+  }
+  let mut dict = HashMap::new();
+  for (key, value) in entries {
+    if let Some(value) = entry(key, value, depth)? {
+      dict.insert(key.clone(), value);
+    }
+  }
+  Ok(dict)
+}
+
+/// A value inside an object inside a property. NetworkManager checks
+/// these types exactly, so the keys it gives another type than `u` get it
+/// here.
 fn entry(key: &str, value: &Json, depth: usize) -> Result<Option<Variant<'static>>, &'static str> {
   Ok(Some(match value {
     Json::Null => return Ok(None),
     Json::Array(items) if items.is_empty() => return Ok(None),
+    Json::Object(entries) if entries.is_empty() => return Ok(None),
     Json::Bool(b) => Variant::from(*b),
     Json::String(text) => Variant::from(text.clone()),
     Json::Number(n) => keyed(key, n).ok_or("a number out of its range")?,
     Json::Array(items) => match &items[0] {
       Json::String(_) => Variant::from(all(items, |item| Some(item.as_str()?.to_owned()))?),
+      // As a traffic filter action's `sdata`.
+      Json::Number(_) => Variant::from(bytes(items)?),
       Json::Object(_) => Variant::from(dicts(items, depth + 1)?),
       _ => return Err("an array NetworkManager has no type for"),
     },
-    Json::Object(_) => return Err("an object NetworkManager has no type for"),
+    // As a traffic filter's `action`.
+    Json::Object(entries) => Variant::from(dict(entries, depth + 1)?),
   }))
 }
 
