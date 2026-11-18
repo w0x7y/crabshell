@@ -3,7 +3,8 @@
 //! otherwise, the weather, the CPU, memory and temperature, a brightness
 //! slider when the screen has a backlight, and the date in the user's
 //! language. Two buttons at the right open the clipboard's history, where
-//! a click copies an entry again, and a wallpaper picker.
+//! a click copies an entry again, and a wallpaper picker, whose pictures
+//! drag out to other programs as files.
 //!
 //! ```sh
 //! cargo run --release -p crabshell --example system
@@ -13,7 +14,8 @@
 //! fetched at the start and every half hour. `WALLPAPERS` names the
 //! picker's folder, `~/Pictures/Wallpapers` by default.
 
-use std::path::PathBuf;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 
 use crabshell::jiff::Zoned;
 use crabshell::prelude::*;
@@ -415,28 +417,50 @@ fn wallpaper_popup(cx: &Cx, folder: PathBuf) -> PopupWindow {
       .child(Grid::new().columns(3).gap(8).children_keyed(
         pictures,
         |e: &FolderEntry| e.path.clone(),
-        |_cx, picture| {
-          let picture = picture.get_untracked();
-          Button::new(
-            Column::new()
-              .gap(4)
-              .child(
-                Image::new(picture.path)
-                  .width(THUMB_WIDTH)
-                  .height(THUMB_HEIGHT)
-                  .fit(Fit::Cover)
-                  .style(PICTURE),
-              )
-              .child(
-                Text::new(picture.name)
-                  .max_lines(1)
-                  .ellipsis(true)
-                  .style(NAME),
-              ),
-          )
-          .style(THUMB)
-          .hover_style(HOVER)
-        },
+        |_cx, picture| thumbnail(picture.get_untracked()),
       )),
   )
+}
+
+/// A picture in the picker, which drags out to other programs as its
+/// `file://` URI, as a file manager's does.
+pub fn thumbnail(picture: FolderEntry) -> Button {
+  let uri = file_uri(&picture.path);
+  Button::new(
+    Column::new()
+      .gap(4)
+      .child(
+        Image::new(picture.path)
+          .width(THUMB_WIDTH)
+          .height(THUMB_HEIGHT)
+          .fit(Fit::Cover)
+          .style(PICTURE),
+      )
+      .child(
+        Text::new(picture.name)
+          .max_lines(1)
+          .ellipsis(true)
+          .style(NAME),
+      ),
+  )
+  .style(THUMB)
+  .hover_style(HOVER)
+  .drag_content(Some(DragContent::Uris(vec![uri])))
+}
+
+/// The `file://` URI of the absolute `path`, each byte but letters,
+/// digits, `/` and `-._~` written as `%XX`, as RFC 8089 and 3986 say.
+pub fn file_uri(path: &Path) -> String {
+  path
+    .as_os_str()
+    .as_bytes()
+    .iter()
+    .fold(String::from("file://"), |mut uri, &byte| {
+      if byte.is_ascii_alphanumeric() || b"/-._~".contains(&byte) {
+        uri.push(char::from(byte));
+      } else {
+        uri.push_str(&format!("%{byte:02X}"));
+      }
+      uri
+    })
 }

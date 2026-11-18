@@ -104,6 +104,10 @@ mod system;
 #[path = "../../crabshell-services/tests/pipewire/mod.rs"]
 mod pipewire;
 
+#[allow(dead_code, reason = "these tests use part of the fake")]
+#[path = "../../crabshell-wayland/tests/fake/mod.rs"]
+mod fake;
+
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader};
@@ -6559,4 +6563,102 @@ fn the_system_bar_reads_the_weather_pictures_and_the_cpus_temperature() {
   );
   stats.temperatures.clear();
   assert_eq!(system::cpu_temperature(&stats), None);
+}
+
+#[test]
+fn a_file_uri_escapes_all_but_unreserved_bytes() {
+  assert_eq!(
+    system::file_uri(Path::new("/home/me/Pictures/Night Sky #2 (ü).png")),
+    "file:///home/me/Pictures/Night%20Sky%20%232%20%28%C3%BC%29.png"
+  );
+  assert_eq!(
+    system::file_uri(Path::new("/a-b_c.d~e")),
+    "file:///a-b_c.d~e"
+  );
+}
+
+/// Part of Phase 18's exit check, on the fake compositor: a picture in
+/// the wallpaper picker dragged out of its window offers other programs
+/// its file's URI as `text/uri-list`.
+#[test]
+fn a_wallpaper_dragged_out_of_the_picker_offers_its_file_uri() {
+  use smithay_client_toolkit::reexports::client::Connection;
+  let (fake, stream) = fake::Fake::start(fake::Globals {
+    pointer: true,
+    data_device: true,
+    ..fake::Globals::default()
+  });
+  let connection = Connection::from_socket(stream).expect("a connection");
+  let mut event_loop = EventLoop::with_connection(connection).expect("the platform starts");
+  let wait =
+    |event_loop: &mut EventLoop, what: &str, done: &mut dyn FnMut(&mut EventLoop) -> bool| {
+      let deadline = Instant::now() + TIMEOUT;
+      while !done(event_loop) {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        event_loop
+          .dispatch(Some(Duration::from_millis(5)))
+          .expect("the connection works");
+      }
+    };
+  let cx = Cx::new(Runtime::current().new_owner());
+  let picture = FolderEntry {
+    path: PathBuf::from("/pictures/Night Sky.png"),
+    name: String::from("Night Sky.png"),
+    is_dir: false,
+    size: 1,
+    modified: None,
+  };
+  let bar = PanelWindow::new(&Output::new("FAKE-1"))
+    .anchors(Edge::Top | Edge::Left | Edge::Right)
+    .height(100)
+    .child(Row::new().child(system::thumbnail(picture)));
+  let id = event_loop
+    .platform()
+    .add_window(crabshell_ui::Window::new(&cx, bar));
+  wait(&mut event_loop, "the first frame", &mut |event_loop| {
+    let info = event_loop.platform().window_info(id);
+    info.is_some_and(|info| info.commits > 0)
+  });
+  fake.run(|state| state.press_out(0, (40.0, 40.0), (40.0, 300.0)));
+  let mut started = None;
+  wait(&mut event_loop, "the drag", &mut |_| {
+    started = fake
+      .log()
+      .into_iter()
+      .find(|line| line.starts_with("start_drag "));
+    started.is_some()
+  });
+  let types = started
+    .expect("a drag")
+    .rsplit(' ')
+    .next()
+    .map(String::from);
+  assert_eq!(
+    types.as_deref(),
+    Some("text/uri-list,application/x-crabshell-drag")
+  );
+  let (sent, received) = mpsc::channel();
+  fake.run(move |state| {
+    sent
+      .send(state.read_started("text/uri-list"))
+      .expect("the test waits")
+  });
+  let mut stream = received.recv().expect("a stream");
+  stream.set_nonblocking(true).expect("non-blocking");
+  let mut bytes = Vec::new();
+  wait(&mut event_loop, "the URI list", &mut |_| {
+    use std::io::Read;
+    let mut chunk = [0; 64];
+    match stream.read(&mut chunk) {
+      Ok(0) => true,
+      Ok(n) => {
+        bytes.extend_from_slice(&chunk[..n]);
+        false
+      }
+      Err(error) if error.kind() == io::ErrorKind::WouldBlock => false,
+      Err(error) => panic!("{error}"),
+    }
+  });
+  assert_eq!(bytes, b"file:///pictures/Night%20Sky.png\r\n");
+  cx.owner().dispose();
 }
