@@ -17,6 +17,7 @@ use std::rc::{Rc, Weak};
 use crabshell_reactive::Signal;
 use taffy::TaffyTree;
 
+use crate::access::Accessibility;
 use crate::animation::{self, Transition};
 use crate::canvas::CanvasNode;
 use crate::cx::{Anchor, Cx};
@@ -93,6 +94,8 @@ pub(crate) struct Tree {
   /// What the platform should do with the primary selection, from the
   /// last pointer button or key.
   pub(crate) primary: Option<Clipboard>,
+  /// The screen readers' registry and this window's number in it.
+  pub(crate) access: Option<(Rc<Accessibility>, u32)>,
 }
 
 /// What only a popup's tree has.
@@ -192,6 +195,8 @@ pub(crate) struct Node {
   pub(crate) measure: Option<Measure>,
   /// The size `measure` was last told.
   pub(crate) measured: Option<Size>,
+  /// What a screen reader calls it, when a config named it.
+  pub(crate) accessible_name: Option<String>,
 }
 
 pub(crate) enum NodeKind {
@@ -487,6 +492,7 @@ impl Node {
       mapped_written: None,
       measure: None,
       measured: None,
+      accessible_name: None,
     }
   }
 
@@ -577,6 +583,10 @@ impl Tree {
   ) -> Tree {
     let mut taffy = TaffyTree::new();
     let anchor = cx.anchor.clone();
+    let access = cx.service::<Accessibility>().map(|access| {
+      let window = access.register(this.clone());
+      (access, window)
+    });
     let root = taffy
       .new_leaf_with_context(
         taffy::Style::default(),
@@ -611,6 +621,7 @@ impl Tree {
       offsets: Vec::new(),
       shown_since_layout: Vec::new(),
       primary: None,
+      access,
     }
   }
 
@@ -910,6 +921,12 @@ impl Tree {
 
     self.bind_opt(id, common.style, "style", set_style);
     self.bind_opt(id, common.visible, "visible", set_visible);
+    self.bind_opt(
+      id,
+      common.accessible_name,
+      "accessible_name",
+      set_accessible_name,
+    );
     self.bind_kind(id, kind);
     self.mount_children(id, children, &cx, &path);
     id
@@ -955,13 +972,24 @@ impl Tree {
       ElementKind::Text(props) => {
         // The old selection's bytes may not be in the new text.
         self.bind_opt(id, props.text, "text", |tree, id, value| {
+          let mut renamed = false;
           tree.update_text(id, |text| {
-            let changed = text.set_content(value);
-            text.forget_selection_if(changed)
-          })
+            renamed = text.set_content(value);
+            text.forget_selection_if(renamed)
+          });
+          if renamed {
+            tree.text_renamed(id);
+          }
         });
         self.bind_opt(id, props.spans, "spans", |tree, id, value| {
-          tree.update_text(id, |text| text.set_spans(value));
+          let mut renamed = false;
+          tree.update_text(id, |text| {
+            renamed = text.set_spans(value);
+            renamed
+          });
+          if renamed {
+            tree.text_renamed(id);
+          }
           tree.drop_stale_link_focus(id);
         });
         self.bind_opt(id, props.selectable, "selectable", Tree::set_selectable);
@@ -1606,6 +1634,16 @@ fn set_style(tree: &mut Tree, id: NodeId, style: Style) {
 /// Shows or hides node `id`. Hidden, it and everything in it let go of
 /// the keyboard focus and the pointer at once; the next layout frees its
 /// space and repaints where it was.
+fn set_accessible_name(tree: &mut Tree, id: NodeId, name: String) {
+  let Some(node) = tree.node_mut(id) else {
+    return;
+  };
+  if node.accessible_name.as_ref() != Some(&name) {
+    node.accessible_name = Some(name);
+    tree.access_event(|window| crate::AccessEvent::NameChanged(tree.access_id(window, id)));
+  }
+}
+
 fn set_visible(tree: &mut Tree, id: NodeId, visible: bool) {
   if tree.update(id, |node| replace(&mut node.visible, visible)) == Change::None {
     return;

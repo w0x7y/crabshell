@@ -57,6 +57,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod access;
 mod animation;
 mod canvas;
 mod cx;
@@ -94,6 +95,8 @@ mod window;
 #[cfg(test)]
 mod tests;
 
+#[doc(hidden)]
+pub use access::{AccessEvent, AccessId, AccessNode, AccessRole, Accessibility};
 pub use animation::{
   Animate, Animation, Easing, Spring, Transition, advance_animations, animating,
 };

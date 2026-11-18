@@ -266,6 +266,17 @@ pub(crate) struct FloatingState {
   pub(crate) requests: Vec<WindowRequest>,
 }
 
+impl FloatingState {
+  /// Shown now: `visible`, and not closed by the compositor since.
+  pub(crate) fn shown(&self) -> bool {
+    self.visible && !self.dismissed
+  }
+
+  pub(crate) fn title(&self) -> &str {
+    &self.title
+  }
+}
+
 impl Window {
   /// Builds `window` under a new child owner of `cx`, as
   /// [`Window::new`] does for a panel.

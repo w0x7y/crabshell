@@ -188,6 +188,7 @@ impl Widget for Menu {
     element.common.visible = self.common.visible;
     element.common.geometry = self.common.geometry;
     element.common.mapped_geometry = self.common.mapped_geometry;
+    element.common.accessible_name = self.common.accessible_name;
     element
   }
 }

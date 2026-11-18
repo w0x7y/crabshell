@@ -87,6 +87,7 @@ pub(crate) struct Common {
   pub(crate) visible: Option<Prop<bool>>,
   pub(crate) geometry: Option<Signal<Rect>>,
   pub(crate) mapped_geometry: Option<Signal<Rect>>,
+  pub(crate) accessible_name: Option<Prop<String>>,
   /// Told the widget's size after each layout that changes it, with the
   /// tree released. Lists measure their rows with it; configs have
   /// `geometry`.
@@ -395,8 +396,8 @@ macro_rules! container_methods {
   };
 }
 
-/// The `visible`, `geometry` and `mapped_geometry` methods every widget
-/// has.
+/// The `visible`, `geometry`, `mapped_geometry` and `accessible_name`
+/// methods every widget has.
 macro_rules! visibility_methods {
   () => {
     /// Shows or hides the widget. Hidden, it is taken out of the layout,
@@ -430,6 +431,14 @@ macro_rules! visibility_methods {
     /// itself is on its output is unknown: Wayland doesn't tell a client.
     pub fn mapped_geometry(mut self, geometry: ::crabshell_reactive::Signal<$crate::Rect>) -> Self {
       self.common.mapped_geometry = Some(geometry);
+      self
+    }
+
+    /// What a screen reader calls the widget, instead of what it shows:
+    /// a button's text, a text's own, or a field's placeholder. An icon
+    /// button needs one to be read at all.
+    pub fn accessible_name(mut self, name: impl $crate::IntoProp<String>) -> Self {
+      self.common.accessible_name = Some(name.into_prop());
       self
     }
   };

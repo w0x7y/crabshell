@@ -12,6 +12,7 @@ use std::rc::Rc;
 
 use crabshell_reactive::{Signal, untrack};
 
+use crate::access::AccessEvent;
 use crate::cx::Cx;
 use crate::edit::Keyed;
 use crate::input::{Handler, run_isolated};
@@ -132,7 +133,10 @@ impl Window {
   /// style again.
   pub fn keyboard_enter(&self) {
     let mut tree = borrow(&self.tree);
-    tree.keyboard.entered = true;
+    if !std::mem::replace(&mut tree.keyboard.entered, true) {
+      let root = tree.root;
+      tree.access_event(|window| AccessEvent::Active(tree.access_id(window, root), true));
+    }
     let focused = tree.keyboard.focused;
     tree.show_focus(focused, true);
   }
@@ -141,9 +145,13 @@ impl Window {
   /// when it comes back.
   pub fn keyboard_leave(&self) {
     let mut tree = borrow(&self.tree);
-    tree.keyboard.entered = false;
+    let was = std::mem::replace(&mut tree.keyboard.entered, false);
     let focused = tree.keyboard.focused;
     tree.show_focus(focused, false);
+    if was {
+      let root = tree.root;
+      tree.access_event(|window| AccessEvent::Active(tree.access_id(window, root), false));
+    }
   }
 
   /// The modifiers held on the seat, which the platform tells before a
@@ -215,12 +223,20 @@ impl Tree {
       self.light_link(id, true, link);
       return;
     }
+    let was = match self.node(id).map(|node| &node.kind) {
+      Some(NodeKind::Input(input)) => input.focused,
+      Some(NodeKind::Button(button)) => button.focused,
+      _ => return,
+    };
+    if was == shown {
+      return;
+    }
     if matches!(
       self.node(id).map(|node| &node.kind),
       Some(NodeKind::Input(_))
     ) {
       self.update(id, |node| match &mut node.kind {
-        NodeKind::Input(input) if input.focused != shown => {
+        NodeKind::Input(input) => {
           input.focused = shown;
           Change::Paint
         }
@@ -229,6 +245,7 @@ impl Tree {
     } else {
       self.update_button_style(id, |button| button.focused = shown);
     }
+    self.access_event(|window| AccessEvent::Focused(self.access_id(window, id), shown));
   }
 
   /// Moves the focus to `id`. It shows once the window has the keyboard.
