@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use crabshell_reactive::{Runtime, Signal};
 use crabshell_ui::{
-  Accessibility, Button, Key, KeyEvent, Modifiers, Output, PanelWindow, Row, Size, Text,
-  TextSystem, Window,
+  Accessibility, Button, Column, Key, KeyEvent, Modifiers, Output, PanelWindow, Row, Size, Slider,
+  Text, TextInput, TextSystem, Window,
 };
 use serde::de::DeserializeOwned;
 use zbus::export::futures_core::Stream;
@@ -18,6 +18,8 @@ use crate::Config;
 use crate::testing::{FakeService, Harness, PrivateBus, capture_logs, offline, reply};
 
 const ACCESSIBLE: &str = "org.a11y.atspi.Accessible";
+const TEXT: &str = "org.a11y.atspi.Text";
+const VALUE: &str = "org.a11y.atspi.Value";
 const DESKTOP: &str = "/org/a11y/atspi/accessible/root";
 
 fn online(bus: &PrivateBus) -> Config {
@@ -206,6 +208,10 @@ fn a_screen_reader_reads_the_counter_bar_and_clicks_its_button() {
       .iter()
       .any(|interface| interface == "org.a11y.atspi.Action")
   );
+  assert!(
+    !interfaces.iter().any(|i| i == TEXT || i == VALUE),
+    "{interfaces:?}"
+  );
   let ((x, y, width, height),): ((i32, i32, i32, i32),) = call(
     &mut shell,
     &client,
@@ -285,16 +291,17 @@ fn listen(shell: &mut Harness, bus: &PrivateBus) -> Rc<RefCell<Vec<String>>> {
         continue;
       };
       let path = header.path().map_or(String::new(), |path| path.to_string());
-      if let Ok((detail, one, _, _, _)) = message.body().deserialize::<(
+      if let Ok((detail, one, two, data, _)) = message.body().deserialize::<(
         String,
         i32,
         i32,
         zbus::OwnedVariant,
         std::collections::HashMap<String, zbus::OwnedVariant>,
       )>() {
-        kept
-          .borrow_mut()
-          .push(format!("{member} {path} {detail} {one}"));
+        let short = format!("{member} {path} {detail} {one}");
+        // And with detail2 and the data, as `TextChanged … insert 5 1 "x"`.
+        let long = format!("{short} {two} {}", *data);
+        kept.borrow_mut().extend([short, long]);
       }
     }
   });
@@ -592,5 +599,237 @@ fn no_at_bridge_follows_nothing_and_at_spi_bus_address_skips_the_launcher() {
   assert!(
     !asked.iter().any(|call| call.starts_with("GetAddress")),
     "{asked:?}"
+  );
+}
+
+/// A shell with the registry, before its window is made.
+fn registered(bus: &PrivateBus) -> (Harness, Fakes) {
+  let mut shell = Harness::new(online(bus));
+  shell.cx.provide(Accessibility::default());
+  let fakes = fakes(&mut shell, bus, true);
+  (shell, fakes)
+}
+
+/// Serves a window holding `column` to a screen reader, and returns the
+/// window, the shell's bus name and the column's widgets' paths.
+fn served(
+  shell: &mut Harness,
+  fakes: &Fakes,
+  bus: &PrivateBus,
+  column: Column,
+) -> (Window, String, Vec<String>) {
+  let window = Window::new(
+    &shell.cx,
+    PanelWindow::new(&Output::new("DP-1")).child(column),
+  );
+  window.set_size(Size::new(300.0, 200.0));
+  lay_out(&window);
+  follow_accessibility(&shell.cx);
+  let name = embedded(shell, fakes);
+  let client = shell.block_on(bus.connect(&[]));
+  let windows = children(shell, &client, (&name, ROOT));
+  let column = children(shell, &client, (&name, &windows[0]))[0].clone();
+  let widgets = children(shell, &client, (&name, &column));
+  (window, name, widgets)
+}
+
+fn property<T: TryFrom<zbus::OwnedVariant>>(
+  shell: &mut Harness,
+  client: &Connection,
+  at: (&str, &str),
+  (interface, name): (&str, &str),
+) -> T {
+  let body = (interface.to_owned(), name.to_owned());
+  let value: zbus::OwnedVariant =
+    call(shell, client, at, (crate::dbus::PROPERTIES, "Get"), body).expect("the property");
+  T::try_from(value).unwrap_or_else(|_| panic!("{name} of the wrong type"))
+}
+
+#[test]
+fn a_screen_reader_reads_a_field_and_a_password_gives_nothing_away() {
+  let bus = PrivateBus::start();
+  let (mut shell, fakes) = registered(&bus);
+  let column = Column::new()
+    .child(TextInput::new(shell.cx.signal("hello wörld".to_owned())))
+    .child(TextInput::new(shell.cx.signal("s3cret".to_owned())).password(true));
+  let (_window, name, widgets) = served(&mut shell, &fakes, &bus, column);
+  let client = shell.block_on(bus.connect(&[]));
+  let (field, password) = (
+    (name.as_str(), widgets[0].as_str()),
+    (name.as_str(), widgets[1].as_str()),
+  );
+  let interfaces: Vec<String> = call(
+    &mut shell,
+    &client,
+    field,
+    (ACCESSIBLE, "GetInterfaces"),
+    (),
+  )
+  .expect("interfaces");
+  assert!(interfaces.iter().any(|i| i == TEXT), "{interfaces:?}");
+  assert!(!interfaces.iter().any(|i| i == VALUE), "{interfaces:?}");
+  let count: i32 = property(&mut shell, &client, field, (TEXT, "CharacterCount"));
+  let caret: i32 = property(&mut shell, &client, field, (TEXT, "CaretOffset"));
+  assert_eq!((count, caret), (11, 11));
+  let text = |shell: &mut Harness, at: (&str, &str), member: &str, body: (i32, i32)| -> String {
+    call(shell, &client, at, (TEXT, member), body).expect("the text")
+  };
+  assert_eq!(text(&mut shell, field, "GetText", (0, -1)), "hello wörld");
+  assert_eq!(text(&mut shell, field, "GetText", (6, 8)), "wö");
+  let char: i32 = call(
+    &mut shell,
+    &client,
+    field,
+    (TEXT, "GetCharacterAtOffset"),
+    (7i32,),
+  )
+  .expect("a character");
+  assert_eq!(char, 'ö' as i32);
+  let word: (String, i32, i32) = call(
+    &mut shell,
+    &client,
+    field,
+    (TEXT, "GetStringAtOffset"),
+    (8i32, 1u32),
+  )
+  .expect("a word");
+  assert_eq!(word, ("wörld".to_owned(), 6, 11));
+
+  let role: u32 = call(&mut shell, &client, password, (ACCESSIBLE, "GetRole"), ()).expect("a role");
+  assert_eq!(role, 40, "password text");
+  assert_eq!(text(&mut shell, password, "GetText", (0, -1)), "••••••");
+  let line: (String, i32, i32) = call(
+    &mut shell,
+    &client,
+    password,
+    (TEXT, "GetStringAtOffset"),
+    (0i32, 3u32),
+  )
+  .expect("a line");
+  assert_eq!(line, ("••••••".to_owned(), 0, 6));
+  let char: i32 = call(
+    &mut shell,
+    &client,
+    password,
+    (TEXT, "GetCharacterAtOffset"),
+    (0i32,),
+  )
+  .expect("a character");
+  assert_eq!(char, '•' as i32);
+  let count: i32 = property(&mut shell, &client, password, (TEXT, "CharacterCount"));
+  assert_eq!(count, 6);
+}
+
+#[test]
+fn a_screen_reader_reads_and_moves_a_slider_unless_it_is_off() {
+  let bus = PrivateBus::start();
+  let (mut shell, fakes) = registered(&bus);
+  let (value, on) = (shell.cx.signal(4.0f32), shell.cx.signal(true));
+  let column = Column::new().child(
+    Slider::new(value)
+      .range(0.0, 10.0)
+      .step(2.0)
+      .enabled(move || on.get()),
+  );
+  let (window, name, widgets) = served(&mut shell, &fakes, &bus, column);
+  let client = shell.block_on(bus.connect(&[]));
+  let slider = (name.as_str(), widgets[0].as_str());
+  let interfaces: Vec<String> = call(
+    &mut shell,
+    &client,
+    slider,
+    (ACCESSIBLE, "GetInterfaces"),
+    (),
+  )
+  .expect("interfaces");
+  assert!(interfaces.iter().any(|i| i == VALUE), "{interfaces:?}");
+  assert!(!interfaces.iter().any(|i| i == TEXT), "{interfaces:?}");
+  let all: std::collections::HashMap<String, zbus::OwnedVariant> = call(
+    &mut shell,
+    &client,
+    slider,
+    (crate::dbus::PROPERTIES, "GetAll"),
+    (VALUE,),
+  )
+  .expect("the value");
+  let number = |name: &str| f64::try_from(&*all[name]).expect("a double");
+  assert_eq!(
+    [
+      number("MinimumValue"),
+      number("MaximumValue"),
+      number("CurrentValue"),
+      number("MinimumIncrement")
+    ],
+    [0.0, 10.0, 4.0, 2.0]
+  );
+  let set = |shell: &mut Harness, to: f64| -> zbus::Result<()> {
+    call(
+      shell,
+      &client,
+      slider,
+      (crate::dbus::PROPERTIES, "Set"),
+      (VALUE, "CurrentValue", Variant::from(to)),
+    )
+  };
+  set(&mut shell, 7.3).expect("the write");
+  assert_eq!(value.get_untracked(), 8.0, "on a step");
+  set(&mut shell, -3.0).expect("the write");
+  assert_eq!(value.get_untracked(), 0.0, "within the range");
+  let current: f64 = property(&mut shell, &client, slider, (VALUE, "CurrentValue"));
+  assert_eq!(current, 0.0);
+  on.set(false);
+  lay_out(&window);
+  let refused = set(&mut shell, 6.0);
+  assert!(refused.is_err(), "a slider that is off moved");
+  assert_eq!(value.get_untracked(), 0.0);
+}
+
+#[test]
+fn typing_moving_the_caret_and_a_slider_are_heard() {
+  let bus = PrivateBus::start();
+  let (mut shell, fakes) = registered(&bus);
+  let value = shell.cx.signal(0.5f32);
+  let column = Column::new()
+    .child(TextInput::new(shell.cx.signal("hi".to_owned())))
+    .child(TextInput::new(shell.cx.signal(String::new())).password(true))
+    .child(Slider::new(value));
+  let (window, _name, widgets) = served(&mut shell, &fakes, &bus, column);
+  let heard = listen(&mut shell, &bus);
+  let wait = |shell: &mut Harness, what: String| {
+    let seen = Rc::clone(&heard);
+    shell.retry_until(&what.clone(), move || seen.borrow().contains(&what), |_| {});
+  };
+  let key = |key: Key, text: Option<&str>| KeyEvent {
+    key,
+    text: text.map(str::to_owned),
+    modifiers: Modifiers::default(),
+    repeat: false,
+  };
+  let field = &widgets[0];
+  window.keyboard_enter();
+  window.key(&key(Key::Tab, None));
+  window.key(&key(Key::Character('x'), Some("x")));
+  wait(&mut shell, format!("TextChanged {field} insert 2 1 \"x\""));
+  wait(&mut shell, format!("TextCaretMoved {field}  3"));
+  window.key(&key(Key::Backspace, None));
+  wait(&mut shell, format!("TextChanged {field} delete 2 1 \"x\""));
+  window.key(&key(Key::Home, None));
+  wait(&mut shell, format!("TextCaretMoved {field}  0"));
+  let password = &widgets[1];
+  window.key(&key(Key::Tab, None));
+  window.key(&key(Key::Character('z'), Some("z")));
+  wait(
+    &mut shell,
+    format!("TextChanged {password} insert 0 1 \"•\""),
+  );
+  value.set(0.25);
+  lay_out(&window);
+  wait(
+    &mut shell,
+    format!("PropertyChange {} accessible-value 0 0 0.25", widgets[2]),
+  );
+  assert!(
+    !heard.borrow().iter().any(|line| line.contains("\"z\"")),
+    "the password's letter was heard"
   );
 }

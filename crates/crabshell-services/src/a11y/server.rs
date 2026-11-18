@@ -1,10 +1,10 @@
 //! The answers to AT-SPI calls on the application and its windows'
 //! widgets, from at-spi2-core's interfaces: `Accessible`, `Application`,
-//! `Component`, `Action` and `Properties`.
+//! `Component`, `Action`, `Text`, `Value` and `Properties`.
 
 use std::collections::HashMap;
 
-use crabshell_ui::{AccessId, AccessNode, AccessRole, Accessibility};
+use crabshell_ui::{AccessId, AccessNode, AccessRole, AccessText, Accessibility};
 use zbus::message::{Flags, Header};
 use zbus::{Connection, Message, ObjectPath, Variant};
 
@@ -15,10 +15,13 @@ const ACCESSIBLE: &str = "org.a11y.atspi.Accessible";
 const APPLICATION: &str = "org.a11y.atspi.Application";
 const COMPONENT: &str = "org.a11y.atspi.Component";
 const ACTION: &str = "org.a11y.atspi.Action";
+const TEXT: &str = "org.a11y.atspi.Text";
+const VALUE: &str = "org.a11y.atspi.Value";
 const CACHE: &str = "org.a11y.atspi.Cache";
 const CACHE_PATH: &str = "/org/a11y/atspi/cache";
 const NULL: &str = "/org/a11y/atspi/null";
 const INVALID_ARGS: &str = "org.freedesktop.DBus.Error.InvalidArgs";
+const ACCESS_DENIED: &str = "org.freedesktop.DBus.Error.AccessDenied";
 const UNKNOWN_METHOD: &str = "org.freedesktop.DBus.Error.UnknownMethod";
 const UNKNOWN_OBJECT: &str = "org.freedesktop.DBus.Error.UnknownObject";
 
@@ -144,6 +147,12 @@ fn facts(access: &Accessibility, app: &App, name: &str, object: &Object) -> Fact
       if node.clickable {
         interfaces.push(ACTION);
       }
+      if node.text.is_some() {
+        interfaces.push(TEXT);
+      }
+      if node.value.is_some() {
+        interfaces.push(VALUE);
+      }
       Facts {
         name: node.name.clone(),
         role: role(node.role),
@@ -242,7 +251,8 @@ fn reply(
         interface,
       ))
     }
-    // The registry numbers the application; nothing else is writable.
+    // The registry numbers the application, and a screen reader moves a
+    // slider; nothing else is writable.
     (PROPERTIES, "Set") => match body.deserialize::<(&str, &str, Variant<'_>)>() {
       Ok((APPLICATION, "Id", value)) if node.is_none() => match i32::try_from(&value) {
         Ok(id) => {
@@ -250,6 +260,15 @@ fn reply(
           reply.build(&())
         }
         Err(_) => refuse(INVALID_ARGS, "the id isn't an int32"),
+      },
+      Ok((VALUE, "CurrentValue", value)) => match (node, f64::try_from(&value)) {
+        (Some((id, node)), Ok(value)) if node.value.is_some() => {
+          match access.set_value(id, value) {
+            true => reply.build(&()),
+            false => refuse(ACCESS_DENIED, "the slider is off"),
+          }
+        }
+        _ => refuse(INVALID_ARGS, "not a slider and a double"),
       },
       _ => refuse(INVALID_ARGS, "read-only"),
     },
@@ -296,6 +315,68 @@ fn reply(
       },
       _ => refuse(UNKNOWN_METHOD, "no such method"),
     },
+    (TEXT, member) => match node.and_then(|(_, node)| node.text.as_ref()) {
+      Some(text) => text_call(text, member, call, reply, refuse),
+      None => refuse(UNKNOWN_METHOD, "no such method"),
+    },
+    _ => refuse(UNKNOWN_METHOD, "no such method"),
+  }
+}
+
+/// `Text`'s answers on a field, in characters of what a screen reader
+/// reads: a password's dots, never its text.
+fn text_call(
+  text: &AccessText,
+  member: &str,
+  call: &Message,
+  reply: zbus::message::Builder<'_>,
+  refuse: impl Fn(&str, &str) -> zbus::Result<Message>,
+) -> zbus::Result<Message> {
+  let body = call.body();
+  let count = text.text.chars().count();
+  let offset = |n: usize| i32::try_from(n).unwrap_or(i32::MAX);
+  // A negative end, as AT-SPI's -1, is the end of the text.
+  let at = |n: i32| usize::try_from(n).map_or(count, |n| n.min(count));
+  let slice = |start: usize, end: usize| -> String {
+    text
+      .text
+      .chars()
+      .skip(start)
+      .take(end.saturating_sub(start))
+      .collect()
+  };
+  match member {
+    "GetText" => match body.deserialize::<(i32, i32)>() {
+      Ok((start, end)) => reply.build(&slice(at(start.max(0)), at(end))),
+      Err(_) => refuse(INVALID_ARGS, "not two offsets"),
+    },
+    "GetCharacterAtOffset" => match body.deserialize::<i32>() {
+      Ok(at) => {
+        let char = usize::try_from(at)
+          .ok()
+          .and_then(|at| text.text.chars().nth(at));
+        reply.build(&char.map_or(0, |char| char as i32))
+      }
+      Err(_) => refuse(INVALID_ARGS, "not an offset"),
+    },
+    "GetStringAtOffset" => match body.deserialize::<(i32, u32)>() {
+      Ok((at, granularity)) => match text.segment(usize::try_from(at).unwrap_or(0), granularity) {
+        Some((start, end)) => reply.build(&(slice(start, end), offset(start), offset(end))),
+        None => refuse(INVALID_ARGS, "no such granularity"),
+      },
+      Err(_) => refuse(INVALID_ARGS, "not an offset and a granularity"),
+    },
+    "GetNSelections" => reply.build(&i32::from(text.selection.is_some())),
+    "GetSelection" => match (body.deserialize::<i32>(), text.selection) {
+      (Ok(0), Some((start, end))) => reply.build(&(offset(start), offset(end))),
+      (Ok(_), _) => reply.build(&(0i32, 0i32)),
+      (Err(_), _) => refuse(INVALID_ARGS, "not a selection number"),
+    },
+    // Plain text: no attributes, the same over the whole field.
+    "GetAttributes" | "GetAttributeRun" => {
+      reply.build(&(HashMap::<&str, &str>::new(), 0i32, offset(count)))
+    }
+    "GetDefaultAttributes" | "GetDefaultAttributeSet" => reply.build(&HashMap::<&str, &str>::new()),
     _ => refuse(UNKNOWN_METHOD, "no such method"),
   }
 }
@@ -346,6 +427,26 @@ fn properties(
     ACTION if node.is_some_and(|node| node.clickable) => {
       HashMap::from([("NActions", Variant::from(1i32))])
     }
+    TEXT => match node.and_then(|node| node.text.as_ref()) {
+      Some(text) => {
+        let offset = |n: usize| Variant::from(i32::try_from(n).unwrap_or(i32::MAX));
+        HashMap::from([
+          ("CharacterCount", offset(text.text.chars().count())),
+          ("CaretOffset", offset(text.caret)),
+        ])
+      }
+      None => HashMap::new(),
+    },
+    VALUE => match node.and_then(|node| node.value) {
+      Some(value) => HashMap::from([
+        ("MinimumValue", Variant::from(value.min)),
+        ("MaximumValue", Variant::from(value.max)),
+        ("CurrentValue", Variant::from(value.current)),
+        ("MinimumIncrement", Variant::from(value.increment)),
+        ("Text", text("")),
+      ]),
+      None => HashMap::new(),
+    },
     _ => HashMap::new(),
   }
 }
