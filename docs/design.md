@@ -115,7 +115,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-crabshell = "0.7"
+crabshell = "0.8"
 
 [profile.dev]
 opt-level = 1
@@ -1392,9 +1392,9 @@ The hand checks are tracked in [issue #2](https://github.com/w0x7y/crabshell/iss
 - Settled limits: window views pair windows by app id and title, the most the protocols give; neither `geometry` nor `mapped_geometry` can say where a window is on its output, which Wayland doesn't tell a client; Hyprland 0.42 and later are supported; and the dashboard's 37 MiB with a 1080p wallpaper is no breach of rule 1, whose cap is for the counter bar, since a 1080p picture and its window buffer take about 16 MiB.
 - Crabshell has no wrapper widgets, since a `Stack` or `Button` with a padded style covers `WrapperItem`, `WrapperRectangle` and `WrapperMouseArea`, and `Style::clip` covers `ClippingRectangle`.
 
-### Unreleased
+### Breaking changes in 0.8
 
-Phase 19 isn't released yet. Against 0.7:
+Phase 19 shipped as 0.8. Against 0.7:
 
 - `ServicesExt` has `pipewire` and `ShellExt` has `reload`, so a type of a config's own that implements either breaks, and `NetworkDevice` has new public fields.
 - A reload starts the new shell beside the old one, whose `cx.process` programs start once the old shell is gone.
