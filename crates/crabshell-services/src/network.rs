@@ -36,6 +36,7 @@ const WIRELESS: &str = "org.freedesktop.NetworkManager.Device.Wireless";
 const WIRED: &str = "org.freedesktop.NetworkManager.Device.Wired";
 const ACCESS_POINT: &str = "org.freedesktop.NetworkManager.AccessPoint";
 const ACTIVE: &str = "org.freedesktop.NetworkManager.Connection.Active";
+const IP4: &str = "org.freedesktop.NetworkManager.IP4Config";
 
 /// The most devices kept, and the most active connections, about one a
 /// device. A host running containers has a virtual device for each.
@@ -199,6 +200,14 @@ pub struct NetworkDevice {
   pub state: NetworkState,
   /// The name of its active connection, or `""`.
   pub connection: String,
+  /// The uuid of its active connection's saved one, as
+  /// [`SavedConnection::uuid`], or `""`.
+  pub connection_uuid: String,
+  /// Its hardware address, such as `52:54:00:12:34:56`, or `""`.
+  pub hw_address: String,
+  /// Its first IPv4 address, such as `192.168.1.5`, or `""` while it has
+  /// none.
+  pub ipv4_address: String,
   /// Why its last try to connect failed, kept until it tries again.
   /// `None` if it hasn't failed since the shell started following it.
   pub fail_reason: Option<ConnectionFailReason>,
@@ -216,9 +225,10 @@ pub struct NetworkDevice {
 impl NetworkDevice {
   fn from_props(path: String, object: &Object, objects: &BTreeMap<String, Object>) -> Option<Self> {
     let props = object.device.as_ref()?;
-    let connection = dbus::get::<&ObjectPath>(props, "ActiveConnection")
-      .and_then(|at| objects.get(at.as_str())?.active.as_ref())
-      .map_or(String::new(), |active| dbus::text(active, "Id"));
+    let active = dbus::get::<&ObjectPath>(props, "ActiveConnection")
+      .and_then(|at| objects.get(at.as_str())?.active.as_ref());
+    let ip4 = dbus::get::<&ObjectPath>(props, "Ip4Config")
+      .and_then(|at| objects.get(at.as_str())?.ip4.as_ref());
     let wifi_mode = object
       .wireless
       .as_ref()
@@ -239,7 +249,10 @@ impl NetworkDevice {
         Some(30 | FAILED) => NetworkState::Disconnected,
         _ => NetworkState::Unavailable,
       },
-      connection,
+      connection: active.map_or(String::new(), |active| dbus::text(active, "Id")),
+      connection_uuid: active.map_or(String::new(), |active| dbus::text(active, "Uuid")),
+      hw_address: dbus::text(props, "HwAddress"),
+      ipv4_address: ip4.and_then(first_address).unwrap_or_default(),
       fail_reason: object.failure,
       wifi_mode: match wifi_mode {
         Some(1) => WifiMode::AdHoc,
@@ -639,6 +652,7 @@ struct Object {
   wired: Option<Props>,
   access_point: Option<Props>,
   active: Option<Props>,
+  ip4: Option<Props>,
   /// A device's last failure, which its `StateReason` forgets as it moves
   /// on.
   failure: Option<ConnectionFailReason>,
@@ -655,6 +669,7 @@ impl Object {
       WIRED => Some(&mut self.wired),
       ACCESS_POINT => Some(&mut self.access_point),
       ACTIVE => Some(&mut self.active),
+      IP4 => Some(&mut self.ip4),
       _ => None,
     }
   }
@@ -664,6 +679,7 @@ impl Object {
       || self.device.is_some()
       || self.access_point.is_some()
       || self.active.is_some()
+      || self.ip4.is_some()
   }
 
   /// Notes a device's failure from its `StateReason`, and forgets it once
@@ -714,6 +730,21 @@ fn ssid(props: &Props) -> Vec<u8> {
     _ => None,
   });
   bytes.take(MAX_SSID).collect()
+}
+
+/// The first address in an IPv4 config's `AddressData`, an `aa{sv}`.
+fn first_address(props: &Props) -> Option<String> {
+  let Variant::Dict(address) = dbus::get::<&Array>(props, "AddressData")?.inner().first()? else {
+    return None;
+  };
+  let address = address.iter().find_map(|(key, value)| match (key, value) {
+    (Variant::Str(key), Variant::Variant(value)) if key.as_str() == "address" => Some(value),
+    _ => None,
+  });
+  match &**address? {
+    Variant::Str(address) => Some(address.as_str().to_owned()),
+    _ => None,
+  }
 }
 
 /// The object paths in the `ao` property `name`.
@@ -790,7 +821,14 @@ fn read(interface: &str, name: &str) -> bool {
     NM => matches!(name, "WirelessEnabled" | "Connectivity"),
     DEVICE => matches!(
       name,
-      "Interface" | "DeviceType" | "State" | "StateReason" | "ActiveConnection" | "InterfaceFlags"
+      "Interface"
+        | "DeviceType"
+        | "State"
+        | "StateReason"
+        | "ActiveConnection"
+        | "InterfaceFlags"
+        | "HwAddress"
+        | "Ip4Config"
     ),
     WIRELESS => matches!(name, "AccessPoints" | "ActiveAccessPoint" | "Mode"),
     WIRED => matches!(name, "Speed" | "Carrier"),
@@ -798,7 +836,8 @@ fn read(interface: &str, name: &str) -> bool {
       name,
       "Ssid" | "Strength" | "Flags" | "WpaFlags" | "RsnFlags"
     ),
-    ACTIVE => name == "Id",
+    ACTIVE => matches!(name, "Id" | "Uuid"),
+    IP4 => name == "AddressData",
     _ => false,
   }
 }
@@ -1026,7 +1065,7 @@ impl Daemon for NetworkService {
       "type='signal',sender='{NM}',path='{ROOT}',interface='{OBJECT_MANAGER}'"
     )];
     rules.extend(
-      [NM, DEVICE, WIRELESS, WIRED, ACCESS_POINT, ACTIVE].map(|interface| {
+      [NM, DEVICE, WIRELESS, WIRED, ACCESS_POINT, ACTIVE, IP4].map(|interface| {
         format!(
           "type='signal',sender='{NM}',interface='{PROPERTIES}',member='PropertiesChanged',\
          arg0='{interface}'"

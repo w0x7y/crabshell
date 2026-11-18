@@ -8,8 +8,9 @@ use zbus::{ObjectPath, OwnedObjectPath, OwnedVariant, Variant};
 
 use super::saved::{SAVED, SETTINGS, SETTINGS_PATH};
 use super::{
-  ACCESS_POINT, ACTIVE, ConnectionFailReason, Connectivity, DEVICE, NM, NM_PATH, NetworkDevice,
-  NetworkKind, NetworkState, SavedConnection, WIRED, WIRELESS, WifiMode, WifiNetwork, WifiSecurity,
+  ACCESS_POINT, ACTIVE, ConnectionFailReason, Connectivity, DEVICE, IP4, NM, NM_PATH,
+  NetworkDevice, NetworkKind, NetworkState, SavedConnection, WIRED, WIRELESS, WifiMode,
+  WifiNetwork, WifiSecurity,
 };
 use crate::dbus::OBJECT_MANAGER;
 use crate::testing::{
@@ -34,6 +35,7 @@ const LIBRARY: &str = "/org/freedesktop/NetworkManager/AccessPoint/3";
 const HIDDEN: &str = "/org/freedesktop/NetworkManager/AccessPoint/4";
 const CAFE: &str = "/org/freedesktop/NetworkManager/AccessPoint/5";
 const ATTIC: &str = "/org/freedesktop/NetworkManager/AccessPoint/6";
+const WLAN_IP4: &str = "/org/freedesktop/NetworkManager/IP4Config/1";
 
 type Props = Vec<(&'static str, Variant<'static>)>;
 
@@ -61,6 +63,22 @@ fn device(interface: &'static str, kind: u32, state: u32, active: &str) -> Props
     ("StateReason", Variant::from((state, 0u32))),
     ("ActiveConnection", path(active)),
     ("Managed", Variant::from(state != 10)),
+    ("Ip4Config", path("/")),
+    ("HwAddress", Variant::from("52:54:00:12:34:56")),
+  ]
+}
+
+/// An IPv4 config's addresses, as `AddressData` gives them, and the
+/// old `Addresses` beside them.
+fn ip4(addresses: &[&str]) -> Props {
+  let data = addresses.iter().map(|address| {
+    let address = Variant::from(address.to_string());
+    HashMap::from([("address", address), ("prefix", Variant::from(24u32))])
+  });
+  vec![
+    ("AddressData", Variant::from(data.collect::<Vec<_>>())),
+    ("Addresses", Variant::from(vec![vec![1u32, 24, 0]])),
+    ("Gateway", Variant::from("192.168.1.1")),
   ]
 }
 
@@ -82,7 +100,6 @@ fn wired(speed: u32, carrier: bool) -> Props {
   vec![
     ("Speed", Variant::from(speed)),
     ("Carrier", Variant::from(carrier)),
-    ("HwAddress", Variant::from("52:54:00:12:34:56")),
   ]
 }
 
@@ -117,7 +134,11 @@ fn fake_nm_with(
   nm.add(&settings, "org.freedesktop.NetworkManager.Settings", &[]);
   nm.add(LO, DEVICE, &device("lo", 32, 100, LO_CONNECTION));
   nm.add(LO_CONNECTION, ACTIVE, &[("Id", Variant::from("lo"))]);
-  nm.add(WLAN, DEVICE, &device("wlan0", 2, 100, HOME_CONNECTION));
+  let mut wlan = device("wlan0", 2, 100, HOME_CONNECTION);
+  wlan[6].1 = path(WLAN_IP4);
+  wlan[7].1 = Variant::from("a0:b1:c2:d3:e4:f5");
+  nm.add(WLAN, DEVICE, &wlan);
+  nm.add(WLAN_IP4, IP4, &ip4(&["192.168.1.5", "192.168.1.6"]));
   nm.add(
     WLAN,
     WIRELESS,
@@ -131,7 +152,11 @@ fn fake_nm_with(
       ("LastScan", Variant::from(1000i64)),
     ],
   );
-  nm.add(HOME_CONNECTION, ACTIVE, &[("Id", Variant::from("home"))]);
+  let home = [
+    ("Id", Variant::from("home")),
+    ("Uuid", Variant::from(HOME_UUID)),
+  ];
+  nm.add(HOME_CONNECTION, ACTIVE, &home);
   nm.add(ETH, DEVICE, &device("eth0", 1, 20, "/"));
   nm.add(ETH, WIRED, &wired(0, false));
   nm.add(BRIDGE, DEVICE, &device("virbr0", 13, 10, "/"));
@@ -159,6 +184,9 @@ fn wlan() -> NetworkDevice {
     kind: NetworkKind::Wifi,
     state: NetworkState::Connected,
     connection: "home".into(),
+    connection_uuid: HOME_UUID.into(),
+    hw_address: "a0:b1:c2:d3:e4:f5".into(),
+    ipv4_address: "192.168.1.5".into(),
     fail_reason: None,
     wifi_mode: WifiMode::Station,
     link_speed: 0,
@@ -173,6 +201,9 @@ fn eth() -> NetworkDevice {
     kind: NetworkKind::Ethernet,
     state: NetworkState::Unavailable,
     connection: "".into(),
+    connection_uuid: "".into(),
+    hw_address: "52:54:00:12:34:56".into(),
+    ipv4_address: "".into(),
     fail_reason: None,
     wifi_mode: WifiMode::Unknown,
     link_speed: 0,
@@ -436,6 +467,76 @@ fn property_changes_show() {
 }
 
 #[test]
+fn a_devices_own_network_follows_networkmanager() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(online(&bus));
+  let nm = fake_nm(&mut shell, &bus);
+  let devices = shell.cx.network().devices();
+  wait_for(&mut shell, "the devices", || {
+    !devices.get_untracked().is_empty()
+  });
+  assert_eq!(devices.get_untracked(), [wlan(), eth()]);
+
+  // A cable in, and the dock's saved connection up on it.
+  let (dock, dock_ip4) = (
+    "/org/freedesktop/NetworkManager/ActiveConnection/3",
+    "/org/freedesktop/NetworkManager/IP4Config/2",
+  );
+  let active = vec![
+    ("Id", Variant::from("dock")),
+    ("Uuid", Variant::from(DOCK_UUID)),
+  ];
+  added(&nm, &mut shell, dock, vec![(ACTIVE, active)]);
+  added(&nm, &mut shell, dock_ip4, vec![(IP4, ip4(&["10.0.0.7"]))]);
+  let up = [
+    ("State", Variant::from(100u32)),
+    ("ActiveConnection", path(dock)),
+    ("Ip4Config", path(dock_ip4)),
+  ];
+  nm.set(&mut shell, ETH, DEVICE, &up);
+  let plugged = NetworkDevice {
+    state: NetworkState::Connected,
+    connection: "dock".into(),
+    connection_uuid: DOCK_UUID.into(),
+    ipv4_address: "10.0.0.7".into(),
+    ..eth()
+  };
+  wait_for(&mut shell, "the dock's network", || {
+    devices.get_untracked()[1] == plugged
+  });
+
+  // A new lease, a new hardware address and a new name.
+  nm.set(&mut shell, dock_ip4, IP4, &ip4(&["10.0.0.8"])[..1]);
+  nm.set(
+    &mut shell,
+    ETH,
+    DEVICE,
+    &[("HwAddress", Variant::from("52:54:00:aa:bb:cc"))],
+  );
+  nm.set(&mut shell, dock, ACTIVE, &[("Uuid", Variant::from("d0c2"))]);
+  wait_for(&mut shell, "the new lease", || {
+    let eth = &devices.get_untracked()[1];
+    eth.ipv4_address == "10.0.0.8"
+      && eth.hw_address == "52:54:00:aa:bb:cc"
+      && eth.connection_uuid == "d0c2"
+  });
+
+  // No addresses yet, then no config at all.
+  nm.set(&mut shell, dock_ip4, IP4, &ip4(&[])[..1]);
+  wait_for(&mut shell, "no address", || {
+    devices.get_untracked()[1].ipv4_address.is_empty()
+  });
+  nm.set(&mut shell, dock_ip4, IP4, &ip4(&["10.0.0.9"])[..1]);
+  nm.set(&mut shell, ETH, DEVICE, &[("Ip4Config", path("/"))]);
+  shell.run_until(Instant::now() + Duration::from_millis(100));
+  assert_eq!(devices.get_untracked()[1].ipv4_address, "");
+  removed(&nm, &mut shell, dock_ip4, vec![IP4]);
+  nm.set(&mut shell, ETH, DEVICE, &[("Ip4Config", path(dock_ip4))]);
+  shell.run_until(Instant::now() + Duration::from_millis(100));
+  assert_eq!(devices.get_untracked()[1].ipv4_address, "", "gone");
+}
+
+#[test]
 fn a_change_nothing_shows_sets_nothing() {
   let bus = PrivateBus::start();
   let mut shell = Harness::new(online(&bus));
@@ -471,6 +572,8 @@ fn a_change_nothing_shows_sets_nothing() {
   nm.set(&mut shell, NM_PATH, NM, &version);
   let address = [("HwAddress", Variant::from("52:54:00:12:34:57"))];
   nm.set(&mut shell, ETH, WIRED, &address);
+  let gateway = [("Gateway", Variant::from("192.168.1.254"))];
+  nm.set(&mut shell, WLAN_IP4, IP4, &gateway);
   // Then one that shows, sent after them, so they have arrived.
   let fainter = [("Strength", Variant::from(50u8))];
   nm.set(&mut shell, CAFE, ACCESS_POINT, &fainter);
@@ -886,6 +989,7 @@ fn wrong_types_read_as_defaults_and_ssids_are_cut_to_32_bytes() {
     kind: NetworkKind::Other,
     state: NetworkState::Unavailable,
     connection: "".into(),
+    hw_address: "".into(),
     ..eth()
   };
   assert_eq!(devices.get_untracked(), [wlan(), expected]);
@@ -1017,14 +1121,14 @@ fn only_what_networking_reads_is_asked_of_the_bus() {
   use crate::dbus::Daemon;
 
   let rules = super::NetworkService::rules();
-  assert_eq!(rules.len(), 7, "{rules:?}");
+  assert_eq!(rules.len(), 8, "{rules:?}");
   assert!(
     rules
       .iter()
       .all(|rule| rule.contains(&format!("sender='{NM}'")))
   );
   assert!(rules[0].contains(&format!("interface='{OBJECT_MANAGER}'")));
-  let read = [NM, DEVICE, WIRELESS, WIRED, ACCESS_POINT, ACTIVE];
+  let read = [NM, DEVICE, WIRELESS, WIRED, ACCESS_POINT, ACTIVE, IP4];
   for (rule, interface) in rules[1..].iter().zip(read) {
     assert!(rule.contains(&format!("arg0='{interface}'")), "{rule}");
   }
