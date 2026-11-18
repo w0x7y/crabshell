@@ -192,10 +192,8 @@ fn bar(
               None => "–".to_owned(),
             })),
         )
-        .child(Text::new(move || format!("cpu {:.0}%", stats.with(|s| s.cpu * 100.0))).style(BODY))
-        .child(
-          Text::new(move || format!("mem {:.0}%", stats.with(memory_used) * 100.0)).style(BODY),
-        )
+        .child(Text::new(move || stats.with(|s| share("cpu", s, s.cpu))).style(BODY))
+        .child(Text::new(move || stats.with(|s| share("mem", s, memory_used(s)))).style(BODY))
         .child(
           Text::new(move || {
             stats.with(|s| {
@@ -222,12 +220,18 @@ fn bar(
     )
 }
 
+/// `label` and `value` as a percentage, or a dash before the first
+/// sample, which is the only one with no memory.
+pub fn share(label: &str, stats: &SystemStats, value: f32) -> String {
+  match stats.memory_total {
+    0 => format!("{label} –"),
+    _ => format!("{label} {:.0}%", value * 100.0),
+  }
+}
+
 /// The share of memory in use, from 0 to 1.
 fn memory_used(stats: &SystemStats) -> f32 {
-  match stats.memory_total {
-    0 => 0.0,
-    total => 1.0 - stats.memory_available as f32 / total as f32,
-  }
+  1.0 - stats.memory_available as f32 / stats.memory_total.max(1) as f32
 }
 
 /// The CPU's temperature: the first sensor of a CPU's chip, or else the

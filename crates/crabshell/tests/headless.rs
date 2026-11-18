@@ -6573,7 +6573,15 @@ fn the_system_bar_reads_the_weather_pictures_and_the_cpus_temperature() {
     assert!(!system::is_picture(other), "{other}");
   }
 
+  let empty = SystemStats::default();
+  assert_eq!(
+    system::share("cpu", &empty, empty.cpu),
+    "cpu –",
+    "before a sample"
+  );
+  assert_eq!(system::cpu_temperature(&empty), None);
   let mut stats = pinned_stats();
+  assert_eq!(system::share("mem", &stats, 0.4), "mem 40%");
   assert_eq!(
     system::cpu_temperature(&stats),
     Some(52.4),
