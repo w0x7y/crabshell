@@ -507,7 +507,8 @@ fn a_field_reads_its_text_and_caret_and_a_password_only_its_length() {
       selection: None,
     }
   );
-  assert_eq!(field.segment(2, 1), Some((0, 5)), "a word");
+  assert_eq!(field.segment(2, 1), Some((0, 6)), "a word to the next");
+  assert_eq!(field.segment(5, 1), Some((0, 6)), "its space with it");
   assert_eq!(
     field.segment(11, 0),
     Some((11, 11)),
@@ -521,6 +522,12 @@ fn a_field_reads_its_text_and_caret_and_a_password_only_its_length() {
   assert_eq!((dots.text.as_str(), dots.caret), ("••••••", 6));
   let area = access.node(area).expect("the area").text.expect("its text");
   assert_eq!(area.segment(5, 3), Some((4, 7)), "the second line");
+  let after = AccessText {
+    text: "ab\n".to_owned(),
+    caret: 3,
+    selection: None,
+  };
+  assert_eq!(after.segment(3, 3), Some((3, 3)), "the empty last line");
   assert_eq!(
     area.segment(1, 3),
     Some((0, 4)),

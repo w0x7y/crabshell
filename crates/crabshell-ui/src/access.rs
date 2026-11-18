@@ -100,12 +100,22 @@ pub struct AccessText {
 impl AccessText {
   /// The character offsets of the character, word, sentence, or line or
   /// paragraph around character `at`, by AT-SPI's granularity from 0 to
-  /// 4; at the end, the last one, or nothing for a character.
+  /// 4; at the end, the last one, or nothing for a character or after a
+  /// last line break. A word runs to the start of the next.
   pub fn segment(&self, at: usize, granularity: u32) -> Option<(usize, usize)> {
     let text = self.text.as_str();
     let pieces: Vec<&str> = match granularity {
       0 => text.split_inclusive(|_| true).collect(),
-      1 => text.split_word_bounds().collect(),
+      1 => {
+        let mut cuts: Vec<usize> = text
+          .split_word_bound_indices()
+          .filter(|(at, piece)| *at > 0 && piece.chars().any(char::is_alphanumeric))
+          .map(|(at, _)| at)
+          .collect();
+        cuts.insert(0, 0);
+        cuts.push(text.len());
+        cuts.windows(2).map(|cut| &text[cut[0]..cut[1]]).collect()
+      }
       2 => text.split_sentence_bounds().collect(),
       3 | 4 => text.split_inclusive('\n').collect(),
       _ => return None,
@@ -120,11 +130,13 @@ impl AccessText {
       last = (start, end);
       start = end;
     }
-    Some(if granularity == 0 {
-      (start, start)
-    } else {
-      last
-    })
+    Some(
+      if granularity == 0 || (granularity >= 3 && text.ends_with('\n')) {
+        (start, start)
+      } else {
+        last
+      },
+    )
   }
 }
 
