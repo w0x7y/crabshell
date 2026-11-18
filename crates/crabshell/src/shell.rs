@@ -1,7 +1,7 @@
 //! The shell: the platform's event loop, the root context and its
 //! services, and what `cx` can ask of the shell.
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::os::unix::net::UnixStream;
 use std::panic::{self, AssertUnwindSafe, Location};
 use std::path::PathBuf;
@@ -56,8 +56,9 @@ pub const EXIT_NO_COMPOSITOR: i32 = 2;
 ///
 /// Logs go to stderr at the level `CRABSHELL_LOG` names (`info` if unset).
 /// Under the supervisor, `CRABSHELL_CONTROL` names its control socket, used
-/// for `ready` and for saving [`persist`](ShellExt::persist)ed values on a
-/// reload. [`ipc`](ShellExt::ipc) handlers are served at
+/// for `ready`, for saving [`persist`](ShellExt::persist)ed values on a
+/// reload, which runs the new shell beside this one until it has drawn,
+/// and for [`reload`](ShellExt::reload). [`ipc`](ShellExt::ipc) handlers are served at
 /// `$XDG_RUNTIME_DIR/crabshell/ipc-<display>.sock`. The design doc's
 /// [Writing a config](https://github.com/w0x7y/crabshell/blob/main/docs/design.md#writing-a-config)
 /// section has the details.
@@ -167,8 +168,8 @@ pub struct Shell {
   pub(crate) started: Instant,
   first_frame: bool,
   switches: SwitchLog,
-  /// The supervisor's socket, until the shell has said it is ready.
-  control: Option<UnixStream>,
+  /// The shell has told the supervisor it is ready.
+  said_ready: bool,
   /// Whether the config showed anything at startup.
   pub(crate) startup: Startup,
   /// Follow the accessibility status once the first frame is shown, so
@@ -257,6 +258,7 @@ impl Shell {
       toplevels: Cell::new(None),
       window_manager: Cell::new(None),
       clipboard: Cell::new(None),
+      control: OnceCell::new(),
     });
     event_loop.platform().on_event(move |platform, event| {
       // First, so a per_output closure finds its output listed.
@@ -285,7 +287,7 @@ impl Shell {
       started: Instant::now(),
       first_frame: false,
       switches: SwitchLog::default(),
-      control: None,
+      said_ready: false,
       startup: Startup::Waiting,
       accessibility: false,
       cx,
@@ -352,38 +354,54 @@ impl Shell {
   }
 
   /// Follows the supervisor on `stream`: tells it when the shell is
-  /// ready, and on `save` writes the persisted values to `file` and exits
-  /// with 0.
+  /// ready, and on `handoff` writes the persisted values to `file` and
+  /// runs on until told `exit`, or on `save` writes them and exits, with
+  /// 0 either way.
   pub(crate) fn follow_supervisor(&mut self, stream: UnixStream, file: Option<std::path::PathBuf>) {
+    let Some(service) = self.cx.service::<Service>() else {
+      return;
+    };
     match stream.try_clone() {
-      Ok(writer) => self.control = Some(writer),
+      Ok(writer) => {
+        control::send(&writer, "can-hand-off");
+        let _ = service.control.set(writer);
+      }
       Err(error) => tracing::warn!(%error, "can't answer the supervisor"),
     }
-    let service = self.cx.service::<Service>();
-    let persisted = service
-      .as_ref()
-      .map(|service| Rc::clone(&service.persisted));
     let cx = self.cx.clone();
-    control::listen(&self.event_loop.handle(), stream, move || {
-      if let Some(service) = &service {
-        service.ipc.remove_socket();
+    let save = move |cx: &Cx| {
+      let mut values = service.persisted.save();
+      if let Some(state) = crabshell_services::save_state(cx) {
+        values.insert(persist::SERVICES_KEY.to_owned(), state);
       }
-      // The next shell starts its own; these would run on beside them.
-      crabshell_services::stop_programs(&cx);
-      remove_clipboard_files(&cx);
-      let values = persisted.as_ref().map(|persisted| {
-        let mut values = persisted.save();
-        if let Some(state) = crabshell_services::save_state(&cx) {
-          values.insert(persist::SERVICES_KEY.to_owned(), state);
-        }
-        values
-      });
-      if let (Some(values), Some(file)) = (values, &file)
+      if let Some(file) = &file
         && let Err(error) = persist::write(file, &values)
       {
         tracing::error!(path = %file.display(), %error, "can't save the persisted values");
       }
-      tracing::info!("the supervisor asked for a reload; exiting");
+    };
+    control::listen(&self.event_loop.handle(), stream, move |command| {
+      match command {
+        control::Command::Handoff => {
+          save(&cx);
+          if let Some(service) = cx.service::<Service>()
+            && let Some(writer) = service.control.get()
+          {
+            control::send(writer, "saved");
+          }
+          tracing::info!("saved for a reload; running on until the new shell is ready");
+          return;
+        }
+        control::Command::Save => {
+          stop_services(&cx);
+          save(&cx);
+          tracing::info!("the supervisor asked for a reload; exiting");
+        }
+        control::Command::Exit => {
+          stop_services(&cx);
+          tracing::info!("the new shell is ready; exiting");
+        }
+      }
       std::process::exit(0);
     });
   }
@@ -437,19 +455,25 @@ impl Shell {
   /// Says `ready` to the supervisor once every panel shown has drawn a
   /// frame, or, with none shown, once the startup judgement passed.
   fn tell_ready(&mut self) {
-    if self.control.is_none() {
+    if self.said_ready {
       return;
     }
+    let Some(service) = self.cx.service::<Service>() else {
+      return;
+    };
+    let Some(writer) = service.control.get() else {
+      return;
+    };
     let platform = self.event_loop.platform();
     let panels = platform
       .windows()
       .filter(|(_, window)| !window.is_popup())
       .filter_map(|(id, _)| platform.window_info(id))
       .map(|info| (info.shown, info.commits));
-    if control::ready(panels, self.startup == Startup::Passed)
-      && let Some(mut stream) = self.control.take()
-    {
-      control::send_ready(&mut stream);
+    let taking_over = crabshell_services::taking_over(&self.cx);
+    if control::ready(panels, self.startup == Startup::Passed, taking_over) {
+      control::send(writer, "ready");
+      self.said_ready = true;
     }
   }
 
@@ -488,28 +512,18 @@ impl Shell {
   pub fn run(mut self) -> ! {
     loop {
       if let Err(error) = self.dispatch(None) {
-        self.stop_services();
+        stop_services(&self.cx);
         tracing::error!(%error, "the shell stops");
         std::process::exit(EXIT_NO_COMPOSITOR);
       }
       if self.startup == Startup::NothingToShow {
-        self.stop_services();
+        stop_services(&self.cx);
         tracing::error!(
           "every per_output closure panicked at startup, so the shell has nothing to show; exiting"
         );
         std::process::exit(EXIT_ROOT_PANICKED);
       }
     }
-  }
-
-  /// Removes the IPC socket and stops the programs the config started,
-  /// before the shell exits.
-  fn stop_services(&self) {
-    if let Some(service) = self.cx.service::<Service>() {
-      service.ipc.remove_socket();
-    }
-    remove_clipboard_files(&self.cx);
-    crabshell_services::stop_programs(&self.cx);
   }
 
   /// The platform: its outputs, windows and counters. Its
@@ -566,6 +580,8 @@ struct Service {
   window_manager: Cell<Option<WindowManager>>,
   /// `cx.clipboard()`, once a config asked.
   clipboard: Cell<Option<Clipboard>>,
+  /// The supervisor's socket, to write to, under `crabshell run`.
+  control: OnceCell<UnixStream>,
 }
 
 impl Service {
@@ -761,6 +777,16 @@ pub(crate) fn request(
 }
 
 /// Removes the clipboard history's image files, as the shell exits.
+/// Removes the IPC socket and stops the programs the config started,
+/// before the shell exits.
+fn stop_services(cx: &Cx) {
+  if let Some(service) = cx.service::<Service>() {
+    service.ipc.remove_socket();
+  }
+  remove_clipboard_files(cx);
+  crabshell_services::stop_programs(cx);
+}
+
 fn remove_clipboard_files(cx: &Cx) {
   if let Some(clipboard) = cx
     .service::<Service>()
@@ -1029,6 +1055,13 @@ pub trait ShellExt {
   /// the supervisor too, and any status but 0 and 2 starts the shell
   /// again. A greeter calls it once its session starts.
   fn exit(&self, code: i32) -> !;
+
+  /// Asks `crabshell run` for a reload, as Quickshell's
+  /// `Quickshell.reload`: it rebuilds the config if its sources changed,
+  /// and starts the shell again either way, with this one running until
+  /// the new one has drawn. Without the supervisor it is logged and
+  /// nothing happens.
+  fn reload(&self);
 
   /// Looks icon names up in `theme`, such as `"Adwaita"`. Without it, a
   /// shell from [`run`] uses GTK's `gtk-icon-theme-name` from
@@ -1364,6 +1397,17 @@ impl ShellExt for Cx {
     crabshell_services::stop_programs(self);
     remove_clipboard_files(self);
     std::process::exit(code)
+  }
+
+  fn reload(&self) {
+    let service = self.service::<Service>();
+    match service.as_ref().and_then(|service| service.control.get()) {
+      Some(writer) => {
+        tracing::info!("the config asks for a reload");
+        control::send(writer, "reload");
+      }
+      None => tracing::warn!("cx.reload needs crabshell run to reload; nothing happens"),
+    }
   }
 
   fn icon_path(&self, name: &str, size: u32) -> Option<PathBuf> {

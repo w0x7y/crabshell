@@ -1,7 +1,10 @@
-//! The supervisor's control socket, named by `CRABSHELL_CONTROL`. The
-//! shell says `ready` once each of its windows has drawn a frame. Told
-//! `save`, it saves its persisted values and exits, so the supervisor can
-//! start the new build.
+//! The supervisor's control socket, named by `CRABSHELL_CONTROL`, one
+//! line per message. The shell says `can-hand-off` when it connects, and
+//! `ready` once each of its windows has drawn a frame. Told `handoff`, it
+//! saves its persisted values and says `saved`, and runs on until the new
+//! shell is ready and it is told `exit`. Told `save`, as a supervisor
+//! from before the handoff says, it saves and exits at once.
+//! `cx.reload()` says `reload`.
 
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -28,12 +31,32 @@ pub(crate) fn connect() -> Option<UnixStream> {
   }
 }
 
+/// What the supervisor tells the shell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Command {
+  /// Save and exit.
+  Save,
+  /// Save and run on, saying `saved`.
+  Handoff,
+  /// Exit, now that the new shell is ready.
+  Exit,
+}
+
 /// Whether the shell is ready: every panel it shows has drawn a frame,
 /// and it shows at least one, or it shows none and `started` says the
 /// startup judgement passed, so there is nothing to wait for. `panels`
 /// gives each panel's `(shown, commits)`. One waiting for its output, or
 /// whose settings layer-shell would refuse, isn't shown and doesn't count.
-pub(crate) fn ready(panels: impl IntoIterator<Item = (bool, u64)>, started: bool) -> bool {
+/// Nor is it ready while `taking_over` the notifications from the shell
+/// before a reload, since that one exits once this one is ready.
+pub(crate) fn ready(
+  panels: impl IntoIterator<Item = (bool, u64)>,
+  started: bool,
+  taking_over: bool,
+) -> bool {
+  if taking_over {
+    return false;
+  }
   let mut drawn = false;
   for (shown, commits) in panels {
     if shown {
@@ -46,20 +69,20 @@ pub(crate) fn ready(panels: impl IntoIterator<Item = (bool, u64)>, started: bool
   drawn || started
 }
 
-/// Tells the supervisor the shell is ready. A failure is logged.
-pub(crate) fn send_ready(stream: &mut UnixStream) {
-  if let Err(error) = stream.write_all(b"ready\n") {
-    tracing::warn!(%error, "can't tell the supervisor the shell is ready");
+/// Tells the supervisor `line`, such as `ready`. A failure is logged.
+pub(crate) fn send(mut stream: &UnixStream, line: &str) {
+  if let Err(error) = stream.write_all(format!("{line}\n").as_bytes()) {
+    tracing::warn!(%error, "can't tell the supervisor {line}");
   }
 }
 
-/// Reads commands from `stream` on the loop: `save` calls `on_save`.
-/// Anything else is logged and skipped. When the supervisor hangs up, the
-/// shell runs on alone.
+/// Reads commands from `stream` on the loop and hands each to
+/// `on_command`. Anything else is logged and skipped. When the supervisor
+/// hangs up, the shell runs on alone.
 pub(crate) fn listen<D: 'static>(
   handle: &LoopHandle<'static, D>,
   stream: UnixStream,
-  mut on_save: impl FnMut() + 'static,
+  mut on_command: impl FnMut(Command) + 'static,
 ) {
   if let Err(error) = stream.set_nonblocking(true) {
     return tracing::warn!(%error, "can't listen to the supervisor");
@@ -84,7 +107,9 @@ pub(crate) fn listen<D: 'static>(
               continue;
             }
             match line.as_slice() {
-              b"save" => on_save(),
+              b"save" => on_command(Command::Save),
+              b"handoff" => on_command(Command::Handoff),
+              b"exit" => on_command(Command::Exit),
               other => tracing::warn!(
                 command = %String::from_utf8_lossy(other),
                 "the supervisor sent something unknown"

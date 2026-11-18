@@ -250,8 +250,8 @@ impl<D: 'static> Ipc<D> {
     if let Some(dir) = path.parent() {
       persist::private_dir(dir)?;
     }
-    // A reload starts the new shell after the old one exits; with two
-    // shells running at once, the newer one wins.
+    // A reload runs the new shell beside the old one for a moment; with
+    // two shells running at once, the newer one wins.
     match std::fs::remove_file(path) {
       Ok(()) => tracing::info!(path = %path.display(), "replaced the IPC socket that was there"),
       Err(error) if error.kind() == ErrorKind::NotFound => {}

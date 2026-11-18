@@ -2091,8 +2091,8 @@ fn private_bus_config() -> PathBuf {
   path
 }
 
-/// Waits for a shell to connect to `listener` and say it is ready; gives
-/// the connection back.
+/// Waits for a shell to connect to `listener`, say it can hand off and
+/// that it is ready; gives the connection back.
 fn accept_ready(listener: &std::os::unix::net::UnixListener) -> std::os::unix::net::UnixStream {
   use std::io::Read;
 
@@ -2114,11 +2114,11 @@ fn accept_ready(listener: &std::os::unix::net::UnixListener) -> std::os::unix::n
   stream
     .set_read_timeout(Some(Duration::from_secs(10)))
     .expect("a read timeout");
-  let mut said = [0_u8; 6];
+  let mut said = [0_u8; 19];
   stream
     .read_exact(&mut said)
     .expect("the shell says something");
-  assert_eq!(&said, b"ready\n");
+  assert_eq!(&said, b"can-hand-off\nready\n");
   stream
 }
 
@@ -2229,6 +2229,91 @@ fn a_reload_keeps_the_notifications_and_their_ids_go_on() {
   assert_eq!(second.exit_status().and_then(|s| s.code()), Some(0));
   let both = [(1, String::from("kept")), (2, String::from("next"))];
   assert_eq!(saved(), both, "the next shell kept the first one's");
+}
+
+/// A reload as `crabshell run` does it: the old shell saves and runs on,
+/// the new one starts beside it and takes the notifications over, and
+/// only then says it is ready and the old one is told to exit. An app
+/// sending notifications all through the swap gets every one answered,
+/// and each is in the new shell's history.
+#[test]
+#[ignore = "needs headless Sway"]
+fn notifications_sent_through_a_handoff_all_reach_the_new_shell() {
+  use std::io::{Read, Write};
+  use std::sync::Arc;
+  use std::sync::atomic::{AtomicBool, Ordering};
+
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let socket = sway.runtime_dir().join("control.sock");
+  let listener = std::os::unix::net::UnixListener::bind(&socket).expect("the control socket");
+  let state = sway.runtime_dir().join("crabshell").join("state.json");
+  let desktop = Desktop::new("handoff-notifications");
+  let mut env: Vec<(&str, &str)> = desktop.env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+  env.push(("CRABSHELL_CONTROL", socket.to_str().expect("a UTF-8 path")));
+  let saved_ids = || -> Vec<u64> {
+    let text = std::fs::read_to_string(&state).expect("the saved values");
+    let values: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+    let history = values["crabshell::services"]["notifications"]["history"]
+      .as_array()
+      .expect("the notifications kept")
+      .clone();
+    history
+      .iter()
+      .map(|kept| kept["id"].as_u64().expect("an id"))
+      .collect()
+  };
+  let said = |supervisor: &mut std::os::unix::net::UnixStream, line: &[u8]| {
+    let mut heard = vec![0_u8; line.len()];
+    supervisor
+      .read_exact(&mut heard)
+      .expect("the shell answers");
+    assert_eq!(heard, line);
+  };
+
+  let mut first = ExampleBar::start(&sway, "desktop", true, &env);
+  let mut old = accept_ready(&listener);
+  let stop = Arc::new(AtomicBool::new(false));
+  let app = std::thread::spawn({
+    let (stop, address) = (Arc::clone(&stop), desktop.session.address.clone());
+    move || {
+      let mut ids = Vec::new();
+      while !stop.load(Ordering::Relaxed) {
+        let output = Command::new("gdbus")
+          .args(["call", "--address", &address])
+          .args(["--dest", "org.freedesktop.Notifications"])
+          .args(["--object-path", "/org/freedesktop/Notifications"])
+          .args(["--method", "org.freedesktop.Notifications.Notify"])
+          .args(["handoff", "0", "", "a note", "", "[]", "{}", "0"])
+          .output()
+          .expect("gdbus runs");
+        assert!(output.status.success(), "unanswered: {output:?}");
+        let reply = String::from_utf8_lossy(&output.stdout);
+        let id = reply
+          .trim()
+          .trim_start_matches("(uint32 ")
+          .trim_end_matches(",)");
+        ids.push(id.parse::<u64>().expect("an id"));
+        std::thread::sleep(Duration::from_millis(5));
+      }
+      ids
+    }
+  });
+  std::thread::sleep(Duration::from_millis(300));
+  old.write_all(b"handoff\n").expect("told to hand off");
+  said(&mut old, b"saved\n");
+  let mut second = ExampleBar::start(&sway, "desktop", true, &env);
+  let mut new = accept_ready(&listener);
+  old.write_all(b"exit\n").expect("told to exit");
+  assert_eq!(first.exit_status().and_then(|s| s.code()), Some(0));
+  std::thread::sleep(Duration::from_millis(300));
+  stop.store(true, Ordering::Relaxed);
+  let sent = app.join().expect("the app ran");
+  new.write_all(b"handoff\n").expect("told to hand off");
+  said(&mut new, b"saved\n");
+  assert_eq!(saved_ids(), sent, "every one sent is in the new shell");
+  new.write_all(b"exit\n").expect("told to exit");
+  assert_eq!(second.exit_status().and_then(|s| s.code()), Some(0));
 }
 
 /// `cx.ipc` in a shell `run` started: it serves at the socket named for

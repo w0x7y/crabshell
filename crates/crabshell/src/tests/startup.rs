@@ -99,9 +99,71 @@ fn a_shell_with_no_window_says_ready_once_judged() {
   supervisor
     .set_read_timeout(Some(Duration::from_secs(1)))
     .expect("a timeout");
-  let mut said = [0_u8; 6];
+  let mut said = [0_u8; 19];
   supervisor
     .read_exact(&mut said)
     .expect("the shell says ready");
-  assert_eq!(&said, b"ready\n");
+  assert_eq!(&said, b"can-hand-off\nready\n");
+}
+
+/// The lines the shell has said to `supervisor`, waiting up to 1 s for
+/// `last`.
+fn said_until(shell: &mut Shell, supervisor: &mut UnixStream, last: &str) -> String {
+  supervisor.set_nonblocking(true).expect("nonblocking");
+  let mut said = Vec::new();
+  let deadline = Instant::now() + Duration::from_secs(1);
+  while !String::from_utf8_lossy(&said)
+    .lines()
+    .any(|line| line == last)
+  {
+    assert!(
+      Instant::now() < deadline,
+      "no {last:?}: {}",
+      String::from_utf8_lossy(&said)
+    );
+    shell
+      .dispatch(Some(Duration::from_millis(5)))
+      .expect("the connection works");
+    let mut chunk = [0_u8; 64];
+    if let Ok(read) = supervisor.read(&mut chunk) {
+      said.extend_from_slice(&chunk[..read]);
+    }
+  }
+  String::from_utf8(said).expect("UTF-8")
+}
+
+#[test]
+fn told_to_hand_off_the_shell_saves_says_so_and_runs_on() {
+  use std::io::Write;
+
+  let (_fake, mut shell) = start(|cx| {
+    cx.persist("clicks", 3_u32).set(4);
+    cx.per_output(|_: &Cx, _: &Output| Vec::new());
+  });
+  let dir = std::env::temp_dir().join(format!("crabshell-handoff-{}", std::process::id()));
+  let file = dir.join("crabshell").join("state.json");
+  let (mut supervisor, ours) = UnixStream::pair().expect("a socket pair");
+  shell.follow_supervisor(ours, Some(file.clone()));
+  said_until(&mut shell, &mut supervisor, "ready");
+  supervisor.write_all(b"handoff\n").expect("written");
+  assert_eq!(said_until(&mut shell, &mut supervisor, "saved"), "saved\n");
+  let saved = crate::persist::load(&file);
+  assert_eq!(saved.get("clicks"), Some(&serde_json::json!(4)));
+  let _ = std::fs::remove_dir_all(&dir);
+  // Still running: it goes on dispatching.
+  shell
+    .dispatch(Some(Duration::from_millis(5)))
+    .expect("the connection works");
+}
+
+#[test]
+fn reload_asks_the_supervisor_and_without_one_is_logged() {
+  let (_fake, mut shell) = start(|cx| cx.per_output(|_: &Cx, _: &Output| Vec::new()));
+  let logs = super::capture_logs(|| shell.cx().reload());
+  assert!(logs.contains("cx.reload needs crabshell run"), "{logs}");
+  let (mut supervisor, ours) = UnixStream::pair().expect("a socket pair");
+  shell.follow_supervisor(ours, None);
+  shell.cx().reload();
+  let said = said_until(&mut shell, &mut supervisor, "reload");
+  assert!(said.starts_with("can-hand-off\n"), "{said}");
 }
