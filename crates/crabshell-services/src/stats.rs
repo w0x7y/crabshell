@@ -1,21 +1,24 @@
 //! CPU, memory and temperature stats from procfs and sysfs, whose files
 //! change without an inotify event, so they are sampled on a timer that
-//! lives only while a config shows them.
+//! lives only while a config shows them. The reads run on a thread of
+//! their own, as some sensors take 100 ms to answer.
 
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashSet;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Once;
+use std::sync::{Once, mpsc};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use calloop::RegistrationToken;
 use calloop::timer::TimeoutAction;
-use crabshell_reactive::ReadSignal;
+use crabshell_reactive::{ReadSignal, Signal};
 use crabshell_ui::Cx;
 
 use crate::Shared;
@@ -32,9 +35,6 @@ const MAX_TEMPERATURES: usize = 64;
 const MAX_READ: u64 = 64 * 1024;
 /// The most entries looked at in one sysfs directory.
 const MAX_LISTED: usize = 1024;
-
-/// What `cx.system_stats` needs from the shell: the loop and the roots.
-pub(crate) struct Service(pub(crate) Rc<Shared>);
 
 /// The system's load, from `cx.system_stats(period)`.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -69,8 +69,154 @@ pub struct Temperature {
   pub celsius: f32,
 }
 
+/// What `cx.system_stats` needs from the shell: the loop and the roots,
+/// and the one thread that samples while any context shows stats.
+pub(crate) struct Service {
+  shared: Rc<Shared>,
+  /// Each live call's signal, with its sampler while no read runs.
+  live: RefCell<HashMap<u64, Live>>,
+  next: Cell<u64>,
+  worker: RefCell<Option<Worker>>,
+  /// How many samples were asked for, for the tests.
+  #[cfg(test)]
+  requests: Cell<usize>,
+  /// The last worker's thread, once stopped, for the tests to join.
+  #[cfg(test)]
+  ended: RefCell<Option<JoinHandle<()>>>,
+}
+
+struct Live {
+  stats: Signal<SystemStats>,
+  /// `None` while the worker reads with it.
+  sampler: Option<Sampler>,
+}
+
+/// A finished sample: whose it is, its sampler back, and what it read.
+pub(crate) type Answer = (u64, Sampler, SystemStats);
+
+/// The thread that reads, and the channel it answers on.
+struct Worker {
+  requests: mpsc::Sender<(u64, Sampler)>,
+  token: RegistrationToken,
+  /// Detached outside tests, which join it.
+  #[cfg_attr(not(test), allow(dead_code))]
+  thread: JoinHandle<()>,
+}
+
+impl Service {
+  pub(crate) fn new(shared: Rc<Shared>) -> Service {
+    Service {
+      shared,
+      live: RefCell::default(),
+      next: Cell::new(0),
+      worker: RefCell::new(None),
+      #[cfg(test)]
+      requests: Cell::new(0),
+      #[cfg(test)]
+      ended: RefCell::new(None),
+    }
+  }
+
+  /// Hands sampler `id` to the worker, starting it if none runs. A
+  /// sampler still reading is skipped, not queued.
+  fn request(self: &Rc<Self>, id: u64) {
+    let taken = self
+      .live
+      .borrow_mut()
+      .get_mut(&id)
+      .and_then(|live| live.sampler.take());
+    let Some(sampler) = taken else {
+      return;
+    };
+    #[cfg(test)]
+    self.requests.set(self.requests.get() + 1);
+    if self.worker.borrow().is_none() {
+      let worker = self.start();
+      self.worker.replace(worker);
+    }
+    let unsent = match self.worker.borrow().as_ref() {
+      Some(worker) => worker
+        .requests
+        .send((id, sampler))
+        .err()
+        .map(|error| error.0.1),
+      None => Some(sampler),
+    };
+    if let Some(sampler) = unsent
+      && let Some(live) = self.live.borrow_mut().get_mut(&id)
+    {
+      live.sampler = Some(sampler);
+    }
+  }
+
+  /// The worker, answering on a channel in the loop. `None`, logged, if
+  /// either couldn't start.
+  fn start(self: &Rc<Self>) -> Option<Worker> {
+    let (answers, channel) = calloop::channel::channel::<Answer>();
+    let weak = Rc::downgrade(self);
+    let answered = Box::new(move |(id, sampler, stats)| {
+      if let Some(service) = weak.upgrade() {
+        service.answered(id, sampler, stats);
+      }
+    });
+    let event_loop = self.shared.event_loop()?;
+    let token = event_loop.insert_stats_channel(channel, answered)?;
+    let (requests, received) = mpsc::channel::<(u64, Sampler)>();
+    let spawned = std::thread::Builder::new()
+      .name(String::from("crabshell-stats"))
+      .spawn(move || {
+        // Ends once the requests' sender or the loop's channel is gone.
+        for (id, mut sampler) in received {
+          let stats = sampler.sample();
+          if answers.send((id, sampler, stats)).is_err() {
+            break;
+          }
+        }
+      });
+    match spawned {
+      Ok(thread) => Some(Worker {
+        requests,
+        token,
+        thread,
+      }),
+      Err(error) => {
+        tracing::warn!(%error, "couldn't start the stats' thread, so they stand still");
+        event_loop.remove(token);
+        None
+      }
+    }
+  }
+
+  fn answered(&self, id: u64, sampler: Sampler, stats: SystemStats) {
+    let signal = {
+      let mut live = self.live.borrow_mut();
+      let Some(live) = live.get_mut(&id) else {
+        return;
+      };
+      live.sampler = Some(sampler);
+      live.stats
+    };
+    set(signal, stats);
+  }
+
+  /// Takes the worker out of the loop. Its thread ends once a read it is
+  /// in finishes.
+  fn stop(&self) {
+    let Some(worker) = self.worker.take() else {
+      return;
+    };
+    if let Some(event_loop) = self.shared.event_loop() {
+      event_loop.remove(worker.token);
+    }
+    drop(worker.requests);
+    #[cfg(test)]
+    self.ended.replace(Some(worker.thread));
+  }
+}
+
 /// `cx.system_stats(period)`.
 pub(crate) fn system_stats(cx: &Cx, period: Duration) -> ReadSignal<SystemStats> {
+  let stats = cx.signal(SystemStats::default());
   let Some(service) = cx.service::<Service>() else {
     static LOGGED: Once = Once::new();
     LOGGED.call_once(|| {
@@ -78,35 +224,59 @@ pub(crate) fn system_stats(cx: &Cx, period: Duration) -> ReadSignal<SystemStats>
         "cx.system_stats() needs the services the shell provides; these stats stand still"
       );
     });
-    return cx.signal(SystemStats::default()).read_only();
+    return stats.read_only();
   };
-  let shared = Rc::clone(&service.0);
-  let mut sampler = Sampler::new(&shared.config.proc, &shared.config.sys);
-  let stats = cx.signal(sampler.sample());
+  let Some(event_loop) = service.shared.event_loop() else {
+    return stats.read_only();
+  };
+  let id = service.next.get();
+  service.next.set(id + 1);
+  let config = &service.shared.config;
+  #[cfg_attr(not(test), allow(unused_mut))]
+  let mut sampler = Sampler::new(&config.proc, &config.sys);
+  #[cfg(test)]
+  {
+    sampler.delay = config.stats_delay;
+  }
+  let live = Live {
+    stats,
+    sampler: Some(sampler),
+  };
+  service.live.borrow_mut().insert(id, live);
+  service.request(id);
   let period = period.clamp(MIN_PERIOD, MAX_PERIOD);
+  let weak = Rc::downgrade(&service);
   let tick = Box::new(move || {
-    if stats.try_with(|_| ()).is_none() {
-      return TimeoutAction::Drop;
+    if let Some(service) = weak.upgrade() {
+      service.request(id);
     }
-    set(stats, sampler.sample());
     TimeoutAction::ToDuration(period)
   });
-  let token = shared
-    .event_loop()
-    .and_then(|event_loop| event_loop.insert_timer(Instant::now() + period, tick));
-  if let Some(token) = token {
-    cx.owner().signal(Unschedule(shared, token));
-  }
+  let timer = event_loop.insert_timer(Instant::now() + period, tick);
+  cx.owner().signal(Unschedule { service, id, timer });
   stats.read_only()
 }
 
-/// Takes the stats' timer out of the loop when its context goes.
-struct Unschedule(Rc<Shared>, RegistrationToken);
+/// Takes a call's timer out of the loop when its context goes, and the
+/// worker with the last one.
+struct Unschedule {
+  service: Rc<Service>,
+  id: u64,
+  timer: Option<RegistrationToken>,
+}
 
 impl Drop for Unschedule {
   fn drop(&mut self) {
-    if let Some(event_loop) = self.0.event_loop() {
-      event_loop.remove(self.1);
+    if let (Some(timer), Some(event_loop)) = (self.timer, self.service.shared.event_loop()) {
+      event_loop.remove(timer);
+    }
+    let empty = {
+      let mut live = self.service.live.borrow_mut();
+      live.remove(&self.id);
+      live.is_empty()
+    };
+    if empty {
+      self.service.stop();
     }
   }
 }
@@ -127,8 +297,8 @@ struct Chip {
 }
 
 /// Reads the stats, keeping the last CPU counters for the next sample's
-/// share.
-struct Sampler {
+/// share. It moves to the worker for each read and back with the result.
+pub(crate) struct Sampler {
   proc: PathBuf,
   sys: PathBuf,
   /// Every CPU's counters at the last sample, then each CPU's by number.
@@ -138,6 +308,9 @@ struct Sampler {
   chips: Option<Vec<Chip>>,
   /// The problems logged already, by kind or by file.
   logged: HashSet<String>,
+  /// A pause before each read, so a test's sensors can be slow.
+  #[cfg(test)]
+  delay: Duration,
 }
 
 impl Sampler {
@@ -148,10 +321,14 @@ impl Sampler {
       last: None,
       chips: None,
       logged: HashSet::new(),
+      #[cfg(test)]
+      delay: Duration::ZERO,
     }
   }
 
   fn sample(&mut self) -> SystemStats {
+    #[cfg(test)]
+    std::thread::sleep(self.delay);
     let mut stats = SystemStats::default();
     self.cpu(&mut stats);
     self.memory(&mut stats);

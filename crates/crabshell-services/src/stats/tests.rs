@@ -1,9 +1,12 @@
+use std::cell::RefCell;
 use std::path::Path;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use calloop::timer::{TimeoutAction, Timer};
 use crabshell_reactive::Runtime;
 
-use super::{Sampler, Temperature};
+use super::{Sampler, Service, SystemStats, Temperature};
 use crate::testing::{Harness, TempDir, capture_logs, offline};
 use crate::{Config, ServicesExt};
 
@@ -190,6 +193,18 @@ fn run(shell: &mut Harness, ms: u64) -> usize {
   shell.run_until(Instant::now() + Duration::from_millis(ms))
 }
 
+fn requests(shell: &Harness) -> usize {
+  let service = shell.cx.service::<Service>().expect("the stats service");
+  service.requests.get()
+}
+
+fn slow(dir: &TempDir, delay: Duration) -> Config {
+  Config {
+    stats_delay: delay,
+    ..fake(dir)
+  }
+}
+
 #[test]
 fn stats_are_sampled_at_once_then_every_period_until_the_context_goes() {
   let dir = TempDir::new();
@@ -197,9 +212,11 @@ fn stats_are_sampled_at_once_then_every_period_until_the_context_goes() {
   let nodes = Runtime::current().node_count();
   let child = shell.cx.child();
   let stats = child.system_stats(Duration::from_millis(300));
+  assert_eq!(stats.get_untracked(), SystemStats::default());
+  run(&mut shell, 100);
   assert_eq!(stats.get_untracked().memory_total, 2048);
   write(&dir.path().join("proc"), "meminfo", "MemTotal: 3 kB\n");
-  assert_eq!(run(&mut shell, 400), 2);
+  run(&mut shell, 300);
   assert_eq!(stats.get_untracked().memory_total, 3072);
 
   child.owner().dispose();
@@ -209,13 +226,86 @@ fn stats_are_sampled_at_once_then_every_period_until_the_context_goes() {
 }
 
 #[test]
+fn a_slow_sensor_never_holds_up_the_loop() {
+  let dir = TempDir::new();
+  let mut shell = Harness::new(slow(&dir, Duration::from_millis(300)));
+  // A loop timer every 20 ms, to see how long the loop is ever held.
+  let ticks: Rc<RefCell<Vec<Instant>>> = Rc::default();
+  let seen = Rc::clone(&ticks);
+  let step = Duration::from_millis(20);
+  shell
+    .event_loop
+    .handle()
+    .insert_source(Timer::from_duration(step), move |_, _, ()| {
+      seen.borrow_mut().push(Instant::now());
+      TimeoutAction::ToDuration(step)
+    })
+    .expect("a timer");
+  let asked = Instant::now();
+  let stats = shell.cx.system_stats(Duration::from_millis(250));
+  assert!(
+    asked.elapsed() < Duration::from_millis(100),
+    "{:?}",
+    asked.elapsed()
+  );
+  assert_eq!(stats.get_untracked(), SystemStats::default());
+  run(&mut shell, 1000);
+  assert_eq!(stats.get_untracked().memory_total, 2048);
+  let ticks = ticks.borrow();
+  let longest = ticks
+    .windows(2)
+    .map(|pair| pair[1] - pair[0])
+    .max()
+    .expect("ticks");
+  assert!(
+    longest < Duration::from_millis(200),
+    "the loop was held {longest:?}"
+  );
+}
+
+#[test]
+fn a_tick_while_a_read_runs_is_skipped() {
+  let dir = TempDir::new();
+  let mut shell = Harness::new(slow(&dir, Duration::from_millis(600)));
+  let _stats = shell.cx.system_stats(Duration::from_millis(250));
+  // Asked at once and at the first tick after the answer, near 750 ms;
+  // the ticks at 250, 500, 1000 and 1250 ms find a read running.
+  run(&mut shell, 1300);
+  assert_eq!(requests(&shell), 2);
+}
+
+#[test]
+fn the_thread_ends_with_the_last_context_showing_stats() {
+  let dir = TempDir::new();
+  let mut shell = Harness::new(slow(&dir, Duration::from_millis(200)));
+  let (first, second) = (shell.cx.child(), shell.cx.child());
+  let _a = first.system_stats(Duration::from_millis(250));
+  let _b = second.system_stats(Duration::from_millis(250));
+  run(&mut shell, 50);
+  let service = shell.cx.service::<Service>().expect("the stats service");
+  first.owner().dispose();
+  assert!(service.worker.borrow().is_some());
+  // Gone while a read runs: the thread ends once the read does.
+  second.owner().dispose();
+  assert!(service.worker.borrow().is_none());
+  let thread = service.ended.take().expect("the stopped thread");
+  let give_up = Instant::now() + Duration::from_secs(2);
+  while !thread.is_finished() {
+    assert!(Instant::now() < give_up, "the stats' thread still runs");
+    std::thread::sleep(Duration::from_millis(10));
+  }
+  assert_eq!(run(&mut shell, 500), 1);
+}
+
+#[test]
 fn a_period_under_250_ms_is_250_ms() {
   let dir = TempDir::new();
   let mut shell = Harness::new(fake(&dir));
   let _stats = shell.cx.system_stats(Duration::from_millis(1));
-  // Ticks at 250, 500 and 750 ms, and the deadline.
-  let wakeups = run(&mut shell, 900);
-  assert!((3..=4).contains(&wakeups), "{wakeups} wakeups");
+  // At once, then at 250, 500 and 750 ms.
+  run(&mut shell, 900);
+  let asked = requests(&shell);
+  assert!((3..=4).contains(&asked), "{asked} samples");
 }
 
 #[test]
@@ -223,8 +313,9 @@ fn a_huge_period_is_the_longest_a_timer_takes() {
   let dir = TempDir::new();
   let mut shell = Harness::new(fake(&dir));
   let stats = shell.cx.system_stats(Duration::MAX);
+  run(&mut shell, 100);
   assert_eq!(stats.get_untracked().memory_total, 2048);
-  assert_eq!(run(&mut shell, 100), 1);
+  assert_eq!(requests(&shell), 1);
 }
 
 #[test]

@@ -136,6 +136,7 @@ pub(crate) fn offline() -> Config {
     backlight: PathBuf::from("/nonexistent/crabshell-backlight"),
     proc: PathBuf::from("/nonexistent/crabshell-proc"),
     sys: PathBuf::from("/nonexistent/crabshell-sys"),
+    stats_delay: Duration::ZERO,
   }
 }
 

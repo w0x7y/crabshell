@@ -136,7 +136,7 @@ fn provide_with<D: 'static>(cx: &Cx, handle: &LoopHandle<'static, D>, config: Co
   cx.provide(desktop_entries::Service::new(Rc::clone(&shared)));
   cx.provide(file::Files(Rc::clone(&shared)));
   cx.provide(http::Service::new(Rc::clone(&shared)));
-  cx.provide(stats::Service(Rc::clone(&shared)));
+  cx.provide(stats::Service::new(Rc::clone(&shared)));
   cx.provide(greetd::Service::new(Rc::clone(&shared)));
   cx.provide(pam::Service(Rc::clone(&shared)));
   cx.provide(polkit::Service::new(Rc::clone(&shared)));
@@ -397,8 +397,10 @@ pub trait ServicesExt {
   /// `period`, at least 250 ms, from `/proc` and `/sys/class/hwmon`. Each
   /// call samples on its own timer, which goes with this context, so
   /// stats wake the shell only while a context that shows them lives.
-  /// Call it once, above `per_output`, and share the signal. Reading the
-  /// sensors costs a few ms per sample, so sample every second or slower.
+  /// Call it once, above `per_output`, and share the signal. The signal
+  /// starts empty and fills when the first sample, asked for at once,
+  /// comes back from the thread the reads run on, so a slow sensor never
+  /// holds up a frame. A tick while a read still runs is skipped.
   fn system_stats(&self, period: Duration) -> ReadSignal<SystemStats>;
 
   /// greetd, for a greeter: makes a session for a user, answers its
@@ -777,6 +779,14 @@ trait EventLoop {
     channel: Channel<polkit::Found>,
     on_event: Box<dyn FnMut(calloop::channel::Event<polkit::Found>)>,
   ) -> Option<RegistrationToken>;
+
+  /// Calls `on_answer` with each sample the stats' thread sends on
+  /// `channel`. `None`, logged, if the loop refused it.
+  fn insert_stats_channel(
+    &self,
+    channel: Channel<stats::Answer>,
+    on_answer: Box<dyn FnMut(stats::Answer)>,
+  ) -> Option<RegistrationToken>;
 }
 
 impl<D: 'static> EventLoop for LoopHandle<'static, D> {
@@ -854,6 +864,21 @@ impl<D: 'static> EventLoop for LoopHandle<'static, D> {
       .inspect_err(|error| tracing::error!(%error, "a user lookup's channel couldn't be added"))
       .ok()
   }
+
+  fn insert_stats_channel(
+    &self,
+    channel: Channel<stats::Answer>,
+    mut on_answer: Box<dyn FnMut(stats::Answer)>,
+  ) -> Option<RegistrationToken> {
+    self
+      .insert_source(channel, move |event, _, _| {
+        if let calloop::channel::Event::Msg(answer) = event {
+          on_answer(answer);
+        }
+      })
+      .inspect_err(|error| tracing::error!(%error, "the stats' channel couldn't be added"))
+      .ok()
+  }
 }
 
 /// Where the services find the system. Tests point it at their own files
@@ -910,6 +935,9 @@ struct Config {
   /// Where procfs and sysfs are, `/proc` and `/sys`, for the stats.
   proc: PathBuf,
   sys: PathBuf,
+  /// A pause before each stats read, so tests can make sensors slow.
+  #[cfg(test)]
+  stats_delay: Duration,
 }
 
 impl Config {
@@ -957,6 +985,8 @@ impl Config {
       backlight: PathBuf::from("/sys/class/backlight"),
       proc: PathBuf::from("/proc"),
       sys: PathBuf::from("/sys"),
+      #[cfg(test)]
+      stats_delay: Duration::ZERO,
     }
   }
 }
