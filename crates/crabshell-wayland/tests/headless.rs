@@ -1734,17 +1734,28 @@ fn a_drag_selection_becomes_the_primary_selection_and_a_middle_click_pastes_it()
     .expect("wl-copy runs");
   // The shell hears of wl-copy's offer in its own time: until then, a
   // middle click pastes what the field offered, so the text is reset.
-  let mut last = Instant::now() - Duration::from_secs(1);
-  run_until(&mut shell.event_loop, "the middle-click paste", |_| {
-    if typed.get_untracked() != "XYhello" && last.elapsed() > Duration::from_millis(300) {
-      last = Instant::now();
+  // Each click's paste lands before the next reset, however slowly a busy
+  // machine passes it on, unless it never comes.
+  let mut clicked: Option<Instant> = None;
+  let deadline = Instant::now() + Duration::from_secs(60);
+  while typed.get_untracked() != "XYhello" {
+    assert!(Instant::now() < deadline, "no middle-click paste in 60 s");
+    let landed = typed.get_untracked() != "hello";
+    if clicked.is_none_or(|at| landed || at.elapsed() > Duration::from_secs(2)) {
       typed.set(String::from("hello"));
+      // In the field before the click, as a later write puts the caret at
+      // its end.
+      settle(&mut shell.event_loop);
+      clicked = Some(Instant::now());
       pointer.move_to(x, y, (1920, 1080));
       pointer.press(VirtualPointer::MIDDLE);
       pointer.release(VirtualPointer::MIDDLE);
     }
-    typed.get_untracked() == "XYhello"
-  });
+    shell
+      .event_loop
+      .dispatch(Some(Duration::from_millis(20)))
+      .expect("the connection works");
+  }
   let _ = copy.kill();
   let _ = copy.wait();
 }
@@ -5367,11 +5378,7 @@ fn a_virtual_pointer_drags_a_slider_and_a_touchpad_flings_a_view_to_rest() {
 
   // Five 10-pixel moves 10 ms apart lift at 1000 pixels a second.
   pointer.move_to(150, 1060, OUTPUT);
-  for _ in 0..5 {
-    pointer.swipe(0.0, 10.0, false);
-    std::thread::sleep(Duration::from_millis(10));
-  }
-  pointer.swipe(0.0, 0.0, true);
+  pointer.fling(5, 10.0);
   run_until(&mut shell.event_loop, "the fling's rest", |_| {
     offset.get() > 50.0 && !crabshell_ui::animating()
   });

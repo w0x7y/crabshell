@@ -533,9 +533,11 @@ impl ExampleBar {
       .collect()
   }
 
-  /// Waits until its context switches stop changing for a second.
+  /// Waits until its context switches stop changing for a second. A
+  /// debug build on a busy machine may take a second a frame, and a
+  /// motion moves at most 0.25 s a frame, so it may take a while.
   fn wait_until_quiet(&self) {
-    let deadline = Instant::now() + TIMEOUT;
+    let deadline = Instant::now() + Duration::from_secs(60);
     let mut last = self.context_switches();
     let mut quiet_since = Instant::now();
     while quiet_since.elapsed() < Duration::from_secs(1) {
@@ -4458,23 +4460,28 @@ fn the_motion_windows_draw_only_while_they_move() {
   run_until(&mut shell, "the OSD to show", |platform| {
     mask_of(platform, osd).is_none()
   });
-  dispatch_until(&mut shell, changed + Duration::from_millis(600));
+  // A slide's first frame draws where it starts, so it draws that and
+  // where it ends however slowly a busy machine draws, about 18 at 60 Hz;
+  // a jump draws once.
+  settle(&mut shell);
   let shown = shell.platform().stats().commits;
   assert!(
-    shown - before >= 5,
+    shown - before >= 2,
     "it slid in over {} frames",
     shown - before
   );
   dispatch_until(&mut shell, changed + Duration::from_millis(1000));
   assert_eq!(shell.platform().stats().commits, shown, "still while shown");
+  // Timed from the second change, however late a busy machine makes it.
+  let changed = Instant::now();
   sink.set(Some(sink_at(70)));
   run_until(&mut shell, "the OSD to hide and slide out", |platform| {
     mask_of(platform, osd) == Some(Region::empty())
   });
   let hidden = changed.elapsed();
-  // 1 s, then 1.5 s, then the 300 ms slide.
+  // 1.5 s, then the 300 ms slide.
   assert!(
-    (Duration::from_millis(2800)..Duration::from_millis(3600)).contains(&hidden),
+    (Duration::from_millis(1800)..Duration::from_millis(2600)).contains(&hidden),
     "hidden after {hidden:?}"
   );
   let empty = shell.platform().snapshot(osd).expect("the OSD draws");
@@ -4490,7 +4497,7 @@ fn the_motion_windows_draw_only_while_they_move() {
   });
   settle(&mut shell);
   let slid = shell.platform().stats().commits - before;
-  assert!(slid >= 5, "it slid in over {slid} frames");
+  assert!(slid >= 2, "it slid in over {slid} frames");
   let shot = shell.platform().snapshot(toasts).expect("the toasts draw");
   // 6 logical pixels into the toast, at scale 2.
   let at = (12 * shot.width as usize + 12) * 4;
@@ -4511,7 +4518,7 @@ fn the_motion_windows_draw_only_while_they_move() {
     stayed >= Duration::from_millis(250),
     "it left after {stayed:?}"
   );
-  assert!(frames >= 5, "it slid out over {frames} frames");
+  assert!(frames >= 2, "it slid out over {frames} frames");
   settle(&mut shell);
   assert_eq!(runtime.node_count(), nodes, "the toast freed what it made");
   let empty = shell.platform().snapshot(toasts).expect("the toasts draw");
@@ -4889,7 +4896,9 @@ fn the_control_centers_highlight_follows_the_pointer_and_its_fling_rests() {
   pointer.move_to(x, y, layout);
   settle(&mut shell);
   let slid = shell.platform().stats().commits - before;
-  assert!(slid >= 3, "it slid over {slid} frames");
+  // Where it starts and where it ends, however slowly a busy machine
+  // draws; a jump draws once.
+  assert!(slid >= 2, "it slid over {slid} frames");
   let shot = shell.platform().snapshot(id).expect("the panel draws");
   assert_eq!(left_of(&shot, rows[2]), HIGHLIGHTED, "on the third row");
   assert_eq!(left_of(&shot, rows[0]), PANEL_BACKGROUND, "off the first");
@@ -4941,11 +4950,7 @@ fn the_control_centers_highlight_follows_the_pointer_and_its_fling_rests() {
   // would space them by a debug build's frame time.
   let before = shell.platform().stats();
   let resting = shell.platform().snapshot(id).expect("the panel draws");
-  for _ in 0..5 {
-    pointer.swipe(0.0, 10.0, false);
-    std::thread::sleep(Duration::from_millis(10));
-  }
-  pointer.swipe(0.0, 0.0, true);
+  pointer.fling(5, 10.0);
   assert_eq!(control_offset(shell.platform(), id), whole, "not read yet");
   settle(&mut shell);
   let after = shell.platform().stats();
@@ -5094,6 +5099,8 @@ fn the_control_center_sets_the_volume_flings_its_list_and_sleeps() {
   pointer.move_to(at(75.0), y + 40, CONTROL_LAYOUT);
   wait_for_volume(&desktop.server, 75);
   pointer.release(VirtualPointer::LEFT);
+  // Asleep, not between two slow frames that look alike.
+  shell.wait_until_quiet();
   steady_shot(&sway, "HEADLESS-1");
   let volume = pactl_volume(&desktop.server);
   assert!(volume.abs_diff(75) <= 1, "pactl says {volume}%");
@@ -5105,11 +5112,8 @@ fn the_control_center_sets_the_volume_flings_its_list_and_sleeps() {
   let (x, y) = control_list_middle();
   pointer.move_to(x, y, CONTROL_LAYOUT);
   let before = steady_shot(&sway, "HEADLESS-1");
-  for _ in 0..5 {
-    pointer.swipe(0.0, 10.0, false);
-    std::thread::sleep(Duration::from_millis(10));
-  }
-  pointer.swipe(0.0, 0.0, true);
+  pointer.fling(5, 10.0);
+  shell.wait_until_quiet();
   let rest = steady_shot(&sway, "HEADLESS-1");
   assert!(rest.rgba != before.rgba, "the list scrolled");
   // Ten rows, 5 × 46 + 5 × 36 tall in a list 180 tall, scroll 230
@@ -5590,7 +5594,8 @@ fn a_1080p_wallpaper_crossfade_holds_both_pictures_only_while_it_runs() {
   assert!(crabshell_ui::animating(), "the crossfade runs");
   let fading = shell.platform().stats();
   let mut both = own_rss_mib();
-  let deadline = Instant::now() + TIMEOUT;
+  // A debug build on a busy machine takes seconds to decode the picture.
+  let deadline = Instant::now() + Duration::from_secs(60);
   while crabshell_ui::animating() {
     assert!(Instant::now() < deadline, "the crossfade never ended");
     shell

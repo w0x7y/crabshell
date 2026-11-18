@@ -488,7 +488,22 @@ impl VirtualPointer {
   /// down when positive, and lift when `lift` says.
   #[allow(dead_code, reason = "crabshell's tests don't use it")]
   pub fn swipe(&mut self, x: f64, y: f64, lift: bool) {
-    let time = self.now();
+    self.swipe_at(x, y, lift, self.now());
+  }
+
+  /// `moves` swipes of `y` pixels down 10 ms apart, then the lift 10 ms
+  /// after the last. The events carry those times however late a busy
+  /// machine sends them, so the fling's speed is always the same.
+  pub fn fling(&mut self, moves: u32, y: f64) {
+    let start = self.now();
+    for step in 0..moves {
+      self.swipe_at(0.0, y, false, start + 10 * step);
+      std::thread::sleep(Duration::from_millis(10));
+    }
+    self.swipe_at(0.0, 0.0, true, start + 10 * moves);
+  }
+
+  fn swipe_at(&mut self, x: f64, y: f64, lift: bool, time: u32) {
     self.pointer.axis_source(wl_pointer::AxisSource::Finger);
     for (axis, value) in [
       (wl_pointer::Axis::HorizontalScroll, x),
