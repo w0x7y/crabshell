@@ -28,6 +28,11 @@ use crate::{log, notify};
 /// The variable that names the control socket for the shell.
 const CONTROL: &str = "CRABSHELL_CONTROL";
 
+/// The variable set to `1` on a shell started beside the old one of a
+/// reload, which waits for `alone` before it takes what only one process
+/// can hold.
+const BESIDE: &str = "CRABSHELL_BESIDE";
+
 /// The signals that stop `crabshell run`, and the shell with it.
 const STOP_SIGNALS: [Signal; 2] = [Signal::SIGINT, Signal::SIGTERM];
 
@@ -327,7 +332,12 @@ impl Supervisor {
     if let Err(error) = self.signals.as_source_mut().remove_signals(&STOP_SIGNALS) {
       log(&format!("can't unblock signals for the shell: {error}"));
     }
-    let spawned = Command::new(&program)
+    self.ending = None;
+    let mut command = Command::new(&program);
+    if self.old.is_some() {
+      command.env(BESIDE, "1");
+    }
+    let spawned = command
       .env(CONTROL, &self.socket)
       .env(
         "GLIBC_TUNABLES",
@@ -413,6 +423,8 @@ impl Supervisor {
 
   /// Shell `pid`'s pidfd turned readable: it exited.
   fn exited(&mut self, pid: u32) {
+    // Meant for the new shell beside the old one, whichever went first.
+    let ending = self.ending.take();
     if self.old.as_ref().is_some_and(|old| old.child.id() == pid) {
       return self.old_exited();
     }
@@ -449,13 +461,12 @@ impl Supervisor {
       return;
     }
     if self.old.as_ref().is_some_and(|old| old.exiting.is_none()) {
-      if let Some(timer) = self.ready_deadline.take() {
-        self.handle.remove(timer);
-      }
-      return match self.ending.take() {
+      return match ending {
         Some(Ending::Replaced) => {
-          log("the new shell ended for a newer build, which starts beside the old one");
-          self.start_beside();
+          // It read the saved state, so the old shell saves again.
+          log("the new shell ended for a newer build; the old one saves again");
+          self.restore_old();
+          self.reload();
         }
         Some(Ending::Late) => self.failed_reload(&format!(
           "the new shell wasn't ready within {} s",
@@ -483,6 +494,10 @@ impl Supervisor {
     let Some(mut old) = self.old.take() else {
       return;
     };
+    // The new shell is the only one now, however long it takes.
+    if let Some(timer) = self.ready_deadline.take() {
+      self.handle.remove(timer);
+    }
     if let Some(Some(timer)) = old.exiting {
       self.handle.remove(timer);
     }
@@ -504,9 +519,9 @@ impl Supervisor {
   /// The new shell ended, or didn't start, before it was ready, as `how`
   /// says: the old one runs on, as after a build that failed.
   fn failed_reload(&mut self, how: &str) {
-    let Some(old) = self.old.take() else {
+    if !self.restore_old() {
       return;
-    };
+    }
     log(&format!(
       "{how} before it was ready, so the old shell stays"
     ));
@@ -516,20 +531,32 @@ impl Supervisor {
       DIDNT_START,
       &format!("{how} before it was ready; the shell before it runs on"),
     );
+    // Its next crash starts the newest build afresh, whose crashes then
+    // count toward last-good.
+    self.policy.new_build();
+    if std::mem::take(&mut self.reload_again) {
+      self.reload();
+    }
+  }
+
+  /// Makes the old shell of a reload the running one again, as it was
+  /// before it saved. Returns whether there was one.
+  fn restore_old(&mut self) -> bool {
+    let Some(old) = self.old.take() else {
+      return false;
+    };
+    if let Some(timer) = self.ready_deadline.take() {
+      self.handle.remove(timer);
+    }
     self.shell = Some((old.child, old.started));
     self.control = old.control;
     self.can_hand_off = true;
     // It held everything all along.
     self.told_alone = true;
-    // Its next crash starts the newest build afresh, whose crashes then
-    // count toward last-good.
-    self.policy.new_build();
     if let Some(due) = old.healthy_due {
       self.time_healthy(due);
     }
-    if std::mem::take(&mut self.reload_again) {
-      self.reload();
-    }
+    true
   }
 
   /// The shell ended as `exit`, described by `how`: stop, or start it
@@ -687,7 +714,8 @@ impl Supervisor {
   /// isn't ready within [`READY_LIMIT`].
   fn start_beside(&mut self) {
     self.start();
-    if self.shell.is_none() {
+    // A program that didn't start restored the old shell.
+    if self.old.is_none() {
       return;
     }
     let timer = Timer::from_duration(READY_LIMIT);
@@ -797,11 +825,29 @@ impl Supervisor {
       } else if let Some((child, _)) = &self.shell
         && self.ending.is_none()
       {
-        // Not ready yet: the newest build starts in its place.
+        // Not ready yet: the old shell saves again once it has gone, and
+        // the newest build starts in its place.
         log("ending the new shell, which isn't ready yet, for the newer build");
         self.ending = Some(Ending::Replaced);
         let _ =
           rustix::process::kill_process(Pid::from_child(child), rustix::process::Signal::TERM);
+        // In place of the ready deadline, which would call it late.
+        if let Some(timer) = self.ready_deadline.take() {
+          self.handle.remove(timer);
+        }
+        let timer = Timer::from_duration(SAVE_LIMIT);
+        self.ready_deadline = self
+          .handle
+          .insert_source(timer, |_, _, supervisor| {
+            supervisor.ready_deadline = None;
+            if supervisor.ending == Some(Ending::Replaced)
+              && let Some((child, _)) = supervisor.shell.as_mut()
+            {
+              let _ = child.kill();
+            }
+            TimeoutAction::Drop
+          })
+          .ok();
       }
       return;
     }

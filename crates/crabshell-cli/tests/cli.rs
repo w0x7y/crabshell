@@ -283,6 +283,9 @@ fn main() {
   }
   // After connecting, so a test that sees the start can reload it.
   append(dir.join("starts"), format!("{name} {} {}\n", std::process::id(), now()));
+  if std::env::var_os("CRABSHELL_BESIDE").is_some_and(|value| value == "1") {
+    append(dir.join("besides"), format!("{}\n", std::process::id()));
+  }
   match mode.trim() {
     "crash" => std::process::exit(1),
     "logout" => std::process::exit(2),
@@ -619,6 +622,15 @@ impl Home {
   /// The process ids the fake wrote when told to save.
   fn saves(&self) -> Vec<u32> {
     let text = std::fs::read_to_string(self.config().join("saves")).unwrap_or_default();
+    text
+      .lines()
+      .map(|line| line.parse().expect("a pid"))
+      .collect()
+  }
+
+  /// The process ids of the fakes started beside an old shell.
+  fn besides(&self) -> Vec<u32> {
+    let text = std::fs::read_to_string(self.config().join("besides")).unwrap_or_default();
     text
       .lines()
       .map(|line| line.parse().expect("a pid"))
@@ -1068,7 +1080,9 @@ fn an_edit_while_the_new_shell_starts_replaces_it_beside_the_old_one() {
   );
   assert!(log.contains("ended for a newer build"), "{log}");
   assert!(!log.contains("so the old shell stays"), "{log}");
-  assert_eq!(home.saves(), [first], "the old shell saved once");
+  // The ended shell read what it saved, so it saved again for the next.
+  assert_eq!(home.saves(), [first, first]);
+  assert_eq!(home.besides(), [starts[1].1], "started beside the old one");
 }
 
 /// A program the shell started connects and says `ready` in its place:
@@ -1110,4 +1124,92 @@ fn a_new_build_that_dies_right_after_connecting_leaves_the_old_shell() {
   let (code, log) = supervised.wait(Duration::from_secs(5));
   assert_eq!(code, Some(0), "{log}");
   assert!(log.contains("exit status: 4"), "{log}");
+}
+
+/// The supervisor's children: the shells running.
+fn shells(supervised: &common::Supervised) -> Vec<u32> {
+  let pid = supervised.pid();
+  let children = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+    .expect("the supervisor's children");
+  children
+    .split_whitespace()
+    .map(|child| child.parse().expect("a pid"))
+    .collect()
+}
+
+/// The old shell crashes while the new one starts slowly: the new one is
+/// the only shell then, and isn't killed for being late.
+#[test]
+fn a_new_shell_left_alone_by_a_crash_is_never_late() {
+  let home = Home::new("old-crashes");
+  home.fake_config("stay");
+  let supervised = home.supervise();
+  let first = home.wait_for_starts(1, Duration::from_secs(60))[0].1;
+  home.edit(|code| code.replacen("fn main() {", HANG, 1));
+  wait_in_log(
+    &supervised,
+    "starting the new build beside it",
+    Duration::from_secs(60),
+  );
+  std::thread::sleep(Duration::from_millis(300));
+  let new: Vec<u32> = shells(&supervised)
+    .into_iter()
+    .filter(|&pid| pid != first)
+    .collect();
+  assert_eq!(new.len(), 1, "{new:?}");
+  let killed = std::process::Command::new("kill")
+    .args(["-KILL", &first.to_string()])
+    .status()
+    .expect("kill runs");
+  assert!(killed.success());
+  std::thread::sleep(Duration::from_secs(12));
+  assert!(alive(new[0]), "the new shell runs on");
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(5));
+  assert_eq!(code, Some(0), "{log}");
+  assert!(log.contains("the old shell ended"), "{log}");
+  assert!(!log.contains("wasn't ready"), "{log}");
+}
+
+/// The new build can't start, so the old shell stays; nothing ends it 10 s
+/// later for a new shell that never came.
+#[test]
+fn a_new_build_that_cant_start_leaves_the_old_shell_for_good() {
+  use std::os::unix::fs::PermissionsExt;
+
+  let home = Home::new("cant-start");
+  home.fake_config("stay");
+  let bus = PrivateBus::start(&home);
+  let supervised = home.supervise_on(Some(&bus));
+  let first = home.wait_for_starts(1, Duration::from_secs(60))[0].1;
+  // A linker that writes a program whose interpreter doesn't exist, so
+  // starting it fails.
+  let linker = home.0.join("bad-linker");
+  std::fs::write(
+    &linker,
+    "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = -o ] && out=$2; shift; done\n\
+     printf '#!/nonexistent/crabshell-test\\n' > \"$out\"\nchmod +x \"$out\"\n",
+  )
+  .expect("written");
+  std::fs::set_permissions(&linker, std::fs::Permissions::from_mode(0o755)).expect("its mode");
+  std::fs::create_dir_all(home.config().join(".cargo")).expect("a directory");
+  std::fs::write(
+    home.config().join(".cargo/config.toml"),
+    format!(
+      "[build]\nrustflags = [\"-C\", \"linker={}\"]\n",
+      linker.display()
+    ),
+  )
+  .expect("written");
+  home.edit(|code| code + "// an edit\n");
+  let notes = bus.wait_for(1, Duration::from_secs(120));
+  assert_eq!(notes[0].0, "Your Crabshell config didn't start");
+  assert!(notes[0].1.contains("didn't start"), "{notes:?}");
+  std::thread::sleep(Duration::from_secs(12));
+  assert!(alive(first), "the old shell runs on");
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(5));
+  assert_eq!(code, Some(0), "{log}");
+  assert!(!log.contains("wasn't ready"), "{log}");
+  assert!(!log.contains("killing it"), "{log}");
 }
