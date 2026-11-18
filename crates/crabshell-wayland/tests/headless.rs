@@ -1912,10 +1912,13 @@ fn a_clipboard_watch_that_panics_is_logged_and_kept() {
       panic!("clipboard panic");
     });
   let first = wl_copy(&sway, "text/plain", b"one");
+  // The empty clipboard there at the start panics first, so the wait is
+  // for "one" itself: a second copy started sooner could land before it.
   run_until(&mut shell.event_loop, "the panic logged", |_| {
-    logs
-      .text()
-      .contains("a clipboard watch panicked: clipboard panic")
+    heard.borrow().last() == Some(&Some(String::from("one")))
+      && logs
+        .text()
+        .contains("a clipboard watch panicked: clipboard panic")
   });
   let second = wl_copy(&sway, "text/plain", b"two");
   run_until(&mut shell.event_loop, "the watch kept", |_| {
