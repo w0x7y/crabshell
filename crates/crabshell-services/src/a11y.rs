@@ -69,6 +69,9 @@ pub fn follow_accessibility(cx: &Cx) {
     return;
   }
   let shared = &service.shared;
+  if shared.config.no_at_bridge {
+    return tracing::info!("NO_AT_BRIDGE=1, so no screen reader reads the shell");
+  }
   let Some(address) = shared.config.session_bus.clone() else {
     return tracing::info!("no session bus, so no screen reader can read the shell");
   };
@@ -256,10 +259,15 @@ async fn join(
   (String, zbus::OwnedObjectPath),
 )> {
   let shared = &status.shared;
-  let call = session.call_method(Some(A11Y_BUS), A11Y_PATH, Some(A11Y_BUS), "GetAddress", &());
-  let address = match shared.timeout(CALL_TIMEOUT, call).await {
-    Ok(reply) => reply.body().deserialize::<String>(),
-    Err(error) => Err(error),
+  let address = match &shared.config.at_spi_bus {
+    Some(address) => Ok(address.clone()),
+    None => {
+      let call = session.call_method(Some(A11Y_BUS), A11Y_PATH, Some(A11Y_BUS), "GetAddress", &());
+      match shared.timeout(CALL_TIMEOUT, call).await {
+        Ok(reply) => reply.body().deserialize::<String>(),
+        Err(error) => Err(error),
+      }
+    }
   };
   let address = match address {
     Ok(address) if address.len() <= MAX_ADDRESS => address,

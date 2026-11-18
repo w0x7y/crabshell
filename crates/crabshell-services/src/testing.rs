@@ -119,6 +119,8 @@ pub(crate) fn offline() -> Config {
     system_bus: None,
     session_bus: None,
     sway: None,
+    no_at_bridge: false,
+    at_spi_bus: None,
     hyprland: None,
     niri: None,
     pipewire: None,

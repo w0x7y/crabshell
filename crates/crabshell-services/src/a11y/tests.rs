@@ -557,3 +557,40 @@ fn a_refused_embed_is_tried_again_at_the_next_word_from_the_status() {
   let seen = Rc::clone(&plugs);
   shell.retry_until("the second embed", || !seen.borrow().is_empty(), |_| {});
 }
+
+#[test]
+fn no_at_bridge_follows_nothing_and_at_spi_bus_address_skips_the_launcher() {
+  let bus = PrivateBus::start();
+  let mut shell = Harness::new(Config {
+    no_at_bridge: true,
+    ..online(&bus)
+  });
+  shell.cx.provide(Accessibility::default());
+  let opted_out = fakes(&mut shell, &bus, true);
+  let _window = counter(&shell, shell.cx.signal(0));
+  let logs = capture_logs(|| {
+    follow_accessibility(&shell.cx);
+    shell.settle();
+  });
+  assert!(logs.contains("NO_AT_BRIDGE=1"), "{logs}");
+  assert!(
+    opted_out.plugs.borrow().is_empty(),
+    "embedded with NO_AT_BRIDGE=1"
+  );
+  drop((shell, opted_out));
+
+  let mut shell = Harness::new(Config {
+    at_spi_bus: Some(bus.address.clone()),
+    ..online(&bus)
+  });
+  shell.cx.provide(Accessibility::default());
+  let given = fakes(&mut shell, &bus, true);
+  let _window = counter(&shell, shell.cx.signal(0));
+  follow_accessibility(&shell.cx);
+  embedded(&mut shell, &given);
+  let asked = given.launcher.calls.borrow().clone();
+  assert!(
+    !asked.iter().any(|call| call.starts_with("GetAddress")),
+    "{asked:?}"
+  );
+}

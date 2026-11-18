@@ -921,6 +921,12 @@ struct Config {
   session_bus: Option<zbus::Address>,
   /// Sway's IPC socket, from `SWAYSOCK`. `None` when that is unset.
   sway: Option<sway::Socket>,
+  /// `NO_AT_BRIDGE=1`, the user's word that no screen reader reads the
+  /// shell, as GTK and Qt take it.
+  no_at_bridge: bool,
+  /// The accessibility bus from `AT_SPI_BUS_ADDRESS`, used instead of
+  /// asking the launcher, as libatspi and Qt do.
+  at_spi_bus: Option<String>,
   /// The directory of Hyprland's sockets,
   /// `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE`. `None` when
   /// either is unset.
@@ -983,6 +989,10 @@ impl Config {
       session_bus: zbus::Address::session()
         .inspect_err(|error| tracing::warn!(%error, "no session bus address"))
         .ok(),
+      no_at_bridge: std::env::var_os("NO_AT_BRIDGE").is_some_and(|value| value == "1"),
+      at_spi_bus: std::env::var("AT_SPI_BUS_ADDRESS")
+        .ok()
+        .filter(|address| !address.is_empty()),
       sway: std::env::var_os("SWAYSOCK")
         .filter(|path| !path.is_empty())
         .map(|path| sway::Socket {
