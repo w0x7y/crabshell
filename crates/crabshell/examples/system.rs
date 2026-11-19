@@ -299,9 +299,10 @@ fn brightness(cx: &Cx, backlights: ReadSignal<Vec<Backlight>>) -> Row {
   let screen = cx.memo(move || backlights.with(|all| all.first().cloned()));
   let percent = cx.signal(0.0_f32);
   let dragging = cx.signal(false);
-  // The backlight moves the handle, except while it is held.
+  // The backlight moves the handle, except while it is held. Letting go
+  // isn't tracked, so a tap's release can't undo its press.
   cx.effect(move || {
-    if let (Some(screen), false) = (screen.get(), dragging.get()) {
+    if let (Some(screen), false) = (screen.get(), untrack(|| dragging.get())) {
       percent.set(percent_of(&screen) as f32);
     }
   });

@@ -141,10 +141,11 @@ pub fn panel(
 fn volume(cx: &Cx, sink: ReadSignal<Option<Sink>>) -> Column {
   let value = cx.signal(0.0_f32);
   let dragging = cx.signal(false);
-  // The sink moves the handle, except while it is held.
+  // The sink moves the handle, except while it is held. Letting go
+  // isn't tracked, so a tap's release can't undo its press.
   cx.effect(move || {
     let percent = sink.with(|sink| sink.as_ref().map(|sink| sink.volume_percent));
-    if let (Some(percent), false) = (percent, dragging.get()) {
+    if let (Some(percent), false) = (percent, untrack(|| dragging.get())) {
       value.set(percent as f32);
     }
   });

@@ -5108,6 +5108,10 @@ fn the_control_center_sets_the_volume_flings_its_list_and_sleeps() {
   eprintln!("pactl says {volume}% after the drag to 75%");
   let (x, _) = slider_handle(&steady_shot(&sway, "HEADLESS-1")).expect("the handle shows");
   assert!(x.abs_diff(at(75.0)) <= 1, "the handle rests at {x}");
+  // A tap's press and release arrive together, as a touchpad sends them.
+  pointer.move_to(at(40.0), y, CONTROL_LAYOUT);
+  pointer.click();
+  wait_for_volume(&desktop.server, 40);
 
   // Five 10-pixel moves 10 ms apart lift at about 1000 pixels a second.
   let (x, y) = control_list_middle();
