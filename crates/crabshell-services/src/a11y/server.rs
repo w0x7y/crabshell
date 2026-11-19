@@ -19,6 +19,7 @@ const TEXT: &str = "org.a11y.atspi.Text";
 const VALUE: &str = "org.a11y.atspi.Value";
 const CACHE: &str = "org.a11y.atspi.Cache";
 const CACHE_PATH: &str = "/org/a11y/atspi/cache";
+const PEER: &str = "org.freedesktop.DBus.Peer";
 const NULL: &str = "/org/a11y/atspi/null";
 const INVALID_ARGS: &str = "org.freedesktop.DBus.Error.InvalidArgs";
 const ACCESS_DENIED: &str = "org.freedesktop.DBus.Error.AccessDenied";
@@ -214,6 +215,10 @@ fn reply(
     .interface()
     .map_or("", |interface| interface.as_str());
   let member = header.member().map_or("", |member| member.as_str());
+  // The registry pings each application on `/` and drops one that errs.
+  if (interface, member) == (PEER, "Ping") {
+    return Message::method_return(header).build(&());
+  }
   // Nothing cached up front, so a screen reader asks for what it reads
   // and never holds a stale copy.
   if (path, interface, member) == (CACHE_PATH, CACHE, "GetItems") {

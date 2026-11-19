@@ -20,6 +20,7 @@ use crate::testing::{FakeService, Harness, PrivateBus, capture_logs, offline, re
 const ACCESSIBLE: &str = "org.a11y.atspi.Accessible";
 const TEXT: &str = "org.a11y.atspi.Text";
 const VALUE: &str = "org.a11y.atspi.Value";
+const PEER: &str = "org.freedesktop.DBus.Peer";
 const DESKTOP: &str = "/org/a11y/atspi/accessible/root";
 
 fn online(bus: &PrivateBus) -> Config {
@@ -268,6 +269,11 @@ fn a_screen_reader_reads_the_counter_bar_and_clicks_its_button() {
     (),
   );
   assert!(gone.is_err(), "no such object");
+  // at-spi2-registryd pings each application on `/` when a client
+  // leaves, and drops one that answers with an error.
+  let ping = (&*name, "/");
+  let pinged = call::<()>(&mut shell, &client, ping, (PEER, "Ping"), ());
+  assert!(pinged.is_ok(), "the ping is answered: {pinged:?}");
   drop(fakes.registry);
 }
 
