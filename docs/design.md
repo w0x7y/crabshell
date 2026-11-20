@@ -1482,6 +1482,8 @@ The gaps found porting a Quickshell config shipped as 0.9. Against 0.8:
 - `max_length` writes a cut value back to its signal.
 - `CaptureRequest::size` is infinite for a view with a crop, which asks for the source's whole frame.
 
+0.9.1 fixes a layout bug: an absolute child with `right` or `bottom`, or two opposite insets, inside a parent smaller than the window now sits in that parent's padding box, where 0.9 and earlier measured from the window.
+
 ## Rules for AI agents
 
 They live in [AGENTS.md](../AGENTS.md), with the commands that test a change.
