@@ -5,7 +5,8 @@ use crabshell_reactive::Signal;
 
 use super::{Counter, Harness};
 use crate::{
-  Align, Button, Column, Drag, Icon, Point, PointerButton, Row, ScrollView, Style, Window,
+  Align, Button, Column, Drag, DragContent, Icon, Point, PointerButton, Row, ScrollView, Style,
+  Window,
 };
 
 /// A 20 by 20 button at the top left of a 100 by 40 window, writing
@@ -169,4 +170,21 @@ fn being_held_repaints_nothing_by_itself() {
   window.pointer_button_at(PointerButton::Left, false, 100);
   h.frame(&window);
   assert!(!window.has_damage());
+}
+
+#[test]
+fn a_window_dropped_while_its_drag_is_out_lets_go() {
+  let mut h = Harness::new();
+  let pressed = h.cx.signal(false);
+  let source = Button::new(square())
+    .drag_content(Some(DragContent::Text("hi".into())))
+    .pressed(pressed);
+  let window = window(&mut h, source);
+  press(&window, 10.0);
+  window.pointer_motion(Point::new(10.0, -5.0));
+  assert!(window.take_drag_out().is_some(), "it went out");
+  window.pointer_leave();
+  assert!(pressed.get_untracked(), "the platform holds the drag");
+  drop(window);
+  assert!(!pressed.get_untracked());
 }

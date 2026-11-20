@@ -699,6 +699,10 @@ impl Drop for Window {
     let mut tree = borrow(&self.tree);
     tree.access_event(|_| crate::AccessEvent::WindowsChanged);
     drop(tree.leave());
+    // A drag out with the platform outlives `leave`; nothing of it runs.
+    if let Some(press) = tree.pointer.pressed.take() {
+      press.write(false);
+    }
     drop(tree);
     self.owner.dispose();
   }

@@ -309,7 +309,7 @@ pub(crate) struct Press {
 
 impl Press {
   /// Writes `held` to the button's `pressed` signal, if that changes it.
-  fn write(self, held: bool) {
+  pub(crate) fn write(self, held: bool) {
     if let Some(signal) = self.signal
       && untrack(|| signal.try_get()) != Some(held)
     {
