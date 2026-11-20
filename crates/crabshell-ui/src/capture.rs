@@ -49,6 +49,11 @@ impl Cx {
   /// source drops the frame and takes one of the new source. The capture
   /// belongs to this context and goes with it.
   ///
+  /// The frame, about 8 MB for a 1920 by 1080 output, stays in memory
+  /// until the capture's context goes, even once no view shows it. So
+  /// make a capture for a passing effect in a child context, from
+  /// [`Cx::child`], and dispose that context's owner after use.
+  ///
   /// ```
   /// use crabshell_reactive::Runtime;
   /// use crabshell_ui::{CaptureSource, Cx, Rect, ScreencopyView, Style};
@@ -99,10 +104,11 @@ impl Capture {
     self.ready.read_only()
   }
 
-  /// Takes a new frame. The views keep showing the old one until the new
-  /// one lands, and [`ready`](Self::ready) reads `false` meanwhile. A
-  /// refresh while a frame is on its way asks again, and the earlier one
-  /// is turned away.
+  /// Takes a new frame. [`ready`](Self::ready) reads `false` from now
+  /// until the new frame lands, so wait for it to turn `true` before you
+  /// rely on the new picture; the views keep showing the old one
+  /// meanwhile. A refresh while a frame is on its way asks again, and
+  /// the earlier frame is turned away.
   pub fn refresh(&self) {
     if untrack(|| self.source.try_with(Option::is_some)) == Some(true) {
       self.ready.try_set(false);
