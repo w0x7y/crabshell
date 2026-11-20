@@ -6,7 +6,7 @@ use std::rc::Rc;
 use super::{Harness, capture_logs, node_at};
 use crate::{
   CaptureFrame, CaptureRequest, CaptureSource, Content, Rect, Row, ScreencopyView, Size, Style,
-  deliver_capture, wanted_captures,
+  deliver_capture, dropped_captures, wanted_captures,
 };
 
 const BOX: Style = Style::new().width(100.0).height(50.0);
@@ -473,4 +473,28 @@ fn a_view_that_draws_nothing_isnt_shown() {
   window.show_capture(id, short);
   present(&window);
   assert!(!on_screen.get(), "a frame missing pixels");
+}
+
+#[test]
+fn a_dropped_view_of_either_kind_is_reported() {
+  let mut h = Harness::new();
+  let capture = h.cx.capture(output("DP-2"));
+  let row = Row::new()
+    .child(ScreencopyView::of(capture).style(BOX))
+    .child(ScreencopyView::new(output("DP-3")).style(BOX));
+  let window = h.window(h.panel().child(row), 200.0, 50.0);
+  let asked = asked_for(&output("DP-2"));
+  assert!(deliver_capture(asked, frame(10)));
+  h.frame(&window);
+  let of = match node_at(window.view().root(), &[0, 0]).content() {
+    Content::Capture(view) => view.id,
+    _ => panic!("no frame"),
+  };
+  let new = window.captures()[0].id;
+  dropped_captures();
+  drop(window);
+  let mut dropped = dropped_captures();
+  dropped.sort_unstable();
+  assert_eq!(dropped, [of.min(new), of.max(new)]);
+  assert!(dropped_captures().is_empty(), "each told once");
 }

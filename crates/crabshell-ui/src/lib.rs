@@ -121,6 +121,8 @@ pub use popup::{Adjust, Placement, PopupWindow};
 pub use prop::{IntoProp, Prop};
 pub use region::{Region, RegionOp, RegionShape};
 pub use rich::{MARKUP_CAP, Span, parse_markup};
+#[doc(hidden)]
+pub use screencopy::dropped_captures;
 pub use screencopy::{CaptureFrame, CaptureRequest, CaptureSource, ScreencopyView};
 pub use scroll::{ListView, ScrollView};
 pub use slider::Slider;

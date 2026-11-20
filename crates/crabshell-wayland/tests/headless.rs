@@ -5996,3 +5996,40 @@ fn a_refresh_while_a_frame_is_on_its_way_takes_a_session_of_its_own() {
   settle(&mut event_loop);
   assert_eq!(event_loop.platform().capture_sessions(), 0);
 }
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_captures_frame_is_freed_once_its_views_and_context_go() {
+  let sway = Sway::start();
+  let root = Cx::new(Runtime::current().new_owner());
+  let mut event_loop = halves(&sway, &root, 1, RED, root.signal(BLUE));
+  let cx = root.child();
+  let capture = cx.capture(CaptureSource::Output(String::from("HEADLESS-2")));
+  let viewer = PanelWindow::new(&Output::new("HEADLESS-1"))
+    .anchors(Edge::Top | Edge::Left)
+    .width(VIEW.0)
+    .height(VIEW.1)
+    .child(Row::new().child(
+      ScreencopyView::of(capture).style(Style::new().width(VIEW.0 as f32).height(VIEW.1 as f32)),
+    ));
+  let viewer = event_loop.platform().add_window(Window::new(&cx, viewer));
+  run_until(&mut event_loop, "the frame drawn", |platform| {
+    platform
+      .window_info(viewer)
+      .is_some_and(|info| info.commits > 0)
+      && frames_of(platform, viewer)
+        .first()
+        .is_some_and(Option::is_some)
+  });
+  settle(&mut event_loop);
+  let frame = frames_of(event_loop.platform(), viewer)[0]
+    .clone()
+    .expect("a frame");
+  event_loop.platform().remove_window(viewer);
+  cx.owner().dispose();
+  // Nothing draws after: the next iteration lets go all the same.
+  event_loop
+    .dispatch(Some(Duration::ZERO))
+    .expect("the connection works");
+  assert_eq!(Rc::strong_count(&frame.rgba), 1, "only this test holds it");
+}

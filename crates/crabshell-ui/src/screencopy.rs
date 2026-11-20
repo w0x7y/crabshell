@@ -2,6 +2,7 @@
 //! shows, and what the platform reads and writes of it: the views to
 //! capture for, and the frames it captured.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -18,6 +19,23 @@ use crate::window::Window;
 /// Numbers every view mounted, in every window, so a platform's capture
 /// and a renderer's cache can't mix two up.
 static NEXT_VIEW: AtomicU64 = AtomicU64::new(0);
+
+/// The most dropped views kept for the platform to hear of; a shell
+/// without one stops counting there.
+const MAX_DROPPED: usize = 4096;
+
+thread_local! {
+  /// The ids of views dropped since [`dropped_captures`] last ran.
+  static DROPPED: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The ids of screencopy views removed, or in windows dropped, since the
+/// last call, of either kind, so the platform can have the renderer let
+/// go of the frames and copies it kept for them.
+#[doc(hidden)]
+pub fn dropped_captures() -> Vec<u64> {
+  DROPPED.with(|dropped| std::mem::take(&mut *dropped.borrow_mut()))
+}
 
 /// A number no view or capture request had before.
 pub(crate) fn next_id() -> u64 {
@@ -260,6 +278,18 @@ pub(crate) enum Seen {
   Drawn,
   /// The compositor presented that commit.
   Shown,
+}
+
+impl Drop for CaptureNode {
+  fn drop(&mut self) {
+    // At thread exit the list may be gone already; nobody is left to ask.
+    let _ = DROPPED.try_with(|dropped| {
+      let mut dropped = dropped.borrow_mut();
+      if dropped.len() < MAX_DROPPED {
+        dropped.push(self.id);
+      }
+    });
+  }
 }
 
 impl CaptureNode {

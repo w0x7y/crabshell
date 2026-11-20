@@ -345,6 +345,11 @@ impl Platform {
           (None, request)
         }),
     );
+    // A view of a capture captures nothing, so only its drop tells of it.
+    let dropped = crabshell_ui::dropped_captures();
+    if !dropped.is_empty() {
+      self.renderer.forget_captures(&dropped);
+    }
     if wanted.is_empty() && self.captures.views.is_empty() {
       return false;
     }
