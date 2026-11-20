@@ -17,9 +17,9 @@ const BAYER: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 
 enum Laid {
   /// From `start` to `end`.
   Linear(Point, Point),
-  /// Out from the middle to `reach`.
+  /// Out from the center to `reach`.
   Radial(Point, f32),
-  /// Clockwise around the middle from this many degrees past 12 o'clock.
+  /// Clockwise around the center from this many degrees past 12 o'clock.
   Sweep(Point, f32),
 }
 
@@ -91,7 +91,7 @@ impl Painter<'_> {
     let mut pixels = Pixmap::new(x1.checked_sub(x0)?, y1.checked_sub(y0)?)?;
     let worked = &self.work.gradient_pixels;
     worked.set(worked.get() + u64::from(pixels.width()) * u64::from(pixels.height()));
-    let laid = self.lay_out(gradient.shape, area);
+    let laid = self.lay_out(gradient, area);
     let stops = even(gradient);
     // The buffer pixel the ramp starts at; tiles start on whole pixels.
     let (left, top) = (
@@ -142,10 +142,14 @@ impl Painter<'_> {
       })
       .collect();
     let moved = Transform::from_translate(-self.grid.left, -self.grid.top);
-    match self.lay_out(gradient.shape, area) {
+    match self.lay_out(gradient, area) {
       Laid::Linear(start, end) => LinearGradient::new(start, end, stops, SpreadMode::Pad, moved),
       Laid::Radial(middle, reach) => {
+        // tiny-skia refuses one too small to draw, which leaves the end.
+        let end = gradient.stops().last()?.1;
+        let end = tiny_skia::Color::from_rgba8(end.r, end.g, end.b, end.a);
         RadialGradient::new(middle, 0.0, middle, reach, stops, SpreadMode::Pad, moved)
+          .or(Some(Shader::SolidColor(end)))
       }
       Laid::Sweep(middle, angle) => {
         // tiny-skia's start at 3 o'clock, and it skips a start angle
@@ -157,13 +161,15 @@ impl Painter<'_> {
     }
   }
 
-  /// Where `shape`'s colors run across `area`, a box in this pixmap's
+  /// Where `gradient`'s colors run across `area`, a box in this pixmap's
   /// pixels, in buffer pixels.
-  fn lay_out(&self, shape: GradientShape, area: tiny_skia::Rect) -> Laid {
+  fn lay_out(&self, gradient: &Gradient, area: tiny_skia::Rect) -> Laid {
     let (left, top) = (area.left() + self.grid.left, area.top() + self.grid.top);
     let (width, height) = (area.width(), area.height());
     let middle = Point::from_xy(left + width / 2.0, top + height / 2.0);
-    match shape {
+    let (x, y) = (gradient.center.x, gradient.center.y);
+    let center = Point::from_xy(left + width * x, top + height * y);
+    match gradient.shape {
       GradientShape::Linear(angle) => {
         // As CSS: 0 degrees points up, and the line is long enough for
         // its ends to meet the corners.
@@ -174,9 +180,21 @@ impl Painter<'_> {
         let end = Point::from_xy(middle.x + dx, middle.y + dy);
         Laid::Linear(start, end)
       }
-      GradientShape::Radial => Laid::Radial(middle, (width * width + height * height).sqrt() / 2.0),
+      GradientShape::Radial => {
+        let reach = match gradient.radius {
+          // Never 0, so the end color holds out from the center.
+          Some(radius) => (radius * self.grid.scale).max(f32::MIN_POSITIVE),
+          None => {
+            // To the farthest corner: the far side on each axis.
+            let dx = width * x.max(1.0 - x);
+            let dy = height * y.max(1.0 - y);
+            (dx * dx + dy * dy).sqrt()
+          }
+        };
+        Laid::Radial(center, reach)
+      }
       // As CSS: 0 degrees points up and the colors go clockwise.
-      GradientShape::Sweep(angle) => Laid::Sweep(middle, angle),
+      GradientShape::Sweep(angle) => Laid::Sweep(center, angle),
     }
   }
 }

@@ -4,9 +4,9 @@
 use std::rc::Rc;
 
 use crabshell_ui::{
-  Align, Color, Column, Content, Elide, Fit, Font, FontFeature, Gradient, Icon, IconPixels,
-  IconSource, Image, Mask, Menu, MenuEntry, MenuToggle, Row, Shadow, Span, Stack, Style, Text,
-  TextAlign, Window, parse_markup,
+  Align, Canvas, Color, Column, Content, Elide, Fit, Font, FontFeature, Gradient, Icon, IconPixels,
+  IconSource, Image, Mask, Menu, MenuEntry, MenuToggle, Path, Point, Row, Shadow, Span, Stack,
+  Style, Text, TextAlign, Window, parse_markup,
 };
 
 use super::{Scene, assert_golden, fixture};
@@ -376,6 +376,71 @@ fn sweep() {
                   .stop(0.25, Color::rgba(0, 0, 0, 0)),
               )
               .padding(18, 26),
+          ),
+        ),
+    )
+  });
+}
+
+/// Gradients centered off the middle: an album-art tile of a five-color
+/// sweep under a radial glow with a radius, a canvas circle filled with
+/// one, and a box masked by one, at all five scales.
+#[test]
+fn placed_gradients() {
+  const VIOLET: Color = Color::hex("#cba6f7");
+  const GLOW: Gradient = Gradient::radial(
+    Color::rgba(255, 255, 255, 89),
+    Color::rgba(255, 255, 255, 0),
+  )
+  .center(0.7, 0.3)
+  .radius(42.0);
+  check_at(&ALL_SCALES, "placed_gradients", 260.0, 84.0, |scene| {
+    let canvas = Canvas::new(|pen| {
+      let light = Gradient::radial(Color::hex("#f5e0dc"), Color::hex("#1e66f5"))
+        .center(0.3, 0.3)
+        .radius(26.0);
+      pen.fill(&Path::circle(Point::new(32.0, 32.0), 30.0), light);
+    })
+    .style(Style::new().width(64.0).height(64.0));
+    scene.panel().style(BAR).child(
+      Row::new()
+        .padding(10, 12)
+        .gap(14)
+        .align(Align::Center)
+        .child(
+          Stack::new()
+            .style(
+              Style::new()
+                .gradient(
+                  Gradient::sweep(200.0, VIOLET, VIOLET)
+                    .stop(0.25, Color::hex("#89b4fa"))
+                    .stop(0.5, Color::hex("#89dceb"))
+                    .stop(0.75, Color::hex("#f5c2e7"))
+                    .center(0.35, 0.65),
+                )
+                .radius(12.0)
+                .width(64.0)
+                .height(64.0)
+                .clip(true),
+            )
+            .child(Row::new().style(Style::new().gradient(GLOW).width(64.0).height(64.0))),
+        )
+        .child(canvas)
+        .child(
+          Row::new().style(
+            Style::new()
+              .gradient(Gradient::linear(
+                90.0,
+                Color::hex("#a6e3a1"),
+                Color::hex("#fab387"),
+              ))
+              .mask(Mask::gradient(
+                Gradient::radial(Color::rgb(0, 0, 0), Color::rgba(0, 0, 0, 0))
+                  .center(1.0, 0.0)
+                  .radius(56.0),
+              ))
+              .width(72.0)
+              .height(56.0),
           ),
         ),
     )

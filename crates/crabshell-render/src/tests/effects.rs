@@ -59,6 +59,24 @@ fn a_gradient_mask_fades_by_its_alpha_alone() {
 }
 
 #[test]
+fn a_radial_mask_is_centered_and_sized_as_a_background_is() {
+  // Opaque at the box's top left corner, 20, 10, out to 20 pixels.
+  let spot = Gradient::radial(WHITE, Color::rgba(255, 255, 255, 0))
+    .center(0.0, 0.0)
+    .radius(20.0);
+  let buffer = boxed(Style::new().mask(Mask::gradient(spot)), 40.0);
+  let alpha = |x, y| buffer.pixel(x, y)[3];
+  assert!(alpha(20, 10) > 245, "{}", alpha(20, 10));
+  assert!(alpha(30, 10).abs_diff(128) <= 10, "{}", alpha(30, 10));
+  assert_eq!(alpha(45, 10), 0, "past the radius");
+  assert_eq!(alpha(55, 45), 0, "the far corner");
+  // A radius of 0 leaves only the end color's alpha, as a background.
+  let gone = Gradient::radial(WHITE, Color::rgba(0, 0, 0, 0)).radius(0.0);
+  let buffer = boxed(Style::new().mask(Mask::gradient(gone)), 40.0);
+  assert_eq!(buffer.pixel(40, 30)[3], 0);
+}
+
+#[test]
 fn an_image_mask_uses_the_files_alpha_stretched_over_the_box() {
   let disc = leaked("disc.png");
   let masked = boxed(Style::new().mask(Mask::image(disc)), 40.0);

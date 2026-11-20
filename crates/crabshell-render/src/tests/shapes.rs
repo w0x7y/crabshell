@@ -358,6 +358,102 @@ mod gradients {
     }
   }
 
+  #[test]
+  fn a_radial_gradient_runs_out_from_its_center_to_its_radius() {
+    // Centered at 20, 80 of a 100 by 100 box, 40 logical pixels across
+    // and so 80 at scale 2; past that the end color holds.
+    let glow = Gradient::radial(RED, BLUE).center(0.2, 0.8).radius(40.0);
+    for scale in [1.0, 2.0] {
+      let buffer = sized(glow, 100.0, 100.0, scale);
+      let at = |x: f32, y: f32| buffer.pixel((x * scale) as u32, (y * scale) as u32);
+      // Half a pixel from the center is already a little way along.
+      let [r, _, b, _] = at(20.0, 80.0);
+      assert!(r > 245 && b < 10, "{:?}", at(20.0, 80.0));
+      // Halfway out, give or take the half pixel to the pixel's center.
+      let halfway = |[r, g, b, _]: [u8; 4]| r.abs_diff(128) <= 8 && g == 0 && b.abs_diff(127) <= 8;
+      assert!(halfway(at(40.0, 80.0)), "{:?}", at(40.0, 80.0));
+      assert!(halfway(at(20.0, 60.0)), "{:?}", at(20.0, 60.0));
+      assert!(close(at(62.0, 80.0), [0, 0, 255]), "{:?}", at(62.0, 80.0));
+      assert!(close(at(95.0, 5.0), [0, 0, 255]), "{:?}", at(95.0, 5.0));
+    }
+    // Without a radius it reaches the corner farthest from the center,
+    // 100 right and 80 up.
+    let reaching = sized(
+      Gradient::radial(RED, BLUE).center(0.0, 1.0),
+      100.0,
+      80.0,
+      1.0,
+    );
+    assert!(
+      close(reaching.pixel(99, 0), [0, 0, 255]),
+      "{:?}",
+      reaching.pixel(99, 0)
+    );
+    let halfway = reaching.pixel(50, 40);
+    assert!(close(halfway, [128, 0, 127]), "{halfway:?}");
+    // A radius of 0 leaves only the end color.
+    let none = sized(Gradient::radial(RED, BLUE).radius(0.0), 10.0, 10.0, 1.0);
+    assert!(
+      close(none.pixel(5, 5), [0, 0, 255]),
+      "{:?}",
+      none.pixel(5, 5)
+    );
+  }
+
+  #[test]
+  fn a_sweep_gradient_turns_around_its_center() {
+    // Centered at 25, 75: straight up from there is the start, straight
+    // right a quarter turn.
+    let sweep = sized(
+      Gradient::sweep(0.0, RED, BLUE).center(0.25, 0.75),
+      100.0,
+      100.0,
+      1.0,
+    );
+    assert!(
+      close(sweep.pixel(25, 10), [255, 0, 0]),
+      "{:?}",
+      sweep.pixel(25, 10)
+    );
+    assert!(
+      close(sweep.pixel(90, 75), [192, 0, 63]),
+      "{:?}",
+      sweep.pixel(90, 75)
+    );
+    assert!(
+      close(sweep.pixel(25, 95), [128, 0, 127]),
+      "{:?}",
+      sweep.pixel(25, 95)
+    );
+  }
+
+  #[test]
+  fn a_gradient_of_eight_colors_shows_each() {
+    let green = Color::rgb(0, 255, 0);
+    let black = Color::rgb(0, 0, 0);
+    let stripes = Gradient::linear(90.0, RED, BLUE)
+      .stop(1.0 / 7.0, green)
+      .stop(2.0 / 7.0, black)
+      .stop(3.0 / 7.0, RED)
+      .stop(4.0 / 7.0, green)
+      .stop(5.0 / 7.0, black)
+      .stop(6.0 / 7.0, green);
+    let buffer = sized(stripes, 701.0, 4.0, 1.0);
+    for (x, expected) in [
+      (0, [255, 0, 0]),
+      (100, [0, 255, 0]),
+      (200, [0, 0, 0]),
+      (300, [255, 0, 0]),
+      (400, [0, 255, 0]),
+      (500, [0, 0, 0]),
+      (600, [0, 255, 0]),
+      (700, [0, 0, 255]),
+    ] {
+      let pixel = buffer.pixel(x, 2);
+      assert!(close(pixel, expected), "at {x}: {pixel:?}");
+    }
+  }
+
   /// A `width` by `height` window filled with `gradient` at `scale`.
   fn sized(gradient: Gradient, width: f32, height: f32, scale: f32) -> super::super::Buffer {
     let mut scene = Scene::new();
