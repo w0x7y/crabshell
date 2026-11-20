@@ -485,3 +485,24 @@ fn a_panicking_partial_eq_is_logged_and_running_ends() {
   assert!(!seq.running().get(), "and running ends");
   assert!(!animating());
 }
+
+#[test]
+fn a_panicking_partial_eq_at_the_end_of_a_play_ends_running() {
+  let h = Harness::new();
+  let go = h.cx.signal(0_u32);
+  // One step of 0 ms: the play's only write is the one at its end.
+  let seq = h.cx.sequence(
+    Touchy(0.0),
+    move || go.get(),
+    [Step::to(Touchy(0.5), Transition::new(0))],
+  );
+  h.runtime.flush();
+  go.set(1);
+  h.runtime.flush();
+  let start = Instant::now();
+  let logs = capture_logs(|| assert!(!tick(start, 0), "the play stops"));
+  assert!(logs.contains("eq failure"), "{logs}");
+  h.runtime.flush();
+  assert!(!seq.running().get(), "and running ends");
+  assert!(!animating());
+}
