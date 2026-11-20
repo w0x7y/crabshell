@@ -243,6 +243,8 @@ impl Platform {
   /// context went is forgotten.
   fn end_session(&mut self, index: usize, refused: bool) {
     let held = &mut self.locks.held[index];
+    // A refusal of a lock the config no longer wants isn't one to report.
+    let refused = refused && held.lock.as_ref().and_then(|lock| lock.wanted()) == Some(true);
     match std::mem::replace(&mut held.state, State::Unlocked { refused }) {
       State::Locked(session) => {
         session.unlock_and_destroy();
