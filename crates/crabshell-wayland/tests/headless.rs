@@ -6090,3 +6090,250 @@ fn a_captures_frame_is_freed_once_its_views_and_context_go() {
     .expect("the connection works");
   assert_eq!(Rc::strong_count(&frame.rgba), 1, "only this test holds it");
 }
+
+/// A panel in `output`'s top right corner, 300 wide, whose height follows its
+/// body's geometry as rime's dropdowns do: the body's height plus `pad`
+/// on both sides, and 6% more. The body holds `rows` rows 20 tall.
+fn content_panel(cx: &Cx, output: &str, rows: Signal<usize>, pad: u32) -> Window {
+  let body = cx.signal(Rect::default());
+  let panel = PanelWindow::new(&Output::new(output))
+    .anchors(Edge::Top | Edge::Right)
+    .width(300)
+    .height(move || ((body.get().height + 2.0 * pad as f32) * 1.06).ceil() as u32)
+    .style(Style::new().background(Color::hex("#1e1e2e")))
+    .child(
+      Column::new().style(Style::new().padding(pad, pad)).child(
+        // Read for the panel's size, so a smaller panel mustn't squeeze it.
+        Column::new()
+          .geometry(body)
+          .style(Style::new().shrink(0.0))
+          .children_keyed(
+            move || (0..rows.get()).collect::<Vec<_>>(),
+            |row| *row,
+            |_, row| {
+              Text::new(move || format!("row {}", row.get())).style(
+                Style::new()
+                  .height(20.0)
+                  .background(Color::hex("#89b4fa"))
+                  .color(Color::hex("#11111b")),
+              )
+            },
+          ),
+      ),
+    );
+  Window::new(cx, panel)
+}
+
+/// The height [`content_panel`] asks for with `rows` rows.
+fn content_height(rows: usize, pad: u32) -> u32 {
+  ((rows as f32 * 20.0 + 2.0 * pad as f32) * 1.06).ceil() as u32
+}
+
+/// Logical × scale, rounded half away from zero.
+fn buffer_side(logical: u32, scale: f32) -> u32 {
+  (f64::from(logical) * f64::from(scale)).round() as u32
+}
+
+/// A committed frame's logical size, scale and buffer size.
+type Frame = ((u32, u32), f32, (u32, u32));
+
+/// Dispatches until `id` stops committing, returning each new commit's
+/// logical size, scale and buffer size, in order.
+fn commits_until_settled(event_loop: &mut EventLoop, id: WindowId) -> Vec<Frame> {
+  let mut seen = event_loop
+    .platform()
+    .window_info(id)
+    .map_or(0, |info| info.commits);
+  let mut frames = Vec::new();
+  let deadline = Instant::now() + Duration::from_secs(10);
+  let mut quiet_since = Instant::now();
+  while quiet_since.elapsed() < Duration::from_millis(500) {
+    assert!(Instant::now() < deadline, "the panel never stopped drawing");
+    event_loop
+      .dispatch(Some(Duration::from_millis(10)))
+      .expect("the connection works");
+    let info = event_loop
+      .platform()
+      .window_info(id)
+      .expect("the panel is held");
+    // A window commits at most once a frame callback, so once a dispatch.
+    if info.commits > seen {
+      assert_eq!(info.commits, seen + 1, "one commit per dispatch");
+      seen = info.commits;
+      quiet_since = Instant::now();
+      frames.push((
+        info.size.expect("a committed panel has a size"),
+        info.scale,
+        info.buffer_size.expect("a committed panel has a buffer"),
+      ));
+    }
+  }
+  frames
+}
+
+/// Checks the panel against the top right of the screenshot, when its
+/// buffer is a whole number of output pixels: otherwise Sway resamples
+/// it, and a row edge blurs.
+fn assert_panel_shows(sway: &Sway, platform: &mut Platform, id: WindowId, name: &str) {
+  let info = platform.window_info(id).expect("the panel is held");
+  let (width, height) = info.size.expect("the panel has a size");
+  let whole = |side: u32| (f64::from(side) * f64::from(info.scale)).fract() == 0.0;
+  if !(whole(width) && whole(height)) {
+    return;
+  }
+  let snapshot = platform.snapshot(id).expect("the panel draws offscreen");
+  let shot = sway.screenshot("HEADLESS-1");
+  assert_matches_at(name, &shot, &snapshot, (shot.width - snapshot.width, 0));
+}
+
+/// Every frame in `frames` is `height` tall and 300 wide, in logical
+/// pixels and in buffer pixels at its scale.
+fn assert_all_at(frames: &[Frame], height: u32, what: &str) {
+  assert!(!frames.is_empty(), "{what}: the panel drew");
+  for &(size, scale, buffer) in frames {
+    assert_eq!(
+      size,
+      (300, height),
+      "{what}: every frame at the content's size: {frames:?}"
+    );
+    assert_eq!(
+      buffer,
+      (buffer_side(300, scale), buffer_side(height, scale)),
+      "{what}: buffer = logical × scale: {frames:?}"
+    );
+  }
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_panel_sized_from_its_content_draws_its_first_frame_at_that_size() {
+  for scale in ["1", "1.25", "1.5", "1.75", "2"] {
+    for pad in [0, 8] {
+      let what = format!("scale {scale}, pad {pad}");
+      let sway = Sway::start();
+      sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", scale]);
+      let mut event_loop = sway.connect();
+      let cx = Cx::new(Runtime::current().new_owner());
+      let rows = cx.signal(3);
+      let id = event_loop
+        .platform()
+        .add_window(content_panel(&cx, "HEADLESS-1", rows, pad));
+      let frames = commits_until_settled(&mut event_loop, id);
+      assert_all_at(&frames, content_height(3, pad), &what);
+      // What shows is the content, laid out at that size.
+      let name = format!("content-panel@{scale}-{pad}");
+      assert_panel_shows(&sway, event_loop.platform(), id, &name);
+      cx.owner().dispose();
+    }
+  }
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_panel_sized_from_its_content_follows_it_without_a_frame_at_the_old_size() {
+  for scale in ["1", "1.25", "1.5", "1.75", "2"] {
+    let what = format!("scale {scale}");
+    let sway = Sway::start();
+    sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", scale]);
+    let mut event_loop = sway.connect();
+    let cx = Cx::new(Runtime::current().new_owner());
+    let rows = cx.signal(3);
+    let id = event_loop
+      .platform()
+      .add_window(content_panel(&cx, "HEADLESS-1", rows, 8));
+    commits_until_settled(&mut event_loop, id);
+    // Ending on 2 rows, 60 tall: whole output pixels at every scale.
+    for count in [5, 1, 2] {
+      rows.set(count);
+      let frames = commits_until_settled(&mut event_loop, id);
+      assert_all_at(
+        &frames,
+        content_height(count, 8),
+        &format!("{what}, {count} rows"),
+      );
+    }
+    let platform = event_loop.platform();
+    assert_panel_shows(&sway, platform, id, &format!("grown-panel@{scale}"));
+    // Settled, nothing wakes.
+    let wakeups = platform.stats().wayland_wakeups;
+    let commits = platform.window_info(id).map(|info| info.commits);
+    for _ in 0..10 {
+      event_loop
+        .dispatch(Some(Duration::from_millis(100)))
+        .expect("the connection works");
+    }
+    let platform = event_loop.platform();
+    assert_eq!(platform.window_info(id).map(|info| info.commits), commits);
+    assert_eq!(
+      platform.stats().wayland_wakeups,
+      wakeups,
+      "{what}: idle once settled"
+    );
+    cx.owner().dispose();
+  }
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_panel_sized_from_its_content_keeps_that_size_through_a_new_scale_and_a_reannounced_output() {
+  let sway = Sway::start();
+  let runtime = Runtime::current();
+  let cx = Cx::new(runtime.new_owner());
+  let rows = cx.signal(3);
+  let mut event_loop = sway.connect();
+  let built: Rc<RefCell<Vec<WindowId>>> = Rc::default();
+  let on_built = Rc::clone(&built);
+  event_loop
+    .platform()
+    .on_event(move |platform: &mut Platform, event| {
+      if let Event::OutputAdded(output) = event
+        && output.name == "HEADLESS-2"
+      {
+        let panel = content_panel(&cx, "HEADLESS-2", rows, 8);
+        on_built.borrow_mut().push(platform.add_window(panel));
+      }
+    });
+  settle(&mut event_loop);
+  runtime.flush();
+  let nodes = runtime.node_count();
+  let newest = |built: &Rc<RefCell<Vec<WindowId>>>| built.borrow().last().copied();
+
+  sway.msg(&["create_output"]);
+  sway.msg(&["output", "HEADLESS-2", "mode", "1920x1080", "scale", "1.5"]);
+  run_until(&mut event_loop, "the panel", |_| newest(&built).is_some());
+  let first = newest(&built).expect("built");
+  let frames = commits_until_settled(&mut event_loop, first);
+  assert_all_at(&frames, content_height(3, 8), "first shown");
+
+  rows.set(5);
+  sway.msg(&["output", "HEADLESS-2", "scale", "2"]);
+  let frames = commits_until_settled(&mut event_loop, first);
+  assert_all_at(&frames, content_height(5, 8), "a new scale and content");
+  assert_eq!(frames.last().map(|frame| frame.1), Some(2.0));
+
+  // Announced again under the same name: a new panel, right at once.
+  sway.msg(&["output", "HEADLESS-2", "disable"]);
+  run_until(&mut event_loop, "the panel to go", |platform| {
+    platform.window_info(first).is_none()
+  });
+  rows.set(2);
+  sway.msg(&["output", "HEADLESS-2", "enable"]);
+  run_until(&mut event_loop, "a new panel", |_| {
+    newest(&built) != Some(first)
+  });
+  let again = newest(&built).expect("built");
+  let frames = commits_until_settled(&mut event_loop, again);
+  assert_all_at(&frames, content_height(2, 8), "announced again");
+
+  sway.msg(&["output", "HEADLESS-2", "unplug"]);
+  run_until(&mut event_loop, "the new panel to go", |platform| {
+    platform.window_info(again).is_none()
+  });
+  runtime.flush();
+  // Each panel's `body` signal is in the test's owner, not its window's.
+  assert_eq!(
+    runtime.node_count(),
+    nodes + 2,
+    "the panels' nodes are freed"
+  );
+}

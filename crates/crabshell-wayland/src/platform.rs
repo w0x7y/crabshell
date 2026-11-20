@@ -8,7 +8,7 @@ use crabshell_reactive::Runtime;
 use crabshell_render::{
   BufferAge, Canvas, DamageHistory, IconLookup, PixelFormat, PixelRect, Renderer,
 };
-use crabshell_ui::{CursorShape, TextSystem, Window};
+use crabshell_ui::{CursorShape, Size, TextSystem, Window};
 use smithay_client_toolkit::compositor::CompositorState;
 use smithay_client_toolkit::output::OutputState;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
@@ -1001,7 +1001,11 @@ impl Platform {
         surface.send_blur(effects, compositor, entry.window.blur().as_ref(), qh);
       }
       if entry.window.needs_layout() {
-        entry.window.layout(text);
+        let alone = *alone;
+        lay_out_sized(&entry.window, text, |window| {
+          window.surface_changed()
+            && surface.resize(window, &surface::beside(window.surface(), alone))
+        });
         surface.fit(&entry.window);
       }
       // A layout can move a button out from under a still pointer, or
@@ -1089,6 +1093,13 @@ impl Platform {
         }
         continue;
       };
+      // Laid out first at the size it asks for, so a size its bindings
+      // read from its content's geometry is right in the first configure.
+      let output_size = (info.width, info.height);
+      ask_size(&entry.window, output_size);
+      lay_out_sized(&entry.window, &mut self.text, |window| {
+        ask_size(window, output_size)
+      });
       let config = surface::beside(entry.window.surface(), self.alone);
       if refused(entry, &config) {
         continue;
@@ -1214,6 +1225,50 @@ fn refused(entry: &mut Entry<Surface, WlOutput>, config: &crabshell_ui::SurfaceC
     }
   }
 }
+
+/// Gives a panel without a surface the size its settings ask for, each
+/// side left to the compositor taken from `output`'s logical size.
+/// Returns whether the size changed.
+pub(crate) fn ask_size(window: &Window, output: (u32, u32)) -> bool {
+  let config = window.surface();
+  let Some((width, height)) = surface::configured_size((config.width, config.height), output)
+  else {
+    return false;
+  };
+  let size = Size::new(width as f32, height as f32);
+  let changed = window.size() != size;
+  window.set_size(size);
+  changed
+}
+
+/// Lays `window` out, and again while `resize` gives it a new size its
+/// settings ask for after that layout, so no frame is drawn at a size the
+/// window's own bindings already changed. A size that still changes
+/// after [`SIZE_ROUNDS`] layouts is logged and goes on at the next pass.
+pub(crate) fn lay_out_sized(
+  window: &Window,
+  text: &mut TextSystem,
+  mut resize: impl FnMut(&Window) -> bool,
+) {
+  for _ in 0..SIZE_ROUNDS {
+    if window.needs_layout() {
+      window.layout(text);
+    }
+    if !resize(window) {
+      return;
+    }
+  }
+  window.layout(text);
+  tracing::warn!(
+    window = window.view().root().path(),
+    "a window's size still changed after {SIZE_ROUNDS} layouts; check the bindings that size it \
+     from its content's geometry"
+  );
+}
+
+/// The most layouts [`lay_out_sized`] runs while a window's size follows
+/// its content.
+pub(crate) const SIZE_ROUNDS: usize = 4;
 
 /// The most passes over the windows one iteration makes while layouts
 /// leave work, so a `geometry` feedback that never settles waits for the

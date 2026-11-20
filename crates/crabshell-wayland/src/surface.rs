@@ -395,6 +395,43 @@ impl Surface {
   /// anything: not when only the mask or other hints changed, since
   /// layer-shell would have the compositor arrange the output again.
   pub(crate) fn reconfigure(&mut self, config: &SurfaceConfig) -> bool {
+    let sent = self.send_layer(config);
+    if sent && let Role::Layer(surface) = &self.role {
+      surface.commit();
+    }
+    sent
+  }
+
+  /// Takes the size a panel's settings ask for once a layout changed it,
+  /// so the next frame is drawn at that size and its commit carries the
+  /// settings. A side left to the compositor keeps its size. Returns
+  /// whether the size changed, which needs another layout. Settings
+  /// layer-shell would refuse are left for the next pass to log.
+  pub(crate) fn resize(&mut self, window: &Window, config: &SurfaceConfig) -> bool {
+    let (Role::Layer(_), Some(size), Some(sent)) = (&self.role, self.size, &self.layer_sent) else {
+      return false;
+    };
+    // Only the window's own ask, never over a size the compositor chose.
+    if (sent.width, sent.height) == (config.width, config.height) || size_problem(config).is_some()
+    {
+      return false;
+    }
+    // The same size has no frame to carry the settings: `reconfigure`
+    // commits them.
+    let Some(asked) =
+      configured_size((config.width, config.height), size).filter(|&asked| asked != size)
+    else {
+      return false;
+    };
+    self.send_layer(config);
+    self.size = Some(asked);
+    window.set_size(Size::new(asked.0 as f32, asked.1 as f32));
+    true
+  }
+
+  /// Sends what [`reconfigure`](Self::reconfigure) sends, without the
+  /// commit.
+  fn send_layer(&mut self, config: &SurfaceConfig) -> bool {
     let Role::Layer(surface) = &self.role else {
       return false;
     };
@@ -420,7 +457,6 @@ impl Surface {
         surface.set_layer(layer(config.layer));
       }
     }
-    surface.commit();
     self.layer_sent = Some(config.clone());
     true
   }
