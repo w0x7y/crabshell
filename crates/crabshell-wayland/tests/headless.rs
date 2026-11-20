@@ -5612,6 +5612,7 @@ fn an_images_status_reaches_its_effects_in_the_iteration_that_drew_it() {
   let cx = Cx::new(runtime.new_owner());
   let (good, bad) = (cx.signal(ImageStatus::Empty), cx.signal(ImageStatus::Empty));
   let blur = cx.signal(0.0_f32);
+  let card = cx.signal(fixtures.join("missing.png"));
   // What the effects saw, which only a flush after the draw updates.
   let seen = Rc::new(RefCell::new((ImageStatus::Empty, ImageStatus::Empty)));
   let s = Rc::clone(&seen);
@@ -5638,9 +5639,11 @@ fn an_images_status_reaches_its_effects_in_the_iteration_that_drew_it() {
             .status(good),
         )
         .child(
-          crabshell_ui::Image::new(fixtures.join("missing.png"))
+          // Shown only once Ready, as a notification card's picture.
+          crabshell_ui::Image::new(move || card.get())
             .width(20)
             .height(20)
+            .visible(move || bad.get() == ImageStatus::Ready)
             .status(bad),
         ),
     );
@@ -5662,6 +5665,21 @@ fn an_images_status_reaches_its_effects_in_the_iteration_that_drew_it() {
   blur.set(2.0);
   settle(&mut event_loop);
   assert_eq!(seen.borrow().0, ImageStatus::Ready);
+  // A hidden picture that failed loads the next source with nothing to
+  // draw, and shows once it is Ready.
+  let before = event_loop
+    .platform()
+    .window_info(id)
+    .expect("the bar")
+    .commits;
+  card.set(fixtures.join("bands.png"));
+  run_until(&mut event_loop, "the card's picture shown", |platform| {
+    platform
+      .window_info(id)
+      .is_some_and(|info| info.commits > before)
+  });
+  assert_eq!(seen.borrow().1, ImageStatus::Ready);
+  settle(&mut event_loop);
   sleeps_through(&mut event_loop, Duration::from_secs(2));
 }
 

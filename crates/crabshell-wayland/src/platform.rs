@@ -927,6 +927,7 @@ impl Platform {
       self.lay_out_and_draw(&mut drawn);
     }
     // A status the last draws told runs its effects before the loop sleeps.
+    self.load_waiting_images();
     if crabshell_ui::image_status_changed() {
       self.runtime.flush();
     }
@@ -1043,6 +1044,22 @@ impl Platform {
     }
   }
 
+  /// Once an image with a `status` signal got a new source, loads every
+  /// window's waiting images, drawn or not: one shown only once Ready
+  /// has nothing to draw until it is.
+  fn load_waiting_images(&mut self) {
+    if !crabshell_ui::image_sources_changed() {
+      return;
+    }
+    for entry in &self.windows.entries {
+      let scale = entry
+        .surface
+        .as_ref()
+        .map_or(1.0, |surface| surface.frames.scale.factor());
+      self.renderer.load_images(&entry.window.view(), scale);
+    }
+  }
+
   /// Whether the last pass's layouts left work for another: a layout
   /// writes `geometry` and flushes, and the effects that run may lay out
   /// or repaint a window already passed, change its settings, open or
@@ -1051,7 +1068,8 @@ impl Platform {
   /// acted on and flushed, as at the start of the iteration.
   fn left_work(&mut self) -> bool {
     let mut work = self.update_locks();
-    // A draw that told an image's status runs what reads it now.
+    self.load_waiting_images();
+    // A draw or load that told an image's status runs what reads it now.
     work |= crabshell_ui::image_status_changed();
     if work {
       self.runtime.flush();

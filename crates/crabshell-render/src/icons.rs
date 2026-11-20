@@ -715,20 +715,15 @@ impl Icons {
     })
   }
 
-  /// Loads each of `images`, which a draw at `scale` skipped while their
-  /// status waits, at its box's size or one pixel, unless it is being
-  /// decoded already, and tells its status: Ready or Failed at once, or
-  /// when the worker is done. A hidden or transparent image would never
-  /// load otherwise, and a config may show it only once it is Ready.
+  /// Loads each of `images`, whose status waits, at its box's size at
+  /// `scale` or one pixel, and tells its status: Ready or Failed at once,
+  /// or when the worker is done. One mid-decode on an earlier source
+  /// doesn't hold it back: that job's report is dropped, as the image
+  /// shows another source now. A hidden or transparent
+  /// image would never load otherwise, and a config may show it only once
+  /// it is Ready.
   pub(crate) fn load_unseen(&mut self, images: &[ImageView<'_>], scale: f32) {
     for image in images {
-      if self
-        .pending
-        .values()
-        .any(|(_, ids)| ids.contains(&image.id))
-      {
-        continue;
-      }
       // `as` saturates, and NaN is 0.
       let pixels = |length: f32| ((length * scale).round() as u32).max(1);
       let size = (pixels(image.rect.width), pixels(image.rect.height));

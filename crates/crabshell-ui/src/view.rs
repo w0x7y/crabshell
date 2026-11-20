@@ -43,9 +43,10 @@ impl<'w> WindowView<'w> {
   }
 
   /// The window's images whose `status` signal still says Loading, hidden
-  /// ones too, at the box they were last laid out in. A renderer loads
-  /// those a draw skipped, such as one at opacity 0 or hidden until it is
-  /// Ready, so each still hears its status.
+  /// ones too, at the box they were last laid out in. The platform has the
+  /// renderer load them when
+  /// [`image_sources_changed`](crate::image_sources_changed) says so,
+  /// drawn or not, since one may be shown only once it is Ready.
   pub fn loading_images(&self) -> Vec<ImageView<'_>> {
     self
       .tree

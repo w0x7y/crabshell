@@ -194,6 +194,16 @@ impl Renderer {
     self.icons.decode_off_thread();
   }
 
+  /// Loads the images of `view` whose status still waits, drawn or not,
+  /// at their laid-out size at `scale`, or one pixel without one, and
+  /// tells each status: at once, or when the worker is done with it. The
+  /// platform calls it for every window, drawn or not, whenever
+  /// [`image_sources_changed`](crabshell_ui::image_sources_changed) says
+  /// a source changed.
+  pub fn load_images(&mut self, view: &WindowView<'_>, scale: f32) {
+    self.icons.load_unseen(&view.loading_images(), scale);
+  }
+
   /// Whether pictures are being decoded for images drawn, or came in and
   /// weren't taken with [`take_decoded`](Self::take_decoded) yet.
   pub fn decoding(&self) -> bool {
@@ -352,8 +362,6 @@ impl Renderer {
       copy(&self.scratch, area, pixels, width, format);
     }
     self.icons.repainted(&tiles);
-    // Images the tiles skipped, hidden or transparent, still load.
-    self.icons.load_unseen(&view.loading_images(), scale);
     self.icons.end_frame();
     if self.glyphs.image_cache.len() > GLYPH_CACHE_LIMIT {
       self.glyphs.image_cache.clear();

@@ -1079,10 +1079,13 @@ impl Image {
   /// [`ImageStatus::Loading`] from each new source until its picture is
   /// loaded, [`ImageStatus::Ready`] once it is, and
   /// [`ImageStatus::Failed`] when the file can't be read or decoded or is
-  /// past the size limits. An image at opacity 0, hidden, cut out by its
-  /// mask region or of no size still loads, at the box it was last laid
-  /// out in or one pixel, so its own status can show it. The picture loads
-  /// once its window draws; a picture decoded again at another size stays
+  /// past the size limits. Each new source is loaded in the loop turn
+  /// that set it, whether the image is drawn or not, so its own status
+  /// can show it: one at opacity 0 or cut out by its mask region loads at
+  /// its size, and one hidden or of no size at the box it was last laid
+  /// out in, or one pixel if it has none. A hidden image is decoded again
+  /// at its size once shown, so binding its opacity to Ready is the cheap
+  /// way to fade it in. A picture decoded again at another size stays
   /// Ready. Written only on a change; the signal belongs to the config,
   /// and the image repaints nothing for it.
   ///

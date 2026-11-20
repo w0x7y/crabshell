@@ -6,7 +6,10 @@ use std::path::{Path, PathBuf};
 
 use super::{Counter, Harness};
 use crate::image::watched_images;
-use crate::{Content, Image, ImageStatus, Row, Window, image_status, image_status_changed};
+use crate::{
+  Content, Image, ImageStatus, Row, Window, image_sources_changed, image_status,
+  image_status_changed,
+};
 
 fn id(window: &Window, index: usize) -> u64 {
   match super::node_at(window.view().root(), &[0, index]).content() {
@@ -105,4 +108,27 @@ fn an_image_that_goes_is_no_longer_watched() {
   image_status(image, Path::new("a.png"), ImageStatus::Ready);
   assert_eq!(status.get(), ImageStatus::Loading, "the last it was told");
   assert!(!image_status_changed());
+}
+
+#[test]
+fn a_new_source_asks_the_platform_to_load_it() {
+  let mut h = Harness::new();
+  let source = h.cx.signal("a.png");
+  let status = h.cx.signal(ImageStatus::Empty);
+  let plain = h.cx.signal("c.png");
+  let row = Row::new()
+    .child(Image::new(move || PathBuf::from(source.get())).status(status))
+    .child(Image::new(move || PathBuf::from(plain.get())));
+  let window = h.window(h.panel().child(row), 200.0, 64.0);
+  assert!(image_sources_changed());
+  assert!(!image_sources_changed(), "taken");
+  plain.set("d.png");
+  h.frame(&window);
+  assert!(!image_sources_changed(), "no status waits on it");
+  source.set("");
+  h.frame(&window);
+  assert!(!image_sources_changed(), "an empty source loads nothing");
+  source.set("b.png");
+  h.frame(&window);
+  assert!(image_sources_changed());
 }

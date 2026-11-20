@@ -38,6 +38,9 @@ thread_local! {
   /// A report changed a status signal since [`image_status_changed`]
   /// last ran.
   static STATUS_CHANGED: Cell<bool> = const { Cell::new(false) };
+  /// A watched image went back to Loading since
+  /// [`image_sources_changed`] last ran.
+  static SOURCES_CHANGED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Where an [`Image`](crate::Image)'s picture is, as Qt's `Image.status`,
@@ -47,8 +50,8 @@ pub enum ImageStatus {
   /// The source is an empty path, so nothing is shown. The default.
   #[default]
   Empty,
-  /// The source is new and its picture hasn't loaded yet: it is read at
-  /// its window's next draw, or decoded off the loop's thread.
+  /// The source is new and its picture hasn't loaded yet: it is read in
+  /// the loop turn that set it, or decoded off the loop's thread.
   Loading,
   /// The source's picture loaded, whether it was drawn or not.
   Ready,
@@ -87,6 +90,15 @@ pub fn image_status_changed() -> bool {
   STATUS_CHANGED.with(|changed| changed.replace(false))
 }
 
+/// Whether an image with a `status` signal got a new source since the
+/// last call, so its picture waits to load. The platform then has the
+/// renderer load each window's waiting images, drawn or not, as
+/// `Renderer::load_images` does, since a hidden image may be shown only
+/// once it is Ready.
+pub fn image_sources_changed() -> bool {
+  SOURCES_CHANGED.with(|changed| changed.replace(false))
+}
+
 /// Writes `status` to `signal` if that changes it, and says whether it
 /// did.
 fn write_status(signal: Signal<ImageStatus>, status: ImageStatus) -> bool {
@@ -109,6 +121,9 @@ fn watch_source(id: u64, source: &Path) {
         false => ImageStatus::Loading,
       };
       write_status(*signal, status);
+      if status == ImageStatus::Loading {
+        SOURCES_CHANGED.with(|changed| changed.set(true));
+      }
     }
   });
 }
