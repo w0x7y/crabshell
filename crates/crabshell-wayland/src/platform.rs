@@ -997,9 +997,6 @@ impl Platform {
       }
       surface.inhibit_idle(idle, entry.window.inhibits_idle(), qh);
       surface.inhibit_shortcuts(shortcuts_inhibit, (entry.id, &entry.window), seats, qh);
-      if surface.blur_outdated() {
-        surface.send_blur(effects, compositor, entry.window.blur().as_ref(), qh);
-      }
       if entry.window.needs_layout() {
         let alone = *alone;
         let settled = lay_out_sized(&entry.window, text, |window| {
@@ -1018,9 +1015,12 @@ impl Platform {
       {
         pointer.show(entry.window.cursor());
       }
-      // A new size, from a configure or a popup's layout, cuts the masks
-      // again, as a new scale does the visible one; the frame drawn at
-      // that size commits them.
+      // A new size, from a configure, a popup's layout or a panel's
+      // resize, cuts the masks and the blur again, as a new scale does the
+      // visible one; the frame drawn at that size commits them.
+      if surface.blur_outdated() {
+        surface.send_blur(effects, compositor, entry.window.blur().as_ref(), qh);
+      }
       if surface.mask_outdated() {
         surface.send_mask(compositor, entry.window.surface().mask.as_ref());
       }
