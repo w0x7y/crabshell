@@ -12,7 +12,7 @@ use crabshell_ui::{
   CaptureFrame, Color, Fit, IconPixels, IconSource, ImageFilters, ImageTransition, ImageView,
 };
 use resvg::usvg;
-use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, PixmapRef, Transform};
+use tiny_skia::{FilterQuality, IntRect, Pixmap, PixmapPaint, PixmapRef, Transform};
 
 use crate::animation::Frames;
 use crate::theme::{IconLookup, Lookup, Themes};
@@ -224,6 +224,7 @@ struct Capture {
   width: u32,
   height: u32,
   fit: Fit,
+  crop: Option<IntRect>,
   /// `None` if the frame couldn't be scaled; drawn as nothing.
   pixmap: Option<Pixmap>,
   used: u64,
@@ -1087,13 +1088,14 @@ impl Icons {
     &mut self,
     view: u64,
     frame: &CaptureFrame,
-    width: u32,
-    height: u32,
+    (width, height): (u32, u32),
     fit: Fit,
+    crop: Option<IntRect>,
   ) -> Option<&Pixmap> {
     let shared = Shared(Rc::clone(&frame.rgba));
     let kept = self.captures.get(&view).is_some_and(|kept| {
-      kept.frame == shared && (kept.width, kept.height, kept.fit) == (width, height, fit)
+      kept.frame == shared
+        && (kept.width, kept.height, kept.fit, kept.crop) == (width, height, fit, crop)
     });
     if !kept {
       let scaled = PixmapRef::from_bytes(&frame.rgba, frame.width, frame.height)
@@ -1105,7 +1107,14 @@ impl Icons {
             frame.height
           )
         })
-        .and_then(|source| crate::images::scale(source, width, height, fit));
+        .and_then(|source| match crop {
+          // The crop is cut to the frame, so the part is never empty.
+          Some(crop) => source
+            .clone_rect(crop)
+            .ok_or_else(|| format!("a crop of {crop:?} outside the frame"))
+            .and_then(|part| crate::images::scale(part.as_ref(), width, height, fit)),
+          None => crate::images::scale(source, width, height, fit),
+        });
       if let Err(error) = &scaled {
         tracing::warn!(%error, "couldn't draw a captured frame");
       }
@@ -1116,6 +1125,7 @@ impl Icons {
           width,
           height,
           fit,
+          crop,
           pixmap: scaled.ok(),
           used: self.frame,
         },

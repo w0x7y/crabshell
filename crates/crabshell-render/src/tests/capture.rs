@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use crabshell_ui::{CaptureFrame, CaptureSource, Fit, Row, ScreencopyView, Style};
+use crabshell_ui::{CaptureFrame, CaptureSource, Fit, Rect, Row, ScreencopyView, Style};
 
 use super::Scene;
 use crate::{PixelFormat, Turn, capture_frame, frame_size};
@@ -185,4 +185,59 @@ fn a_turned_frame_is_turned_back_upright() {
     [other[1].clone(), other[0].clone()],
     "opposite turns"
   );
+}
+
+#[test]
+fn a_crop_draws_that_part_of_the_frame_into_the_box() {
+  let mut scene = Scene::new();
+  let crop = scene.cx.signal(Some(Rect::new(1.0, 0.0, 1.0, 1.0)));
+  let view = ScreencopyView::new(CaptureSource::Output(String::from("DP-2")))
+    .crop(move || crop.get())
+    .style(Style::new().width(20.0).height(10.0));
+  let window = scene.window(scene.panel().child(view), 20.0, 10.0);
+  let id = window.captures()[0].id;
+  let (red, blue) = ([255, 0, 0, 255], [0, 0, 255, 255]);
+  // 4 by 2 pixels of a 2 by 1 source at scale 2: red left, blue right.
+  let halves = |width: u32, height: u32| CaptureFrame {
+    width,
+    height,
+    logical_width: 2,
+    logical_height: 1,
+    rgba: Rc::from(
+      (0..width * height)
+        .flat_map(|at| if at % width < width / 2 { red } else { blue })
+        .collect::<Vec<u8>>(),
+    ),
+  };
+  window.show_capture(id, halves(4, 2));
+  for scale in [1.0, 2.0] {
+    let drawn = scene.full(&window, scale);
+    let last = (20.0 * scale) as u32 - 1;
+    for (x, y) in [(0, 0), (last, last / 2)] {
+      assert_eq!(drawn.pixel(x, y), blue, "at {x},{y}, scale {scale}");
+    }
+  }
+  // A frame kept smaller maps the crop the same.
+  window.show_capture(id, halves(2, 1));
+  assert_eq!(scene.full(&window, 2.0).pixel(0, 0), blue);
+  crop.set(Some(Rect::new(0.0, 0.0, 1.0, 1.0)));
+  scene.frame(&window);
+  assert_eq!(scene.full(&window, 2.0).pixel(39, 19), red);
+
+  // Cut to the frame, and nothing when none of it is left.
+  crop.set(Some(Rect::new(1.0, -5.0, 9.0, 9.0)));
+  scene.frame(&window);
+  assert_eq!(scene.full(&window, 1.0).pixel(0, 0), blue);
+  for outside in [
+    Rect::new(2.0, 0.0, 1.0, 1.0),
+    Rect::new(f32::NAN, 0.0, 1.0, 1.0),
+  ] {
+    crop.set(Some(outside));
+    scene.frame(&window);
+    assert_eq!(
+      scene.full(&window, 1.0).pixel(0, 0),
+      [0, 0, 0, 0],
+      "{outside:?}"
+    );
+  }
 }
