@@ -1230,7 +1230,10 @@ impl Button {
   /// catcher that closes a panel at the first press. A left press or a
   /// touch runs it after `on_press`. It runs only for the press that
   /// starts a hold, not for a second button pressed while one is held, and
-  /// not for a press on a scroll bar.
+  /// not for a left press or a touch on a scroll bar, which the bar takes;
+  /// the other buttons reach the button under it. Only the innermost
+  /// enabled button under the pointer gets it, and a disabled one lets it
+  /// through to the button around it.
   pub fn on_any_press(mut self, handler: impl Fn(&Cx, PointerButton) + 'static) -> Button {
     self.button.handlers.any_press = Some(Rc::new(Handler::new(handler)));
     self
