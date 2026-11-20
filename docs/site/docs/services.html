@@ -362,7 +362,7 @@ Column::new().gap(8).children_keyed(
               <td><code>set_default_timeout(duration)</code></td>
               <td>
                 How long a popup shows when its app doesn't say, for popups that
-                arrive from then on. It is 5 s until set.
+                arrive or are replaced from then on. It is 5 s until set.
               </td>
             </tr>
             <tr>
@@ -380,7 +380,7 @@ Column::new().gap(8).children_keyed(
               <td><code>popup_time_left(id)</code></td>
               <td>
                 The time left and the whole timeout, or <code>None</code> for a
-                popup that never expires or isn't showing.
+                popup that never expires, has no timeout or isn't showing.
               </td>
             </tr>
           </tbody>

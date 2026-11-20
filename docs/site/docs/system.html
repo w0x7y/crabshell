@@ -221,7 +221,7 @@ let shown = cx.memo(move || {
           split.
         </p>
         <pre><code class="rs">// "firefox" for /usr/lib/firefox/firefox %u
-let program = entry.command.first().and_then(|path| Path::new(path).file_name());
+let program = entry.command.first().and_then(|path| std::path::Path::new(path).file_name());
 
 // A terminal app in ghostty.
 let mut run = vec![String::from("ghostty"), String::from("-e")];

@@ -492,9 +492,9 @@ Icon::new(move || if muted.get() { "audio-volume-muted" } else { "audio-volume-h
           <code>status</code> says whether the picture has loaded:
           <code>Loading</code> after each new source, then <code>Ready</code> or
           <code>Failed</code> once the picture is loaded, whether or not it
-          shows. <code>Failed</code> means the file can't be read or is too
-          large. Fade album art in on <code>Ready</code> with its opacity, or
-          show a glyph on <code>Failed</code>.
+          shows. <code>Failed</code> means the file can't be read or decoded, or
+          is too large. Fade album art in on <code>Ready</code> with its
+          opacity, or show a glyph on <code>Failed</code>.
         </p>
         <pre><code class="rs">let status = cx.signal(ImageStatus::Empty);
 let shown = cx.animate(
@@ -645,14 +645,16 @@ Slider::new(volume)
               <td><code>limit(max)</code></td>
               <td>
                 The highest value a drag, the wheel or a key can set. The track
-                still shows the whole range.
+                still shows the whole range. With a step, a limit between steps
+                stops at the step under it.
               </td>
             </tr>
             <tr>
               <td><code>wheel_step(n)</code></td>
               <td>
                 How far a wheel notch or an arrow key moves it. The default is
-                the step, or a twentieth of the range without one.
+                the step, or a twentieth of the range without one. With a step
+                it rounds to whole steps, at least one.
               </td>
             </tr>
             <tr>
