@@ -208,8 +208,9 @@ impl Cx {
   /// with the same fonts and fallbacks. Each line break starts another
   /// line: the width is the widest line's and the height a line height per
   /// line. [`TextMetrics::ink`] is the box the glyphs draw, for sizing an
-  /// icon glyph by its ink rather than its advance. It isn't reactive itself; a binding that calls it runs again
-  /// when the signals it read change.
+  /// icon glyph by its ink rather than its advance. It isn't reactive
+  /// itself; a binding that calls it runs again when the signals it read
+  /// change.
   pub fn measure_text(&self, text: &str, font: Font) -> TextMetrics {
     self.text_system().fonts().measure(text, font)
   }

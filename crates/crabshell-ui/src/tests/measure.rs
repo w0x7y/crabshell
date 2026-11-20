@@ -492,3 +492,39 @@ fn a_color_bitmap_glyphs_ink_is_its_pixels() {
   assert!(ink.width > 10.0 && ink.height > 10.0, "{measured:?}");
   assert!(ink.width <= measured.width + 2.0, "{measured:?}");
 }
+
+#[test]
+fn measuring_glyphs_again_builds_no_outlines_until_a_font_is_added() {
+  let mut fonts = Fonts::new();
+  let font = Font::new("sans-serif", 18.0);
+  let first = fonts.measure("hello world", font);
+  let built = fonts.glyphs_built;
+  // h, e, l, o, the space, w, r and d; the space draws nothing, so no
+  // bitmap is tried for it.
+  assert_eq!(built, (8, 0));
+  assert_eq!(fonts.measure("hello world", font), first);
+  fonts.measure("held lower", font);
+  assert_eq!(fonts.glyphs_built, built, "the same glyphs");
+  fonts.measure("hello", Font::new("sans-serif", 20.0));
+  assert_eq!(fonts.glyphs_built, (12, 0), "another size");
+
+  let Some(bytes) = dejavu() else { return };
+  fonts.add(bytes);
+  fonts.measure("hello", font);
+  assert_eq!(
+    fonts.glyphs_built,
+    (16, 0),
+    "measured again after a font came"
+  );
+}
+
+#[test]
+fn the_ink_cache_keeps_at_most_its_cap() {
+  let mut fonts = Fonts::new();
+  // Each size is another glyph to the cache.
+  for step in 0..=crate::text::INK_GLYPHS {
+    fonts.measure("x", Font::new("sans-serif", 8.0 + step as f32 / 64.0));
+    assert!(fonts.ink.len() <= crate::text::INK_GLYPHS);
+  }
+  assert_eq!(fonts.ink.len(), 1, "it started again at the cap");
+}

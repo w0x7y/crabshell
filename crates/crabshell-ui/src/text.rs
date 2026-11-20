@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use cosmic_text::fontdb::{self, Database, FaceInfo, ID, Query, Source};
 use cosmic_text::{
-  Align, Attrs, Buffer, CacheKeyFlags, Command, Ellipsize, EllipsizeHeightLimit, Family,
+  Align, Attrs, Buffer, CacheKey, CacheKeyFlags, Command, Ellipsize, EllipsizeHeightLimit, Family,
   FeatureTag, FontFeatures, FontSystem, LayoutGlyph, LayoutRun, Metrics, Shaping, SwashCache,
   Weight, Wrap,
 };
@@ -104,54 +104,9 @@ pub struct TextMetrics {
   pub ink: Rect,
 }
 
-/// The tight box around the ink of the glyphs `node` shows, from its
-/// top-left, or an empty rect at 0, 0 if they draw none.
-fn ink(node: &TextNode, fonts: &mut FontSystem) -> Rect {
-  let mut cache = SwashCache::new();
-  // Left, top, right and bottom.
-  let mut ink = [
-    f32::INFINITY,
-    f32::INFINITY,
-    f32::NEG_INFINITY,
-    f32::NEG_INFINITY,
-  ];
-  let mut add = |x: f32, y: f32| {
-    ink = [ink[0].min(x), ink[1].min(y), ink[2].max(x), ink[3].max(y)];
-  };
-  for run in node.runs() {
-    for glyph in run.glyphs.iter() {
-      let physical = glyph.physical((0.0, run.line_y), 1.0);
-      let x = glyph.x + glyph.font_size * glyph.x_offset;
-      let y = run.line_y + glyph.y - glyph.font_size * glyph.y_offset;
-      let mut key = physical.cache_key;
-      key.flags |= CacheKeyFlags::DISABLE_HINTING;
-      match cache.get_outline_commands_uncached(fonts, key) {
-        // Outlines rise up from the baseline.
-        Some(commands) if !commands.is_empty() => {
-          outline_extremes(&commands, |px, py| add(x + px, y - py));
-        }
-        // A bitmap: its pixels' box. A blank has none.
-        _ => {
-          let Some(image) = cache.get_image_uncached(fonts, physical.cache_key) else {
-            continue;
-          };
-          let placement = image.placement;
-          if placement.width == 0 || placement.height == 0 {
-            continue;
-          }
-          let left = (physical.x + placement.left) as f32;
-          let top = (physical.y - placement.top) as f32;
-          add(left, top);
-          add(left + placement.width as f32, top + placement.height as f32);
-        }
-      }
-    }
-  }
-  match ink[0] <= ink[2] {
-    true => Rect::new(ink[0], ink[1], ink[2] - ink[0], ink[3] - ink[1]),
-    false => Rect::default(),
-  }
-}
+/// How many glyphs' ink boxes [`Fonts`] keeps, at about 50 bytes each;
+/// past it the cache starts again.
+pub(crate) const INK_GLYPHS: usize = 4096;
 
 /// Calls `add` with every point where the outline `commands` reach
 /// furthest along either axis.
@@ -243,6 +198,13 @@ pub(crate) struct Fonts {
   /// The weights each bundled face draws, lowest and highest: one, or a
   /// variable font's whole weight axis.
   bundled: HashMap<ID, (u16, u16)>,
+  /// Each glyph's ink box from its origin, by its unhinted cache key at
+  /// a whole pixel, or `None` if it draws nothing. At most
+  /// [`INK_GLYPHS`]; a face ID can be reused once a font is added.
+  pub(crate) ink: HashMap<CacheKey, Option<Rect>>,
+  /// How many outlines and bitmaps ink boxes were worked out from.
+  #[cfg(test)]
+  pub(crate) glyphs_built: (usize, usize),
 }
 
 /// fontconfig, started on first use because that costs about 15 ms.
@@ -266,6 +228,9 @@ impl Fonts {
       files: HashSet::new(),
       fallback_tried: HashSet::new(),
       bundled: HashMap::new(),
+      ink: HashMap::new(),
+      #[cfg(test)]
+      glyphs_built: (0, 0),
     }
   }
 
@@ -413,6 +378,7 @@ impl Fonts {
       .retain(|(family, _, _), _| !names.iter().any(|name| name.eq_ignore_ascii_case(family)));
     // A character a removed face drew is looked up again if it is missing.
     self.fallback_tried.clear();
+    self.ink.clear();
     FONTS_ADDED.set(FONTS_ADDED.get() + 1);
   }
 
@@ -453,8 +419,91 @@ impl Fonts {
       ascent,
       descent,
       line_height,
-      ink: ink(&node, &mut self.fonts),
+      ink: self.ink(&node),
     }
+  }
+
+  /// The tight box around the ink of the glyphs `node` shows, from its
+  /// top-left, or an empty rect at 0, 0 if they draw none.
+  fn ink(&mut self, node: &TextNode) -> Rect {
+    // Made only when a glyph isn't cached yet.
+    let mut scaler = None;
+    // Left, top, right and bottom.
+    let mut ink = [
+      f32::INFINITY,
+      f32::INFINITY,
+      f32::NEG_INFINITY,
+      f32::NEG_INFINITY,
+    ];
+    for run in node.runs() {
+      for glyph in run.glyphs.iter() {
+        let (key, _, _) = CacheKey::new(
+          glyph.font_id,
+          glyph.glyph_id,
+          glyph.font_size,
+          (0.0, 0.0),
+          glyph.font_weight,
+          glyph.cache_key_flags | CacheKeyFlags::DISABLE_HINTING,
+        );
+        let found = match self.ink.get(&key) {
+          Some(found) => *found,
+          None => {
+            let found = self.glyph_ink(scaler.get_or_insert_with(SwashCache::new), key);
+            if self.ink.len() >= INK_GLYPHS {
+              self.ink.clear();
+            }
+            self.ink.insert(key, found);
+            found
+          }
+        };
+        let Some(found) = found else {
+          continue;
+        };
+        let x = glyph.x + glyph.font_size * glyph.x_offset;
+        let y = run.line_y + glyph.y - glyph.font_size * glyph.y_offset;
+        ink = [
+          ink[0].min(x + found.x),
+          ink[1].min(y + found.y),
+          ink[2].max(x + found.right()),
+          ink[3].max(y + found.bottom()),
+        ];
+      }
+    }
+    match ink[0] <= ink[2] {
+      true => Rect::new(ink[0], ink[1], ink[2] - ink[0], ink[3] - ink[1]),
+      false => Rect::default(),
+    }
+  }
+
+  /// The ink box of the glyph `key` names, from its origin, y down: its
+  /// outline's, or a bitmap's pixels' if it has no outline. `None` for a
+  /// blank.
+  fn glyph_ink(&mut self, scaler: &mut SwashCache, key: CacheKey) -> Option<Rect> {
+    let Some(commands) = scaler.get_outline_commands_uncached(&mut self.fonts, key) else {
+      #[cfg(test)]
+      {
+        self.glyphs_built.1 += 1;
+      }
+      let placement = scaler.get_image_uncached(&mut self.fonts, key)?.placement;
+      let (width, height) = (placement.width as f32, placement.height as f32);
+      return (width > 0.0 && height > 0.0)
+        .then(|| Rect::new(placement.left as f32, -placement.top as f32, width, height));
+    };
+    #[cfg(test)]
+    {
+      self.glyphs_built.0 += 1;
+    }
+    let mut ink = [
+      f32::INFINITY,
+      f32::INFINITY,
+      f32::NEG_INFINITY,
+      f32::NEG_INFINITY,
+    ];
+    // Outlines rise up from the baseline.
+    outline_extremes(&commands, |x, y| {
+      ink = [ink[0].min(x), ink[1].min(-y), ink[2].max(x), ink[3].max(-y)];
+    });
+    (ink[0] <= ink[2]).then(|| Rect::new(ink[0], ink[1], ink[2] - ink[0], ink[3] - ink[1]))
   }
 
   /// Loads fontconfig's best font for each character in `missing` that
