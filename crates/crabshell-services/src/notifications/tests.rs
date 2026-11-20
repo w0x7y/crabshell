@@ -1460,6 +1460,194 @@ fn a_save_after_handing_over_still_names_the_shell_for_the_next() {
   );
 }
 
+fn timed(summary: &str, ms: u64) -> Notification {
+  Notification {
+    timeout: Timeout::After(Duration::from_millis(ms)),
+    ..sample(summary)
+  }
+}
+
+fn timer_armed(server: &Service) -> bool {
+  let state = server.state.borrow();
+  state.as_ref().is_some_and(|state| state.timer.is_some())
+}
+
+#[test]
+fn the_default_timeout_applies_to_popups_that_arrive_after_it() {
+  let mut shell = Harness::new(offline());
+  let notifications = shell.cx.notifications();
+  let server = service(&notifications);
+  let before = server.notify(0, sample("before"));
+  let whole = |id| notifications.popup_time_left(id).map(|(_, whole)| whole);
+  assert_eq!(whole(before), Some(Duration::from_secs(5)), "5 s at first");
+  notifications.set_default_timeout(Duration::from_millis(100));
+  let after = server.notify(0, sample("after"));
+  let own = server.notify(0, timed("its own", 3000));
+  assert_eq!(whole(after), Some(Duration::from_millis(100)));
+  assert_eq!(
+    whole(own),
+    Some(Duration::from_secs(3)),
+    "an app's own stays"
+  );
+  let popups = notifications.popups();
+  wait_for(&mut shell, "the short one to expire", || {
+    ids(popups) == [own, before]
+  });
+  assert_eq!(
+    whole(before),
+    Some(Duration::from_secs(5)),
+    "one showing keeps its"
+  );
+  // A replaced one counts the new default.
+  let mut replaced = sample("replaced");
+  replaced.urgency = Urgency::Low;
+  server.notify(before, replaced);
+  assert_eq!(whole(before), Some(Duration::from_millis(100)));
+  // Past what an `Instant` holds, it never expires.
+  notifications.set_default_timeout(Duration::MAX);
+  let forever = server.notify(0, sample("forever"));
+  assert_eq!(notifications.popup_time_left(forever), None);
+  let mut critical = sample("critical");
+  critical.urgency = Urgency::Critical;
+  let critical = server.notify(0, critical);
+  assert_eq!(notifications.popup_time_left(critical), None);
+  assert_eq!(notifications.popup_time_left(999), None, "an unknown id");
+  notifications.set_default_timeout(Duration::ZERO);
+  let at_once = server.notify(0, sample("at once"));
+  assert_eq!(
+    notifications.popup_time_left(at_once),
+    None,
+    "no zero whole"
+  );
+}
+
+#[test]
+fn a_held_popup_stops_counting_and_resumes_with_the_time_it_had_left() {
+  let mut shell = Harness::new(offline());
+  let notifications = shell.cx.notifications();
+  let server = service(&notifications);
+  let id = server.notify(0, timed("held", 300));
+  let other = server.notify(0, timed("other", 5000));
+  shell.run_until(Instant::now() + Duration::from_millis(100));
+  notifications.hold_popup(id, true);
+  notifications.hold_popup(id, true);
+  let (left, whole) = notifications.popup_time_left(id).expect("counting");
+  assert_eq!(whole, Duration::from_millis(300));
+  assert!(left <= Duration::from_millis(200), "{left:?}");
+  shell.run_until(Instant::now() + Duration::from_millis(400));
+  assert_eq!(ids(notifications.popups()), [other, id], "still showing");
+  assert_eq!(
+    notifications.popup_time_left(id),
+    Some((left, whole)),
+    "frozen"
+  );
+  notifications.hold_popup(999, true);
+
+  notifications.hold_popup(id, false);
+  let started = Instant::now();
+  let popups = notifications.popups();
+  wait_for(&mut shell, "the held one to expire", || {
+    ids(popups) == [other]
+  });
+  let counted = started.elapsed();
+  assert!(
+    counted + Duration::from_millis(20) >= left,
+    "{counted:?} of {left:?}"
+  );
+  assert_eq!(ids(notifications.list()), [id, other], "it stays kept");
+}
+
+#[test]
+fn hiding_a_popup_ends_it_as_expiry_does() {
+  let bus = PrivateBus::start();
+  let (mut shell, notifications, app) = serve(&bus, online(&bus));
+  let heard = listen(&mut shell, &bus);
+  let closed = closes(&notifications);
+  let kept = notify(&mut shell, &app, note("kept")).expect("an id");
+  let mut transient = note("transient");
+  transient.hints = vec![("transient", Variant::from(true))];
+  let transient = notify(&mut shell, &app, transient).expect("an id");
+  notifications.hide_popup(kept);
+  notifications.hide_popup(999);
+  assert_eq!(ids(notifications.popups()), [transient]);
+  assert_eq!(ids(notifications.list()), [kept, transient]);
+  notifications.hide_popup(transient);
+  assert_eq!(ids(notifications.popups()), [0u32; 0]);
+  assert_eq!(ids(notifications.list()), [kept], "a transient one goes");
+  assert_eq!(
+    *closed.borrow(),
+    [self::heard("transient", CloseReason::Expired)]
+  );
+  wait_for(&mut shell, "its signal", || !heard.borrow().is_empty());
+  shell.run_until(Instant::now() + Duration::from_millis(100));
+  assert_eq!(
+    *heard.borrow(),
+    [format!("NotificationClosed {transient} 1")]
+  );
+  assert!(
+    !timer_armed(&service(&notifications)),
+    "nothing left to expire"
+  );
+}
+
+#[test]
+fn a_handler_hears_each_arrival_and_can_hide_it_before_it_pops_up() {
+  let shell = Harness::new(offline());
+  let notifications = shell.cx.notifications();
+  let server = service(&notifications);
+  let popups = notifications.popups();
+  let ever_shown: Rc<RefCell<Vec<u32>>> = Rc::default();
+  let sink = Rc::clone(&ever_shown);
+  shell
+    .cx
+    .effect(move || sink.borrow_mut().extend(popups.get().iter().map(|n| n.id)));
+  let heard: Rc<RefCell<Vec<(u32, String)>>> = Rc::default();
+  let sink = Rc::clone(&heard);
+  let inner = notifications.clone();
+  notifications.on_notification(move |arrived| {
+    assert!(!ids(inner.popups()).contains(&arrived.id), "not shown yet");
+    sink
+      .borrow_mut()
+      .push((arrived.id, arrived.summary.clone()));
+    // Nothing of the service is borrowed while a handler runs.
+    if arrived.urgency != Urgency::Critical {
+      inner.hide_popup(arrived.id);
+    }
+  });
+  let quiet = server.notify(0, sample("quiet"));
+  let mut critical = sample("critical");
+  critical.urgency = Urgency::Critical;
+  let critical = server.notify(0, critical);
+  Runtime::current().flush();
+  assert_eq!(ids(popups), [critical]);
+  assert_eq!(
+    ids(notifications.list()),
+    [quiet, critical],
+    "kept in the history"
+  );
+  assert!(
+    !ever_shown.borrow().contains(&quiet),
+    "{:?}",
+    ever_shown.borrow()
+  );
+  let mut replaced = sample("replaced");
+  replaced.urgency = Urgency::Critical;
+  server.notify(quiet, replaced);
+  assert_eq!(
+    *heard.borrow(),
+    [
+      (quiet, "quiet".to_owned()),
+      (critical, "critical".to_owned()),
+      (quiet, "replaced".to_owned())
+    ]
+  );
+  assert_eq!(
+    ids(popups),
+    [quiet, critical],
+    "a replaced one pops up again"
+  );
+}
+
 #[test]
 fn a_panicking_arrival_handler_is_logged_and_taken_away_and_the_rest_run_on() {
   let shell = Harness::new(offline());
@@ -1507,4 +1695,93 @@ fn an_arrival_handler_goes_with_its_context() {
   assert_eq!(Rc::strong_count(&heard), 1, "the handler was dropped");
   server.notify(0, sample("unheard"));
   assert_eq!(heard.get(), 1);
+}
+
+#[test]
+fn a_replaced_popup_counts_its_whole_timeout_again() {
+  let mut shell = Harness::new(offline());
+  let notifications = shell.cx.notifications();
+  let server = service(&notifications);
+  let id = server.notify(0, timed("first", 300));
+  shell.run_until(Instant::now() + Duration::from_millis(200));
+  let (left, _) = notifications.popup_time_left(id).expect("counting");
+  assert!(left <= Duration::from_millis(100), "{left:?}");
+  server.notify(id, timed("again", 300));
+  let (left, _) = notifications.popup_time_left(id).expect("counting");
+  assert!(left > Duration::from_millis(250), "{left:?}");
+  shell.run_until(Instant::now() + Duration::from_millis(150));
+  assert_eq!(
+    ids(notifications.popups()),
+    [id],
+    "past the first one's time"
+  );
+  // A held one stays held, counting from its whole timeout.
+  notifications.hold_popup(id, true);
+  server.notify(id, timed("held", 300));
+  shell.run_until(Instant::now() + Duration::from_millis(400));
+  assert_eq!(
+    notifications.popup_time_left(id),
+    Some((Duration::from_millis(300), Duration::from_millis(300)))
+  );
+}
+
+#[test]
+fn no_timer_runs_while_every_popup_is_held_or_never_expires() {
+  let mut shell = Harness::new(offline());
+  let notifications = shell.cx.notifications();
+  let server = service(&notifications);
+  let mut never = sample("never");
+  never.timeout = Timeout::Never;
+  server.notify(0, never);
+  let held = server.notify(0, timed("held", 100));
+  assert!(timer_armed(&server));
+  notifications.hold_popup(held, true);
+  assert!(!timer_armed(&server), "nothing counts down");
+  shell.run_until(Instant::now() + Duration::from_millis(50));
+  assert_eq!(
+    shell.run_until(Instant::now() + Duration::from_millis(500)),
+    1
+  );
+  notifications.hold_popup(held, false);
+  assert!(timer_armed(&server));
+}
+
+/// A held popup is saved with the time it had left, and the next shell
+/// counts that down, since the window that held it is gone.
+#[test]
+fn a_reload_keeps_a_held_popup_with_its_time_left_counting() {
+  let (saved, id) = {
+    let mut shell = Harness::new(offline());
+    let notifications = shell.cx.notifications();
+    let id = service(&notifications).notify(0, timed("held", 400));
+    shell.run_until(Instant::now() + Duration::from_millis(100));
+    notifications.hold_popup(id, true);
+    shell.run_until(Instant::now() + Duration::from_millis(300));
+    let saved = crate::save_state(&shell.cx).expect("something to keep");
+    let saved: serde_json::Value = serde_json::from_str(&saved.to_string()).expect("JSON");
+    shell.cx.owner().dispose();
+    (saved, id)
+  };
+  let mut shell = Harness::new(offline());
+  crate::restore_state(&shell.cx, saved);
+  let notifications = shell.cx.notifications();
+  let (left, whole) = notifications.popup_time_left(id).expect("counting");
+  assert_eq!(whole, Duration::from_millis(400), "its whole timeout kept");
+  assert!(
+    left > Duration::from_millis(200) && left <= Duration::from_millis(300),
+    "{left:?}"
+  );
+  let popups = notifications.popups();
+  wait_for(&mut shell, "it to expire", || ids(popups).is_empty());
+
+  // One saved by a shell before these fields counts its time left as whole.
+  let mut shell = Harness::new(offline());
+  let saved = serde_json::json!({
+    "next_id": 2, "history": [kept(1, "old".into(), false)], "showing": [[1, 900]],
+  });
+  crate::restore_state(&shell.cx, serde_json::json!({ "notifications": saved }));
+  let notifications = shell.cx.notifications();
+  let (_, whole) = notifications.popup_time_left(1).expect("counting");
+  assert_eq!(whole, Duration::from_millis(900));
+  shell.run_until(Instant::now() + Duration::from_millis(10));
 }

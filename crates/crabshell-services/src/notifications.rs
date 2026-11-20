@@ -10,7 +10,7 @@
 //! zbus has no object server here, so the calls are answered by hand on
 //! the main thread, in [`server`]. One stream reads every message the bus
 //! sends this connection, and one loop timer runs only while a popup
-//! waits to expire, so a quiet bus leaves the shell asleep.
+//! counts down to expire, so a quiet bus leaves the shell asleep.
 
 mod server;
 
@@ -58,7 +58,8 @@ const MAX_HELD: usize = 256;
 /// history's own caps, so a full history fits.
 const MAX_HANDOFF: usize = 16 * 1024 * 1024;
 
-/// How long a popup shows when its app leaves that to the server.
+/// How long a popup shows when its app leaves that to the server, until
+/// the config sets its own.
 pub(crate) const POPUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The most notifications kept. Past it the oldest goes, as if it
@@ -109,7 +110,8 @@ pub enum Urgency {
 /// How long a notification's popup shows, as its app asks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Timeout {
-  /// As long as the server likes: 5 s.
+  /// As long as the server likes: 5 s, or what
+  /// [`Notifications::set_default_timeout`] set.
   #[default]
   Default,
   /// Until dismissed.
@@ -183,10 +185,78 @@ impl Notifications {
 
   /// The notifications still showing as popups, newest first. Each stays
   /// for its timeout, and until dismissed when that is
-  /// [`Timeout::Never`] or it is [`Urgency::Critical`]. An expired one
-  /// stays in [`list`](Self::list), unless it is transient.
+  /// [`Timeout::Never`] or it is [`Urgency::Critical`]. A replaced one
+  /// counts its whole timeout again. An expired one stays in
+  /// [`list`](Self::list), unless it is transient.
   pub fn popups(&self) -> ReadSignal<Vec<Notification>> {
     self.popups
+  }
+
+  /// Sets what [`Timeout::Default`] means for the popups that arrive or
+  /// are replaced from now on; those showing keep the countdown they
+  /// have. It is 5 s until set. A timeout too long for the clock to hold
+  /// shows until dismissed.
+  pub fn set_default_timeout(&self, timeout: Duration) {
+    if let Some(service) = &self.service {
+      service.default_timeout.set(timeout);
+    }
+  }
+
+  /// While `held`, popup `id`'s countdown stops, as for the pointer over
+  /// it; `false` resumes it with the time it had left. A popup replaced
+  /// while held stays held, with its whole timeout left. A reload resumes
+  /// every held popup, since the window that held it is gone. An unknown
+  /// `id` is ignored.
+  pub fn hold_popup(&self, id: u32, held: bool) {
+    if let Some(service) = &self.service {
+      service.hold(id, held);
+    }
+  }
+
+  /// Ends popup `id` now, as if its time ran out: it leaves
+  /// [`popups`](Self::popups) and stays in [`list`](Self::list), and its
+  /// app isn't told. A transient one goes from the list too, and its app
+  /// and [`on_closed`](Self::on_closed) hear [`CloseReason::Expired`]. An
+  /// unknown `id` is ignored.
+  pub fn hide_popup(&self, id: u32) {
+    if let Some(service) = &self.service {
+      service.hide(&[id]);
+    }
+  }
+
+  /// Popup `id`'s time left and its whole timeout, to draw a countdown
+  /// bar of `left / whole`. The time left stops while
+  /// [`hold_popup`](Self::hold_popup) holds it. `None` for a popup that
+  /// shows until dismissed or expires at once, or one not showing. It
+  /// isn't a signal, so read it in a binding that `cx.frames` ticks while
+  /// the popup counts.
+  ///
+  /// ```no_run
+  /// use crabshell_reactive::{Memo, Signal};
+  /// use crabshell_services::ServicesExt;
+  /// use crabshell_ui::Cx;
+  ///
+  /// /// How full popup `id`'s countdown bar is, from 1 down to 0. It stops
+  /// /// while `hovered`, which the toast's button writes, and nothing
+  /// /// ticks then, or for a popup that never expires.
+  /// fn countdown(cx: &Cx, id: u32, hovered: Signal<bool>) -> Memo<f32> {
+  ///   let notifications = cx.notifications();
+  ///   let held = notifications.clone();
+  ///   cx.effect(move || held.hold_popup(id, hovered.get()));
+  ///   let (counting, popups) = (notifications.clone(), notifications.popups());
+  ///   // Read again when a replacement gives the popup a new timeout.
+  ///   let time = cx.frames(move || {
+  ///     !hovered.get() && popups.with(|_| counting.popup_time_left(id).is_some())
+  ///   });
+  ///   cx.memo(move || {
+  ///     time.get();
+  ///     let left = notifications.popup_time_left(id);
+  ///     left.map_or(1.0, |(left, whole)| left.as_secs_f32() / whole.as_secs_f32())
+  ///   })
+  /// }
+  /// ```
+  pub fn popup_time_left(&self, id: u32) -> Option<(Duration, Duration)> {
+    self.service.as_ref()?.time_left(id)
   }
 
   /// Takes notification `id` away, as the user's close button does, and
@@ -244,7 +314,9 @@ impl Notifications {
   /// Calls `handler` with each notification as it arrives or is replaced,
   /// as Quickshell's `onNotification`, for as long as the context
   /// `cx.notifications()` was called on lives. It runs on the main thread
-  /// before [`popups`](Self::popups) shows it.
+  /// before [`popups`](Self::popups) shows it, so a
+  /// [`hide_popup`](Self::hide_popup) inside it, for do not disturb, means
+  /// it never pops up and only joins [`list`](Self::list).
   ///
   /// If it panics, that is logged with where `on_notification` was
   /// called, and it isn't called again. Called on a handle whose context
@@ -338,6 +410,8 @@ pub(crate) struct Service {
   state: RefCell<Option<State>>,
   /// Whether bodies are kept as markup, from `set_body_markup`.
   body_markup: Cell<bool>,
+  /// What `Timeout::Default` means, from `set_default_timeout`.
+  default_timeout: Cell<Duration>,
   /// What the shell before a reload kept, until the server starts.
   saved: RefCell<Option<Saved>>,
   /// Whether expiries wait for the bus to answer the name request, so a
@@ -367,6 +441,11 @@ struct Saved {
   /// The ids showing as popups, newest first, each with the milliseconds
   /// left until it expires, `None` for never.
   showing: Vec<(u32, Option<u64>)>,
+  /// The whole timeout of each popup that expires, in milliseconds, for
+  /// its countdown bar. A shell from 0.8.2 or before kept none, and then
+  /// the time left counts as whole.
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  whole: Vec<(u32, u64)>,
   /// The shell's name on the bus while it served, so the next one takes
   /// the name over and asks it for what came after the save.
   #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -467,7 +546,7 @@ struct State {
   serving: bool,
   /// Every notification kept, oldest first.
   history: Vec<Notification>,
-  /// The ids showing as popups.
+  /// The popups showing.
   showing: Showing,
   /// The id the next notification gets, unless one kept has it.
   next_id: u32,
@@ -493,9 +572,61 @@ impl State {
   }
 }
 
-/// The ids showing as popups, newest first, each with when it expires,
-/// `None` for never.
-type Showing = Vec<(u32, Option<Instant>)>;
+/// The popups showing, newest first.
+type Showing = Vec<Popup>;
+
+/// A notification showing as a popup, and its countdown.
+#[derive(Clone, Copy)]
+struct Popup {
+  id: u32,
+  /// How long it shows in all, `None` for until dismissed.
+  timeout: Option<Duration>,
+  /// The time it had left at `since`.
+  left: Duration,
+  /// When it last started counting or was held.
+  since: Instant,
+  /// Whether its countdown stopped, from `hold_popup`.
+  held: bool,
+}
+
+impl Popup {
+  fn new(id: u32, timeout: Option<Duration>, now: Instant) -> Popup {
+    Popup {
+      id,
+      timeout,
+      left: timeout.unwrap_or_default(),
+      since: now,
+      held: false,
+    }
+  }
+
+  /// The time it has left at `now`, `None` for never.
+  fn left(&self, now: Instant) -> Option<Duration> {
+    self.timeout?;
+    match self.held {
+      true => Some(self.left),
+      false => Some(
+        self
+          .left
+          .saturating_sub(now.saturating_duration_since(self.since)),
+      ),
+    }
+  }
+
+  /// When it expires, `None` while held or for never.
+  fn expires(&self) -> Option<Instant> {
+    self.timeout.filter(|_| !self.held)?;
+    self.since.checked_add(self.left)
+  }
+
+  fn hold(&mut self, held: bool, now: Instant) {
+    if held != self.held {
+      self.left = self.left(now).unwrap_or(self.left);
+      self.since = now;
+      self.held = held;
+    }
+  }
+}
 
 /// A signal for the apps, sent in order.
 enum Event {
@@ -508,6 +639,7 @@ enum Event {
 impl Service {
   pub(crate) fn new(shared: Rc<Shared>) -> Service {
     Service {
+      default_timeout: Cell::new(shared.config.popup_timeout),
       shared,
       state: RefCell::new(None),
       body_markup: Cell::new(false),
@@ -553,19 +685,16 @@ impl Service {
     let state = self.state.borrow();
     let state = state.as_ref()?;
     let now = Instant::now();
-    let showing = state.showing.iter().map(|(id, expires)| {
-      let left = expires.map(|at| at.saturating_duration_since(now).as_millis());
-      (
-        *id,
-        left.map(|left| u64::try_from(left).unwrap_or(u64::MAX)),
-      )
-    });
+    let ms = |time: Duration| u64::try_from(time.as_millis()).unwrap_or(u64::MAX);
+    let showing = (state.showing.iter()).map(|popup| (popup.id, popup.left(now).map(ms)));
+    let whole = (state.showing.iter()).filter_map(|popup| Some((popup.id, ms(popup.timeout?))));
     let owner = (state.connection.as_ref()).filter(|_| state.serving || self.handed_over.get());
     let owner = owner.and_then(|connection| connection.unique_name());
     Some(Saved {
       next_id: state.next_id,
       history: state.history.iter().map(Kept::new).collect(),
       showing: showing.collect(),
+      whole: whole.collect(),
       owner: owner.map(|name| name.to_string()),
     })
   }
@@ -647,10 +776,10 @@ impl Service {
       || (Vec::new(), Vec::new(), 1),
       |saved| restored(saved, Instant::now()),
     );
-    let popups_shown = showing.iter().filter_map(|(id, _)| {
+    let popups_shown = showing.iter().filter_map(|popup| {
       history
         .iter()
-        .find(|kept: &&Notification| kept.id == *id)
+        .find(|kept: &&Notification| kept.id == popup.id)
         .cloned()
     });
     let list = self.shared.root.signal(history.clone());
@@ -696,11 +825,12 @@ impl Service {
   /// and shows it as a popup. Returns its id.
   fn notify(self: &Rc<Self>, replaces: u32, mut notification: Notification) -> u32 {
     let now = Instant::now();
-    let expires = match (notification.urgency, notification.timeout) {
+    let timeout = match (notification.urgency, notification.timeout) {
       (Urgency::Critical, _) | (_, Timeout::Never) => None,
-      (_, Timeout::Default) => Some(now + self.shared.config.popup_timeout),
-      (_, Timeout::After(after)) => Some(now + after),
+      (_, Timeout::Default) => Some(self.default_timeout.get()),
+      (_, Timeout::After(after)) => Some(after),
     };
+    let timeout = timeout.filter(|timeout| now.checked_add(*timeout).is_some());
     let (id, arrived, dropped) = {
       let mut state = self.state.borrow_mut();
       let Some(state) = state.as_mut() else {
@@ -718,16 +848,22 @@ impl Service {
         Some(at) => state.history[at] = notification,
         None => state.history.push(notification),
       }
-      match state.showing.iter_mut().find(|(shown, _)| *shown == id) {
-        Some(shown) => shown.1 = expires,
-        None => state.showing.insert(0, (id, expires)),
+      let popup = Popup::new(id, timeout, now);
+      match state.showing.iter_mut().find(|shown| shown.id == id) {
+        Some(shown) => {
+          *shown = Popup {
+            held: shown.held,
+            ..popup
+          }
+        }
+        None => state.showing.insert(0, popup),
       }
       let excess = state.history.len().saturating_sub(MAX_KEPT);
       let dropped: Vec<Notification> = state.history.drain(..excess).collect();
       let history = &state.history;
       state
         .showing
-        .retain(|(id, _)| history.iter().any(|kept| kept.id == *id));
+        .retain(|popup| history.iter().any(|kept| kept.id == popup.id));
       keep_pixels_within(&mut state.history, MAX_PIXELS_KEPT);
       (id, arrived, dropped)
     };
@@ -739,6 +875,48 @@ impl Service {
     });
     self.closed(Vec::new(), dropped, CloseReason::Expired);
     id
+  }
+
+  /// Holds popup `id`'s countdown, or resumes it, as
+  /// [`Notifications::hold_popup`] does.
+  fn hold(self: &Rc<Self>, id: u32, held: bool) {
+    if let Some(state) = self.state.borrow_mut().as_mut()
+      && let Some(popup) = state.showing.iter_mut().find(|popup| popup.id == id)
+    {
+      popup.hold(held, Instant::now());
+    }
+    self.schedule();
+  }
+
+  /// Popup `id`'s time left and whole timeout, as
+  /// [`Notifications::popup_time_left`] gives them.
+  fn time_left(&self, id: u32) -> Option<(Duration, Duration)> {
+    let state = self.state.borrow();
+    let popup = state
+      .as_ref()?
+      .showing
+      .iter()
+      .find(|popup| popup.id == id)?;
+    // Never a zero whole, which a bar would divide by.
+    let whole = popup.timeout.filter(|whole| !whole.is_zero())?;
+    Some((popup.left(Instant::now())?, whole))
+  }
+
+  /// Ends the popups `ids` as their expiry does: each stays in the
+  /// history, unless it is transient, when its app hears that it expired.
+  fn hide(self: &Rc<Self>, ids: &[u32]) {
+    let transient = {
+      let mut state = self.state.borrow_mut();
+      let Some(state) = state.as_mut() else {
+        return;
+      };
+      state.showing.retain(|popup| !ids.contains(&popup.id));
+      let history = state.history.iter();
+      let transient = history.filter(|kept| kept.transient && ids.contains(&kept.id));
+      transient.map(|kept| kept.id).collect::<Vec<_>>()
+    };
+    let taken = self.take(&transient);
+    self.closed(Vec::new(), taken, CloseReason::Expired);
   }
 
   /// Takes `ids` away and tells their apps `reason`. Returns whether any
@@ -783,7 +961,7 @@ impl Service {
       .into_iter()
       .partition(|kept| ids.contains(&kept.id));
     state.history = kept;
-    state.showing.retain(|(id, _)| !ids.contains(id));
+    state.showing.retain(|popup| !ids.contains(&popup.id));
     taken
   }
 
@@ -862,8 +1040,7 @@ impl Service {
     }
   }
 
-  /// The timer's tick: takes the expired popups away, and the transient
-  /// ones out of the history too.
+  /// The timer's tick: ends the popups whose time ran out.
   fn expire(self: &Rc<Self>) -> TimeoutAction {
     if let Some(state) = self.state.borrow_mut().as_mut() {
       // This timer goes once the tick returns.
@@ -873,24 +1050,14 @@ impl Service {
       return TimeoutAction::Drop;
     }
     let now = Instant::now();
-    let transient = {
-      let mut state = self.state.borrow_mut();
-      let Some(state) = state.as_mut() else {
-        return TimeoutAction::Drop;
-      };
-      let (expired, showing) = std::mem::take(&mut state.showing)
-        .into_iter()
-        .partition::<Vec<_>, _>(|(_, expires)| expires.is_some_and(|at| at <= now));
-      state.showing = showing;
-      let history = state.history.iter();
-      let transient = history.filter(|kept| kept.transient);
-      transient
-        .map(|kept| kept.id)
-        .filter(|id| expired.iter().any(|(gone, _)| gone == id))
-        .collect::<Vec<_>>()
-    };
-    let taken = self.take(&transient);
-    self.closed(Vec::new(), taken, CloseReason::Expired);
+    let expired = self.state.borrow().as_ref().map(|state| {
+      let showing = state.showing.iter();
+      let expired = showing.filter(|popup| popup.expires().is_some_and(|at| at <= now));
+      expired.map(|popup| popup.id).collect::<Vec<_>>()
+    });
+    if let Some(expired) = expired {
+      self.hide(&expired);
+    }
     TimeoutAction::Drop
   }
 
@@ -899,8 +1066,8 @@ impl Service {
   fn changed(self: &Rc<Self>) {
     // Set apart from the borrow, since effects may ask for more.
     let shown = self.state.borrow().as_ref().map(|state| {
-      let popups = state.showing.iter().filter_map(|(id, _)| {
-        let kept = state.history.iter().find(|kept| kept.id == *id);
+      let popups = state.showing.iter().filter_map(|popup| {
+        let kept = state.history.iter().find(|kept| kept.id == popup.id);
         kept.cloned()
       });
       let popups = popups.collect::<Vec<_>>();
@@ -929,7 +1096,7 @@ impl Service {
     if let Some(token) = state.timer.take() {
       event_loop.remove(token);
     }
-    let Some(next) = state.showing.iter().filter_map(|(_, at)| *at).min() else {
+    let Some(next) = state.showing.iter().filter_map(Popup::expires).min() else {
       return;
     };
     let service = Rc::clone(self);
@@ -1110,9 +1277,20 @@ fn restored(saved: Saved, now: Instant) -> (Vec<Notification>, Showing, u32) {
   let mut showing = Showing::new();
   for (id, left) in saved.showing {
     let known = history.iter().any(|kept| kept.id == id);
-    if known && !showing.iter().any(|(shown, _)| *shown == id) {
+    if known && !showing.iter().any(|shown| shown.id == id) {
+      // Past what the clock holds, it expires at once.
       let left = left.map(Duration::from_millis);
-      showing.push((id, left.map(|left| now.checked_add(left).unwrap_or(now))));
+      let left = left.map(|left| match now.checked_add(left) {
+        Some(_) => left,
+        None => Duration::ZERO,
+      });
+      let whole = saved.whole.iter().find(|(whole, _)| *whole == id);
+      let whole = whole.map(|(_, ms)| Duration::from_millis(*ms));
+      let timeout = left.map(|left| whole.unwrap_or(left).max(left));
+      showing.push(Popup {
+        left: left.unwrap_or_default(),
+        ..Popup::new(id, timeout, now)
+      });
     }
   }
   (history, showing, saved.next_id.max(1))
