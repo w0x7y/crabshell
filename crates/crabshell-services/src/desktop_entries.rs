@@ -68,10 +68,12 @@ pub struct DesktopEntry {
   /// `%f`, `%F`, `%u`, `%U` and the deprecated codes go, `%i` is
   /// `--icon` and the icon, or nothing without one, `%c` is `name`, `%k`
   /// is `path` and `%%` is `%`. An `Exec` the spec's quoting refuses is
-  /// split as a POSIX shell would, with nothing expanded, as GLib does;
-  /// one that still makes no sense, such as an unclosed quote or an
-  /// unknown `%x`, gives `[]`, as does an empty `exec`. A terminal app's
-  /// command doesn't name the terminal it runs in.
+  /// split as a POSIX shell would, with no `$` or glob expansion, as GLib
+  /// does, then field codes filled in as above; one that still makes no
+  /// sense, such as an unclosed quote or an unknown `%x`, gives `[]`, as
+  /// does an empty `exec`. A terminal app's command doesn't name the
+  /// terminal it runs in, and a `dbus_activatable` app runs it only when
+  /// D-Bus refuses to start it.
   pub command: Vec<String>,
   /// Whether it is started over D-Bus, from `DBusActivatable`, with
   /// `exec` only for when that fails.
