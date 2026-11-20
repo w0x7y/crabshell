@@ -177,6 +177,36 @@
             </tr>
           </tbody>
         </table>
+        <h3 id="content-size">A panel the size of its content</h3>
+        <p>
+          A dropdown can size itself from its content: give its body a
+          <a href="widgets.html#common"><code>geometry</code></a> signal and
+          read it in <code>height</code>. The first frame is already the right
+          size, and when the content grows or shrinks, the panel resizes in the
+          same frame that shows the change.
+        </p>
+        <pre><code class="rs">let body = cx.signal(Rect::new(0.0, 0.0, 0.0, 0.0));
+PanelWindow::new(output)
+  .anchors(Edge::Top | Edge::Right)
+  .width(320)
+  .height(move || (body.get().height + 16.0).ceil() as u32)
+  .child(
+    Column::new().padding(8, 8).child(
+      Column::new()
+        .geometry(body)
+        .style(Style::new().shrink(0.0))
+        .children_keyed(move || lines.get(), |line: &amp;String| line.clone(), |_cx, line| {
+          Text::new(move || line.get())
+        }),
+    ),
+  )</code></pre>
+        <p>
+          The 16 is the padding above and below the body. Give the body a shrink
+          of 0, so a panel smaller than its content can't squeeze it, and
+          measure the content, never a widget that fills the window. A side you
+          set keeps its size whatever the compositor sends; only a side left at
+          0 takes the compositor's.
+        </p>
         <h2 id="per-output">One function, every monitor</h2>
         <p>
           <code>cx.per_output(f)</code> calls <code>f</code> for every monitor

@@ -351,8 +351,80 @@ Column::new().gap(8).children_keyed(
                 <code>CloseRequested</code>.
               </td>
             </tr>
+            <tr>
+              <td><code>on_notification(handler)</code></td>
+              <td>
+                Calls <code>handler</code> with each notification as it arrives
+                or is replaced, before it pops up.
+              </td>
+            </tr>
+            <tr>
+              <td><code>set_default_timeout(duration)</code></td>
+              <td>
+                How long a popup shows when its app doesn't say, for popups that
+                arrive from then on. It is 5 s until set.
+              </td>
+            </tr>
+            <tr>
+              <td><code>hold_popup(id, bool)</code></td>
+              <td>Pauses a popup's countdown while true.</td>
+            </tr>
+            <tr>
+              <td><code>hide_popup(id)</code></td>
+              <td>
+                Ends a popup as if its time ran out. It stays in the history
+                unless it is transient.
+              </td>
+            </tr>
+            <tr>
+              <td><code>popup_time_left(id)</code></td>
+              <td>
+                The time left and the whole timeout, or <code>None</code> for a
+                popup that never expires or isn't showing.
+              </td>
+            </tr>
           </tbody>
         </table>
+        <p>
+          A config can keep its own popup rules.
+          <code>on_notification</code> sees each notification before it pops up,
+          so a do-not-disturb switch or an open notification center can call
+          <code>hide_popup</code> and leave it in the history only.
+        </p>
+        <pre><code class="rs">let notifications = cx.notifications();
+let quiet = notifications.clone();
+notifications.on_notification(move |notification| {
+  if dnd.get_untracked() {
+    quiet.hide_popup(notification.id);
+  }
+});</code></pre>
+        <p>
+          <code>hold_popup(id, true)</code> pauses a popup while the pointer is
+          over it, and <code>popup_time_left</code> gives what a countdown bar
+          needs. It isn't a signal, so read it in a binding that
+          <a href="motion.html#frames"><code>cx.frames</code></a> ticks.
+        </p>
+        <pre><code class="rs">fn countdown(cx: &amp;Cx, id: u32, hovered: Signal&lt;bool&gt;) -&gt; Memo&lt;f32&gt; {
+  let notifications = cx.notifications();
+  let held = notifications.clone();
+  cx.effect(move || held.hold_popup(id, hovered.get()));
+  let (counting, popups) = (notifications.clone(), notifications.popups());
+  // Ticks only while the popup counts down.
+  let time = cx.frames(move || {
+    !hovered.get() &amp;&amp; popups.with(|_| counting.popup_time_left(id).is_some())
+  });
+  cx.memo(move || {
+    time.get();
+    // A replacement fills the bar again, even while it is held.
+    popups.with(|_| ());
+    let left = notifications.popup_time_left(id);
+    left.map_or(1.0, |(left, whole)| left.as_secs_f32() / whole.as_secs_f32())
+  })
+}</code></pre>
+        <p>
+          Pass the toast's <code>Button::hovered</code> signal as
+          <code>hovered</code>, and scale the bar's width by the memo.
+        </p>
         <p>
           A <code>Notification</code> has <code>id</code>,
           <code>app_name</code>, <code>app_icon</code>, <code>summary</code>,

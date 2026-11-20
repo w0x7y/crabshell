@@ -204,6 +204,44 @@ Row::new().style(move || SPINNER.rotate(turn.get() * 360.0))
 
 let glow = cx.cycle(move || recording.get(), PULSE);
 Row::new().style(move || DOT.opacity(0.5 + glow.get() / 2.0))</code></pre>
+        <h2 id="sequences">Sequences</h2>
+        <p>
+          <code>cx.sequence(initial, trigger, steps)</code> plays keyframe steps
+          one after another each time <code>trigger</code>'s value changes, as
+          Qt's <code>SequentialAnimation</code> does. A password pill shakes
+          left, right and back each time a counter bumps.
+        </p>
+        <pre><code class="rs">const SHAKE: [Step&lt;f32&gt;; 3] = [
+  Step::to(-14.0, Transition::new(70).easing(Easing::OutQuad)),
+  Step::to(12.0, Transition::new(90).easing(Easing::InOutQuad)),
+  Step::to(0.0, Transition::new(95).easing(Easing::OutQuad)),
+];
+
+let wrong = cx.signal(0_u32); // bumped on each wrong password
+let shake = cx.sequence(0.0, move || wrong.get(), SHAKE);
+Row::new().style(move || PILL.translate(shake.value().get(), 0.0))</code></pre>
+        <p>
+          <code>Step::to(value, transition)</code> moves from wherever the value
+          is, and <code>Step::hold(ms)</code> waits. A hold lets the shell sleep
+          instead of drawing frames. The trigger's first value plays nothing,
+          and a new one mid-play starts over from where the value is. It gives
+          an <code>Animation</code>, so an effect on <code>running()</code>
+          runs what comes after the last step, holds included, such as an
+          unlock.
+        </p>
+        <h3 id="sequence-loop">Looping sequences</h3>
+        <p>
+          <code>cx.sequence_loop(initial, running, steps)</code> repeats its
+          steps while a closure says so, holds included. Loading tiles pulse one
+          after another when each waits <code>Step::hold(index * 140)</code>
+          first. When it stops, it finishes the round and rests on the last
+          value, so nothing freezes mid-fade.
+        </p>
+        <pre><code class="rs">const SINE: Transition = Transition::new(1100).easing(Easing::InOutSine);
+
+let steps = [Step::hold(index * 140), Step::to(0.4, SINE), Step::to(1.0, SINE)];
+let pulse = cx.sequence_loop(1.0, move || loading.get(), steps);
+Row::new().style(move || TILE.opacity(pulse.value().get()))</code></pre>
         <h2 id="frames">A value for each frame</h2>
         <p>
           <code>cx.frames(running)</code> gives the time since

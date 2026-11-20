@@ -261,14 +261,26 @@ const DOTTED: Style = DROP_ZONE.border_dash(0.0, 5.0);</code></pre>
         </p>
         <h2 id="gradients">Gradients</h2>
         <pre><code class="rs">Gradient::linear(90.0, from, to)   // along a line: 0 runs bottom to top, 90 left to right
-Gradient::radial(from, to)         // from the middle out to the farthest corner
-Gradient::sweep(0.0, from, to)     // around the middle, clockwise from 12 o'clock</code></pre>
+Gradient::radial(from, to)         // from the center out to the farthest corner
+Gradient::sweep(0.0, from, to)     // around the center, clockwise from 12 o'clock</code></pre>
         <p>
           <code>.stop(at, color)</code> adds a color between the two ends, at a
-          place from 0 to 1. A gradient holds at most four colors. Gradients are
-          dithered by less than one color step, so a subtle one across a wide
-          bar shows no bands.
+          place from 0 to 1. A gradient holds up to eight colors, so six
+          <code>.stop</code>s between its ends. Gradients are dithered by less
+          than one color step, so a subtle one across a wide bar shows no bands.
         </p>
+        <p>
+          Radial and sweep gradients can sit anywhere in their box:
+          <code>.center(0.7, 0.3)</code> puts the center 70% across and 30%
+          down, and the default is the middle. A radial gradient reaches the
+          farthest corner unless you give it <code>.radius(42.0)</code> in
+          logical pixels, after which the end color holds. A linear gradient
+          ignores both.
+        </p>
+        <pre><code class="rs">// A glow up and to the right over album art.
+const GLOW: Gradient = Gradient::radial(Color::rgba(255, 255, 255, 89), Color::rgba(255, 255, 255, 0))
+  .center(0.7, 0.3)
+  .radius(42.0);</code></pre>
         <pre><code class="rs">const BAR: Style = Style::new().gradient(
   Gradient::linear(90.0, Color::rgba(0x1e, 0x1e, 0x2e, 0xd8), Color::rgba(0x31, 0x32, 0x44, 0xd8)),
 );

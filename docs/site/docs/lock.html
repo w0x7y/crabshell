@@ -76,6 +76,13 @@ cx.session_lock(
                 inherits.
               </td>
             </tr>
+            <tr>
+              <td><code>on_key(handler)</code></td>
+              <td>
+                Keys a surface's field or button didn't use, as a panel's
+                <a href="input.html#keys"><code>on_key</code></a> gets them.
+              </td>
+            </tr>
           </tbody>
         </table>
         <p>
@@ -87,8 +94,17 @@ cx.session_lock(
         </p>
         <p>
           The lock surfaces get the keyboard, so a <code>TextInput</code> with
-          <code>focus(true)</code> is ready to type in.
+          <code>focus(true)</code> is ready to type in. Escape clearing the
+          password is the usual <code>on_key</code>.
         </p>
+        <pre><code class="rs">SessionLock::new().on_key(move |_, key| {
+  if key.key == Key::Escape {
+    entry.set(String::new());
+    true
+  } else {
+    false
+  }
+})</code></pre>
         <h3 id="stay-locked">Stay locked through a crash</h3>
         <p>
           A lock screen that dies leaves the session locked. The compositor
@@ -285,7 +301,10 @@ cx.session_lock(
 );</code></pre>
         <p>
           Every monitor's field shares one <code>entry</code> signal, so any of
-          them can submit it. The answer is never logged. The
+          them can submit it. To freeze the field while PAM checks the password,
+          add <code>.read_only(move || state.get() == PamState::Busy)</code>. A
+          read-only field takes no typing, and its keys go on to
+          <code>on_key</code>. The answer is never logged. The
           <a href="examples.html#lock">lock example</a> is the full file.
         </p>
         <h2 id="greeter">Greeter</h2>

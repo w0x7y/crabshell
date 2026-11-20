@@ -72,6 +72,14 @@
                 ancestors' transforms, in the window's logical pixels.
               </td>
             </tr>
+            <tr>
+              <td><code>mask_region(region)</code></td>
+              <td>
+                Shows the widget only inside a <code>Region</code>, in its own
+                logical pixels. Clicks still land on the whole widget. See
+                <a href="drawing.html#mask-regions">mask regions</a>.
+              </td>
+            </tr>
           </tbody>
         </table>
         <p>
@@ -298,6 +306,13 @@ Text::rich(move || parse_markup(&amp;body.get())).on_link(open)</code></pre>
           <code>TextMetrics</code> with the width, height, ascent, descent and
           line height a <code>Text</code> in that font would have.
         </p>
+        <p>
+          Its <code>ink</code> is the rectangle the glyphs actually cover. Icon
+          fonts often draw wider than a glyph advances, so size an icon's box by
+          <code>ink.width</code> and shift the text left by <code>ink.x</code>.
+        </p>
+        <pre><code class="rs">let ink = cx.measure_text("\u{f028}", ICON_FONT).ink;
+Text::new("\u{f028}").style(ICON.width(ink.width.ceil()).translate(-ink.x, 0.0))</code></pre>
         <h2 id="button">Button</h2>
         <p>
           <code>Button::new(child)</code> is a clickable box that centers one
@@ -359,8 +374,23 @@ Text::rich(move || parse_markup(&amp;body.get())).on_link(open)</code></pre>
                 <code>Signal&lt;Option&lt;Point&gt;&gt;</code>.
               </td>
             </tr>
+            <tr>
+              <td><code>pressed(signal)</code></td>
+              <td>
+                Writes to a <code>Signal&lt;bool&gt;</code> whether the button
+                is held, even after the pointer slides off it.
+              </td>
+            </tr>
           </tbody>
         </table>
+        <p>
+          <code>pressed</code> lets you scale a glyph inside a button while it
+          is held, without scaling the button's box.
+        </p>
+        <pre><code class="rs">let held = cx.signal(false);
+Button::new(Text::new("\u{f04b}").style(move || GLYPH.scale(if held.get() { 0.85 } else { 1.0 })))
+  .pressed(held)
+  .on_click(|cx| play_pause(cx))</code></pre>
         <p>
           Its handlers are on <a href="input.html">Pointer and keyboard</a>.
         </p>
@@ -448,8 +478,34 @@ Icon::new(move || if muted.get() { "audio-volume-muted" } else { "audio-volume-h
               <td><code>transition(transition)</code></td>
               <td>How a new source replaces the old one.</td>
             </tr>
+            <tr>
+              <td><code>status(signal)</code></td>
+              <td>
+                Writes an <code>ImageStatus</code> to a signal:
+                <code>Empty</code>, <code>Loading</code>, <code>Ready</code> or
+                <code>Failed</code>.
+              </td>
+            </tr>
           </tbody>
         </table>
+        <p>
+          <code>status</code> says whether the picture has loaded:
+          <code>Loading</code> after each new source, then <code>Ready</code> or
+          <code>Failed</code> once the picture is loaded, whether or not it
+          shows. <code>Failed</code> means the file can't be read or is too
+          large. Fade album art in on <code>Ready</code> with its opacity, or
+          show a glyph on <code>Failed</code>.
+        </p>
+        <pre><code class="rs">let status = cx.signal(ImageStatus::Empty);
+let shown = cx.animate(
+  move || if status.get() == ImageStatus::Ready { 1.0 } else { 0.0 },
+  Transition::new(300),
+);
+Image::new(move || art.get())
+  .width(96)
+  .height(96)
+  .status(status)
+  .style(move || Style::new().opacity(shown.get()))</code></pre>
         <p>See <a href="drawing.html#images">images</a>.</p>
         <h2 id="textinput">TextInput</h2>
         <p>
@@ -490,6 +546,34 @@ TextInput::new(query)
                 pressed.
               </td>
             </tr>
+            <tr>
+              <td><code>max_length(n)</code></td>
+              <td>
+                At most <code>n</code> characters. Typing and pastes stop there,
+                and text set from outside is cut and written back to the signal.
+              </td>
+            </tr>
+            <tr>
+              <td><code>read_only(bool)</code></td>
+              <td>
+                Takes no edits while true. The text can still be selected and
+                copied, unless it is a password.
+              </td>
+            </tr>
+            <tr>
+              <td><code>selection_color(color)</code></td>
+              <td>
+                The selection's color. <code>None</code>, the default, is the
+                text's color at a third of its alpha.
+              </td>
+            </tr>
+            <tr>
+              <td><code>selected_text_color(color)</code></td>
+              <td>
+                The selected text's color. <code>None</code>, the default, keeps
+                the text's own.
+              </td>
+            </tr>
           </tbody>
         </table>
         <p>
@@ -510,8 +594,11 @@ TextInput::new(query)
         <p>
           <code>TextArea::new(text)</code> is a multi-line editor. It takes the
           <code>Signal&lt;String&gt;</code> it edits, as a field does, and takes
-          <code>placeholder</code>, <code>focus</code>, <code>wrap</code> and
-          <code>on_accept</code>.
+          <code>placeholder</code>, <code>focus</code>, <code>wrap</code>,
+          <code>on_accept</code>, <code>max_length</code>,
+          <code>read_only</code>, <code>selection_color</code> and
+          <code>selected_text_color</code>. Its <code>max_length</code> counts a
+          line break as one character.
         </p>
         <pre><code class="rs">let note = cx.persist("note", String::new());
 ScrollView::new(TextArea::new(note).placeholder("jot something down"))
@@ -555,6 +642,20 @@ Slider::new(volume)
               <td>What values snap to. 0, the default, doesn't snap.</td>
             </tr>
             <tr>
+              <td><code>limit(max)</code></td>
+              <td>
+                The highest value a drag, the wheel or a key can set. The track
+                still shows the whole range.
+              </td>
+            </tr>
+            <tr>
+              <td><code>wheel_step(n)</code></td>
+              <td>
+                How far a wheel notch or an arrow key moves it. The default is
+                the step, or a twentieth of the range without one.
+              </td>
+            </tr>
+            <tr>
               <td><code>vertical(bool)</code></td>
               <td>Runs it bottom to top.</td>
             </tr>
@@ -584,6 +685,18 @@ Slider::new(volume)
           </tbody>
         </table>
         <p>A press, a drag, the wheel and the arrow keys all move it.</p>
+        <p>
+          <code>limit</code> keeps a slider under a cap without shrinking its
+          track. A brightness slider held to half in a power saver mode still
+          shows 0 to 100, and nothing moves it past 50.
+          <code>wheel_step</code> lets drags give whole values while the wheel
+          moves 5.
+        </p>
+        <pre><code class="rs">Slider::new(brightness)
+  .range(0.0, 100.0)
+  .step(1.0)
+  .wheel_step(5.0)
+  .limit(move || if saver.get() { Some(50.0) } else { None })</code></pre>
         <p>
           To bind a slider to an outside value such as a sink's volume, copy the
           outside value in only while <code>dragging</code> is false, and send

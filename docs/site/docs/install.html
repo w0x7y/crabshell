@@ -120,8 +120,9 @@ $ crabshell run</code></pre>
         <p>
           Leave <code>crabshell run</code> running and change
           <code>src/main.rs</code>. Each save rebuilds the config and swaps the
-          bar. A one-line edit builds in about 0.7 s, and the screen is without
-          a bar for 13 to 19 ms.
+          bar. A one-line edit builds in about 0.7 s. The new bar starts beside
+          the old one, which exits once the new one is ready, so the bar never
+          leaves the screen.
         </p>
         <ul>
           <li>
@@ -171,7 +172,7 @@ $ cargo run --release -p crabshell --example launcher</code></pre>
         <p>
           Run <code>cargo install --locked crabshell-cli</code> again to update
           the command, and <code>cargo update</code> in
-          <code>~/.config/crabshell</code> for the newest 0.5 library. To remove
+          <code>~/.config/crabshell</code> for the newest 0.9 library. To remove
           everything, run <code>cargo uninstall crabshell-cli</code> and delete
           <code>~/.config/crabshell</code> and <code>~/.cache/crabshell</code>.
         </p>

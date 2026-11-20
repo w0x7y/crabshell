@@ -429,6 +429,35 @@ Image::new(move || wallpaper.get()).transition(ImageTransition::crossfade(FADE))
           its length, and waits at its start until the new one is decoded. A
           source that can't be loaded ends the transition at once.
         </p>
+        <h2 id="mask-regions">Mask regions</h2>
+        <p>
+          <code>mask_region</code> cuts any widget to a shape built from
+          rectangles, rounded rectangles and ellipses, the same
+          <a href="windows.html#masks"><code>Region</code></a> a window's input
+          mask takes, in the widget's own logical pixels. The edges are
+          antialiased. Pass a closure to animate it: holes that grow over a
+          wallpaper let the windows beneath show through, and each frame
+          repaints only the masked widget.
+        </p>
+        <pre><code class="rs">let open = cx.signal(false);
+let grow = cx.animate(move || if open.get() { 1.0 } else { 0.0 }, Transition::new(450));
+
+Image::new(move || picture.get())
+  .width(1920)
+  .height(1080)
+  .fit(Fit::Cover)
+  .mask_region(move || {
+    let r = (grow.get() * 260.0) as i32;
+    let hole = |x: i32| Region::rect(x - r, 540 - r, 2 * r as u32, 2 * r as u32).radius(32.0);
+    Some(Region::rect(0, 0, 1920, 1080).subtract(hole(480)).subtract(hole(1440)))
+  })</code></pre>
+        <p>
+          Clicks still land on the whole widget, holes included. Use the
+          window's <a href="windows.html#masks"><code>mask</code></a> to let
+          them through. A full-screen picture with a few holes takes about 6 to
+          8 ms a frame at scale 1 and 22 to 25 ms at scale 2, so mask the
+          smallest widget the effect needs.
+        </p>
         <h2 id="more">More ways to shape what is drawn</h2>
         <ul>
           <li>

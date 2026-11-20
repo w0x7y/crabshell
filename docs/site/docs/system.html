@@ -199,11 +199,12 @@ let shown = cx.memo(move || {
           <code>exec</code>, <code>terminal</code>, <code>categories</code>,
           <code>keywords</code>, <code>no_display</code>,
           <code>dbus_activatable</code>, <code>startup_wm_class</code>,
-          <code>working_dir</code>, <code>actions</code> and the file's
-          <code>path</code>. Entries marked <code>no_display</code> are in the
-          list, so filter them out of a launcher. The directories are watched,
-          links on the way included, so a newly installed application shows up
-          without a restart, and so does a NixOS profile swapped behind a link.
+          <code>working_dir</code>, <code>command</code>,
+          <code>actions</code> and the file's <code>path</code>. Entries marked
+          <code>no_display</code> are in the list, so filter them out of a
+          launcher. The directories are watched, links on the way included, so a
+          newly installed application shows up without a restart, and so does a
+          NixOS profile swapped behind a link.
         </p>
         <p>
           An entry with <code>DBusActivatable=true</code> is started over D-Bus,
@@ -211,6 +212,20 @@ let shown = cx.memo(move || {
           isn't on the bus. An <code>Exec</code> line that breaks the spec's
           quoting is split as GLib splits it, and logged.
         </p>
+        <p>
+          <code>entry.command</code> is the app's <code>Exec</code> line as a
+          list of arguments, field codes filled in as for a launch with no
+          files. Use it to search by the program's name, or to run a terminal
+          app in a terminal of your choice, in <code>entry.working_dir</code>.
+          It is empty without an <code>Exec</code> or for one that can't be
+          split.
+        </p>
+        <pre><code class="rs">// "firefox" for /usr/lib/firefox/firefox %u
+let program = entry.command.first().and_then(|path| Path::new(path).file_name());
+
+// A terminal app in ghostty.
+let mut run = vec![String::from("ghostty"), String::from("-e")];
+run.extend(entry.command.iter().cloned());</code></pre>
         <h2 id="files">Files</h2>
         <p><code>cx.file_view(path)</code> follows a text file.</p>
         <pre><code class="rs">let note = cx.file_view("/home/me/notes/today.txt");

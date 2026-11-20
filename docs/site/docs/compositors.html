@@ -447,12 +447,57 @@ Row::new().children_keyed(
                 >.
               </td>
             </tr>
+            <tr>
+              <td><code>crop(rect)</code></td>
+              <td>
+                Shows one part of the picture, a <code>Some(Rect)</code> in the
+                source's logical pixels. <code>None</code>, the default, shows
+                it whole.
+              </td>
+            </tr>
+            <tr>
+              <td><code>shown(signal)</code></td>
+              <td>
+                Writes <code>true</code> to a <code>Signal&lt;bool&gt;</code>
+                once the view's picture is on screen.
+              </td>
+            </tr>
           </tbody>
         </table>
         <p>
           A live view of a window that doesn't change wakes nothing. The view
           draws nothing until its first frame, and keeps the last frame when its
           source goes. It needs <code>ext-image-copy-capture-v1</code>.
+        </p>
+        <h3 id="capture">One picture, many views</h3>
+        <p>
+          <code>cx.capture(source)</code> takes one picture of a monitor or a
+          window. Any number of <code>ScreencopyView::of(capture)</code> views
+          show it, each whole or cropped, and it is taken only once.
+          <code>capture.refresh()</code> takes a new picture, and
+          <code>capture.ready()</code> turns true when it has landed. Until then
+          the views keep the old one.
+        </p>
+        <pre><code class="rs">let screen = cx.capture(CaptureSource::Output(String::from("DP-1")));
+let whole = ScreencopyView::of(screen).style(Style::new().width(1920.0).height(1080.0));
+let corner = ScreencopyView::of(screen)
+  .crop(Some(Rect::new(0.0, 0.0, 480.0, 270.0)))
+  .style(Style::new().width(480.0).height(270.0));</code></pre>
+        <p>
+          A crop is in the monitor's logical pixels, the same coordinates Sway
+          gives for window rectangles, so a view can show one window cut out of
+          the monitor's picture. A capture of a monitor includes the shell's own
+          windows on it, so hide your view of it before you refresh. A 1080p
+          picture takes about 8 MB until the capture's context goes, so make a
+          capture for a passing effect in a
+          <a href="reactivity.html#contexts">child context</a> and dispose it
+          after.
+        </p>
+        <p>
+          <code>shown</code> tells you when the view's current picture is on
+          screen, after the compositor presented the frame that drew it. Wait
+          for it before you change what's underneath, so the change never
+          flashes. Give each view a signal of its own.
         </p>
         <h2 id="global-shortcuts">Global shortcuts</h2>
         <p>
