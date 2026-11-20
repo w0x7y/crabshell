@@ -89,7 +89,7 @@ fn a_size_that_never_settles_stops_after_a_few_layouts_and_is_logged() {
   use crabshell_reactive::Runtime;
   use crabshell_ui::{Column, Cx, Edge, Rect, TextSystem, Window};
 
-  use crate::platform::{SIZE_ROUNDS, ask_size, lay_out_sized};
+  use crate::platform::{SIZE_ROUNDS, ask_size, lay_out_sized, log_unsettled};
 
   let runtime = Runtime::current();
   let cx = Cx::new(runtime.new_owner());
@@ -104,18 +104,35 @@ fn a_size_that_never_settles_stops_after_a_few_layouts_and_is_logged() {
   runtime.flush();
   let output = (1920, 1080);
   ask_size(&window, output);
+  let mut text = TextSystem::new();
+  let mut logged = false;
+  let warning = "a window's size still changed after 5 layouts";
+  let pass = |text: &mut TextSystem, logged: &mut bool| {
+    let settled = lay_out_sized(&window, text, |window| ask_size(window, output));
+    log_unsettled(&window, logged, settled);
+    settled
+  };
   let logs = super::capture_logs(|| {
-    lay_out_sized(&window, &mut TextSystem::new(), |window| {
-      ask_size(window, output)
-    });
+    assert!(!pass(&mut text, &mut logged));
   });
   assert!(
-    logs.contains("PanelWindow[DP-1]")
-      && logs.contains("a window's size still changed after 4 layouts"),
+    logs.contains("PanelWindow[DP-1]") && logs.contains(warning),
     "{logs}"
   );
-  // One pixel a layout, and the last layout is at the last size given.
+  // One pixel a size, and the last layout is at the last size given.
   assert_eq!(window.size().height, 1.0 + SIZE_ROUNDS as f32);
   assert!(!window.needs_layout());
+  // Each pass after it goes on quietly, until the size settles.
+  let logs = super::capture_logs(|| {
+    assert!(!pass(&mut text, &mut logged));
+    assert!(!pass(&mut text, &mut logged));
+  });
+  assert!(logs.is_empty(), "{logs}");
+  assert!(lay_out_sized(&window, &mut text, |_| false));
+  log_unsettled(&window, &mut logged, true);
+  let logs = super::capture_logs(|| {
+    assert!(!pass(&mut text, &mut logged));
+  });
+  assert_eq!(logs.matches(warning).count(), 1, "{logs}");
   cx.owner().dispose();
 }

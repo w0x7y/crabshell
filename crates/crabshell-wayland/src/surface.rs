@@ -376,14 +376,19 @@ impl Surface {
     popup.popup.reposition(&popup.positioner, popup.token);
   }
 
-  /// Takes a configure's size. Returns the size, or `None` if it can't be
-  /// drawn at.
+  /// Takes a configure's size. A panel keeps each side it last sent as
+  /// non-zero, since layer-shell's size is a hint, so a configure for an
+  /// older size can't undo a newer resize; other sides and roles take the
+  /// compositor's. Returns the size, or `None` if it can't be drawn at.
   pub(crate) fn configure(
     &mut self,
     new_size: (u32, u32),
     config: &SurfaceConfig,
   ) -> Option<(u32, u32)> {
-    let size = configured_size(new_size, (config.width, config.height))?;
+    let size = match (&self.role, &self.layer_sent) {
+      (Role::Layer(_), Some(sent)) => configured_size((sent.width, sent.height), new_size)?,
+      _ => configured_size(new_size, (config.width, config.height))?,
+    };
     self.size = Some(size);
     self.frames.pacing.configure();
     Some(size)

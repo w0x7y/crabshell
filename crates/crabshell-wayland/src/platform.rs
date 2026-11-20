@@ -1002,10 +1002,11 @@ impl Platform {
       }
       if entry.window.needs_layout() {
         let alone = *alone;
-        lay_out_sized(&entry.window, text, |window| {
+        let settled = lay_out_sized(&entry.window, text, |window| {
           window.surface_changed()
             && surface.resize(window, &surface::beside(window.surface(), alone))
         });
+        log_unsettled(&entry.window, &mut entry.unsettled, settled);
         surface.fit(&entry.window);
       }
       // A layout can move a button out from under a still pointer, or
@@ -1097,9 +1098,10 @@ impl Platform {
       // read from its content's geometry is right in the first configure.
       let output_size = (info.width, info.height);
       ask_size(&entry.window, output_size);
-      lay_out_sized(&entry.window, &mut self.text, |window| {
+      let settled = lay_out_sized(&entry.window, &mut self.text, |window| {
         ask_size(window, output_size)
       });
+      log_unsettled(&entry.window, &mut entry.unsettled, settled);
       let config = surface::beside(entry.window.surface(), self.alone);
       if refused(entry, &config) {
         continue;
@@ -1243,31 +1245,44 @@ pub(crate) fn ask_size(window: &Window, output: (u32, u32)) -> bool {
 
 /// Lays `window` out, and again while `resize` gives it a new size its
 /// settings ask for after that layout, so no frame is drawn at a size the
-/// window's own bindings already changed. A size that still changes
-/// after [`SIZE_ROUNDS`] layouts is logged and goes on at the next pass.
+/// window's own bindings already changed. Takes at most [`SIZE_ROUNDS`]
+/// new sizes, so at most one more layout than that, and returns whether
+/// the size settled; one that didn't goes on at the next pass.
 pub(crate) fn lay_out_sized(
   window: &Window,
   text: &mut TextSystem,
   mut resize: impl FnMut(&Window) -> bool,
-) {
+) -> bool {
   for _ in 0..SIZE_ROUNDS {
     if window.needs_layout() {
       window.layout(text);
     }
     if !resize(window) {
-      return;
+      return true;
     }
   }
+  // Laid out at the last size taken, so the frame drawn matches it.
   window.layout(text);
-  tracing::warn!(
-    window = window.view().root().path(),
-    "a window's size still changed after {SIZE_ROUNDS} layouts; check the bindings that size it \
-     from its content's geometry"
-  );
+  false
 }
 
-/// The most layouts [`lay_out_sized`] runs while a window's size follows
-/// its content.
+/// Logs a window whose size didn't settle, once until it settles again,
+/// so a binding that never settles doesn't log every frame.
+pub(crate) fn log_unsettled(window: &Window, logged: &mut bool, settled: bool) {
+  if settled {
+    *logged = false;
+  } else if !std::mem::replace(logged, true) {
+    tracing::warn!(
+      window = window.view().root().path(),
+      "a window's size still changed after {} layouts; check the bindings that size it from \
+       its content's geometry",
+      SIZE_ROUNDS + 1
+    );
+  }
+}
+
+/// The most new sizes [`lay_out_sized`] takes while a window's size
+/// follows its content.
 pub(crate) const SIZE_ROUNDS: usize = 4;
 
 /// The most passes over the windows one iteration makes while layouts

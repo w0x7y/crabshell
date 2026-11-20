@@ -24,6 +24,8 @@ pub(crate) struct Entry<S, O> {
   pub(crate) refused: bool,
   /// Waiting for an output of its name was logged.
   pub(crate) waiting: bool,
+  /// The window's size never settled, and that was logged.
+  pub(crate) unsettled: bool,
 }
 
 /// The windows, in the order they were added.
@@ -69,6 +71,7 @@ impl<S, O: PartialEq> Windows<S, O> {
       output: None,
       refused: false,
       waiting: false,
+      unsettled: false,
     });
     id
   }

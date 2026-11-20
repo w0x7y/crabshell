@@ -6337,3 +6337,45 @@ fn a_panel_sized_from_its_content_keeps_that_size_through_a_new_scale_and_a_rean
     "the panels' nodes are freed"
   );
 }
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_panel_changed_twice_before_its_configure_keeps_the_newer_size() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1920x1080", "scale", "1"]);
+  let mut event_loop = sway.connect();
+  let cx = Cx::new(Runtime::current().new_owner());
+  let rows = cx.signal(3);
+  let id = event_loop
+    .platform()
+    .add_window(content_panel(&cx, "HEADLESS-1", rows, 8));
+  commits_until_settled(&mut event_loop, id);
+  let commits = |event_loop: &mut EventLoop| {
+    event_loop
+      .platform()
+      .window_info(id)
+      .map_or(0, |info| info.commits)
+  };
+  // Sway answers the first resize after the second is asked for, a
+  // configure the panel must not go back to.
+  for round in 0..20 {
+    let (between, wanted) = if round % 2 == 0 { (4, 10) } else { (7, 11) };
+    rows.set(between);
+    let before = commits(&mut event_loop);
+    run_until(&mut event_loop, "the in-between frame", |platform| {
+      platform.window_info(id).map_or(0, |info| info.commits) > before
+    });
+    rows.set(wanted);
+    // At once, so the resize goes out before Sway's configure comes in.
+    event_loop
+      .dispatch(Some(Duration::ZERO))
+      .expect("the connection works");
+    let frames = commits_until_settled(&mut event_loop, id);
+    assert_all_at(
+      &frames,
+      content_height(wanted, 8),
+      &format!("round {round}, {between} then {wanted} rows"),
+    );
+  }
+  cx.owner().dispose();
+}
