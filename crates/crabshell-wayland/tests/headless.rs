@@ -4536,6 +4536,63 @@ fn typing_reaches_a_field_on_the_lock_surface_and_a_click_unlocks() {
 
 #[test]
 #[ignore = "needs headless Sway"]
+fn escape_reaches_the_locks_on_key_and_a_panicking_one_is_contained() {
+  let sway = Sway::start();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1280x720", "scale", "1"]);
+  let mut keyboard = VirtualKeyboard::new(&sway);
+  let mut shell = Shell::new(&sway);
+  shell.wait_for_bar("HEADLESS-1");
+  let (logs, _logging) = capture_logs();
+  let cx = Cx::new(shell.runtime.new_owner());
+  let on = cx.signal(false);
+  let typed = cx.signal(String::new());
+  let lock = Lock::new(
+    &cx,
+    SessionLock::new()
+      .locked(move || on.get())
+      .style(Style::new().background(MAGENTA))
+      .surface(move |_, _| TextInput::new(typed).focus(true))
+      .on_key(move |_, event| match event.key {
+        Key::Escape => {
+          typed.set(String::new());
+          true
+        }
+        Key::Up => panic!("up failure"),
+        _ => false,
+      }),
+  );
+  let locked = lock.locked();
+  shell.event_loop.platform().add_session_lock(lock);
+  on.set(true);
+  run_until(&mut shell.event_loop, "the lock", |_| {
+    locked.get_untracked()
+  });
+  settle(&mut shell.event_loop);
+
+  keyboard.tap(keys::H);
+  keyboard.tap(keys::I);
+  run_until(&mut shell.event_loop, "the typing", |_| {
+    typed.get_untracked() == "hi"
+  });
+  keyboard.tap(keys::ESC);
+  run_until(&mut shell.event_loop, "Escape to clear the field", |_| {
+    typed.get_untracked().is_empty()
+  });
+  keyboard.tap(keys::UP);
+  run_until(&mut shell.event_loop, "the panic to be logged", |_| {
+    logs
+      .text()
+      .contains("handler SessionLock[HEADLESS-1].on_key panicked and is disabled: up failure")
+  });
+  keyboard.tap(keys::H);
+  run_until(&mut shell.event_loop, "typing after the panic", |_| {
+    typed.get_untracked() == "h"
+  });
+  assert!(locked.get_untracked(), "still locked");
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
 fn a_second_lock_after_the_first_ended_locks_again() {
   let sway = Sway::start();
   let mut shell = Shell::new(&sway);

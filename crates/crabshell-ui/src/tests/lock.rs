@@ -130,6 +130,85 @@ fn a_field_on_a_surface_takes_typing() {
   assert_eq!(typed.get_untracked(), "a");
 }
 
+fn key(key: Key, text: Option<&str>) -> KeyEvent {
+  KeyEvent {
+    key,
+    text: text.map(str::to_owned),
+    modifiers: Modifiers::default(),
+    repeat: false,
+  }
+}
+
+#[test]
+fn on_key_gets_the_keys_a_surfaces_field_left() {
+  let mut h = Harness::new();
+  let typed = h.cx.signal(String::from("pw"));
+  let seen = Rc::new(RefCell::new(Vec::new()));
+  let record = Rc::clone(&seen);
+  let lock = Lock::new(
+    &h.cx,
+    SessionLock::new()
+      .surface(move |_, _| TextInput::new(typed).focus(true))
+      .on_key(move |_, event| {
+        record.borrow_mut().push(event.key.clone());
+        if event.key == Key::Escape {
+          typed.set(String::new());
+        }
+        event.key == Key::Escape
+      }),
+  );
+  let window = lock.surface(&Output::new("DP-1")).expect("the lock lives");
+  window.set_size(Size::new(300.0, 40.0));
+  h.frame(&window);
+  window.keyboard_enter();
+  window.key(&key(Key::Character('a'), Some("a")));
+  window.key(&key(Key::Escape, None));
+  assert_eq!(*seen.borrow(), [Key::Escape], "the field took the a");
+  assert_eq!(typed.get_untracked(), "", "Escape cleared it");
+}
+
+#[test]
+fn a_panicking_on_key_is_logged_with_its_surfaces_path_and_the_rest_runs() {
+  let mut h = Harness::new();
+  let typed = h.cx.signal(String::new());
+  let seen = Rc::new(RefCell::new(Vec::new()));
+  let record = Rc::clone(&seen);
+  let lock = Lock::new(
+    &h.cx,
+    SessionLock::new()
+      .surface(move |_, _| TextInput::new(typed).focus(true))
+      .on_key(move |_, event| {
+        if event.key == Key::Escape {
+          panic!("escape failure");
+        }
+        record.borrow_mut().push(event.key.clone());
+        true
+      }),
+  );
+  let surfaces: Vec<_> = ["DP-1", "DP-2"]
+    .into_iter()
+    .map(|name| {
+      let window = lock.surface(&Output::new(name)).expect("the lock lives");
+      window.set_size(Size::new(300.0, 40.0));
+      h.frame(&window);
+      window.keyboard_enter();
+      window
+    })
+    .collect();
+  let logs = capture_logs(|| {
+    surfaces[0].key(&key(Key::Escape, None));
+  });
+  assert!(
+    logs.contains("handler SessionLock[DP-1].on_key panicked and is disabled: escape failure"),
+    "{logs}"
+  );
+  surfaces[0].key(&key(Key::Down, None));
+  surfaces[0].key(&key(Key::Character('a'), Some("a")));
+  assert_eq!(typed.get_untracked(), "a", "the field still types");
+  surfaces[1].key(&key(Key::Down, None));
+  assert_eq!(*seen.borrow(), [Key::Down], "only DP-1's is disabled");
+}
+
 #[test]
 fn surfaces_and_the_lock_free_what_they_made_and_a_gone_lock_builds_nothing() {
   let mut h = Harness::new();

@@ -9,7 +9,8 @@ use std::rc::Rc;
 use crabshell_reactive::{ReadSignal, Signal, untrack};
 
 use crate::cx::{Anchor, Cx};
-use crate::input::panic_message;
+use crate::input::{Handler, panic_message};
+use crate::keyboard::{KeyEvent, KeyHandler};
 use crate::prop::{IntoProp, Prop, PropKind};
 use crate::style::Style;
 use crate::tree::{Tree, borrow};
@@ -19,8 +20,11 @@ use crate::window::{Output, Window};
 /// A `surface` builder, as stored.
 type Build = Rc<dyn Fn(&Cx, &Output) -> Box<dyn Widget>>;
 
-/// The style, shared by every surface, and the builder.
-type Parts = (Option<Rc<dyn Fn() -> Style>>, Option<Build>);
+/// An `on_key` handler, as stored.
+type OnKey = Rc<dyn Fn(&Cx, &KeyEvent) -> bool>;
+
+/// The style, shared by every surface, the builder and `on_key`.
+type Parts = (Option<Rc<dyn Fn() -> Style>>, Option<Build>, Option<OnKey>);
 
 /// A lock screen: while `locked` is true, the compositor shows only its
 /// surfaces, one covering each output, and nothing else gets input. Lock
@@ -40,6 +44,7 @@ pub struct SessionLock {
   locked: Option<Prop<bool>>,
   style: Option<Prop<Style>>,
   surface: Option<Build>,
+  on_key: Option<OnKey>,
 }
 
 impl SessionLock {
@@ -70,6 +75,17 @@ impl SessionLock {
     self.surface = Some(Rc::new(move |cx: &Cx, output: &Output| {
       Box::new(build(cx, output)) as Box<dyn Widget>
     }));
+    self
+  }
+
+  /// Runs `handler` with every key a surface's focused field or button
+  /// didn't use, as [`PanelWindow::on_key`](crate::PanelWindow::on_key)
+  /// does, with that surface's context; it returns `true` when it used
+  /// the key. Escape clearing the password field is the usual one. A
+  /// handler that panics is logged with the surface's path, such as
+  /// `SessionLock[DP-1].on_key`, and that surface's stops running it.
+  pub fn on_key(mut self, handler: impl Fn(&Cx, &KeyEvent) -> bool + 'static) -> SessionLock {
+    self.on_key = Some(Rc::new(handler));
     self
   }
 }
@@ -110,7 +126,7 @@ impl Lock {
     Lock {
       wanted,
       locked: cx.signal(false),
-      parts: cx.signal((lock.style.map(Prop::shared), lock.surface)),
+      parts: cx.signal((lock.style.map(Prop::shared), lock.surface, lock.on_key)),
       cx,
     }
   }
@@ -138,7 +154,7 @@ impl Lock {
   /// that path, and the surface shows only the lock's style. `None` once
   /// the lock's owner is gone.
   pub fn surface(&self, output: &Output) -> Option<Window> {
-    let (style, build) = untrack(|| self.parts.try_with(Clone::clone))?;
+    let (style, build, on_key) = untrack(|| self.parts.try_with(Clone::clone))?;
     let path: Rc<str> = format!("SessionLock[{}]", output.name()).into();
     let cx = self
       .cx
@@ -167,7 +183,15 @@ impl Lock {
       ))
     });
     let style = style.map(|style| (move || style()).into_prop());
-    borrow(&tree).mount_root(style, child);
+    let mut mounted = borrow(&tree);
+    // Each surface's own, so a panic disables it on that surface only.
+    mounted.keyboard.handler = on_key.map(|on_key| {
+      Rc::new(Handler::new(move |cx: &Cx, event: &KeyEvent| {
+        on_key(cx, event)
+      })) as KeyHandler
+    });
+    mounted.mount_root(style, child);
+    drop(mounted);
     Some(Window { tree, owner })
   }
 }
