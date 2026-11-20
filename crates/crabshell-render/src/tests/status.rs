@@ -321,3 +321,32 @@ fn a_transparent_picture_decoded_off_the_thread_is_ready_when_it_comes_in() {
   scene.full(&window, 1.0);
   assert!(!scene.renderer.decoding());
 }
+
+#[test]
+fn a_scaled_image_waiting_on_the_worker_is_decoded_once() {
+  let mut scene = Scene::new();
+  scene.renderer.decode_off_thread();
+  let source = scene.cx.signal(fixture("stripes.png"));
+  let status = scene.cx.signal(ImageStatus::Empty);
+  // Drawn at twice its box inside the scale, so past 256 pixels a side
+  // and on the worker, at another size than the window's scale gives.
+  let image = Image::new(move || source.get())
+    .width(150)
+    .height(150)
+    .status(status);
+  let row = Row::new()
+    .align(Align::Start)
+    .style(crabshell_ui::Style::new().scale(2.0).origin(0.0, 0.0))
+    .child(image);
+  let window = scene.window(scene.panel().child(row), 300.0, 300.0);
+  let mut history = crate::DamageHistory::new();
+  let mut buffer = Buffer::new(&window, 1.0);
+  turn(&mut scene, &window, &mut history, &mut buffer);
+  decoded(&mut scene, status);
+  assert_eq!(status.get(), ImageStatus::Ready);
+  turn(&mut scene, &window, &mut history, &mut buffer);
+  assert!(
+    !scene.renderer.decoding(),
+    "the draw's own job was kept, so Ready means it can draw"
+  );
+}
