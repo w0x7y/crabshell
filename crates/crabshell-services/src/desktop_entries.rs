@@ -62,6 +62,17 @@ pub struct DesktopEntry {
   /// What it runs, as its `Exec` key writes it, field codes such as `%U`
   /// and quotes included. `""` for one only D-Bus starts.
   pub exec: String,
+  /// What [`DesktopEntries::launch`] runs, the program then its
+  /// arguments: `exec` split by the Desktop Entry Specification's
+  /// quoting, with field codes filled in as for a launch with no files.
+  /// `%f`, `%F`, `%u`, `%U` and the deprecated codes go, `%i` is
+  /// `--icon` and the icon, or nothing without one, `%c` is `name`, `%k`
+  /// is `path` and `%%` is `%`. An `Exec` the spec's quoting refuses is
+  /// split as a POSIX shell would, with nothing expanded, as GLib does;
+  /// one that still makes no sense, such as an unclosed quote or an
+  /// unknown `%x`, gives `[]`, as does an empty `exec`. A terminal app's
+  /// command doesn't name the terminal it runs in.
+  pub command: Vec<String>,
   /// Whether it is started over D-Bus, from `DBusActivatable`, with
   /// `exec` only for when that fails.
   pub dbus_activatable: bool,

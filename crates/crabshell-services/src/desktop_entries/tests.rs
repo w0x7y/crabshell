@@ -356,6 +356,52 @@ fn launch_runs_the_program_apart_and_reaps_it() {
 }
 
 #[test]
+fn launch_runs_exactly_the_entrys_command() {
+  let dirs = Dirs::new();
+  let (program, out) = dirs.recorder("record");
+  let (_, terminal_out) = dirs.recorder("xdg-terminal-exec");
+  let exec = format!(
+    r#""{}" %U "a\\\\b" %i --name=%c %k 100%% 'c d'"#,
+    program.display()
+  );
+  write(
+    &dirs.user(),
+    "record.desktop",
+    &app("Record", &exec, "Icon=rec"),
+  );
+  let terminal = app("Term", "htop %i -d 10 %F", "Terminal=true");
+  write(&dirs.user(), "term.desktop", &terminal);
+  let (mut shell, entries) = shell(dirs.sources());
+  run(&mut shell, 50);
+  let ran = |shell: &mut Harness, out: &Path| {
+    shell.retry_until("the program's output", || out.exists(), |_| {});
+    let lines = std::fs::read_to_string(out).expect("its output");
+    lines.lines().skip(2).map(str::to_owned).collect::<Vec<_>>()
+  };
+
+  let command = entries.lookup("record").expect("listed").command;
+  let path = dirs.user().join("record.desktop").display().to_string();
+  let args = [
+    "a\\b",
+    "--icon",
+    "rec",
+    "--name=Record",
+    &path,
+    "100%",
+    "c d",
+  ];
+  assert_eq!(command[0], program.display().to_string());
+  assert_eq!(command[1..], args);
+  entries.launch("record");
+  assert_eq!(ran(&mut shell, &out), command[1..]);
+
+  let command = entries.lookup("term").expect("listed").command;
+  assert_eq!(command, ["htop", "-d", "10"]);
+  entries.launch("term");
+  assert_eq!(ran(&mut shell, &terminal_out), command);
+}
+
+#[test]
 fn a_terminal_application_runs_in_xdg_terminal_exec() {
   let dirs = Dirs::new();
   let (_, out) = dirs.recorder("xdg-terminal-exec");

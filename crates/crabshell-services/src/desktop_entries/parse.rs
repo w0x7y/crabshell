@@ -194,13 +194,14 @@ pub(super) fn entry(
       exec,
     })
   });
-  Some(DesktopEntry {
+  let mut entry = DesktopEntry {
     id,
     name,
     generic_name: local("GenericName"),
     comment: local("Comment"),
     icon: local("Icon"),
     exec,
+    command: Vec::new(),
     dbus_activatable: flag(main, "DBusActivatable"),
     terminal: flag(main, "Terminal"),
     categories: items(main, "Categories"),
@@ -212,7 +213,10 @@ pub(super) fn entry(
       .map(PathBuf::from),
     actions: actions.collect(),
     path,
-  })
+  };
+  // Not logged here, as every read would repeat it: `run` logs at launch.
+  entry.command = command_line(&entry.exec, &entry).unwrap_or_default();
+  Some(entry)
 }
 
 /// Where `program` is, as an executable file: at its path when that is
@@ -553,6 +557,46 @@ mod tests {
     assert_eq!(run("prog 100%"), Err("a % ends it".to_owned()));
     assert_eq!(run("%f %U"), Err("it names no program".to_owned()));
     assert_eq!(run(""), Err("it names no program".to_owned()));
+  }
+
+  #[test]
+  fn an_entry_carries_the_command_a_launch_runs() {
+    let command = |exec: &str, icon: &str| {
+      let body = format!("Type=Application\nName=My App\nIcon={icon}\nExec={exec}\n");
+      read(&body, &Sources::default()).expect("listed").command
+    };
+    // The file's string escapes come first, then the quotes.
+    assert_eq!(
+      command(r#""/opt/My App/run" "a\\\\b" "c\\$d" x\sy"#, ""),
+      ["/opt/My App/run", "a\\b", "c$d", "x", "y"]
+    );
+    assert_eq!(
+      command(
+        "prog %f %F %u %U %d %D %n %N %v %m %i %c %k 100%%",
+        "app-icon"
+      ),
+      [
+        "prog",
+        "--icon",
+        "app-icon",
+        "My App",
+        "/apps/app.desktop",
+        "100%"
+      ]
+    );
+    assert_eq!(command("prog %i --name=%c", ""), ["prog", "--name=My App"]);
+    assert_eq!(
+      command("sh -c 'echo hi; exit'", ""),
+      ["sh", "-c", "echo hi; exit"]
+    );
+    for malformed in [r#"prog "open"#, "prog %x", "prog 100%", "%U"] {
+      assert_eq!(command(malformed, ""), Vec::<String>::new(), "{malformed}");
+    }
+    let bus = read(
+      "Type=Application\nName=App\nDBusActivatable=true\n",
+      &Sources::default(),
+    );
+    assert_eq!(bus.expect("listed").command, Vec::<String>::new());
   }
 
   #[test]
