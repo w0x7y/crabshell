@@ -63,6 +63,14 @@ cx.session_lock(
               </td>
             </tr>
             <tr>
+              <td><code>refused(signal)</code></td>
+              <td>
+                Written true when the compositor refuses the lock, as when
+                another locker holds it, or ends it, and false once
+                <code>locked</code> turns false. Clear your own flag from it.
+              </td>
+            </tr>
+            <tr>
               <td><code>surface(builder)</code></td>
               <td>
                 Builds the widget that covers one monitor. It runs for every

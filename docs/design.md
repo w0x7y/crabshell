@@ -313,7 +313,7 @@ API rules settled in Phase 14, time and motion:
 API rules settled in Phase 15, layout, pointer and views:
 
 - The layout fields of `Style` merge per field, and a number that isn't finite counts as unset. All but `z` change the layout at once; a `z` change repaints.
-- Any of `left`, `top`, `right` and `bottom` takes a widget out of its parent's flow, as CSS's `position: absolute`: it is placed from those edges of the parent's padding box and no longer sizes the parent. `align_self` places a child across a row or column, or vertically in a stack's or grid's cell, and `justify_self` horizontally in a cell; rows and columns ignore `justify_self`. `z` orders siblings for drawing and for the pointer, lowest first, keeping child order for equal ones; Tab keeps child order.
+- Any of `left`, `top`, `right` and `bottom` takes a widget out of its parent's flow, as CSS's `position: absolute`: it is placed from those edges of the parent's padding box and no longer sizes the parent. `align_self` places a child across a row or column, or vertically in a stack's or grid's cell, and `justify_self` horizontally in a cell (an absolute child aligns in the parent's padding box instead); rows and columns ignore `justify_self`. `z` orders siblings for drawing and for the pointer, lowest first, keeping child order for equal ones; Tab keeps child order.
 - `Grid` places children row by row into `columns` equal columns, 1 by default, with rows as tall as their content. A `wrap` row starts a new line for children that don't fit, and `reverse` runs a row right to left and a column bottom to top, so `Justify::Start` packs at the right or the bottom.
 - Hidden through `visible`, a widget frees its space, isn't drawn, hit or reached by Tab, drops the focus, unhovers and lets go of a held press, and keeps its bindings and state. A field inside it can't take the focus, and when it shows again the first field in Tab order whose `focus` is still true takes it.
 - After each layout that moves or resizes a widget, its laid-out rectangle is written to its `geometry` signal, in window logical pixels, with scroll offsets but not transforms. `mapped_geometry` writes the box where it is drawn, through its own and its ancestors' transforms, every frame of an animated transform whether or not anything reads it, so pass it only where it is used. A hidden widget writes neither. A window laid out from another's geometry catches up in the same loop iteration. Neither says where the window is on its output, since layer-shell and xdg-shell don't tell a client.
@@ -419,6 +419,14 @@ API rules settled in 0.9, from porting a Quickshell config:
 - `Image::status(signal)` writes an `ImageStatus`, as Qt's `Image.status`: `Empty` for an empty path, `Loading` after each new source, and `Ready` or `Failed` once the picture is loaded, whether or not it shows. To fade a picture in, bind its opacity to `Ready`.
 - `cx.sequence(initial, trigger, steps)` plays `steps` one after another each time `trigger`'s value changes, as Qt's `SequentialAnimation`; `trigger`'s first value plays nothing. `Step::to(value, transition)` moves from wherever the value is, and `Step::hold(ms)` keeps it there. Steps are `const`, so a shake lives in a `const` array. `cx.sequence_loop(initial, running, steps)` plays them round after round while `running` is true. Both give an `Animation` whose `running()` is true from each trigger, or while `running` holds for a loop, until the last step ends, holds included, so an effect on it runs what comes after, such as an unlock. A hold sleeps instead of drawing frames.
 - The prelude adds `Capture`, `ImageStatus` and `Step`.
+
+API rules settled in 0.9.1, from finishing that port:
+
+- `cx.sequence_now(initial, steps)` plays `steps` once, starting when it is made, so a staggered entrance plays each time its widget is built: `Step::hold(index * 40)` and then a fade.
+- `Button::on_any_press(|cx, button| ...)` runs at the press of any pointer button, as a click catcher that closes a panel needs. Only the innermost enabled button under the pointer gets it.
+- `cx.notifications().restart_popup(id)` counts a popup's whole timeout again from now, as a replacement does; a held popup stays held.
+- `SessionLock::refused(signal)` is written `true` when the compositor refuses the lock, as when another locker holds it, or ends it while `locked` is still true, and `false` once `locked` turns false, so a config can clear its own flag: `cx.effect(move || if refused.get() { locked.set(false) })`.
+- The prelude adds `PointerButton`.
 
 ## Process model and reload
 
@@ -773,6 +781,9 @@ Rules settled while building `crabshell-ui` (0.9 gap fixes):
 - A sequence's steps are read untracked as each play starts. A new trigger mid-play starts over from where the value is, and the replaced play stops; an empty list plays nothing, and a play rests at its last step's target. A loop's round 0 moves from where the value is, each later round from the last target. Stopped, a loop finishes its round and rests there; started again before then, it never stops. A round of 0 ms plays once.
 - A hold, and a delay inside a sequence, takes the step off the animation clock. It sleeps until the next value change, merged through back-to-back holds and the next step's delay, and `next_timer` and `fire_timers` wake it. Its timeline counts from its first tick, so a late wake lands where the timeline says. A sleeping step still counts in its item. One whose owner went, or whose play was replaced, is freed at the next `next_timer` or `fire_timers` without waking.
 - A panic in a trigger stops that sequence for good, one in `running` ends the loop after its round, and one in the steps binding or a config's `lerp` stops that play. Each is logged as `animation cx.sequence at <file:line>` or `animation cx.sequence_loop at <file:line>`.
+- Every node is `position: relative` to taffy, so a parent is always its absolute children's containing block; taffy's default, static, placed them from the window. An absolute child of a `Stack`, a `Grid` or the window gets no cell placement, so its insets, and its alignment along an axis with no inset, measure from the parent's padding box, not the cell's content box.
+- `cx.sequence_now` reads its steps once, untracked, as it is made, and plays at once. It is logged as `animation cx.sequence_now at <file:line>`.
+- `on_any_press` runs at the press that starts a hold, after `on_press` for the left button, and never for a second button while one is held or for a left press or touch on a scroll bar.
 
 ## Rendering
 
@@ -1136,6 +1147,7 @@ Rules settled while building `crabshell-wayland` (0.9 gap fixes):
 - After a layout that changes a panel's own width or height, the panel takes that size at once and is laid out again, taking at most 4 new sizes, so 5 layouts. The frame drawn at the new size commits the new settings with it. A configure is a hint: each side the panel last sent as non-zero keeps that size, so a configure answering an older resize can't pull it back, and only a side sent as 0 takes the compositor's size. A size still changing after 5 layouts is logged once with the window's path, "a window's size still changed after 5 layouts", until it settles, and goes on at the next pass.
 - A new size, from a configure, a popup's layout or a panel's resize, cuts the masks and the blur region again, and the frame drawn at that size commits them.
 - Whenever `image_sources_changed` says an image's status waits, the platform has the renderer load each window's waiting images, drawn or not, at the window's scale. After the draws and loads, a status that changed runs the reactive flush before the loop sleeps, so effects that read it run in the iteration that loaded the picture.
+- A lock's `refused` signal turns `true` when the compositor sends `finished` (refused, or ended while `locked` is true) or lacks ext-session-lock-v1, only while the config still wants it locked. It turns `false` once `locked` turns false. A lock that takes never writes it.
 
 ## Services
 
@@ -1333,6 +1345,7 @@ Rules settled while building `crabshell-services` (0.9 gap fixes):
 - Notifications: `on_notification` handlers run on the main thread, untracked and with nothing borrowed, before the popups change; one that panics is logged with where it was given and removed.
 - Notifications: `popup_time_left` isn't a signal; a countdown bar reads it in a binding that `cx.frames` ticks while the popup counts and isn't held. It is `None` for a popup that never expires, has a zero timeout or isn't showing.
 - Desktop entries: `DesktopEntry::command` is what `launch` runs, split and expanded once when the list is read, by the same function `launch` uses. An `Exec` the spec's quoting refuses is split as a POSIX shell would, with no `$` or glob expansion, as GLib does; one that still makes no sense gives `[]`. The launch logs a refused `Exec`, not the read.
+- `restart_popup` gives a popup its whole timeout from now, as a replacement does. A held one stays held with its whole timeout left. A reload keeps the restarted time left.
 
 Rules settled while building the `Tray` widget (Phase 4, step 5):
 

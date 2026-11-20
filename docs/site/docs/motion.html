@@ -242,6 +242,12 @@ Row::new().style(move || PILL.translate(shake.value().get(), 0.0))</code></pre>
 let steps = [Step::hold(index * 140), Step::to(0.4, SINE), Step::to(1.0, SINE)];
 let pulse = cx.sequence_loop(1.0, move || loading.get(), steps);
 Row::new().style(move || TILE.opacity(pulse.value().get()))</code></pre>
+        <p>
+          <code>cx.sequence_now(initial, steps)</code> has no trigger: it plays
+          once, as soon as it is made. Use it for an entrance that plays each
+          time a panel opens and builds its contents, with a hold per item for a
+          stagger.
+        </p>
         <h2 id="frames">A value for each frame</h2>
         <p>
           <code>cx.frames(running)</code> gives the time since
