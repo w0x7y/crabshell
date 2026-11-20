@@ -235,10 +235,16 @@ fn read_only_still_moves_selects_and_copies() {
 fn a_read_only_password_still_never_copies() {
   let mut h = Harness::new();
   let text = h.cx.signal(String::from("secret"));
-  let (window, _) = window(&mut h, input(text).password(true).read_only(true));
+  let field = input(text).password(true).read_only(true);
+  let (window, seen) = window(&mut h, field);
   window.key(&ctrl("a"));
   assert_eq!(window.key(&ctrl("c")), None);
+  assert_eq!(window.key(&ctrl("x")), None);
   assert_eq!(text.get(), "secret");
+  assert!(
+    seen.borrow().is_empty(),
+    "the field keeps Ctrl+C and Ctrl+X alike"
+  );
 }
 
 #[test]

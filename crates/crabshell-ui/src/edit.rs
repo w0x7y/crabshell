@@ -139,7 +139,7 @@ impl Edit {
       self.multiline && !modifiers.shift && !modifiers.ctrl && !modifiers.alt && !modifiers.logo;
     let before = self.clone();
     match &event.key {
-      _ if self.read_only && self.edits(event, tab) => return Keyed::Unused,
+      _ if self.read_only && self.edits(event, tab, copyable) => return Keyed::Unused,
       Key::Enter if self.multiline && !modifiers.ctrl => self.insert("\n"),
       Key::Enter => return Keyed::Accept,
       Key::Tab if tab => self.insert("\t"),
@@ -184,14 +184,16 @@ impl Edit {
   }
 
   /// Whether `event` would change the text, as [`key`](Self::key) reads
-  /// it, with `tab` true if Tab types one.
-  fn edits(&self, event: &KeyEvent, tab: bool) -> bool {
+  /// it, with `tab` true if Tab types one. Ctrl+X doesn't where nothing
+  /// copies: it does nothing there, as Ctrl+C does.
+  fn edits(&self, event: &KeyEvent, tab: bool, copyable: bool) -> bool {
     let modifiers = event.modifiers;
     let command = modifiers.ctrl && !modifiers.alt;
     match &event.key {
       Key::Enter => self.multiline && !modifiers.ctrl,
       Key::Tab if tab => true,
-      Key::Character('x' | 'X' | 'v' | 'V') if command => true,
+      Key::Character('x' | 'X') if command => copyable,
+      Key::Character('v' | 'V') if command => true,
       Key::Character('c' | 'C' | 'a' | 'A') if command => false,
       Key::Backspace | Key::Delete => true,
       Key::Left | Key::Right | Key::Home | Key::End => false,
