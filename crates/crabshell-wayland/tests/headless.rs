@@ -5703,3 +5703,250 @@ fn a_typed_drag_crosses_from_the_top_bar_to_the_bottom_bar_through_sway() {
   assert!(!hovered.get());
   cx.owner().dispose();
 }
+
+/// HEADLESS-1 at 1280 by 720 and HEADLESS-2 at 640 by 360, both at
+/// `scale`, with HEADLESS-2 filled by a panel: `left` on its left half and
+/// `right` on its right. Returns once HEADLESS-2 shows it.
+fn halves(sway: &Sway, cx: &Cx, scale: u32, left: Color, right: Signal<Color>) -> EventLoop {
+  let scale = scale.to_string();
+  sway.msg(&["output", "HEADLESS-1", "mode", "1280x720", "scale", &scale]);
+  sway.msg(&["create_output"]);
+  sway.msg(&["output", "HEADLESS-2", "mode", "640x360", "scale", &scale]);
+  let mut event_loop = sway.connect();
+  let half = Style::new().width(0.0).grow(1.0);
+  let fill = PanelWindow::new(&Output::new("HEADLESS-2"))
+    .anchors(Edge::Top | Edge::Bottom | Edge::Left | Edge::Right)
+    .child(
+      Row::new()
+        .child(Row::new().style(half.background(left)))
+        .child(Row::new().style(move || half.background(right.get()))),
+    );
+  event_loop.platform().add_window(Window::new(cx, fill));
+  wait_for_color(sway, &mut event_loop, "HEADLESS-2", (0, 0, 320, 360), left);
+  let right = right.get();
+  wait_for_color(
+    sway,
+    &mut event_loop,
+    "HEADLESS-2",
+    (320, 0, 320, 360),
+    right,
+  );
+  event_loop
+}
+
+/// The frames the views in the viewer's first row show, in order.
+fn frames_of(platform: &Platform, viewer: WindowId) -> Vec<Option<CaptureFrame>> {
+  let Some((_, window)) = platform.windows().find(|(id, _)| *id == viewer) else {
+    return Vec::new();
+  };
+  let view = window.view();
+  let Some(row) = view.root().children().next() else {
+    return Vec::new();
+  };
+  row
+    .children()
+    .map(|node| match node.content() {
+      Content::Capture(capture) => Some(capture.frame.clone()),
+      _ => None,
+    })
+    .collect()
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_capture_shown_whole_and_cropped_is_taken_once_at_scales_1_and_2() {
+  for scale in [1, 2] {
+    let sway = Sway::start();
+    let cx = Cx::new(Runtime::current().new_owner());
+    let mut event_loop = halves(&sway, &cx, scale, RED, cx.signal(BLUE));
+    let capture = cx.capture(CaptureSource::Output(String::from("HEADLESS-2")));
+    // HEADLESS-2's right half, in its logical pixels.
+    let (width, height) = (640.0 / scale as f32, 360.0 / scale as f32);
+    let right = Rect::new(width / 2.0, 0.0, width / 2.0, height);
+    let viewer = PanelWindow::new(&Output::new("HEADLESS-1"))
+      .anchors(Edge::Top | Edge::Left)
+      .width(240)
+      .height(90)
+      .child(
+        Row::new()
+          .child(ScreencopyView::of(capture).style(Style::new().width(160.0).height(90.0)))
+          .child(
+            ScreencopyView::of(capture)
+              .crop(Some(right))
+              .style(Style::new().width(80.0).height(90.0)),
+          ),
+      );
+    let viewer = event_loop.platform().add_window(Window::new(&cx, viewer));
+    let mut most = 0;
+    run_until(&mut event_loop, "the capture's frame", |platform| {
+      most = most.max(platform.capture_sessions());
+      frames_of(platform, viewer).iter().all(Option::is_some)
+    });
+    assert_eq!(most, 1, "one session for both views");
+    assert_eq!(event_loop.platform().capture_sessions(), 0, "one frame");
+    let frames: Vec<CaptureFrame> = frames_of(event_loop.platform(), viewer)
+      .into_iter()
+      .flatten()
+      .collect();
+    assert!(
+      Rc::ptr_eq(&frames[0].rgba, &frames[1].rgba),
+      "the one frame"
+    );
+    assert_eq!((frames[0].width, frames[0].height), (640, 360), "whole");
+    assert_eq!(
+      (frames[0].logical_width, frames[0].logical_height),
+      (640 / scale, 360 / scale)
+    );
+    // In HEADLESS-1's pixels, past the edges a scaled frame blends.
+    let px = |logical: u32| logical * scale;
+    let inside = |x: u32, width: u32| (px(x) + 2, 2, px(width) - 4, px(90) - 4);
+    wait_for_color(&sway, &mut event_loop, "HEADLESS-1", inside(0, 80), RED);
+    wait_for_color(&sway, &mut event_loop, "HEADLESS-1", inside(80, 80), BLUE);
+    wait_for_color(&sway, &mut event_loop, "HEADLESS-1", inside(160, 80), BLUE);
+  }
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn shown_turns_true_after_the_frame_that_drew_it_and_refresh_brings_a_new_one() {
+  let sway = Sway::start();
+  let cx = Cx::new(Runtime::current().new_owner());
+  let color = cx.signal(RED);
+  let mut event_loop = halves(&sway, &cx, 1, RED, color);
+  let capture = cx.capture(CaptureSource::Output(String::from("HEADLESS-2")));
+  let ready = capture.ready();
+  let shown = cx.signal(false);
+  let viewer = PanelWindow::new(&Output::new("HEADLESS-1"))
+    .anchors(Edge::Top | Edge::Left)
+    .width(VIEW.0)
+    .height(VIEW.1)
+    .child(
+      Row::new().child(
+        ScreencopyView::of(capture)
+          .shown(shown)
+          .style(Style::new().width(VIEW.0 as f32).height(VIEW.1 as f32)),
+      ),
+    );
+  let viewer = event_loop.platform().add_window(Window::new(&cx, viewer));
+  // The right half, which the refresh turns blue.
+  let right = (VIEW.0 / 2 + 2, 2, VIEW.0 / 2 - 4, VIEW.1 - 4);
+  for (round, expected) in [(0, RED), (1, BLUE)] {
+    if round == 1 {
+      color.set(BLUE);
+      wait_for_color(
+        &sway,
+        &mut event_loop,
+        "HEADLESS-2",
+        (320, 0, 320, 360),
+        BLUE,
+      );
+      settle(&mut event_loop);
+      capture.refresh();
+      assert!(!ready.get(), "a new frame on its way");
+      assert!(shown.get(), "the old one stays on screen");
+    }
+    // After each iteration: whether the frame was there, the viewer's
+    // commits and whether the view was shown.
+    let commits = |event_loop: &mut EventLoop| {
+      let info = event_loop.platform().window_info(viewer);
+      info.expect("there").commits
+    };
+    let mut steps = vec![(false, commits(&mut event_loop), false)];
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !shown.get() || !ready.get() {
+      assert!(Instant::now() < deadline, "never shown in round {round}");
+      event_loop
+        .dispatch(Some(Duration::from_millis(20)))
+        .expect("the connection works");
+      steps.push((ready.get(), commits(&mut event_loop), shown.get()));
+    }
+    // The first commit once the frame landed drew it, and its frame
+    // callback came in a later iteration.
+    let landed = steps.iter().position(|step| step.0).expect("ready");
+    let drew = (landed..steps.len())
+      .find(|&at| steps[at].1 > steps[at - 1].1)
+      .expect("a commit");
+    assert!(!steps[drew].2, "shown in its commit's iteration: {steps:?}");
+    let shot = sway.screenshot("HEADLESS-1");
+    assert!(
+      all_of(&area(&shot, right), expected),
+      "on screen, round {round}"
+    );
+  }
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_capture_sleeps_after_its_frame_and_goes_with_its_context() {
+  let sway = Sway::start();
+  let root = Cx::new(Runtime::current().new_owner());
+  let mut event_loop = halves(&sway, &root, 1, RED, root.signal(BLUE));
+  let before = Runtime::current().node_count();
+  let cx = root.child();
+  let capture = cx.capture(CaptureSource::Output(String::from("HEADLESS-2")));
+  // One of an output not there yet waits for it.
+  let waiting = cx.capture(CaptureSource::Output(String::from("HEADLESS-3")));
+  let viewer = PanelWindow::new(&Output::new("HEADLESS-1"))
+    .anchors(Edge::Top | Edge::Left)
+    .width(VIEW.0)
+    .height(VIEW.1)
+    .child(Row::new().child(
+      ScreencopyView::of(capture).style(Style::new().width(VIEW.0 as f32).height(VIEW.1 as f32)),
+    ));
+  let viewer = event_loop.platform().add_window(Window::new(&cx, viewer));
+  run_until(&mut event_loop, "the frame", |_| capture.ready().get());
+  settle(&mut event_loop);
+  assert_eq!(event_loop.platform().capture_sessions(), 0);
+  let iterations = event_loop.platform().stats().iterations;
+  event_loop
+    .dispatch(Some(Duration::from_secs(2)))
+    .expect("the connection works");
+  assert_eq!(
+    event_loop.platform().stats().iterations,
+    iterations + 1,
+    "nothing woke the loop"
+  );
+
+  event_loop.platform().remove_window(viewer);
+  cx.owner().dispose();
+  assert_eq!(Runtime::current().node_count(), before);
+  // The output the waiting capture wanted comes, too late.
+  sway.msg(&["create_output"]);
+  let deadline = Instant::now() + Duration::from_secs(1);
+  while Instant::now() < deadline {
+    event_loop
+      .dispatch(Some(Duration::from_millis(20)))
+      .expect("the connection works");
+    assert_eq!(event_loop.platform().capture_sessions(), 0);
+  }
+  assert!(waiting.ready().try_get().is_none(), "freed");
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_floating_window_that_hides_takes_its_views_off_screen() {
+  let sway = Sway::start();
+  let cx = Cx::new(Runtime::current().new_owner());
+  let mut event_loop = halves(&sway, &cx, 1, RED, cx.signal(BLUE));
+  let capture = cx.capture(CaptureSource::Output(String::from("HEADLESS-2")));
+  let shown = cx.signal(false);
+  let open = cx.signal(true);
+  let floating = FloatingWindow::new()
+    .title("overlay")
+    .width(VIEW.0)
+    .height(VIEW.1)
+    .visible(move || open.get())
+    .child(
+      ScreencopyView::of(capture)
+        .shown(shown)
+        .style(Style::new().width(VIEW.0 as f32).height(VIEW.1 as f32)),
+    );
+  event_loop
+    .platform()
+    .add_window(Window::floating(&cx, floating));
+  run_until(&mut event_loop, "the view shown", |_| shown.get());
+  open.set(false);
+  run_until(&mut event_loop, "the view hidden", |_| !shown.get());
+  open.set(true);
+  run_until(&mut event_loop, "the view shown again", |_| shown.get());
+}

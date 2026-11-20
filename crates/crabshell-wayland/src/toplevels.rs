@@ -77,6 +77,7 @@ impl Platform {
           self.windows.remove_popups_of(id);
           // Its pointer events stop with its surface.
           self.windows.entries[index].window.pointer_leave();
+          self.windows.entries[index].window.unmapped();
           self.windows.entries[index].surface = None;
         } else if surface.floating.as_ref() == Some(&config) {
           // Only its hints changed, which need no commit of their own.

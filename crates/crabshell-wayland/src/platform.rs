@@ -1028,6 +1028,7 @@ impl Platform {
           stats.commits += 1;
           stats.drawing += started.elapsed();
           drawn.push(entry.id);
+          entry.window.frame_committed();
         }
       }
     }

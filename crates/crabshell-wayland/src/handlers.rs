@@ -125,11 +125,13 @@ impl CompositorHandler for Platform {
 
   fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, surface: &WlSurface, _: u32) {
     if let Some(Entry {
+      window,
       surface: Some(ours),
       ..
     }) = self.by_surface(surface)
     {
       ours.frames.pacing.frame_done();
+      window.frame_presented();
     }
   }
 

@@ -9,11 +9,15 @@
 //! are cut once for the largest view and go to each, and while one of
 //! them is live the session asks for the next frame, which the
 //! compositor answers only once the source changes.
+//!
+//! A `Capture` the config made is a view of no window: it shares a
+//! session only with other captures, so it never waits on a live
+//! session's next frame, and takes the source's whole frame.
 
 use std::time::Instant;
 
 use crabshell_render::{PixelFormat, Turn};
-use crabshell_ui::{CaptureFrame, CaptureRequest, CaptureSource};
+use crabshell_ui::{CaptureFrame, CaptureRequest, CaptureSource, Size};
 use smithay_client_toolkit::reexports::client::protocol::wl_output::WlOutput;
 use smithay_client_toolkit::reexports::client::protocol::wl_shm;
 use smithay_client_toolkit::reexports::client::{
@@ -69,9 +73,11 @@ pub(crate) struct Captures {
   sessions: Vec<Session>,
 }
 
-/// A view a shown window holds.
+/// A view a shown window holds, or a capture waiting for its frame.
 struct View {
-  window: WindowId,
+  /// `None` for a capture, whose request id is the number its frame is
+  /// asked under.
+  window: Option<WindowId>,
   request: CaptureRequest,
   /// What the source is now; `None` while it isn't there.
   target: Option<Target>,
@@ -92,6 +98,7 @@ impl View {
     !self.ended
       && self.target.as_ref() == Some(&session.target)
       && self.request.paint_cursors == session.cursors
+      && self.window.is_none() == session.captures
   }
 }
 
@@ -106,6 +113,8 @@ enum Target {
 struct Session {
   target: Target,
   cursors: bool,
+  /// Whether it takes frames for captures, not windows' views.
+  captures: bool,
   proxy: ExtImageCopyCaptureSessionV1,
   /// The constraints announced since the last `done`.
   size: Option<(u32, u32)>,
@@ -160,8 +169,13 @@ impl Captures {
     }
   }
 
-  /// A session for `target`, or `None` without the protocols.
-  fn start(&self, target: &Target, cursors: bool, qh: &QueueHandle<Platform>) -> Option<Session> {
+  /// A session for `target`, for captures or windows' views, or `None`
+  /// without the protocols.
+  fn start(
+    &self,
+    (target, cursors, captures): (&Target, bool, bool),
+    qh: &QueueHandle<Platform>,
+  ) -> Option<Session> {
     let manager = self.manager.as_ref()?;
     let source = match target {
       Target::Output(output) => self.outputs.as_ref()?.create_source(output, qh, ()),
@@ -181,6 +195,7 @@ impl Captures {
     Some(Session {
       target: target.clone(),
       cursors,
+      captures,
       proxy,
       size: None,
       formats: Vec::new(),
@@ -301,9 +316,29 @@ impl Platform {
       let shown = entry.surface.as_ref();
       if shown.is_some_and(|surface| surface.frames.pacing.configured()) {
         let requests = entry.window.captures();
-        wanted.extend(requests.into_iter().map(|request| (entry.id, request)));
+        wanted.extend(
+          requests
+            .into_iter()
+            .map(|request| (Some(entry.id), request)),
+        );
       }
     }
+    // A capture takes the whole frame, whatever shows it.
+    let whole = Size::new(f32::INFINITY, f32::INFINITY);
+    wanted.extend(
+      crabshell_ui::wanted_captures()
+        .into_iter()
+        .map(|(id, source)| {
+          let request = CaptureRequest {
+            id,
+            source,
+            live: false,
+            paint_cursors: false,
+            size: whole,
+          };
+          (None, request)
+        }),
+    );
     if wanted.is_empty() && self.captures.views.is_empty() {
       return false;
     }
@@ -329,7 +364,7 @@ impl Platform {
       self.renderer.forget_captures(&gone);
     }
     // Sessions to start again, for a view whose box outgrew their frame.
-    let mut again: Vec<(Target, bool)> = Vec::new();
+    let mut again: Vec<(Target, bool, bool)> = Vec::new();
     for ((window, request), target) in wanted.into_iter().zip(targets) {
       let index = captures
         .views
@@ -358,7 +393,11 @@ impl Platform {
         {
           // Asked once: it counts as having no frame until the next.
           (view.ended, view.cover) = (false, (0, 0));
-          again.push((target.clone(), view.request.paint_cursors));
+          again.push((
+            target.clone(),
+            view.request.paint_cursors,
+            view.window.is_none(),
+          ));
         }
         continue;
       }
@@ -392,10 +431,11 @@ impl Platform {
       };
       let own = cover(view.request.size, scale);
       if !*whole && (own.0 > cut.0 || own.1 > cut.1) {
-        again.push((session.target.clone(), session.cursors));
+        again.push((session.target.clone(), session.cursors, session.captures));
         continue;
       }
-      if let Some(entry) = self.windows.get(view.window) {
+      // A capture's session ends with its frame, so it keeps none.
+      if let Some(entry) = view.window.and_then(|window| self.windows.get(window)) {
         shown |= entry.window.show_capture(view.request.id, frame.clone());
       }
       (view.cover, view.whole) = (*cut, *whole);
@@ -409,13 +449,11 @@ impl Platform {
     }
     let views = &captures.views;
     captures.sessions.retain_mut(|session| {
-      let takers: Vec<WindowId> = views
-        .iter()
-        .filter(|view| view.takes(session))
-        .map(|view| view.window)
-        .collect();
-      let key = (session.target.clone(), session.cursors);
-      let kept = !again.contains(&key) && !takers.is_empty();
+      let mut takers = views.iter().filter(|view| view.takes(session)).peekable();
+      let taken = takers.peek().is_some();
+      let takers: Vec<WindowId> = takers.filter_map(|view| view.window).collect();
+      let key = (session.target.clone(), session.cursors, session.captures);
+      let kept = !again.contains(&key) && taken;
       // A window the next frame waited for has no view of it now: it
       // waits no more for that one.
       let waited = !session.waiting.is_empty();
@@ -434,7 +472,8 @@ impl Platform {
       let Some(target) = &view.target else {
         continue;
       };
-      if let Some(session) = captures.start(target, view.request.paint_cursors, &self.qh) {
+      let key = (target, view.request.paint_cursors, view.window.is_none());
+      if let Some(session) = captures.start(key, &self.qh) {
         captures.sessions.push(session);
       }
     }
@@ -487,6 +526,14 @@ impl Platform {
   /// that repaint for it.
   fn deliver(&mut self, index: usize) -> Vec<WindowId> {
     let scale = self.largest_scale();
+    let logical = match &self.captures.sessions[index].target {
+      Target::Output(output) => self.known.iter().find(|(known, _)| known == output),
+      Target::Toplevel(_) => None,
+    }
+    .map(|(_, info)| (info.width, info.height));
+    // A window's logical pixels are taken as the largest output scale's.
+    let fractional = self.known.iter().map(|(_, info)| info.fractional_scale);
+    let fractional = fractional.fold(1.0, f64::max);
     let Captures {
       views, sessions, ..
     } = &mut self.captures;
@@ -516,20 +563,30 @@ impl Platform {
       return Vec::new();
     };
     let frame = crabshell_render::capture_frame(pixels, width, height, order, opaque, turn, cover);
-    let Some(frame) = frame else {
+    let Some(mut frame) = frame else {
       tracing::warn!(width, height, "a captured frame doesn't fit its buffer");
       return Vec::new();
     };
+    // `as` saturates, and the scale is at least 1.
+    let in_logical = |pixels: u32| ((f64::from(pixels) / fractional).round() as u32).max(1);
+    (frame.logical_width, frame.logical_height) = logical.unwrap_or((
+      in_logical(frame.logical_width),
+      in_logical(frame.logical_height),
+    ));
     let (kept, whole) = ((frame.width, frame.height), (width, height));
     let whole = kept == whole || kept == (whole.1, whole.0);
     let mut shown = Vec::new();
     for view in views.iter_mut().filter(|view| view.takes(session)) {
       (view.cover, view.whole) = (cover, whole);
-      let window = self.windows.get(view.window);
-      if window.is_some_and(|entry| entry.window.show_capture(view.request.id, frame.clone()))
-        && !shown.contains(&view.window)
+      let Some(window) = view.window else {
+        crabshell_ui::deliver_capture(view.request.id, frame.clone());
+        continue;
+      };
+      let entry = self.windows.get(window);
+      if entry.is_some_and(|entry| entry.window.show_capture(view.request.id, frame.clone()))
+        && !shown.contains(&window)
       {
-        shown.push(view.window);
+        shown.push(window);
       }
     }
     session.last = Some((frame, cover, whole));
@@ -656,9 +713,9 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, ()> for Platform {
             false
           }
         };
-        let (target, cursors) = (session.target.clone(), session.cursors);
+        let key = (session.target.clone(), session.cursors, session.captures);
         let restarted = again
-          .then(|| captures.start(&target, cursors, qh))
+          .then(|| captures.start((&key.0, key.1, key.2), qh))
           .flatten();
         match restarted {
           Some(mut session) => {
