@@ -182,8 +182,8 @@ impl Painter<'_> {
       }
       GradientShape::Radial => {
         let reach = match gradient.radius {
-          // Never 0, so the end color holds out from the center.
-          Some(radius) => (radius * self.grid.scale).max(f32::MIN_POSITIVE),
+          // 0 or less leaves only the end color, as `at` reads it.
+          Some(radius) => (radius * self.grid.scale).max(0.0),
           None => {
             // To the farthest corner: the far side on each axis.
             let dx = width * x.max(1.0 - x);
@@ -207,6 +207,7 @@ impl Laid {
         let (dx, dy) = (end.x - start.x, end.y - start.y);
         ((point.x - start.x) * dx + (point.y - start.y) * dy) / (dx * dx + dy * dy)
       }
+      Laid::Radial(_, reach) if reach <= 0.0 => 1.0,
       Laid::Radial(middle, reach) => middle.distance(point) / reach,
       Laid::Sweep(middle, angle) => {
         // Clockwise from 12 o'clock, with y down.

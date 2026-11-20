@@ -398,6 +398,9 @@ mod gradients {
       "{:?}",
       none.pixel(5, 5)
     );
+    // Even where the center falls on a pixel's center, in an odd box.
+    let odd = sized(Gradient::radial(RED, BLUE).radius(0.0), 11.0, 11.0, 1.0);
+    assert!(close(odd.pixel(5, 5), [0, 0, 255]), "{:?}", odd.pixel(5, 5));
   }
 
   #[test]
