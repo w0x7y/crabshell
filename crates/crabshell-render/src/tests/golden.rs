@@ -1359,6 +1359,15 @@ fn masks() {
   });
 }
 
+/// Widgets cut by regions: an image by a rect minus two rounded rects, a
+/// stack by an ellipse, and a turned, faded one by a region past its box.
+#[test]
+fn mask_regions() {
+  check_at(&ALL_SCALES, "mask_regions", 200.0, 60.0, |scene| {
+    super::mask_regions::regions(scene, scene.cx.signal(10))
+  });
+}
+
 /// Text and an icon casting shadows through their alpha: one soft and
 /// low, one sharp and spread, and one cut out under translucent text.
 #[test]

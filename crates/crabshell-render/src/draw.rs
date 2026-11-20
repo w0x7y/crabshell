@@ -530,7 +530,7 @@ impl Painter<'_> {
   }
 
   /// Draws `node` and everything inside it. With an opacity below 1, a
-  /// mask or a content shadow, they are drawn into one layer first, which
+  /// mask, a mask region or a content shadow, they are drawn into one layer first, which
   /// is masked, given its shadow and blended in at that opacity, so
   /// overlapping children don't show through each other.
   fn node(&mut self, pixmap: &mut PixmapMut<'_>, node: NodeView<'_>) {
@@ -553,16 +553,32 @@ impl Painter<'_> {
       return;
     }
     let shadow = effects::cast_by_content(&style);
+    // A region that covers this area whole or not at all needs no layer;
+    // a content shadow may still fall where it is clear.
+    let region = node
+      .mask_region()
+      .filter(|_| node.transform().is_none() && shadow.is_none())
+      .map(|region| {
+        let inner = self.on(self.grid.moved(x, y));
+        inner.region_cover(width, height, node.rect(), region)
+      });
+    if matches!(region, Some(effects::Cover::Clear)) {
+      return;
+    }
     if let Some(transform) = node.transform() {
       self.transformed(pixmap, node, &style, transform, opacity);
-    } else if opacity < 1.0 || style.mask.is_some() || shadow.is_some() {
+    } else if opacity < 1.0
+      || style.mask.is_some()
+      || matches!(region, Some(effects::Cover::Part(_)))
+      || shadow.is_some()
+    {
       // The layer covers only what the subtree paints in this area.
       let Some(mut layer) = Pixmap::new(width, height) else {
         return;
       };
       self.work.layer_pixels += u64::from(layer.width()) * u64::from(layer.height());
       let mut inner = self.on(self.grid.moved(x, y));
-      inner.layer_contents(&mut layer.as_mut(), node, &style, shadow);
+      inner.layer_contents(&mut layer.as_mut(), node, &style, shadow, region);
       let paint = PixmapPaint {
         opacity,
         ..PixmapPaint::default()
@@ -575,18 +591,30 @@ impl Painter<'_> {
   }
 
   /// What `node_contents` draws into a fresh `layer`, kept only where the
-  /// style's mask is opaque, with `shadow` cast by what is left put under
-  /// it.
+  /// style's mask is opaque and inside the node's mask region, which
+  /// `cover` holds when it was worked out over this layer already, with
+  /// `shadow` cast by what is left put under it.
   fn layer_contents(
     &mut self,
     layer: &mut PixmapMut<'_>,
     node: NodeView<'_>,
     style: &Style,
     shadow: Option<Shadow>,
+    cover: Option<effects::Cover>,
   ) {
     self.node_contents(layer, node, style);
     if let Some(mask) = &style.mask {
       self.mask(layer, node.rect(), mask);
+    }
+    let (width, height) = (layer.width(), layer.height());
+    let cover = cover.or_else(|| {
+      let region = node.mask_region()?;
+      Some(self.region_cover(width, height, node.rect(), region))
+    });
+    match cover {
+      Some(effects::Cover::Clear) => layer.fill(tiny_skia::Color::TRANSPARENT),
+      Some(effects::Cover::Part(cut)) => layer.apply_mask(&cut),
+      Some(effects::Cover::Whole) | None => {}
     }
     if let Some(shadow) = shadow {
       self.content_shadow(layer, node, &shadow);
@@ -690,7 +718,7 @@ impl Painter<'_> {
       ..self.grid
     });
     let shadow = effects::cast_by_content(style);
-    inner.layer_contents(&mut layer.as_mut(), node, style, shadow);
+    inner.layer_contents(&mut layer.as_mut(), node, style, shadow, None);
     let paint = PixmapPaint {
       opacity,
       quality: FilterQuality::Bilinear,

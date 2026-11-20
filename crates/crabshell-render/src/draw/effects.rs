@@ -5,10 +5,10 @@ use std::collections::VecDeque;
 use std::ops::Range;
 use std::path::Path;
 
-use crabshell_ui::{Mask, NodeView, Rect, Shadow, Style};
+use crabshell_ui::{Mask, NodeView, Rect, Region, RegionOp, RegionShape, Shadow, Style};
 use tiny_skia::{FillRule, MaskType, Paint, PathBuilder, Pixmap, PixmapMut, Transform};
 
-use super::{Grid, LAYER_MARGIN, Painter, mul};
+use super::{Corners, Grid, LAYER_MARGIN, Painter, fit, mul, rounded_rect};
 
 impl Painter<'_> {
   /// Keeps `layer` only where `mask`, laid over `rect`, is opaque, its
@@ -69,6 +69,50 @@ impl Painter<'_> {
       }
     }
     layer.apply_mask(&cut);
+  }
+
+  /// How much of a `width` by `height` layer `region`, laid out from
+  /// `rect`'s top-left corner, and `rect` itself cover: each shape filled
+  /// antialiased, then joined to the coverage so far. A shape that misses
+  /// the layer or covers all of it isn't filled, so most tiles of a large
+  /// region cost no mask.
+  pub(super) fn region_cover(&self, width: u32, height: u32, rect: Rect, region: &Region) -> Cover {
+    let in_box = self.grid.rect(rect).map_or(Cover::Clear, |area| {
+      shape_cover(width, height, area, Some([0.0; 4]))
+    });
+    if matches!(in_box, Cover::Clear) {
+      return Cover::Clear;
+    }
+    join(
+      in_box,
+      self.shapes_cover(width, height, rect, region),
+      RegionOp::Intersect,
+    )
+  }
+
+  /// [`region_cover`](Self::region_cover) without the box.
+  fn shapes_cover(&self, width: u32, height: u32, rect: Rect, region: &Region) -> Cover {
+    let area = |[left, top, right, bottom]: [i32; 4]| {
+      let (left, top) = (rect.x + left as f32, rect.y + top as f32);
+      let (right, bottom) = (rect.x + right as f32, rect.y + bottom as f32);
+      self
+        .grid
+        .rect(Rect::new(left, top, right - left, bottom - top))
+    };
+    let mut cover = match region.shape() {
+      RegionShape::Empty => Cover::Clear,
+      RegionShape::Rect(bounds, radii) => area(bounds).map_or(Cover::Clear, |area| {
+        let corners = fit(radii.map(|radius| radius * self.grid.scale), area);
+        shape_cover(width, height, area, Some(corners))
+      }),
+      RegionShape::Ellipse(bounds) => {
+        area(bounds).map_or(Cover::Clear, |area| shape_cover(width, height, area, None))
+      }
+    };
+    for (op, other) in region.joined() {
+      cover = join(cover, self.shapes_cover(width, height, rect, other), op);
+    }
+    cover
   }
 
   /// How far, in buffer pixels, `shadow` reaches back from where it is
@@ -156,7 +200,7 @@ impl Painter<'_> {
       top: top as f32,
       ..self.grid
     });
-    inner.layer_contents(&mut layer.as_mut(), node, &node.style(), None);
+    inner.layer_contents(&mut layer.as_mut(), node, &node.style(), None, None);
     let (width, height) = (width as usize, height as usize);
     let mut alpha: Vec<u8> = layer
       .data()
@@ -571,4 +615,118 @@ fn box_line(line: &[u8], out: &mut [u8], left: usize, right: usize) {
       sum -= at(gone);
     }
   }
+}
+
+/// How much of a layer a region covers.
+pub(super) enum Cover {
+  /// None of it.
+  Clear,
+  /// All of it.
+  Whole,
+  /// Each pixel's coverage.
+  Part(tiny_skia::Mask),
+}
+
+impl Cover {
+  /// The coverage of each of a `width` by `height` layer's pixels.
+  fn mask(self, width: u32, height: u32) -> Option<tiny_skia::Mask> {
+    let mut mask = match self {
+      Cover::Part(mask) => return Some(mask),
+      _ => tiny_skia::Mask::new(width, height)?,
+    };
+    if matches!(self, Cover::Whole) {
+      mask.data_mut().fill(255);
+    }
+    Some(mask)
+  }
+}
+
+/// How much of a `width` by `height` layer `area` covers, as a rectangle
+/// with `corners` or, with none, as the ellipse filling it. It is filled
+/// only when an edge or a corner crosses the layer.
+fn shape_cover(width: u32, height: u32, area: tiny_skia::Rect, corners: Option<Corners>) -> Cover {
+  let (w, h) = (width as f32, height as f32);
+  if area.right() <= 0.0 || area.left() >= w || area.bottom() <= 0.0 || area.top() >= h {
+    return Cover::Clear;
+  }
+  let inside = area.left() <= 0.0 && area.top() <= 0.0 && area.right() >= w && area.bottom() >= h;
+  let whole = match corners {
+    // No corner's square reaches the layer.
+    Some([top_left, top_right, bottom_right, bottom_left]) => {
+      let (left, top) = (area.left(), area.top());
+      let (right, bottom) = (area.right() - w, area.bottom() - h);
+      inside
+        && (left + top_left <= 0.0 || top + top_left <= 0.0)
+        && (right - top_right >= 0.0 || top + top_right <= 0.0)
+        && (right - bottom_right >= 0.0 || bottom - bottom_right >= 0.0)
+        && (left + bottom_left <= 0.0 || bottom - bottom_left >= 0.0)
+    }
+    // Every corner of the layer, a pixel out, is inside the ellipse.
+    None => {
+      let (rx, ry) = (area.width() / 2.0, area.height() / 2.0);
+      let (cx, cy) = (area.left() + rx, area.top() + ry);
+      [
+        (-1.0, -1.0),
+        (w + 1.0, -1.0),
+        (-1.0, h + 1.0),
+        (w + 1.0, h + 1.0),
+      ]
+      .iter()
+      .all(|&(x, y)| ((x - cx) / rx).powi(2) + ((y - cy) / ry).powi(2) < 1.0)
+    }
+  };
+  if whole {
+    return Cover::Whole;
+  }
+  let path = match corners {
+    Some(corners) => {
+      let mut path = PathBuilder::new();
+      rounded_rect(&mut path, area, corners);
+      path.finish()
+    }
+    None => PathBuilder::from_oval(area),
+  };
+  let (Some(path), Some(mut mask)) = (path, tiny_skia::Mask::new(width, height)) else {
+    return Cover::Clear;
+  };
+  mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
+  Cover::Part(mask)
+}
+
+/// Joins `b`'s coverage to `a`'s as `op` joins regions, each pixel as a
+/// fraction covered, so edges stay antialiased.
+fn join(a: Cover, b: Cover, op: RegionOp) -> Cover {
+  use Cover::{Clear, Part, Whole};
+  let (a, b) = match (op, a, b) {
+    (RegionOp::Union, Whole, _) | (RegionOp::Union, _, Whole) => return Whole,
+    (RegionOp::Union | RegionOp::Xor, Clear, other)
+    | (RegionOp::Union | RegionOp::Xor | RegionOp::Subtract, other, Clear)
+    | (RegionOp::Intersect, Whole, other)
+    | (RegionOp::Intersect, other, Whole) => return other,
+    (RegionOp::Subtract | RegionOp::Intersect, Clear, _)
+    | (RegionOp::Subtract, _, Whole)
+    | (RegionOp::Intersect, _, Clear)
+    | (RegionOp::Xor, Whole, Whole) => return Clear,
+    (_, Part(a), b) => {
+      let (width, height) = (a.width(), a.height());
+      (Some(a), b.mask(width, height))
+    }
+    (_, a, Part(b)) => {
+      let (width, height) = (b.width(), b.height());
+      (a.mask(width, height), Some(b))
+    }
+  };
+  let (Some(mut a), Some(b)) = (a, b) else {
+    return Clear;
+  };
+  for (a, &b) in a.data_mut().iter_mut().zip(b.data()) {
+    let both = mul(*a, b);
+    *a = match op {
+      RegionOp::Union => (*a - both).saturating_add(b),
+      RegionOp::Subtract => mul(*a, 255 - b),
+      RegionOp::Intersect => both,
+      RegionOp::Xor => (*a - both).saturating_add(b - both),
+    };
+  }
+  Part(a)
 }
