@@ -23,12 +23,12 @@ type StyleFn = Rc<dyn Fn() -> Style>;
 /// moves the handle.
 ///
 /// A press anywhere on the slider moves the value there and drags it from
-/// there. The wheel moves it one step a notch, or a twentieth of the range
-/// when it has no step, and a touchpad in proportion; so do the arrow keys
-/// while it has the keyboard focus, which Tab gives it. The value written
-/// is always within the range and on a step, and only a change is
-/// written. A value set from outside the range shows at that end, and NaN
-/// at the start.
+/// there. The wheel moves it one wheel step a notch, by default the step,
+/// or a twentieth of the range when it has no step, and a touchpad in
+/// proportion; so do the arrow keys while it has the keyboard focus, which
+/// Tab gives it. The value written is always within the range, at or under
+/// the limit, and on a step, and only a change is written. A value set
+/// from outside the range shows at that end, and NaN at the start.
 ///
 /// It draws nothing until styled: `style` sets the track's box, 120 by 4
 /// logical pixels unless it sets a size, `fill_style` the part from the
@@ -60,6 +60,8 @@ struct SliderProps {
   min: Option<Prop<f32>>,
   max: Option<Prop<f32>>,
   step: Option<Prop<f32>>,
+  limit: Option<Prop<Option<f32>>>,
+  wheel_step: Option<Prop<f32>>,
   vertical: Option<Prop<bool>>,
   enabled: Option<Prop<bool>>,
   style: Option<Prop<Style>>,
@@ -87,6 +89,8 @@ impl Slider {
         min: None,
         max: None,
         step: None,
+        limit: None,
+        wheel_step: None,
         vertical: None,
         enabled: None,
         style: None,
@@ -110,6 +114,27 @@ impl Slider {
   /// default, or a step that isn't a number above 0, slides freely.
   pub fn step(mut self, step: impl IntoProp<f32>) -> Slider {
     self.props.step = Some(step.into_prop());
+    self
+  }
+
+  /// Caps what a drag, the wheel, the keys or a screen reader can set,
+  /// below the range's end, as a brightness slider held to half in a power
+  /// saver mode; the track still shows the whole range. `None`, the
+  /// default, a cap that isn't a number or one past the end is the end,
+  /// and one under the start is the start. A value set from outside past
+  /// the cap shows where it is, and the next move from there lands at or
+  /// under the cap.
+  pub fn limit(mut self, max: impl IntoProp<Option<f32>>) -> Slider {
+    self.props.limit = Some(max.into_prop());
+    self
+  }
+
+  /// Sets how far one wheel notch or arrow key moves the value, so a
+  /// slider of whole steps can move 5 a notch. By default, or when it
+  /// isn't a number above 0, it is the step, or a twentieth of the range
+  /// without one. The value still snaps to the step.
+  pub fn wheel_step(mut self, step: impl IntoProp<f32>) -> Slider {
+    self.props.wheel_step = Some(step.into_prop());
     self
   }
 
@@ -185,6 +210,8 @@ pub(crate) struct Range {
   min: Memo<f32>,
   max: Memo<f32>,
   step: Memo<f32>,
+  limit: Memo<Option<f32>>,
+  wheel_step: Memo<f32>,
 }
 
 impl Range {
@@ -224,7 +251,19 @@ impl Range {
   /// One step of the wheel or the keys.
   fn unit(self) -> f32 {
     let (min, max) = self.bounds();
-    self.snap().unwrap_or((max - min) / PARTS)
+    untrack(|| self.wheel_step.try_get())
+      .filter(|step| step.is_finite() && *step > 0.0)
+      .or_else(|| self.snap())
+      .unwrap_or((max - min) / PARTS)
+  }
+
+  /// The highest value a move can write: the limit within the range.
+  fn cap(self) -> f32 {
+    let (min, max) = self.bounds();
+    match untrack(|| self.limit.try_get()).flatten() {
+      Some(limit) if limit < max => limit.max(min),
+      _ => max,
+    }
   }
 
   /// The step, unless it slides freely.
@@ -240,15 +279,16 @@ impl Range {
     })
   }
 
-  /// Writes `value`, within the range and on a step, if that changes it.
+  /// Writes `value`, within the range, at or under the cap and on a
+  /// step, if that changes it.
   pub(crate) fn write(self, value: f32) {
     untrack(|| {
-      let (min, max) = self.bounds();
+      let (min, _) = self.bounds();
       let mut value = if value.is_nan() { min } else { value };
       if let Some(step) = self.snap() {
         value = min + ((value - min) / step).round() * step;
       }
-      let value = value.max(min).min(max);
+      let value = value.max(min).min(self.cap());
       if self.value.try_get() != Some(value) {
         self.value.try_set(value);
       }
@@ -268,6 +308,8 @@ fn build(cx: &Cx, props: SliderProps) -> Button {
     min,
     max,
     step,
+    limit,
+    wheel_step,
     vertical,
     enabled,
     style,
@@ -280,6 +322,8 @@ fn build(cx: &Cx, props: SliderProps) -> Button {
     min: cx.memo(shared_or(min, 0.0)),
     max: cx.memo(shared_or(max, 1.0)),
     step: cx.memo(shared_or(step, 0.0)),
+    limit: cx.memo(shared_or(limit, None)),
+    wheel_step: cx.memo(shared_or(wheel_step, 0.0)),
   };
   if let Some(dragging) = dragging {
     // Kept under the slider's context, so it drops when the slider goes.

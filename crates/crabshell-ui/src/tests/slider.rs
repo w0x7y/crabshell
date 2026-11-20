@@ -290,3 +290,88 @@ fn a_step_can_be_bound() {
   assert_eq!(value.get(), 75.0);
   release(&window);
 }
+
+#[test]
+fn a_limit_caps_a_drag_the_wheel_and_the_keys_and_the_track_keeps_the_range() {
+  let mut h = Harness::new();
+  let value = h.cx.signal(0.0);
+  let limit = h.cx.signal(Some(50.0));
+  let window = window(
+    &mut h,
+    pixels_slider(value).step(1.0).limit(move || limit.get()),
+  );
+  press(&window, 60.0, 8.0);
+  assert_eq!(value.get(), 50.0, "52 is past the cap");
+  window.pointer_motion(Point::new(300.0, 8.0));
+  assert_eq!(value.get(), 50.0);
+  h.frame(&window);
+  assert_eq!(handle(&window).x, 50.0, "drawn along the whole range");
+  window.pointer_scroll(wheel(-120));
+  assert_eq!(value.get(), 50.0);
+  window.pointer_motion(Point::new(30.0, 8.0));
+  assert_eq!(value.get(), 22.0);
+  release(&window);
+  window.keyboard_enter();
+  window.key(&key(Key::Tab));
+  // A cap lowered under the value moves nothing until the value moves.
+  limit.set(Some(10.0));
+  h.frame(&window);
+  assert_eq!(value.get(), 22.0);
+  window.key(&key(Key::Right));
+  assert_eq!(value.get(), 10.0, "a move lands at or under the cap");
+  // None, NaN or a cap past the end is the end.
+  for cap in [None, Some(f32::NAN), Some(500.0)] {
+    limit.set(cap);
+    h.frame(&window);
+    press(&window, 119.0, 8.0);
+    assert_eq!(value.get(), 104.0, "{cap:?}");
+    release(&window);
+    value.set(0.0);
+  }
+}
+
+#[test]
+fn a_value_set_from_outside_past_the_limit_shows_where_it_is() {
+  let mut h = Harness::new();
+  let value = h.cx.signal(80.0);
+  let window = window(&mut h, pixels_slider(value).limit(Some(50.0)));
+  assert_eq!(handle(&window).x, 80.0);
+  assert_eq!(value.get(), 80.0, "showing it writes nothing");
+}
+
+#[test]
+fn a_wheel_step_moves_the_wheel_and_keys_while_a_drag_keeps_the_step() {
+  let mut h = Harness::new();
+  let value = h.cx.signal(50.0);
+  let window = window(
+    &mut h,
+    Slider::new(value)
+      .range(0.0, 100.0)
+      .step(1.0)
+      .wheel_step(5.0),
+  );
+  window.pointer_motion(Point::new(60.0, 8.0));
+  window.pointer_scroll(wheel(-120));
+  assert_eq!(value.get(), 55.0);
+  // A touchpad adds up to whole wheel steps.
+  window.pointer_scroll(pixels(-10.0));
+  assert_eq!(value.get(), 55.0);
+  window.pointer_scroll(pixels(-10.0));
+  assert_eq!(value.get(), 60.0);
+  window.keyboard_enter();
+  window.key(&key(Key::Tab));
+  window.key(&key(Key::Left));
+  assert_eq!(value.get(), 55.0);
+  press(&window, 8.0 + 0.473 * 104.0, 8.0);
+  assert_eq!(value.get(), 47.0, "a drag snaps to the step");
+  release(&window);
+  // A wheel step that isn't a number above 0 falls back to the step.
+  let bad = h.cx.signal(5.0);
+  let window = self::window(
+    &mut h,
+    Slider::new(bad).range(0.0, 10.0).step(1.0).wheel_step(-2.0),
+  );
+  window.pointer_motion(Point::new(60.0, 8.0));
+  window.pointer_scroll(wheel(-120));
+  assert_eq!(bad.get(), 6.0);
+}
