@@ -363,3 +363,75 @@ fn a_crop_draws_that_part_and_asks_for_the_whole_frame() {
     "the whole frame"
   );
 }
+
+#[test]
+fn shown_turns_true_once_the_commit_that_drew_the_picture_is_presented() {
+  let mut h = Harness::new();
+  let on_screen = h.cx.signal(true);
+  let visible = h.cx.signal(true);
+  let view = ScreencopyView::new(output("DP-2"))
+    .shown(on_screen)
+    .visible(move || visible.get())
+    .style(BOX);
+  let window = h.window(h.panel().child(Row::new().child(view)), 100.0, 50.0);
+  assert!(!on_screen.get(), "no picture yet");
+  // A commit before the picture came draws nothing of it.
+  window.frame_committed();
+  let id = window.captures()[0].id;
+  window.show_capture(id, frame(10));
+  window.frame_presented();
+  assert!(!on_screen.get(), "presented a commit from before it");
+  window.frame_committed();
+  assert!(!on_screen.get(), "committed, not yet presented");
+  window.frame_presented();
+  assert!(on_screen.get());
+
+  // A new picture is off screen until it is presented.
+  window.show_capture(id, frame(20));
+  assert!(!on_screen.get());
+  window.frame_committed();
+  window.frame_presented();
+  assert!(on_screen.get());
+
+  visible.set(false);
+  h.frame(&window);
+  window.frame_committed();
+  assert!(!on_screen.get(), "hidden");
+  visible.set(true);
+  h.frame(&window);
+  window.frame_committed();
+  window.frame_presented();
+  assert!(on_screen.get());
+
+  window.unmapped();
+  assert!(!on_screen.get(), "the surface went");
+  window.frame_committed();
+  window.frame_presented();
+  assert!(on_screen.get());
+  drop(window);
+  assert!(!on_screen.get(), "the window went");
+}
+
+#[test]
+fn a_view_removed_while_shown_writes_false() {
+  let mut h = Harness::new();
+  let on_screen = h.cx.signal(false);
+  let keys = h.cx.signal(vec![1]);
+  let row = Row::new().children_keyed(
+    move || keys.get(),
+    |key| *key,
+    move |_, _| {
+      ScreencopyView::new(output("DP-2"))
+        .shown(on_screen)
+        .style(BOX)
+    },
+  );
+  let window = h.window(h.panel().child(row), 100.0, 50.0);
+  window.show_capture(window.captures()[0].id, frame(10));
+  window.frame_committed();
+  window.frame_presented();
+  assert!(on_screen.get());
+  keys.set(Vec::new());
+  h.frame(&window);
+  assert!(!on_screen.get());
+}

@@ -5,6 +5,8 @@
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crabshell_reactive::{Signal, untrack};
+
 use crate::capture::Capture;
 use crate::geometry::{Affine, Rect, Size};
 use crate::prop::{IntoProp, Prop};
@@ -37,6 +39,7 @@ pub(crate) struct ScreencopyProps {
   pub(crate) source: Option<Prop<CaptureSource>>,
   pub(crate) capture: Option<Capture>,
   pub(crate) crop: Option<Prop<Option<Rect>>>,
+  pub(crate) shown: Option<Signal<bool>>,
   pub(crate) live: Option<Prop<bool>>,
   pub(crate) paint_cursors: Option<Prop<bool>>,
   pub(crate) fit: Option<Prop<Fit>>,
@@ -86,6 +89,7 @@ impl ScreencopyView {
         source,
         capture,
         crop: None,
+        shown: None,
         live: None,
         paint_cursors: None,
         fit: None,
@@ -102,6 +106,18 @@ impl ScreencopyView {
   /// resolution, so the part stays sharp.
   pub fn crop(mut self, rect: impl IntoProp<Option<Rect>>) -> ScreencopyView {
     self.props.crop = Some(rect.into_prop());
+    self
+  }
+
+  /// Writes `true` to `shown` once the picture this view shows is on
+  /// screen: the compositor presented the window's frame that first drew
+  /// it, as its frame callback says. It writes `false` while the view has
+  /// no picture, from when it takes a new one until that is presented,
+  /// and while the view is hidden, outside the window or a clipping
+  /// ancestor, or its window has no surface. Give each view a signal of
+  /// its own.
+  pub fn shown(mut self, shown: Signal<bool>) -> ScreencopyView {
+    self.props.shown = Some(shown);
     self
   }
 
@@ -189,6 +205,20 @@ pub(crate) struct CaptureNode {
   pub(crate) fit: Fit,
   pub(crate) crop: Option<Rect>,
   pub(crate) frame: Option<CaptureFrame>,
+  pub(crate) shown: Option<Signal<bool>>,
+  pub(crate) seen: Seen,
+}
+
+/// How far the picture a view shows got to the screen.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Seen {
+  /// No commit drew it yet, or the view isn't shown.
+  #[default]
+  Unseen,
+  /// The window's last commit drew it.
+  Drawn,
+  /// The compositor presented that commit.
+  Shown,
 }
 
 impl CaptureNode {
@@ -201,15 +231,31 @@ impl CaptureNode {
       fit: Fit::default(),
       crop: None,
       frame: None,
+      shown: None,
+      seen: Seen::Unseen,
     }
   }
 
-  /// Shows `frame`, and returns whether that changed what shows.
+  /// The view left its window: a `shown` it wrote `true` reads `false`.
+  pub(crate) fn gone(&self) {
+    if let Some(shown) = self.shown {
+      write(shown, false);
+    }
+  }
+
+  /// Shows `frame`, and returns whether that changed what shows. A new
+  /// picture isn't on screen until a commit draws it.
   fn show(&mut self, frame: Option<CaptureFrame>) -> bool {
     if self.frame == frame {
       return false;
     }
     self.frame = frame;
+    if self.seen == Seen::Shown
+      && let Some(shown) = self.shown
+    {
+      shown.try_set(false);
+    }
+    self.seen = Seen::Unseen;
     true
   }
 }
@@ -219,6 +265,13 @@ impl Tree {
   /// shows; the platform reads the rest when it next captures.
   pub(crate) fn bind_capture(&mut self, id: NodeId, props: ScreencopyProps) {
     self.captures.push(id);
+    if let Some(shown) = props.shown {
+      write(shown, false);
+      self.update_capture(id, |capture| {
+        capture.shown = Some(shown);
+        Change::None
+      });
+    }
     if let Some(capture) = props.capture {
       let frame = (move || capture.frame()).into_prop();
       self.bind(id, frame, "frame", |tree, id, frame| {
@@ -379,5 +432,67 @@ impl Window {
       }
     });
     shown
+  }
+
+  /// The window committed a frame. Each view in it with a picture no
+  /// commit drew yet counts as drawn, and each hidden, outside the window
+  /// or a clipping ancestor, or without a picture, as off screen.
+  pub fn frame_committed(&self) {
+    self.each_view(|capture, placed| match (placed, capture.seen) {
+      (false, _) => Seen::Unseen,
+      (true, Seen::Unseen) => Seen::Drawn,
+      (true, seen) => seen,
+    });
+  }
+
+  /// The compositor presented the window's last commit, as its frame
+  /// callback says: each view that commit drew shows its picture.
+  pub fn frame_presented(&self) {
+    self.each_view(|capture, _| match capture.seen {
+      Seen::Drawn => Seen::Shown,
+      seen => seen,
+    });
+  }
+
+  /// The window's surface went, as a hidden floating window's does: no
+  /// view in it is on screen.
+  pub fn unmapped(&self) {
+    self.each_view(|_, _| Seen::Unseen);
+  }
+
+  /// Moves each view's picture to the state `next` gives, from whether
+  /// it has one placed in sight, and writes `shown` where that changes.
+  fn each_view(&self, mut next: impl FnMut(&CaptureNode, bool) -> Seen) {
+    let mut writes = Vec::new();
+    let mut tree = borrow(&self.tree);
+    let views = tree.captures.clone();
+    for id in views {
+      let placed = tree.node(id).is_some_and(|node| node.rect.is_some()) && tree.in_sight(id);
+      let Some(node) = tree.node_mut(id) else {
+        continue;
+      };
+      let NodeKind::Capture(capture) = &mut node.kind else {
+        continue;
+      };
+      let seen = next(capture, placed && capture.frame.is_some());
+      if let Some(shown) = capture.shown
+        && (seen == Seen::Shown) != (capture.seen == Seen::Shown)
+      {
+        writes.push((shown, seen == Seen::Shown));
+      }
+      capture.seen = seen;
+    }
+    drop(tree);
+    for (shown, value) in writes {
+      write(shown, value);
+    }
+  }
+}
+
+/// Writes `value` to `signal` only when it changes, since a signal
+/// notifies on every write.
+fn write(signal: Signal<bool>, value: bool) {
+  if untrack(|| signal.try_get()).is_some_and(|was| was != value) {
+    signal.try_set(value);
   }
 }

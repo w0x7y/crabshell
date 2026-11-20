@@ -693,8 +693,9 @@ const GEOMETRY_ROUNDS: usize = 8;
 
 impl Drop for Window {
   fn drop(&mut self) {
-    // A `hovered` signal owned elsewhere mustn't stay `true`, and a drag
-    // on a window going away ends without running anything.
+    // A `hovered` or `shown` signal owned elsewhere mustn't stay `true`,
+    // and a drag on a window going away ends without running anything.
+    self.unmapped();
     let mut tree = borrow(&self.tree);
     tree.access_event(|_| crate::AccessEvent::WindowsChanged);
     drop(tree.leave());

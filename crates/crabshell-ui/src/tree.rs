@@ -1286,6 +1286,11 @@ impl Tree {
       }
     }
     self.pointer.forget(&removed);
+    for node in &removed {
+      if let Some(NodeKind::Capture(capture)) = self.node(*node).map(|node| &node.kind) {
+        capture.gone();
+      }
+    }
     self.captures.retain(|node| !removed.contains(node));
     self.images.retain(|node| !removed.contains(node));
     self.keyboard.forget(&removed);
