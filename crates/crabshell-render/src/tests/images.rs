@@ -183,7 +183,7 @@ fn an_image_past_the_window_edge_is_cut_not_squashed() {
 fn view(path: &std::path::Path, fit: Fit, filters: ImageFilters) -> ImageView<'_> {
   ImageView {
     id: 0,
-    path,
+    source: super::file_source(path),
     rect: crabshell_ui::Rect::new(0.0, 0.0, 1.0, 1.0),
     fit,
     filters,

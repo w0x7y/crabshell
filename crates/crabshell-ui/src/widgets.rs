@@ -167,7 +167,7 @@ pub(crate) struct IconProps {
 }
 
 pub(crate) struct ImageProps {
-  pub(crate) source: Prop<PathBuf>,
+  pub(crate) source: Prop<IconSource>,
   pub(crate) width: Option<Prop<u32>>,
   pub(crate) height: Option<Prop<u32>>,
   pub(crate) fit: Option<Prop<Fit>>,
@@ -278,15 +278,16 @@ pub enum Justify {
   SpaceEvenly,
 }
 
-/// What an [`Icon`] shows.
+/// What an [`Icon`] or an [`Image::from_source`] shows.
 #[derive(Clone, Debug, PartialEq)]
 pub enum IconSource {
   /// A freedesktop icon name such as `"audio-volume-high"`, looked up in
   /// the icon theme.
   Name(String),
-  /// An SVG or PNG file.
+  /// An SVG or PNG file; for an [`Image`], any file [`Image::new`]
+  /// reads.
   File(PathBuf),
-  /// Raw pixels, as a tray item sends them.
+  /// Raw pixels, as a tray item or a notification sends them.
   Pixels(IconPixels),
 }
 
@@ -976,7 +977,7 @@ impl Image {
   pub fn new(source: impl IntoProp<PathBuf>) -> Image {
     Image {
       image: ImageProps {
-        source: source.into_prop(),
+        source: source.into_prop().map(IconSource::File),
         width: None,
         height: None,
         fit: None,
@@ -991,6 +992,32 @@ impl Image {
       },
       common: Common::default(),
     }
+  }
+
+  /// An image of an [`IconSource`], or a closure that returns an
+  /// `Option` of one, such as crabshell-services' `Notification::image`:
+  /// raw pixels, a file as [`new`](Image::new) reads it, or an icon name
+  /// looked up in the icon theme at the box's larger side and the
+  /// window's scale rounded up, then read as that file. `None` shows
+  /// nothing and is [`ImageStatus::Empty`], as an empty path is. `fit`,
+  /// the filters, `transition` and `status` work as for a file.
+  ///
+  /// Pixels keep an [`Icon`]'s limits: at most 512 a side and exactly
+  /// `width * height * 4` bytes, or the image is [`ImageStatus::Failed`]
+  /// and the bad buffer is logged once. They are scaled on the loop's
+  /// thread, once for each size, fit and filters, and cached by their
+  /// shared allocation, so images showing the same [`IconPixels`] share
+  /// one picture. A new source with the same bytes keeps the one shown. A
+  /// name that no theme has fails as a missing file does.
+  ///
+  /// [`ImageStatus::Empty`]: crate::ImageStatus::Empty
+  /// [`ImageStatus::Failed`]: crate::ImageStatus::Failed
+  pub fn from_source(source: impl IntoProp<Option<IconSource>>) -> Image {
+    let mut image = Image::new(PathBuf::new());
+    image.image.source = source
+      .into_prop()
+      .map(|source| source.unwrap_or_else(crate::image::empty_source));
+    image
   }
 
   /// Sets the width in logical pixels.
@@ -1078,12 +1105,13 @@ impl Image {
   /// can't be read: [`ImageStatus::Empty`] for an empty path,
   /// [`ImageStatus::Loading`] from each new source until its picture is
   /// loaded, [`ImageStatus::Ready`] once it is, and
-  /// [`ImageStatus::Failed`] when the file can't be read or decoded or is
-  /// past the size limits. Each new source is loaded in the loop turn
-  /// that set it, whether the image is drawn or not, so its own status
-  /// can show it: one at opacity 0 or cut out by its mask region loads at
-  /// its size, and one hidden or of no size at the box it was last laid
-  /// out in, or one pixel if it has none. A hidden image is decoded again
+  /// [`ImageStatus::Failed`] when the file can't be read or decoded, the
+  /// pixels or name of [`from_source`](Image::from_source) are bad or
+  /// missing, or it is past the size limits. Each new source is loaded in
+  /// the loop turn that set it, whether the image is drawn or not, so its
+  /// own status can show it: one at opacity 0 or cut out by its mask
+  /// region loads at its size, and one hidden or of no size at the box it
+  /// was last laid out in, or one pixel if it has none. A hidden image is decoded again
   /// at its size once shown, so binding its opacity to Ready is the cheap
   /// way to fade it in. A picture decoded again at another size stays
   /// Ready. Written only on a change; the signal belongs to the config,

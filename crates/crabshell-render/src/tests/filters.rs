@@ -166,10 +166,9 @@ fn a_blur_of_nothing_or_of_an_empty_picture_does_nothing() {
 }
 
 fn view(fit: Fit, filters: ImageFilters) -> ImageView<'static> {
-  let path: &'static std::path::Path = Box::leak(fixture("stripes.png").into_boxed_path());
   ImageView {
     id: 0,
-    path,
+    source: super::file_source(&fixture("stripes.png")),
     rect: Rect::new(0.0, 0.0, 1.0, 1.0),
     fit,
     filters,

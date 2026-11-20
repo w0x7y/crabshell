@@ -11,7 +11,6 @@
 //! live in the reactive runtime rather than here, so the runtime drops them.
 
 use std::cell::{Cell, RefCell, RefMut};
-use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 
 use crabshell_reactive::Signal;
@@ -328,7 +327,7 @@ pub(crate) struct ImageNode {
   /// Names the image for the renderer's playback of a GIF and the
   /// platform's repaint of its next frame.
   pub(crate) id: u64,
-  pub(crate) source: Option<PathBuf>,
+  pub(crate) source: Option<IconSource>,
   pub(crate) width: u32,
   pub(crate) height: u32,
   pub(crate) fit: Fit,

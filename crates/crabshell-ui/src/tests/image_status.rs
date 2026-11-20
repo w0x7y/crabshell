@@ -7,9 +7,13 @@ use std::path::{Path, PathBuf};
 use super::{Counter, Harness};
 use crate::image::watched_images;
 use crate::{
-  Content, Image, ImageStatus, Row, Window, image_sources_changed, image_status,
+  Content, IconSource, Image, ImageStatus, Row, Window, image_sources_changed, image_status,
   image_status_changed,
 };
+
+fn file(name: &str) -> IconSource {
+  IconSource::File(Path::new(name).to_owned())
+}
 
 fn id(window: &Window, index: usize) -> u64 {
   match super::node_at(window.view().root(), &[0, index]).content() {
@@ -40,17 +44,17 @@ fn the_source_says_empty_or_loading_and_the_renderer_ready_or_failed() {
   assert_eq!(empty.get(), ImageStatus::Empty);
   let image = id(&window, 0);
 
-  image_status(image, Path::new("a.png"), ImageStatus::Ready);
+  image_status(image, &file("a.png"), ImageStatus::Ready);
   assert!(image_status_changed());
   assert!(!image_status_changed(), "taken");
   h.frame(&window);
   assert_eq!(status.get(), ImageStatus::Ready);
   assert_eq!(writes.get(), 3, "the first run, Loading and Ready");
   // The same report again, every draw, writes nothing.
-  image_status(image, Path::new("a.png"), ImageStatus::Ready);
+  image_status(image, &file("a.png"), ImageStatus::Ready);
   assert!(!image_status_changed());
   // An empty source keeps Empty whatever is drawn.
-  image_status(id(&window, 1), Path::new(""), ImageStatus::Failed);
+  image_status(id(&window, 1), &file(""), ImageStatus::Failed);
   assert_eq!(empty.get(), ImageStatus::Empty);
 
   // A new source goes back to Loading, and a late report about the old
@@ -58,9 +62,9 @@ fn the_source_says_empty_or_loading_and_the_renderer_ready_or_failed() {
   source.set("b.png");
   h.frame(&window);
   assert_eq!(status.get(), ImageStatus::Loading);
-  image_status(image, Path::new("a.png"), ImageStatus::Ready);
+  image_status(image, &file("a.png"), ImageStatus::Ready);
   assert_eq!(status.get(), ImageStatus::Loading);
-  image_status(image, Path::new("b.png"), ImageStatus::Failed);
+  image_status(image, &file("b.png"), ImageStatus::Failed);
   h.frame(&window);
   assert_eq!(status.get(), ImageStatus::Failed);
   source.set("");
@@ -80,7 +84,7 @@ fn a_status_change_repaints_nothing_by_itself() {
     64.0,
   );
   window.take_damage();
-  image_status(id(&window, 0), Path::new("a.png"), ImageStatus::Ready);
+  image_status(id(&window, 0), &file("a.png"), ImageStatus::Ready);
   h.frame(&window);
   assert_eq!(status.get(), ImageStatus::Ready);
   assert!(!window.has_damage());
@@ -105,7 +109,7 @@ fn an_image_that_goes_is_no_longer_watched() {
   shown.set(false);
   h.frame(&window);
   assert_eq!(watched_images(), before);
-  image_status(image, Path::new("a.png"), ImageStatus::Ready);
+  image_status(image, &file("a.png"), ImageStatus::Ready);
   assert_eq!(status.get(), ImageStatus::Loading, "the last it was told");
   assert!(!image_status_changed());
 }

@@ -318,7 +318,7 @@ fn a_first_frame_off_or_larger_than_its_canvas_is_refused() {
 fn view(id: u64, path: &Path, playing: bool) -> ImageView<'_> {
   ImageView {
     id,
-    path,
+    source: super::file_source(path),
     rect: Rect::new(0.0, 0.0, 4.0, 4.0),
     fit: Fit::Fill,
     filters: ImageFilters::default(),
@@ -465,10 +465,7 @@ fn a_playing_gif_keeps_its_frames_past_the_byte_budget() {
   icons.next_frame(start);
   let stripes = super::fixture("stripes.png");
   for side in [2000, 2001, 2002] {
-    let image = ImageView {
-      path: &stripes,
-      ..view(0, &stripes, true)
-    };
+    let image = view(0, &stripes, true);
     icons.picture(&image, (side, 2000), 1.0);
   }
   for _ in 0..20 {

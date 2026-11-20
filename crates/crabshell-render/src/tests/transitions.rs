@@ -383,13 +383,13 @@ fn icons() -> Icons {
 fn view<'a>(path: &'a Path, leaving: Option<(&'a Path, f32)>) -> ImageView<'a> {
   ImageView {
     id: 1,
-    path,
+    source: super::file_source(path),
     rect: Rect::new(0.0, 0.0, 1.0, 1.0),
     fit: Fit::Fill,
     filters: ImageFilters::default(),
     playing: true,
     transition: ImageTransition::crossfade(LINEAR),
-    leaving,
+    leaving: leaving.map(|(path, t)| (super::file_source(path), t)),
   }
 }
 

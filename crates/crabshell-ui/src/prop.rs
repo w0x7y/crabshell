@@ -159,6 +159,12 @@ impl IntoProp<Option<Color>> for Color {
   }
 }
 
+impl IntoProp<Option<IconSource>> for IconSource {
+  fn into_prop(self) -> Prop<Option<IconSource>> {
+    Prop(PropKind::Value(Some(self)))
+  }
+}
+
 impl IntoProp<Option<Style>> for Style {
   fn into_prop(self) -> Prop<Option<Style>> {
     Prop(PropKind::Value(Some(self)))

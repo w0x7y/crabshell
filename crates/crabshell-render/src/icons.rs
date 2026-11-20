@@ -93,8 +93,8 @@ pub(crate) struct Icons {
   /// each as it is first drawn.
   worker: Option<Worker>,
   /// The pictures the worker decodes: each one's job, and the images
-  /// waiting for it.
-  pending: HashMap<Key, (u64, Vec<u64>)>,
+  /// waiting for it with the source each shows.
+  pending: HashMap<Key, (u64, Vec<(u64, IconSource)>)>,
   /// Images whose picture came in, to repaint.
   ready: Vec<u64>,
   /// How many jobs the worker did, for tests.
@@ -113,10 +113,10 @@ pub(crate) struct Icons {
 struct Memo {
   /// The draw, the image's id, its size in pixels and its scale's bits.
   at: (u64, u64, (u32, u32), u32),
-  /// What else of the view picks the pictures: its file, the file its
-  /// transition leaves, its fit, filters and transition.
-  path: PathBuf,
-  leaving: Option<PathBuf>,
+  /// What else of the view picks the pictures: its source, the source
+  /// its transition leaves, its fit, filters and transition.
+  source: IconSource,
+  leaving: Option<IconSource>,
   fit: Fit,
   filters: FilterKey,
   transition: ImageTransition,
@@ -128,8 +128,8 @@ impl Memo {
   fn new(at: (u64, u64, (u32, u32), u32), image: &ImageView<'_>, scale: f32, to: Key) -> Memo {
     Memo {
       at,
-      path: image.path.to_owned(),
-      leaving: image.leaving.map(|(path, _)| path.to_owned()),
+      source: image.source.clone(),
+      leaving: image.leaving.map(|(source, _)| source.clone()),
       fit: image.fit,
       filters: FilterKey::new(&image.filters, scale),
       transition: image.transition,
@@ -141,9 +141,8 @@ impl Memo {
   /// Whether `image`, drawn at `at` and `scale`, shows what this did.
   fn matches(&self, at: (u64, u64, (u32, u32), u32), image: &ImageView<'_>, scale: f32) -> bool {
     self.at == at
-      && self.path.as_os_str() == image.path.as_os_str()
-      && self.leaving.as_deref().map(Path::as_os_str)
-        == image.leaving.map(|(path, _)| path.as_os_str())
+      && &self.source == image.source
+      && self.leaving.as_ref() == image.leaving.map(|(source, _)| source)
       && self.fit == image.fit
       && self.filters == FilterKey::new(&image.filters, scale)
       && self.transition == image.transition
@@ -154,10 +153,10 @@ impl Memo {
 #[derive(Default)]
 struct Shown {
   /// The last source that loaded, which one that can't falls back to.
-  good: Option<PathBuf>,
-  /// While a transition runs: the file it leaves, as the view names it,
+  good: Option<IconSource>,
+  /// While a transition runs: the source it leaves, as the view names it,
   /// and the one it draws, the last good one when that can't be loaded.
-  leaving: Option<(PathBuf, Option<PathBuf>)>,
+  leaving: Option<(IconSource, Option<IconSource>)>,
   /// The picture it left at its last draw, held only while drawn.
   left: Option<Key>,
   used: u64,
@@ -259,6 +258,17 @@ enum Key {
     fit: Fit,
     filters: FilterKey,
   },
+  /// Raw pixels drawn as an image, by their shared allocation, scaled to
+  /// `size` as an image file is.
+  Picture {
+    data: Shared,
+    pixels: (u32, u32),
+    size: (u32, u32),
+    fit: Fit,
+    filters: FilterKey,
+  },
+  /// An icon name drawn as an image that no theme has, failed once.
+  Missing { theme: String, name: String },
   /// Raw pixels, by their shared allocation: reading the bytes on every
   /// draw would cost as much as rasterizing them.
   Pixels {
@@ -428,14 +438,11 @@ impl Icons {
         .remove(&key)
         .map(|(_, images)| images)
         .unwrap_or_default();
-      ready.extend(&images);
-      let source = match &key {
-        Key::Image { path, .. } => Some(path.clone()),
-        _ => None,
+      ready.extend(images.iter().map(|(id, _)| *id));
+      let path = match &key {
+        Key::Image { path, .. } => path.display().to_string(),
+        _ => String::new(),
       };
-      let path = source
-        .as_ref()
-        .map_or_else(String::new, |path| path.display().to_string());
       let mut frames = frames;
       // Each job had the room left when it was sent, so GIFs decoded
       // together could keep more than the cache holds.
@@ -462,10 +469,8 @@ impl Icons {
       };
       self.store(key, frames, || format!("image {path}"));
       // Told now, as an image that isn't drawn would never tell it.
-      if let Some(source) = &source {
-        for &id in &images {
-          crabshell_ui::image_status(id, source, status);
-        }
+      for (id, source) in &images {
+        crabshell_ui::image_status(*id, source, status);
       }
     }
     ready.sort_unstable();
@@ -646,7 +651,7 @@ impl Icons {
         _ => Drawn::One(to),
       });
     }
-    let key = self.load(image.path, image, size, scale, true, Some(image.id));
+    let key = self.load(image.source, image, size, scale, true, Some(image.id));
     if self.pending.contains_key(&key) {
       return self.waiting(image, &key, size, scale);
     }
@@ -661,7 +666,7 @@ impl Icons {
       0 => ImageStatus::Failed,
       _ => ImageStatus::Ready,
     };
-    crabshell_ui::image_status(image.id, image.path, status);
+    crabshell_ui::image_status(image.id, image.source, status);
     let index = if count > 1 {
       self.play(image, &key, count)
     } else {
@@ -689,14 +694,14 @@ impl Icons {
     if count == 0 {
       // Keeps the old picture, and ends the transition coming in.
       if image.leaving.is_some() {
-        crabshell_ui::image_source_failed(image.id, image.path);
+        crabshell_ui::image_source_failed(image.id, image.source);
       }
       let good = shown.good.clone()?;
       let key = self.load(&good, image, size, scale, true, Some(image.id));
       self.show(image.id, &key);
       return frame(&self.cache, &key, 0).map(Drawn::One);
     }
-    shown.good = Some(image.path.to_owned());
+    shown.good = Some(image.source.clone());
     self.show(image.id, &key);
     if count == 1 {
       self.memo = Some(Memo {
@@ -727,8 +732,10 @@ impl Icons {
     for image in images {
       // A draw already sent this source to the worker for it, maybe at a
       // transform's scale; loading it here too would cancel that job.
-      let sent = self.pending.iter().any(|(key, (_, waiting))| {
-        matches!(key, Key::Image { path, .. } if path == image.path) && waiting.contains(&image.id)
+      let sent = self.pending.values().any(|(_, waiting)| {
+        waiting
+          .iter()
+          .any(|(id, source)| *id == image.id && source == image.source)
       });
       if sent {
         continue;
@@ -736,13 +743,13 @@ impl Icons {
       // `as` saturates, and NaN is 0.
       let pixels = |length: f32| ((length * scale).round() as u32).max(1);
       let size = (pixels(image.rect.width), pixels(image.rect.height));
-      let key = self.load(image.path, image, size, scale, true, Some(image.id));
+      let key = self.load(image.source, image, size, scale, true, Some(image.id));
       if let Some(entry) = self.cache.get(&key) {
         let status = match entry.frames {
           Some(_) => ImageStatus::Ready,
           None => ImageStatus::Failed,
         };
-        crabshell_ui::image_status(image.id, image.path, status);
+        crabshell_ui::image_status(image.id, image.source, status);
       }
     }
   }
@@ -751,9 +758,10 @@ impl Icons {
   /// paused on its first frame, so a GIF never wakes the loop. A failure
   /// is logged once per path, so a box that changes size logs once.
   pub(crate) fn mask(&mut self, path: &Path, size: (u32, u32), scale: f32) -> Option<&Pixmap> {
+    let source = IconSource::File(path.to_owned());
     let image = ImageView {
       id: u64::MAX,
-      path,
+      source: &source,
       rect: crabshell_ui::Rect::default(),
       fit: Fit::Fill,
       filters: ImageFilters::default(),
@@ -762,7 +770,7 @@ impl Icons {
       leaving: None,
     };
     let log = !self.failed_masks.contains(path);
-    let key = self.load(path, &image, size, scale, log, None);
+    let key = self.load(&source, &image, size, scale, log, None);
     self.masked.insert(key.clone(), self.frame);
     if self
       .cache
@@ -838,9 +846,9 @@ impl Icons {
           .cache
           .get(&left)
           .is_some_and(|entry| entry.frames.is_some());
-        let drawn = if loads { Some(named.to_owned()) } else { good };
+        let drawn = if loads { Some(named.clone()) } else { good };
         let shown = self.transitions.entry(image.id).or_default();
-        shown.leaving = Some((named.to_owned(), drawn.clone()));
+        shown.leaving = Some((named.clone(), drawn.clone()));
         drawn
       }
     };
@@ -878,7 +886,7 @@ impl Icons {
     self.waited = true;
     if image.leaving.is_some() {
       // Its transition waits at the start until the picture comes in.
-      crabshell_ui::image_source_decoding(image.id, image.path);
+      crabshell_ui::image_source_decoding(image.id, image.source);
     }
     let left = if image.transition == ImageTransition::None {
       None
@@ -926,59 +934,94 @@ impl Icons {
     }
   }
 
-  /// The cache key of the file at `path` drawn as `image` is, and the
-  /// file's length.
+  /// The cache key of `source` drawn as `image` is at `size`, and a
+  /// file's length. A name is looked up in the theme as an icon is, at
+  /// the box's larger side and the scale rounded up, and drawn as the file
+  /// found.
   fn key(
     &mut self,
-    path: &Path,
+    source: &IconSource,
     image: &ImageView<'_>,
     (width, height): (u32, u32),
     scale: f32,
   ) -> (Key, u64) {
     self.lookups += 1;
-    let (modified, length) = match self.modified.get(path) {
+    let filters = FilterKey::new(&image.filters, scale);
+    let path = match source {
+      IconSource::File(path) => path.clone(),
+      IconSource::Pixels(pixels) => {
+        let key = Key::Picture {
+          data: Shared(Rc::clone(&pixels.data)),
+          pixels: (pixels.width, pixels.height),
+          size: (width, height),
+          fit: image.fit,
+          filters,
+        };
+        return (key, pixels.data.len() as u64);
+      }
+      IconSource::Name(name) => {
+        let mut lookup = self.lookup.borrow();
+        let Lookup { theme, themes } = &mut *lookup;
+        // `as` saturates, and NaN is 0.
+        let side = (width.max(height) as f32 / scale).round() as u32;
+        match themes.find(theme, name, side, scale.ceil().max(1.0) as u32) {
+          Some(path) => path,
+          None => {
+            let (theme, name) = (theme.clone(), name.clone());
+            return (Key::Missing { theme, name }, 0);
+          }
+        }
+      }
+    };
+    let (modified, length) = match self.modified.get(&path) {
       Some(file) => *file,
       None => {
-        let metadata = std::fs::metadata(path).ok();
+        let metadata = std::fs::metadata(&path).ok();
         let file = (
           metadata
             .as_ref()
             .and_then(|metadata| metadata.modified().ok()),
           metadata.map_or(0, |metadata| metadata.len()),
         );
-        self.modified.insert(path.to_owned(), file);
+        self.modified.insert(path.clone(), file);
         file
       }
     };
     let key = Key::Image {
-      path: path.to_owned(),
+      path,
       modified,
       width,
       height,
       fit: image.fit,
-      filters: FilterKey::new(&image.filters, scale),
+      filters,
     };
     (key, length)
   }
 
-  /// The key of the file at `path` drawn as `image` is, decoded into the
-  /// cache on first use, marked used by this draw. A failure is logged
-  /// only with `log`. For a `waiter`, the image that draws it, a large
-  /// file goes to the worker, if there is one, and stays out of the cache
-  /// until it comes back; without, it is decoded at once, taking over a
-  /// job the worker hasn't started.
+  /// The key of `source` drawn as `image` is, decoded into the cache on
+  /// first use, marked used by this draw. A failure is logged only with
+  /// `log`. For a `waiter`, the image that draws it, a large file goes to
+  /// the worker, if there is one, and stays out of the cache until it
+  /// comes back; without, it is decoded at once, taking over a job the
+  /// worker hasn't started. Pixels are scaled at once.
   fn load(
     &mut self,
-    path: &Path,
+    source: &IconSource,
     image: &ImageView<'_>,
     size: (u32, u32),
     scale: f32,
     log: bool,
     waiter: Option<u64>,
   ) -> Key {
-    let (key, length) = self.key(path, image, size, scale);
+    let (key, length) = self.key(source, image, size, scale);
     if !self.cache.contains_key(&key) {
-      if !log {
+      let empty = match source {
+        IconSource::File(path) => path.as_os_str().is_empty(),
+        IconSource::Name(name) => name.is_empty(),
+        IconSource::Pixels(_) => false,
+      };
+      // An empty source is the image's Empty status, not a failure.
+      if !log || empty {
         // Counted as logged already.
         self.failed.insert(key.clone());
       }
@@ -986,10 +1029,14 @@ impl Icons {
       let small = length <= SMALL_FILE
         && image.filters.blur == 0.0
         && u64::from(size.0) * u64::from(size.1) <= SMALL_PIXELS;
-      if let (Some(worker), Some(id), false) = (&mut self.worker, waiter, small) {
+      // shortcut: pixels are `Rc`, so they are scaled and blurred on the
+      // loop's thread; copy them into the job if a large blurred one stalls.
+      if let (Some(worker), Some(id), false, Key::Image { path, .. }) =
+        (&mut self.worker, waiter, small, &key)
+      {
         let (_, images) = self.pending.entry(key.clone()).or_insert_with(|| {
           let job = Job {
-            path: path.to_owned(),
+            path: path.clone(),
             size,
             fit: image.fit,
             filters: image.filters,
@@ -998,8 +1045,11 @@ impl Icons {
           };
           (worker.send(job), Vec::new())
         });
-        if !images.contains(&id) {
-          images.push(id);
+        if !images
+          .iter()
+          .any(|(waiting, shown)| *waiting == id && shown == source)
+        {
+          images.push((id, source.clone()));
           self.leave_other_jobs(id, &key);
         }
         return key;
@@ -1008,12 +1058,25 @@ impl Icons {
         if let Some(worker) = &mut self.worker {
           worker.cancel(job);
         }
-        self.ready.extend(images);
+        self.ready.extend(images.iter().map(|(id, _)| *id));
       }
-      let rasterized = crate::animation::frames(path, size, image.fit, &image.filters, scale, room);
-      self.store(key.clone(), rasterized, || {
-        format!("image {}", path.display())
-      });
+      let rasterized = match (&key, source) {
+        (Key::Image { path, .. }, _) => {
+          crate::animation::frames(path, size, image.fit, &image.filters, scale, room)
+        }
+        (_, IconSource::Pixels(pixels)) => from_argb(pixels)
+          .and_then(|pixmap| {
+            let picture = crate::images::Picture::Pixels(pixmap);
+            crate::images::finish(&picture, size, image.fit, &image.filters, scale)
+          })
+          .map(Frames::still),
+        (_, source) => Err(format!("no icon {} in the theme", describe(source))),
+      };
+      let what = match &key {
+        Key::Image { path, .. } => format!("image {}", path.display()),
+        _ => describe(source),
+      };
+      self.store(key.clone(), rasterized, || what);
     }
     if let Some(entry) = self.cache.get_mut(&key) {
       entry.used = self.frame;
@@ -1031,7 +1094,7 @@ impl Icons {
     let mut abandoned = Vec::new();
     for (other, (job, images)) in &mut self.pending {
       if other != key && matches!(other, Key::Image { path: file, .. } if file == path) {
-        images.retain(|&waiting| waiting != id);
+        images.retain(|(waiting, _)| *waiting != id);
         if images.is_empty() {
           abandoned.push((other.clone(), *job));
         }

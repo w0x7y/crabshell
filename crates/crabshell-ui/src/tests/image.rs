@@ -313,3 +313,37 @@ fn a_panicking_fallback_is_logged_with_its_path() {
     Some(IconSource::Name("b".into()))
   );
 }
+
+#[test]
+fn an_image_of_a_source_shows_it_and_a_panicking_one_is_logged_with_its_path() {
+  let mut h = Harness::new();
+  let fail = h.cx.signal(false);
+  let pixels = IconSource::Pixels(crate::IconPixels {
+    width: 1,
+    height: 1,
+    data: std::rc::Rc::from(&[255, 0, 0, 0][..]),
+  });
+  let shown = pixels.clone();
+  let row = Row::new()
+    .child(Image::from_source(move || {
+      assert!(!fail.get(), "source failure");
+      Some(shown.clone())
+    }))
+    .child(Image::from_source(None));
+  let window = h.window(h.panel().child(row), 200.0, 64.0);
+  let source_at = |index: usize| match node_at(window.view().root(), &[0, index]).content() {
+    Content::Image(image) => image.source.clone(),
+    _ => panic!("no image at {index}"),
+  };
+  assert_eq!(source_at(0), pixels);
+  assert_eq!(source_at(1), IconSource::File("".into()), "none is empty");
+  let logs = capture_logs(|| {
+    fail.set(true);
+    h.frame(&window);
+  });
+  assert!(
+    logs.contains("effect PanelWindow[DP-1]/Row/Image[0].image panicked and is disabled"),
+    "{logs}"
+  );
+  assert_eq!(source_at(0), pixels, "keeps its last source");
+}

@@ -450,7 +450,7 @@ fn an_image_is_its_size_and_a_new_picture_only_repaints() {
   assert_eq!(rect_at(&window, &[0, 1]), Rect::new(64.0, 0.0, 30.0, 20.0));
   match node_at(window.view().root(), &[0, 1]).content() {
     Content::Image(image) => {
-      assert_eq!(image.path, std::path::Path::new("a.png"));
+      assert_eq!(image.source, &crate::IconSource::File("a.png".into()));
       assert_eq!(image.rect, Rect::new(64.0, 0.0, 30.0, 20.0));
       assert_eq!(image.fit, Fit::Cover);
     }

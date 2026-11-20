@@ -1,7 +1,6 @@
 //! A read-only view of a laid-out window, for drawing it.
 
 use std::cell::Ref;
-use std::path::Path;
 
 use cosmic_text::{Buffer, LayoutGlyph};
 
@@ -229,9 +228,9 @@ impl<'a> NodeView<'a> {
         })
       }
       NodeKind::Image(image) => match &image.source {
-        Some(path) => Content::Image(ImageView {
+        Some(source) => Content::Image(ImageView {
           id: image.id,
-          path,
+          source,
           rect: centered(self.node.content, image.width, image.height),
           fit: image.fit,
           filters: image.filters,
@@ -240,7 +239,7 @@ impl<'a> NodeView<'a> {
           leaving: image
             .leaving
             .as_ref()
-            .map(|leaving| (leaving.source.as_path(), leaving.t)),
+            .map(|leaving| (&leaving.source, leaving.t)),
         }),
         None => Content::None,
       },
@@ -447,8 +446,9 @@ pub struct ImageView<'a> {
   /// Names the image, so a renderer can keep a GIF's playback and the
   /// platform repaint it with [`Window::repaint_image`](crate::Window::repaint_image).
   pub id: u64,
-  /// The file to show.
-  pub path: &'a Path,
+  /// What to show: a file, an icon name looked up in the theme at the
+  /// box's larger side, or raw pixels.
+  pub source: &'a IconSource,
   /// Where: a box of the image's size, centered in the node.
   pub rect: Rect,
   /// How the picture fills the box.
@@ -460,10 +460,10 @@ pub struct ImageView<'a> {
   /// How a new source comes in. With one other than none, a source that
   /// can't be loaded shows the last one that could.
   pub transition: ImageTransition,
-  /// While a transition runs: the file it leaves and how far along it is,
+  /// While a transition runs: the source it leaves and how far along it is,
   /// eased, from 0 (all old) to 1 (all new); an easing that overshoots
   /// may stray past either end.
-  pub leaving: Option<(&'a Path, f32)>,
+  pub leaving: Option<(&'a IconSource, f32)>,
 }
 
 /// A screencopy view's frame, ready to draw.

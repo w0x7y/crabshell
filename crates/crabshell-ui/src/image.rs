@@ -3,7 +3,7 @@
 //! image: a repaint of one GIF's box when its next frame is due.
 
 use std::cell::{Cell, RefCell};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -11,7 +11,7 @@ use crabshell_reactive::{Signal, untrack};
 
 use crate::animation::{self, Transition};
 use crate::tree::{Change, ImageNode, NodeId, NodeKind, Tree, borrow, replace};
-use crate::widgets::{Fit, IconProps, ImageFilters, ImageProps};
+use crate::widgets::{Fit, IconProps, IconSource, ImageFilters, ImageProps};
 use crate::window::Window;
 
 /// Numbers every image mounted, in every window, so the renderer's
@@ -27,13 +27,13 @@ thread_local! {
   static DROPPED: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
   /// Images whose transition's new source the renderer couldn't load,
   /// with that source, until the transition's next tick.
-  static FAILED: RefCell<Vec<(u64, PathBuf)>> = const { RefCell::new(Vec::new()) };
+  static FAILED: RefCell<Vec<(u64, IconSource)>> = const { RefCell::new(Vec::new()) };
   /// Images whose transition's new source the renderer is decoding, with
   /// that source, until the picture comes in.
-  static DECODING: RefCell<Vec<(u64, PathBuf)>> = const { RefCell::new(Vec::new()) };
+  static DECODING: RefCell<Vec<(u64, IconSource)>> = const { RefCell::new(Vec::new()) };
   /// The images with a `status` signal: their id, the signal and the
   /// source they show.
-  static WATCHED: RefCell<Vec<(u64, Signal<ImageStatus>, PathBuf)>> =
+  static WATCHED: RefCell<Vec<(u64, Signal<ImageStatus>, IconSource)>> =
     const { RefCell::new(Vec::new()) };
   /// A report changed a status signal since [`image_status_changed`]
   /// last ran.
@@ -47,7 +47,8 @@ thread_local! {
 /// written to the signal [`Image::status`](crate::Image::status) takes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum ImageStatus {
-  /// The source is an empty path, so nothing is shown. The default.
+  /// The source is an empty path or icon name, or none, so nothing is
+  /// shown. The default.
   #[default]
   Empty,
   /// The source is new and its picture hasn't loaded yet: it is read in
@@ -67,8 +68,8 @@ pub enum ImageStatus {
 /// about another source, an empty one, or an image without a `status`
 /// signal changes nothing. The platform then asks
 /// [`image_status_changed`] and runs the reactive flush.
-pub fn image_status(id: u64, source: &Path, status: ImageStatus) {
-  if source.as_os_str().is_empty() {
+pub fn image_status(id: u64, source: &IconSource, status: ImageStatus) {
+  if is_empty(source) {
     return;
   }
   let _ = WATCHED.try_with(|watched| {
@@ -107,16 +108,16 @@ fn write_status(signal: Signal<ImageStatus>, status: ImageStatus) -> bool {
 
 /// Watches image `id`'s status with `signal`, from its source's binding.
 fn watch(id: u64, signal: Signal<ImageStatus>) {
-  WATCHED.with(|watched| watched.borrow_mut().push((id, signal, PathBuf::new())));
+  WATCHED.with(|watched| watched.borrow_mut().push((id, signal, empty_source())));
 }
 
 /// Image `id` shows `source` now: its status goes back to Loading, or to
-/// Empty for an empty path.
-fn watch_source(id: u64, source: &Path) {
+/// Empty for an empty path or name.
+fn watch_source(id: u64, source: &IconSource) {
   WATCHED.with(|watched| {
     for (_, signal, shown) in watched.borrow_mut().iter_mut().filter(|(at, ..)| *at == id) {
       source.clone_into(shown);
-      let status = match source.as_os_str().is_empty() {
+      let status = match is_empty(source) {
         true => ImageStatus::Empty,
         false => ImageStatus::Loading,
       };
@@ -126,6 +127,20 @@ fn watch_source(id: u64, source: &Path) {
       }
     }
   });
+}
+
+/// The source an image shows nothing for: an empty path.
+pub(crate) fn empty_source() -> IconSource {
+  IconSource::File(PathBuf::new())
+}
+
+/// Whether `source` is an empty path or icon name, which shows nothing.
+fn is_empty(source: &IconSource) -> bool {
+  match source {
+    IconSource::File(path) => path.as_os_str().is_empty(),
+    IconSource::Name(name) => name.is_empty(),
+    IconSource::Pixels(_) => false,
+  }
 }
 
 /// Whether image `id` has a `status` signal that still says Loading.
@@ -157,11 +172,11 @@ pub fn dropped_images() -> Vec<u64> {
 /// shown and its box still. The reverse of [`dropped_images`]: a renderer
 /// calls it while drawing. A report for an image with no transition
 /// running, or one to another source, changes nothing.
-pub fn image_source_failed(id: u64, source: &Path) {
+pub fn image_source_failed(id: u64, source: &IconSource) {
   FAILED.with(|failed| {
     let mut failed = failed.borrow_mut();
     if failed.len() < MAX_DROPPED && !failed.iter().any(|(at, path)| *at == id && path == source) {
-      failed.push((id, source.to_owned()));
+      failed.push((id, source.clone()));
     }
   });
 }
@@ -170,7 +185,7 @@ pub fn image_source_failed(id: u64, source: &Path) {
 /// new `source`, so its clock waits at the start, the old picture shown,
 /// until [`Window::repaint_image`] says the picture came in. A renderer
 /// calls it while drawing. A report for another source holds nothing.
-pub fn image_source_decoding(id: u64, source: &Path) {
+pub fn image_source_decoding(id: u64, source: &IconSource) {
   DECODING.with(|decoding| {
     let mut decoding = decoding.borrow_mut();
     if decoding.len() < MAX_DROPPED
@@ -178,13 +193,13 @@ pub fn image_source_decoding(id: u64, source: &Path) {
         .iter()
         .any(|(at, path)| *at == id && path == source)
     {
-      decoding.push((id, source.to_owned()));
+      decoding.push((id, source.clone()));
     }
   });
 }
 
 /// Whether the renderer said it is decoding `source` for image `id`.
-fn source_decoding(id: u64, source: Option<&PathBuf>) -> bool {
+fn source_decoding(id: u64, source: Option<&IconSource>) -> bool {
   DECODING.with(|decoding| {
     decoding
       .borrow()
@@ -212,7 +227,7 @@ pub(crate) fn failed_reports() -> usize {
 
 /// Whether the renderer said image `id` can't load `source`, using up
 /// every report about `id`.
-fn source_failed(id: u64, source: Option<&PathBuf>) -> bool {
+fn source_failed(id: u64, source: Option<&IconSource>) -> bool {
   FAILED.with(|failed| {
     let mut found = false;
     failed.borrow_mut().retain(|(at, path)| {
@@ -328,7 +343,7 @@ impl ImageTransition {
 
 /// The picture a running transition leaves.
 pub(crate) struct Leaving {
-  pub(crate) source: PathBuf,
+  pub(crate) source: IconSource,
   /// How far along the transition is, eased.
   pub(crate) t: f32,
   /// Which transition of the image it is, so one replaced stops.

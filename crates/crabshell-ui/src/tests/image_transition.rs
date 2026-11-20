@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 
 use super::{Harness, capture_logs, node_at, rect_at};
 use crate::{
-  Content, Easing, Image, ImageTransition, Row, Transition, Window, advance_animations, animating,
+  Content, Easing, IconSource, Image, ImageTransition, Row, Transition, Window, advance_animations,
+  animating,
 };
 
 const LINEAR: Transition = Transition::new(100).easing(Easing::Linear);
@@ -18,8 +19,8 @@ fn shown_at(window: &Window, path: &[usize]) -> (PathBuf, Option<(PathBuf, f32)>
   let view = window.view();
   match node_at(view.root(), path).content() {
     Content::Image(image) => (
-      image.path.to_owned(),
-      image.leaving.map(|(source, t)| (source.to_owned(), t)),
+      file_path(image.source),
+      image.leaving.map(|(source, t)| (file_path(source), t)),
     ),
     _ => panic!("no image at {path:?}"),
   }
@@ -27,6 +28,17 @@ fn shown_at(window: &Window, path: &[usize]) -> (PathBuf, Option<(PathBuf, f32)>
 
 fn path(name: &str) -> PathBuf {
   Path::new(name).to_owned()
+}
+
+fn file(name: &str) -> IconSource {
+  IconSource::File(path(name))
+}
+
+fn file_path(source: &IconSource) -> PathBuf {
+  match source {
+    IconSource::File(path) => path.clone(),
+    _ => panic!("not a file: {source:?}"),
+  }
 }
 
 #[test]
@@ -312,13 +324,13 @@ fn a_source_the_renderer_cant_load_ends_its_transition_at_once() {
   window.take_damage();
 
   // A report for another image or another source changes nothing.
-  crate::image_source_failed(id + 1, Path::new("broken.png"));
-  crate::image_source_failed(id, Path::new("a.png"));
+  crate::image_source_failed(id + 1, &file("broken.png"));
+  crate::image_source_failed(id, &file("a.png"));
   assert!(advance_animations(start + Duration::from_millis(10)));
   assert!(shown_at(&window, &[0, 0]).1.is_some(), "still running");
 
-  crate::image_source_failed(id, Path::new("broken.png"));
-  crate::image_source_failed(id, Path::new("broken.png"));
+  crate::image_source_failed(id, &file("broken.png"));
+  crate::image_source_failed(id, &file("broken.png"));
   assert!(
     !advance_animations(start + Duration::from_millis(20)),
     "it ends"
@@ -343,7 +355,7 @@ fn a_report_about_an_image_dropped_is_let_go() {
     Content::Image(image) => image.id,
     _ => panic!("no image"),
   };
-  crate::image_source_failed(id, Path::new("broken.png"));
+  crate::image_source_failed(id, &file("broken.png"));
   assert_eq!(crate::image::failed_reports(), 1);
   drop(window);
   assert_eq!(crate::image::failed_reports(), 0);
@@ -364,7 +376,7 @@ fn a_transition_waits_at_its_start_while_its_new_picture_is_decoded() {
   };
   source.set(path("b.png"));
   h.frame(&window);
-  crate::image_source_decoding(id, Path::new("b.png"));
+  crate::image_source_decoding(id, &file("b.png"));
   let start = Instant::now();
   let ms = Duration::from_millis;
   for at in [0, 50, 500] {
@@ -382,7 +394,7 @@ fn a_transition_waits_at_its_start_while_its_new_picture_is_decoded() {
 
   // A report about another source, or one an image dropped, holds
   // nothing.
-  crate::image_source_decoding(id, Path::new("c.png"));
+  crate::image_source_decoding(id, &file("c.png"));
   source.set(path("a.png"));
   h.frame(&window);
   assert!(advance_animations(start + ms(800)));
