@@ -25,6 +25,7 @@ mod images;
 mod mask_regions;
 mod repaint;
 mod shapes;
+mod status;
 mod theme;
 mod transform;
 mod transitions;

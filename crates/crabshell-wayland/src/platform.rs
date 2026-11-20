@@ -926,6 +926,10 @@ impl Platform {
     if self.sync_captures() {
       self.lay_out_and_draw(&mut drawn);
     }
+    // A status the last draws told runs its effects before the loop sleeps.
+    if crabshell_ui::image_status_changed() {
+      self.runtime.flush();
+    }
     self.paced_captures(&drawn);
     self.sync_text_inputs();
     self.tick_animations();
@@ -1047,6 +1051,8 @@ impl Platform {
   /// acted on and flushed, as at the start of the iteration.
   fn left_work(&mut self) -> bool {
     let mut work = self.update_locks();
+    // A draw that told an image's status runs what reads it now.
+    work |= crabshell_ui::image_status_changed();
     if work {
       self.runtime.flush();
     }

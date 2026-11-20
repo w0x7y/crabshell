@@ -9,7 +9,8 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use crabshell_ui::{
-  CaptureFrame, Color, Fit, IconPixels, IconSource, ImageFilters, ImageTransition, ImageView,
+  CaptureFrame, Color, Fit, IconPixels, IconSource, ImageFilters, ImageStatus, ImageTransition,
+  ImageView,
 };
 use resvg::usvg;
 use tiny_skia::{FilterQuality, IntRect, Pixmap, PixmapPaint, PixmapRef, Transform};
@@ -599,7 +600,10 @@ impl Icons {
   /// once. While a transition runs, the picture it leaves too, at its
   /// first frame. With a transition other than none, a source that can't
   /// be loaded draws the last one that could, and a transition to it is
-  /// told to end, through [`crabshell_ui::image_source_failed`]. The picture a transition
+  /// told to end, through [`crabshell_ui::image_source_failed`]. Its
+  /// status is told Ready or Failed, through
+  /// [`crabshell_ui::image_status`], once it isn't decoded off the thread.
+  /// The picture a transition
   /// leaves is held only while a draw uses it, and dropped as soon as the
   /// transition ends. `None` if nothing can be loaded; a failure is
   /// logged once.
@@ -637,6 +641,11 @@ impl Icons {
       .frames
       .as_ref()
       .map_or(0, |frames| frames.frames.len());
+    let status = match count {
+      0 => ImageStatus::Failed,
+      _ => ImageStatus::Ready,
+    };
+    crabshell_ui::image_status(image.id, image.path, status);
     let index = if count > 1 {
       self.play(image, &key, count)
     } else {

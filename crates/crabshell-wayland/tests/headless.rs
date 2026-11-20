@@ -5603,6 +5603,62 @@ fn a_picture_decoded_off_the_loop_repaints_its_box_and_then_nothing_wakes() {
 
 #[test]
 #[ignore = "needs headless Sway"]
+fn an_images_status_reaches_its_effects_in_the_iteration_that_drew_it() {
+  use crabshell_ui::ImageStatus;
+  let sway = Sway::start();
+  let fixtures =
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../crabshell-render/tests/fixtures");
+  let runtime = Runtime::current();
+  let cx = Cx::new(runtime.new_owner());
+  let (good, bad) = (cx.signal(ImageStatus::Empty), cx.signal(ImageStatus::Empty));
+  let blur = cx.signal(0.0_f32);
+  // What the effects saw, which only a flush after the draw updates.
+  let seen = Rc::new(RefCell::new((ImageStatus::Empty, ImageStatus::Empty)));
+  let s = Rc::clone(&seen);
+  cx.effect(move || *s.borrow_mut() = (good.get(), bad.get()));
+  let still = fixtures.join("stripes.png");
+  let bar = PanelWindow::new(&Output::new("HEADLESS-1"))
+    .anchors(Edge::Top | Edge::Left | Edge::Right)
+    .height(30)
+    .child(
+      Row::new()
+        .child(
+          crabshell_ui::Image::new(still)
+            .width(40)
+            .height(20)
+            .blur(move || blur.get())
+            .status(good),
+        )
+        .child(
+          crabshell_ui::Image::new(fixtures.join("missing.png"))
+            .width(20)
+            .height(20)
+            .status(bad),
+        ),
+    );
+  let mut event_loop = sway.connect();
+  let id = event_loop.platform().add_window(Window::new(&cx, bar));
+  run_until(&mut event_loop, "the bar's first frame", |platform| {
+    platform
+      .window_info(id)
+      .is_some_and(|info| info.commits > 0)
+  });
+  assert_eq!(
+    *seen.borrow(),
+    (ImageStatus::Ready, ImageStatus::Failed),
+    "seen in the iteration that drew them"
+  );
+  settle(&mut event_loop);
+  // Blurred, it is decoded on the worker thread at a new size, and stays
+  // Ready while it is.
+  blur.set(2.0);
+  settle(&mut event_loop);
+  assert_eq!(seen.borrow().0, ImageStatus::Ready);
+  sleeps_through(&mut event_loop, Duration::from_secs(2));
+}
+
+#[test]
+#[ignore = "needs headless Sway"]
 fn a_windows_first_commit_waits_for_the_pictures_its_first_draw_asked_for() {
   let sway = Sway::start();
   let dir = std::env::temp_dir().join(format!("crabshell-first-{}", std::process::id()));
