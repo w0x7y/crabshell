@@ -5950,3 +5950,49 @@ fn a_floating_window_that_hides_takes_its_views_off_screen() {
   open.set(true);
   run_until(&mut event_loop, "the view shown again", |_| shown.get());
 }
+
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_refresh_while_a_frame_is_on_its_way_takes_a_session_of_its_own() {
+  let sway = Sway::start();
+  let cx = Cx::new(Runtime::current().new_owner());
+  let mut event_loop = halves(&sway, &cx, 1, RED, cx.signal(BLUE));
+  let capture = cx.capture(CaptureSource::Output(String::from("HEADLESS-2")));
+  run_until(&mut event_loop, "the first frame", |_| {
+    capture.ready().get()
+  });
+  let logs = Logs::default();
+  let writer = logs.clone();
+  let subscriber = tracing_subscriber::fmt()
+    .with_max_level(tracing::Level::DEBUG)
+    .with_writer(move || writer.clone())
+    .finish();
+  let _guard = tracing::subscriber::set_default(subscriber);
+  // One sync starts a session for the first refresh; its frame can't
+  // have come before the second.
+  capture.refresh();
+  event_loop
+    .dispatch(Some(Duration::ZERO))
+    .expect("the connection works");
+  assert_eq!(event_loop.platform().capture_sessions(), 1);
+  capture.refresh();
+  let [(second, _)] = crabshell_ui::wanted_captures()[..] else {
+    panic!("one request");
+  };
+  run_until(&mut event_loop, "the second frame", |_| {
+    capture.ready().get()
+  });
+  let started: Vec<String> = logs
+    .text()
+    .lines()
+    .filter(|line| line.contains("a capture session starts"))
+    .map(str::to_owned)
+    .collect();
+  assert_eq!(started.len(), 2, "{started:?}");
+  assert!(
+    started[1].contains(&format!("asked=[{second}]")),
+    "the second request's own session: {started:?}"
+  );
+  settle(&mut event_loop);
+  assert_eq!(event_loop.platform().capture_sessions(), 0);
+}

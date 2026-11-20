@@ -11,8 +11,9 @@
 //! compositor answers only once the source changes.
 //!
 //! A `Capture` the config made is a view of no window: it shares a
-//! session only with other captures, so it never waits on a live
-//! session's next frame, and takes the source's whole frame.
+//! session only with the captures that waited when it started, so it
+//! never gets a frame asked for before its own request, nor waits on a
+//! live session's next frame, and takes the source's whole frame.
 
 use std::time::Instant;
 
@@ -99,6 +100,7 @@ impl View {
       && self.target.as_ref() == Some(&session.target)
       && self.request.paint_cursors == session.cursors
       && self.window.is_none() == session.captures
+      && (self.window.is_some() || session.asked.contains(&self.request.id))
   }
 }
 
@@ -115,6 +117,9 @@ struct Session {
   cursors: bool,
   /// Whether it takes frames for captures, not windows' views.
   captures: bool,
+  /// The captures' requests it was started for. A request made later
+  /// takes a session of its own, since this one's frame may be older.
+  asked: Vec<u64>,
   proxy: ExtImageCopyCaptureSessionV1,
   /// The constraints announced since the last `done`.
   size: Option<(u32, u32)>,
@@ -196,6 +201,7 @@ impl Captures {
       target: target.clone(),
       cursors,
       captures,
+      asked: Vec::new(),
       proxy,
       size: None,
       formats: Vec::new(),
@@ -473,9 +479,21 @@ impl Platform {
         continue;
       };
       let key = (target, view.request.paint_cursors, view.window.is_none());
-      if let Some(session) = captures.start(key, &self.qh) {
-        captures.sessions.push(session);
+      let Some(mut session) = captures.start(key, &self.qh) else {
+        continue;
+      };
+      if view.window.is_none() {
+        // Every capture of the source still waiting shares it.
+        let views = captures.views.iter().filter(|other| {
+          other.window.is_none()
+            && !other.ended
+            && other.target.as_ref() == Some(&session.target)
+            && !captures.sessions.iter().any(|old| other.takes(old))
+        });
+        session.asked = views.map(|other| other.request.id).collect();
+        tracing::debug!(asked = ?session.asked, "a capture session starts");
       }
+      captures.sessions.push(session);
     }
     shown
   }
@@ -531,7 +549,9 @@ impl Platform {
       Target::Toplevel(_) => None,
     }
     .map(|(_, info)| (info.width, info.height));
-    // A window's logical pixels are taken as the largest output scale's.
+    // shortcut: a window's logical pixels are taken as the largest output
+    // scale's, wrong for a window on a smaller-scale output beside a larger
+    // one; take its own output's scale once a window's output is known.
     let fractional = self.known.iter().map(|(_, info)| info.fractional_scale);
     let fractional = fractional.fold(1.0, f64::max);
     let Captures {
@@ -721,6 +741,7 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, ()> for Platform {
           Some(mut session) => {
             session.retried = retried || reason != WEnum::Value(FailureReason::BufferConstraints);
             session.last = captures.sessions[index].last.take();
+            session.asked = std::mem::take(&mut captures.sessions[index].asked);
             captures.sessions[index] = session;
           }
           None => captures.end(index),
