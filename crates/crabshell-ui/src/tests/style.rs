@@ -1,7 +1,7 @@
 //! Colors, fonts and styles.
 
 use crate::{
-  Border, Color, Font, Gradient, GradientShape, Mask, Padding, Radii, Rect, Shadow, Style,
+  Border, Color, Font, Gradient, GradientShape, Mask, Padding, Point, Radii, Rect, Shadow, Style,
 };
 
 #[test]
@@ -180,13 +180,62 @@ fn a_gradient_keeps_its_ends_and_the_stops_between_in_order() {
 }
 
 #[test]
-#[should_panic(expected = "at most four colors")]
-fn a_fifth_gradient_color_is_refused() {
+fn a_gradient_holds_eight_colors() {
+  const BLACK: Color = Color::rgb(0, 0, 0);
+  const WHITE: Color = Color::rgb(255, 255, 255);
+  const EIGHT: Gradient = Gradient::linear(0.0, BLACK, WHITE)
+    .stop(0.1, WHITE)
+    .stop(0.2, BLACK)
+    .stop(0.3, WHITE)
+    .stop(0.4, BLACK)
+    .stop(0.5, WHITE)
+    .stop(0.6, BLACK);
+  assert_eq!(EIGHT.stops().len(), 8);
+  assert_eq!(EIGHT.stops()[6], (0.6, BLACK));
+  assert_eq!(EIGHT.stops()[7], (1.0, WHITE));
+}
+
+#[test]
+#[should_panic(expected = "at most eight colors")]
+fn a_ninth_gradient_color_is_refused() {
   let black = Color::rgb(0, 0, 0);
-  let _ = Gradient::radial(black, black)
-    .stop(0.2, black)
-    .stop(0.4, black)
-    .stop(0.6, black);
+  let mut gradient = Gradient::radial(black, black);
+  for index in 0..7 {
+    gradient = gradient.stop(index as f32 / 10.0, black);
+  }
+}
+
+#[test]
+fn a_gradient_is_centered_and_reaches_the_farthest_corner_by_default() {
+  const BLACK: Color = Color::rgb(0, 0, 0);
+  let radial = Gradient::radial(BLACK, BLACK);
+  assert_eq!(radial.center, Point::new(0.5, 0.5));
+  assert_eq!(radial.radius, None);
+  const GLOW: Gradient = Gradient::radial(
+    Color::rgba(255, 255, 255, 89),
+    Color::rgba(255, 255, 255, 0),
+  )
+  .center(0.7, 0.3)
+  .radius(42.0);
+  assert_eq!(GLOW.center, Point::new(0.7, 0.3));
+  assert_eq!(GLOW.radius, Some(42.0));
+  assert_eq!(GLOW.shape, GradientShape::Radial);
+  const ART: Gradient = Gradient::sweep(0.0, BLACK, BLACK).center(0.35, 0.65);
+  assert_eq!(ART.center, Point::new(0.35, 0.65));
+}
+
+#[test]
+fn a_center_and_a_radius_blend_or_switch_at_once() {
+  let black = Color::rgb(0, 0, 0);
+  let from = Style::new().gradient(Gradient::radial(black, black).center(0.0, 0.0).radius(10.0));
+  let to = Style::new().gradient(Gradient::radial(black, black).center(1.0, 0.5).radius(30.0));
+  let half = from.lerp(&to, 0.5).gradient.expect("both set one");
+  assert_eq!(half.center, Point::new(0.5, 0.25));
+  assert_eq!(half.radius, Some(20.0));
+  // A radius only one side sets has nothing to blend from.
+  let reaching = Style::new().gradient(Gradient::radial(black, black));
+  assert_eq!(from.lerp(&reaching, 0.5).gradient, reaching.gradient);
+  assert_eq!(reaching.lerp(&from, 0.5).gradient, from.gradient);
 }
 
 #[test]

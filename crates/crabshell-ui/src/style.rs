@@ -462,9 +462,17 @@ pub(crate) fn fit_corners(corners: [f32; 4], width: f32, height: f32) -> [f32; 4
 pub struct Gradient {
   /// Which way the colors run.
   pub shape: GradientShape,
+  /// Where a radial or sweep gradient is centered, as fractions of the
+  /// box: 0, 0 is its top-left corner and 1, 1 its bottom-right. 0.5, 0.5
+  /// by default. A linear gradient ignores it.
+  pub center: Point,
+  /// A radial gradient's radius in logical pixels, or `None`, the
+  /// default, to reach the farthest corner from its center. Other shapes
+  /// ignore it.
+  pub radius: Option<f32>,
   /// The first `count` hold each color and where it sits, from 0 at the
   /// start to 1 at the end.
-  stops: [(f32, Color); 4],
+  stops: [(f32, Color); 8],
   count: u8,
 }
 
@@ -475,10 +483,12 @@ pub enum GradientShape {
   /// runs from the bottom up, 90 from left to right, 180 from the top
   /// down. Its ends meet the corners.
   Linear(f32),
-  /// In circles out from the middle to the farthest corner.
+  /// In circles out from the gradient's [`center`](Gradient::center) to
+  /// its [`radius`](Gradient::radius).
   Radial,
-  /// Around the middle, clockwise from this many degrees, as CSS's
-  /// `conic-gradient(from …)`: 0 starts at 12 o'clock, 90 at 3.
+  /// Around the gradient's [`center`](Gradient::center), clockwise from
+  /// this many degrees, as CSS's `conic-gradient(from …)`: 0 starts at 12
+  /// o'clock, 90 at 3.
   Sweep(f32),
 }
 
@@ -490,6 +500,19 @@ impl Gradient {
   }
 
   /// A gradient from `from` in the middle to `to` at the farthest corner.
+  /// [`center`](Gradient::center) moves the middle and
+  /// [`radius`](Gradient::radius) sets how far it reaches.
+  ///
+  /// ```
+  /// use crabshell_ui::{Color, Gradient, Style};
+  ///
+  /// // A glow up and to the right, 42 pixels across.
+  /// const GLOW: Style = Style::new().gradient(
+  ///     Gradient::radial(Color::rgba(255, 255, 255, 89), Color::rgba(255, 255, 255, 0))
+  ///         .center(0.7, 0.3)
+  ///         .radius(42.0),
+  /// );
+  /// ```
   pub const fn radial(from: Color, to: Color) -> Gradient {
     Gradient::new(GradientShape::Radial, from, to)
   }
@@ -497,6 +520,7 @@ impl Gradient {
   /// A gradient from `from` to `to` once around the middle, clockwise
   /// from `angle` degrees: 0 starts at 12 o'clock, 90 at 3, as CSS's
   /// `conic-gradient(from 90deg, …)`. The end meets the start there.
+  /// [`center`](Gradient::center) moves the middle.
   ///
   /// ```
   /// use crabshell_ui::{Color, Gradient, Style};
@@ -513,16 +537,27 @@ impl Gradient {
   const fn new(shape: GradientShape, from: Color, to: Color) -> Gradient {
     Gradient {
       shape,
-      stops: [(0.0, from), (1.0, to), (1.0, to), (1.0, to)],
+      center: Point::new(0.5, 0.5),
+      radius: None,
+      stops: [
+        (0.0, from),
+        (1.0, to),
+        (1.0, to),
+        (1.0, to),
+        (1.0, to),
+        (1.0, to),
+        (1.0, to),
+        (1.0, to),
+      ],
       count: 2,
     }
   }
 
   /// Adds `color` at `at`, from 0 to 1, before the end color. Add them
-  /// in order. A gradient has at most four colors, so a third stop
-  /// panics.
+  /// in order. A gradient has at most eight colors, so a seventh stop
+  /// panics, which is a compile error in a `const`.
   pub const fn stop(self, at: f32, color: Color) -> Gradient {
-    assert!(self.count < 4, "a gradient has at most four colors");
+    assert!(self.count < 8, "a gradient has at most eight colors");
     let mut stops = self.stops;
     let last = self.count as usize - 1;
     stops[last + 1] = stops[last];
@@ -530,6 +565,28 @@ impl Gradient {
     Gradient {
       stops,
       count: self.count + 1,
+      ..self
+    }
+  }
+
+  /// Centers a radial or sweep gradient at `x`, `y`, fractions of the
+  /// box: 0, 0 is its top-left corner and 1, 1 its bottom-right. The
+  /// default is 0.5, 0.5. A center outside the box works, as CSS's
+  /// `at 120% 50%`. A linear gradient ignores it.
+  pub const fn center(self, x: f32, y: f32) -> Gradient {
+    Gradient {
+      center: Point::new(x, y),
+      ..self
+    }
+  }
+
+  /// Sets a radial gradient's radius to `radius` logical pixels, instead
+  /// of reaching the farthest corner from its center. Past the radius
+  /// the end color holds, as in CSS, and a radius of 0 or less leaves only
+  /// the end color. Other shapes ignore it.
+  pub const fn radius(self, radius: f32) -> Gradient {
+    Gradient {
+      radius: Some(radius),
       ..self
     }
   }
@@ -553,6 +610,12 @@ impl Gradient {
 
       _ => return None,
     };
+    // A radius only one side sets has no length to blend from.
+    let radius = match (self.radius, to.radius) {
+      (Some(from), Some(to)) => Some(from.lerp(&to, t)),
+      (None, None) => None,
+      _ => return None,
+    };
     if self.count != to.count {
       return None;
     }
@@ -562,6 +625,8 @@ impl Gradient {
     }
     Some(Gradient {
       shape,
+      center: self.center.lerp(&to.center, t),
+      radius,
       stops,
       count: to.count,
     })
