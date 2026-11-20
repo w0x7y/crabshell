@@ -250,6 +250,8 @@ impl Notifications {
   ///   });
   ///   cx.memo(move || {
   ///     time.get();
+  ///     // A replacement while held fills the bar again with no frame ticking.
+  ///     popups.with(|_| ());
   ///     let left = notifications.popup_time_left(id);
   ///     left.map_or(1.0, |(left, whole)| left.as_secs_f32() / whole.as_secs_f32())
   ///   })
