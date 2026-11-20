@@ -11,7 +11,7 @@ use crate::image::ImageTransition;
 use crate::region::Region;
 use crate::rich::Span;
 use crate::screencopy::CaptureFrame;
-use crate::select::{highlights, text_selection};
+use crate::select::{cursor_at, highlights, text_selection};
 use crate::style::{Color, Style};
 use crate::text::{TextNode, TextRun};
 use crate::tree::{Node, NodeId, NodeKind, Tree, centered, icon_rect};
@@ -159,6 +159,7 @@ impl<'a> NodeView<'a> {
         color: self.inherited_color(),
         underline: self.inherited(|style| style.underline) == Some(true),
         strikethrough: self.inherited(|style| style.strikethrough) == Some(true),
+        selected: None,
       }),
       NodeKind::Icon(icon) => match &icon.source {
         Some(source) => Content::Icon(IconView {
@@ -176,13 +177,31 @@ impl<'a> NodeView<'a> {
         } else {
           color
         };
+        // The selected glyphs, between two cursors of the buffer.
+        let selected = match (input.focused, input.selected_text_color) {
+          (true, Some(selected)) => input.shown_selection().map(|range| {
+            let at = |index| {
+              let cursor = cursor_at(&input.text.buffer, index);
+              (cursor.line, cursor.index)
+            };
+            (at(range.start), at(range.end), selected)
+          }),
+          _ => None,
+        };
         Content::Input(InputView {
           text: TextView {
             text: &input.text,
             color,
             underline: self.inherited(|style| style.underline) == Some(true),
             strikethrough: self.inherited(|style| style.strikethrough) == Some(true),
+            selected,
           },
+          selection_color: input.selection_color.unwrap_or(Color::rgba(
+            color.r,
+            color.g,
+            color.b,
+            color.a / 3,
+          )),
           // An input method may ask for no caret while it composes.
           caret: (input.focused
             && !matches!(&input.preedit, Some(preedit) if preedit.cursor.is_none()))
@@ -289,6 +308,9 @@ pub struct InputView<'a> {
   /// The selection, while the field has the keyboard: one span, or more
   /// where right-to-left and left-to-right text mix.
   pub selection: &'a [Rect],
+  /// The color to draw the selection in: the field's own, or a third of
+  /// the text's alpha.
+  pub selection_color: Color,
   /// The content box everything is cut to.
   pub area: Rect,
   /// The line under text an input method is composing.
@@ -303,7 +325,13 @@ pub struct TextView<'a> {
   color: Color,
   underline: bool,
   strikethrough: bool,
+  /// From which line and byte to which the glyphs take a field's
+  /// selected text color, and the color.
+  selected: Option<(Place, Place, Color)>,
 }
+
+/// A buffer line and a byte in it.
+type Place = (usize, usize);
 
 impl<'a> TextView<'a> {
   /// The text itself.
@@ -356,6 +384,15 @@ impl<'a> TextView<'a> {
   /// The color a lit link is drawn in; without one it keeps its own.
   pub fn link_hover_color(&self) -> Option<Color> {
     self.text.link_hover_color
+  }
+
+  /// The color `glyph`, on the run of buffer line `line`, is drawn in
+  /// because it is selected in a field with a selected text color, over
+  /// any span or link color.
+  pub fn selected_color(&self, line: usize, glyph: &LayoutGlyph) -> Option<Color> {
+    let (start, end, color) = self.selected?;
+    let at = (line, glyph.start);
+    (start <= at && at < end).then_some(color)
   }
 
   /// Whether to draw a line under the glyphs, in the text's color.

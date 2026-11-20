@@ -7,7 +7,8 @@ use crabshell_reactive::Signal;
 
 use super::{Harness, node_at};
 use crate::{
-  Clipboard, Column, Content, Key, KeyEvent, Modifiers, Preedit, Style, TextArea, TextInput, Window,
+  Clipboard, Color, Column, Content, Key, KeyEvent, Modifiers, Preedit, Style, TextArea, TextInput,
+  Window,
 };
 
 fn key(key: Key) -> KeyEvent {
@@ -251,4 +252,75 @@ fn a_read_only_text_area_passes_enter_and_tab_on() {
   window.key(&typed("x"));
   assert_eq!(text.get(), "note");
   assert_eq!(*seen.borrow(), [Key::Enter, Key::Tab, Key::Character('x')]);
+}
+
+/// Each shown glyph's selected text color, line by line, and the
+/// selection's color.
+fn selected(window: &Window) -> (Vec<Vec<Option<Color>>>, Color) {
+  match node_at(window.view().root(), &[0, 0]).content() {
+    Content::Input(input) => (
+      input
+        .text
+        .runs()
+        .map(|run| {
+          run
+            .glyphs
+            .iter()
+            .map(|glyph| input.text.selected_color(run.line_i, glyph))
+            .collect()
+        })
+        .collect(),
+      input.selection_color,
+    ),
+    _ => panic!("not a field"),
+  }
+}
+
+#[test]
+fn the_selected_text_color_takes_only_the_selected_glyphs_while_focused() {
+  const GREEN: Color = Color::rgb(0, 255, 0);
+  let mut h = Harness::new();
+  let text = h.cx.signal(String::from("ab\ncd"));
+  let area = TextArea::new(text)
+    .focus(true)
+    .style(Style::new().color(Color::rgb(30, 60, 90)))
+    .selected_text_color(GREEN);
+  let (window, _) = window(&mut h, area);
+  window.key(&ctrl("a"));
+  window.key(&key(Key::Home));
+  window.key(&key(Key::Up));
+  window.key(&key(Key::Right));
+  window.key(&shift(Key::Right));
+  window.key(&shift(Key::Right));
+  window.key(&shift(Key::Right));
+  h.frame(&window);
+  let (glyphs, selection) = selected(&window);
+  let g = Some(GREEN);
+  assert_eq!(glyphs, [vec![None, g], vec![g, None]], "b, the break and c");
+  assert_eq!(
+    selection,
+    Color::rgba(30, 60, 90, 85),
+    "a third of the text's alpha"
+  );
+
+  window.keyboard_leave();
+  let (glyphs, _) = selected(&window);
+  assert_eq!(glyphs, [vec![None, None], vec![None, None]]);
+}
+
+#[test]
+fn a_selection_color_binding_repaints_and_none_is_the_default() {
+  const RED: Color = Color::rgb(255, 0, 0);
+  let mut h = Harness::new();
+  let text = h.cx.signal(String::from("hi"));
+  let on = h.cx.signal(true);
+  let field = input(text)
+    .style(Style::new().width(200.0).color(Color::rgb(0, 0, 0)))
+    .selection_color(move || on.get().then_some(RED));
+  let (window, _) = window(&mut h, field);
+  assert_eq!(selected(&window).1, RED);
+  on.set(false);
+  h.runtime.flush();
+  assert!(!window.needs_layout(), "a color needs no layout");
+  assert_eq!(selected(&window).1, Color::rgba(0, 0, 0, 85));
 }

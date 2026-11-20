@@ -13,7 +13,7 @@ use crate::input::Handler;
 use crate::keyboard::{Key, KeyEvent};
 use crate::prop::{IntoProp, Prop};
 use crate::select::{cursor_at, highlights, index_of};
-use crate::style::Style;
+use crate::style::{Color, Style};
 use crate::text::{TextNode, TextRun};
 use crate::tree::{NodeKind, borrow};
 use crate::widgets::{Common, Element, ElementKind, Widget, visibility_methods};
@@ -38,6 +38,8 @@ pub(crate) struct InputProps {
   pub(crate) wrap: Option<Prop<bool>>,
   pub(crate) max_length: Option<Prop<Option<usize>>>,
   pub(crate) read_only: Option<Prop<bool>>,
+  pub(crate) selection_color: Option<Prop<Option<Color>>>,
+  pub(crate) selected_text_color: Option<Prop<Option<Color>>>,
 }
 
 /// A one-line text field. It takes the keyboard focus when clicked, when
@@ -77,6 +79,8 @@ impl TextInput {
         wrap: None,
         max_length: None,
         read_only: None,
+        selection_color: None,
+        selected_text_color: None,
       },
       common: Common::default(),
     }
@@ -112,6 +116,22 @@ impl TextInput {
   /// `on_accept`, and text set from outside still shows.
   pub fn read_only(mut self, on: impl IntoProp<bool>) -> TextInput {
     self.input.read_only = Some(on.into_prop());
+    self
+  }
+
+  /// Sets the color the selection is drawn in behind the text. By
+  /// default, or with `None`, it is the text's color at a third of its
+  /// alpha.
+  pub fn selection_color(mut self, color: impl IntoProp<Option<Color>>) -> TextInput {
+    self.input.selection_color = Some(color.into_prop());
+    self
+  }
+
+  /// Sets the color the selected text is drawn in, over any span or
+  /// link color. By default, or with `None`, it keeps its own color.
+  /// Underlines and strikethroughs keep theirs.
+  pub fn selected_text_color(mut self, color: impl IntoProp<Option<Color>>) -> TextInput {
+    self.input.selected_text_color = Some(color.into_prop());
     self
   }
 
@@ -327,6 +347,9 @@ pub(crate) struct InputNode {
   pub(crate) area: Rect,
   /// What an input method is composing, shown at the caret.
   pub(crate) preedit: Option<Preedit>,
+  /// The selection's own color, and the selected text's.
+  pub(crate) selection_color: Option<Color>,
+  pub(crate) selected_text_color: Option<Color>,
   /// The line under the preedit, from the last layout.
   pub(crate) underline: Vec<Rect>,
   /// Where across Up and Down keep the caret, and the caret position it
@@ -366,6 +389,8 @@ impl InputNode {
       selection: Vec::new(),
       area: Rect::default(),
       preedit: None,
+      selection_color: None,
+      selected_text_color: None,
       underline: Vec::new(),
       goal: None,
       upstream: None,
@@ -423,6 +448,12 @@ impl InputNode {
       self.edit.text.clone()
     };
     self.text.set_content(shown)
+  }
+
+  /// The selection, in bytes of what is shown.
+  pub(crate) fn shown_selection(&self) -> Option<std::ops::Range<usize>> {
+    let range = self.edit.selection()?;
+    Some(self.shown_index(range.start)..self.shown_index(range.end))
   }
 
   /// The byte in what is shown that matches byte `at` of the text.
@@ -545,11 +576,8 @@ impl InputNode {
     let (top, height) = self.glyph_box(top, height);
     self.caret = Rect::new(origin.x + x, origin.y + top, 1.0, height);
     self.area = content;
-    self.selection = match self.edit.selection() {
-      Some(range) => highlights(
-        &self.text,
-        self.shown_index(range.start)..self.shown_index(range.end),
-      ),
+    self.selection = match self.shown_selection() {
+      Some(range) => highlights(&self.text, range),
       None => Vec::new(),
     };
     self.underline = match &self.preedit {

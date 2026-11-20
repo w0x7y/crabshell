@@ -1309,6 +1309,68 @@ fn a_field_draws_only_inside_its_content_box() {
   }
 }
 
+/// A field whose whole text is selected, with its own selection colors:
+/// the selection is drawn in one and the selected glyphs in the other,
+/// at every scale. Without them, the glyphs are white over a dim
+/// selection.
+#[test]
+fn a_fields_selection_colors_paint_the_selection_and_its_text() {
+  let render = |scale: f32, colors: bool| {
+    let mut scene = Scene::new();
+    let text = scene.cx.signal(String::from("MMMM"));
+    let field = crabshell_ui::TextInput::new(text)
+      .focus(true)
+      .style(Style::new().width(60.0).color(Color::rgb(255, 255, 255)));
+    let field = match colors {
+      true => field
+        .selection_color(Color::rgb(255, 0, 0))
+        .selected_text_color(Color::rgb(0, 255, 0)),
+      false => field,
+    };
+    let panel = scene
+      .panel()
+      .style(BAR)
+      .child(Row::new().padding(4, 10).align(Align::Center).child(field));
+    let window = scene.window(panel, 100.0, 30.0);
+    window.keyboard_enter();
+    window.key(&crabshell_ui::KeyEvent {
+      key: crabshell_ui::Key::Character('a'),
+      text: Some(String::from("a")),
+      modifiers: crabshell_ui::Modifiers {
+        ctrl: true,
+        ..crabshell_ui::Modifiers::default()
+      },
+      repeat: false,
+    });
+    scene.frame(&window);
+    scene.full(&window, scale)
+  };
+  // Red, green and white pixels.
+  let count = |buffer: &super::Buffer| {
+    let pixels = || buffer.pixels.as_chunks::<4>().0.iter();
+    (
+      pixels().filter(|pixel| pixel[..3] == [255, 0, 0]).count(),
+      pixels()
+        .filter(|pixel| pixel[1] > 0xa0 && pixel[0] < 0x60 && pixel[2] < 0x60)
+        .count(),
+      pixels()
+        .filter(|pixel| pixel[..3].iter().all(|&channel| channel > 0xa0))
+        .count(),
+    )
+  };
+  for (scale, _) in ALL_SCALES {
+    let (red, green, white) = count(&render(scale, true));
+    let (plain_red, plain_green, plain_white) = count(&render(scale, false));
+    assert!(red > 100 && plain_red == 0, "the selection, at {scale}");
+    assert!(green > 20 && plain_green == 0, "the glyphs, at {scale}");
+    // Only the caret keeps the text's color.
+    assert!(
+      white * 4 < plain_white,
+      "{white} of {plain_white} white at {scale}"
+    );
+  }
+}
+
 /// A rounded card with a border and text, moved, scaled and turned; a
 /// turned pair of boxes at half opacity, drawn as one layer; and a turned
 /// clip, which cuts its children along its turned corners.

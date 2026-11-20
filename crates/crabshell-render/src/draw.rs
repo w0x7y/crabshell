@@ -745,7 +745,9 @@ impl Painter<'_> {
     self.draw_box(pixmap, node.rect(), style);
     match node.content() {
       Content::Text(text) => {
-        self.selection(pixmap, &text.selection(), text.color());
+        let color = text.color();
+        let tint = Color::rgba(color.r, color.g, color.b, color.a / 3);
+        self.selection(pixmap, &text.selection(), tint);
         self.text(pixmap, &text);
       }
       Content::Icon(icon) => self.icon(pixmap, &icon),
@@ -1275,7 +1277,8 @@ impl Painter<'_> {
       };
       for glyph in run.glyphs.iter() {
         let span = text.span(run.line_i, glyph);
-        let color = span.and_then(|span| span_color(span, glyph));
+        let color = text.selected_color(run.line_i, glyph);
+        let color = color.or_else(|| span.and_then(|span| span_color(span, glyph)));
         let color = color.unwrap_or(text.color());
         if color.a == 0 {
           continue;
@@ -1415,11 +1418,11 @@ impl Painter<'_> {
     });
   }
 
-  /// A field's selection in a third of the text's color, the text, and a
-  /// caret in the text's color.
+  /// A field's selection in its color, the text, and a caret in the
+  /// text's color.
   fn input_contents(&mut self, pixmap: &mut PixmapMut<'_>, input: &InputView<'_>) {
     let color = input.text.color();
-    self.selection(pixmap, input.selection, color);
+    self.selection(pixmap, input.selection, input.selection_color);
     self.text(pixmap, &input.text);
     for line in input.underline {
       if let Some(area) = self.grid.rect(*line) {
@@ -1445,9 +1448,8 @@ impl Painter<'_> {
     }
   }
 
-  /// A selection, behind text in `color`, in a third of it.
-  fn selection(&mut self, pixmap: &mut PixmapMut<'_>, spans: &[Rect], color: Color) {
-    let tint = Color::rgba(color.r, color.g, color.b, color.a / 3);
+  /// A selection, behind text, in `tint`.
+  fn selection(&mut self, pixmap: &mut PixmapMut<'_>, spans: &[Rect], tint: Color) {
     for span in spans {
       if let Some(area) = self.grid.rect(*span) {
         let mut path = PathBuilder::new();

@@ -9,7 +9,7 @@ use crabshell_reactive::Signal;
 use crate::cx::Cx;
 use crate::input::Handler;
 use crate::prop::IntoProp;
-use crate::style::Style;
+use crate::style::{Color, Style};
 use crate::text_input::InputProps;
 use crate::widgets::{Common, Element, ElementKind, Widget, visibility_methods};
 
@@ -55,6 +55,8 @@ impl TextArea {
         wrap: None,
         max_length: None,
         read_only: None,
+        selection_color: None,
+        selected_text_color: None,
       },
       common: Common::default(),
     }
@@ -83,6 +85,22 @@ impl TextArea {
   /// and text set from outside still shows.
   pub fn read_only(mut self, on: impl IntoProp<bool>) -> TextArea {
     self.input.read_only = Some(on.into_prop());
+    self
+  }
+
+  /// Sets the color the selection is drawn in behind the text. By
+  /// default, or with `None`, it is the text's color at a third of its
+  /// alpha.
+  pub fn selection_color(mut self, color: impl IntoProp<Option<Color>>) -> TextArea {
+    self.input.selection_color = Some(color.into_prop());
+    self
+  }
+
+  /// Sets the color the selected text is drawn in, over any span or
+  /// link color. By default, or with `None`, it keeps its own color.
+  /// Underlines and strikethroughs keep theirs.
+  pub fn selected_text_color(mut self, color: impl IntoProp<Option<Color>>) -> TextArea {
+    self.input.selected_text_color = Some(color.into_prop());
     self
   }
 

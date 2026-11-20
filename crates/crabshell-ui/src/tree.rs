@@ -1054,6 +1054,30 @@ impl Tree {
             tree.write_back(id);
           }
         });
+        self.bind_opt(
+          id,
+          props.selection_color,
+          "selection_color",
+          |tree, id, color| {
+            tree.update(id, |node| match &mut node.kind {
+              NodeKind::Input(input) if input.selection_color != color => {
+                input.selection_color = color;
+                Change::Paint
+              }
+              _ => Change::None,
+            });
+          },
+        );
+        let selected = props.selected_text_color;
+        self.bind_opt(id, selected, "selected_text_color", |tree, id, color| {
+          tree.update(id, |node| match &mut node.kind {
+            NodeKind::Input(input) if input.selected_text_color != color => {
+              input.selected_text_color = color;
+              Change::Paint
+            }
+            _ => Change::None,
+          });
+        });
         self.bind_opt(id, props.read_only, "read_only", |tree, id, value| {
           tree.update_input(id, |input| {
             input.edit.read_only = value;
