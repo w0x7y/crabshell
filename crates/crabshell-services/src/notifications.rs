@@ -213,6 +213,19 @@ impl Notifications {
     }
   }
 
+  /// Popup `id` counts its whole timeout again from now, as when it is
+  /// replaced, for a toast that starts over once the pointer leaves it.
+  /// A held one stays held, with its whole timeout left for when
+  /// [`hold_popup`](Self::hold_popup) lets it go. It changes neither
+  /// [`popups`](Self::popups) nor [`list`](Self::list), and a reload keeps
+  /// the time it has left as for any popup. An unknown `id`, or one that
+  /// shows until dismissed, is ignored.
+  pub fn restart_popup(&self, id: u32) {
+    if let Some(service) = &self.service {
+      service.restart(id);
+    }
+  }
+
   /// Ends popup `id` now, as if its time ran out: it leaves
   /// [`popups`](Self::popups) and stays in [`list`](Self::list), and its
   /// app isn't told. A transient one goes from the list too, and its app
@@ -886,6 +899,20 @@ impl Service {
       && let Some(popup) = state.showing.iter_mut().find(|popup| popup.id == id)
     {
       popup.hold(held, Instant::now());
+    }
+    self.schedule();
+  }
+
+  /// Counts popup `id`'s whole timeout again, as
+  /// [`Notifications::restart_popup`] does.
+  fn restart(self: &Rc<Self>, id: u32) {
+    if let Some(state) = self.state.borrow_mut().as_mut()
+      && let Some(popup) = state.showing.iter_mut().find(|popup| popup.id == id)
+    {
+      *popup = Popup {
+        held: popup.held,
+        ..Popup::new(id, popup.timeout, Instant::now())
+      };
     }
     self.schedule();
   }

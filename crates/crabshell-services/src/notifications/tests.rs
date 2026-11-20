@@ -1725,6 +1725,50 @@ fn a_replaced_popup_counts_its_whole_timeout_again() {
   );
 }
 
+/// Restarted on the bus as a toast does when the pointer leaves, then
+/// held, restarted and handed to the next shell.
+#[test]
+fn a_restarted_popup_counts_its_whole_timeout_again_held_or_not() {
+  let bus = PrivateBus::start();
+  let (saved, id) = {
+    let (mut shell, notifications, app) = serve(&bus, online(&bus));
+    let mut toast = note("toast");
+    toast.timeout = 400;
+    let id = notify(&mut shell, &app, toast).expect("an id");
+    shell.run_until(Instant::now() + Duration::from_millis(300));
+    notifications.restart_popup(id);
+    let (left, whole) = notifications.popup_time_left(id).expect("counting");
+    assert_eq!(whole, Duration::from_millis(400));
+    assert!(left > Duration::from_millis(350), "{left:?}");
+    shell.run_until(Instant::now() + Duration::from_millis(200));
+    assert_eq!(ids(notifications.popups()), [id], "past its first time");
+    // A held one stays held, with its whole timeout left.
+    notifications.hold_popup(id, true);
+    notifications.restart_popup(id);
+    notifications.restart_popup(999);
+    shell.run_until(Instant::now() + Duration::from_millis(100));
+    assert_eq!(notifications.popup_time_left(id), Some((whole, whole)));
+    let saved = crate::save_state(&shell.cx).expect("something to keep");
+    let saved: serde_json::Value = serde_json::from_str(&saved.to_string()).expect("JSON");
+    shell.cx.owner().dispose();
+    (saved, id)
+  };
+  let mut shell = Harness::new(online(&bus));
+  crate::restore_state(&shell.cx, saved);
+  let notifications = shell.cx.notifications();
+  let (left, whole) = notifications.popup_time_left(id).expect("counting");
+  assert_eq!(whole, Duration::from_millis(400));
+  assert!(left > Duration::from_millis(350), "{left:?}");
+  let started = Instant::now();
+  let popups = notifications.popups();
+  wait_for(&mut shell, "it to expire", || ids(popups).is_empty());
+  let counted = started.elapsed();
+  assert!(
+    counted + Duration::from_millis(20) >= left,
+    "{counted:?} of {left:?}"
+  );
+}
+
 #[test]
 fn no_timer_runs_while_every_popup_is_held_or_never_expires() {
   let mut shell = Harness::new(offline());
