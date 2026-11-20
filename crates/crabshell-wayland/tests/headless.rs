@@ -5623,10 +5623,18 @@ fn an_images_status_reaches_its_effects_in_the_iteration_that_drew_it() {
     .child(
       Row::new()
         .child(
+          // Drawn only once Ready, as rime's album art fades in.
           crabshell_ui::Image::new(still)
             .width(40)
             .height(20)
             .blur(move || blur.get())
+            .style(move || {
+              Style::new().opacity(if good.get() == ImageStatus::Ready {
+                1.0
+              } else {
+                0.0
+              })
+            })
             .status(good),
         )
         .child(

@@ -423,13 +423,19 @@ impl Icons {
       else {
         continue;
       };
-      if let Some((_, images)) = self.pending.remove(&key) {
-        ready.extend(images);
-      }
-      let path = match &key {
-        Key::Image { path, .. } => path.display().to_string(),
-        _ => String::new(),
+      let images = self
+        .pending
+        .remove(&key)
+        .map(|(_, images)| images)
+        .unwrap_or_default();
+      ready.extend(&images);
+      let source = match &key {
+        Key::Image { path, .. } => Some(path.clone()),
+        _ => None,
       };
+      let path = source
+        .as_ref()
+        .map_or_else(String::new, |path| path.display().to_string());
       let mut frames = frames;
       // Each job had the room left when it was sent, so GIFs decoded
       // together could keep more than the cache holds.
@@ -450,7 +456,17 @@ impl Icons {
           gif.repeats = Some(0);
         }
       }
+      let status = match &frames {
+        Ok(_) => ImageStatus::Ready,
+        Err(_) => ImageStatus::Failed,
+      };
       self.store(key, frames, || format!("image {path}"));
+      // Told now, as an image that isn't drawn would never tell it.
+      if let Some(source) = &source {
+        for &id in &images {
+          crabshell_ui::image_status(id, source, status);
+        }
+      }
     }
     ready.sort_unstable();
     ready.dedup();
@@ -697,6 +713,34 @@ impl Icons {
       },
       _ => Drawn::One(to),
     })
+  }
+
+  /// Loads each of `images`, which a draw at `scale` skipped while their
+  /// status waits, at its box's size or one pixel, unless it is being
+  /// decoded already, and tells its status: Ready or Failed at once, or
+  /// when the worker is done. A hidden or transparent image would never
+  /// load otherwise, and a config may show it only once it is Ready.
+  pub(crate) fn load_unseen(&mut self, images: &[ImageView<'_>], scale: f32) {
+    for image in images {
+      if self
+        .pending
+        .values()
+        .any(|(_, ids)| ids.contains(&image.id))
+      {
+        continue;
+      }
+      // `as` saturates, and NaN is 0.
+      let pixels = |length: f32| ((length * scale).round() as u32).max(1);
+      let size = (pixels(image.rect.width), pixels(image.rect.height));
+      let key = self.load(image.path, image, size, scale, true, Some(image.id));
+      if let Some(entry) = self.cache.get(&key) {
+        let status = match entry.frames {
+          Some(_) => ImageStatus::Ready,
+          None => ImageStatus::Failed,
+        };
+        crabshell_ui::image_status(image.id, image.path, status);
+      }
+    }
   }
 
   /// The file at `path` scaled to `size` to mask with, unfiltered and

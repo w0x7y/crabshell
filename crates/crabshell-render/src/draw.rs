@@ -352,6 +352,8 @@ impl Renderer {
       copy(&self.scratch, area, pixels, width, format);
     }
     self.icons.repainted(&tiles);
+    // Images the tiles skipped, hidden or transparent, still load.
+    self.icons.load_unseen(&view.loading_images(), scale);
     self.icons.end_frame();
     if self.glyphs.image_cache.len() > GLYPH_CACHE_LIMIT {
       self.glyphs.image_cache.clear();

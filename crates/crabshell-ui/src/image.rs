@@ -47,19 +47,20 @@ pub enum ImageStatus {
   /// The source is an empty path, so nothing is shown. The default.
   #[default]
   Empty,
-  /// The source is new and its picture hasn't been drawn yet: it is read
-  /// at the next draw, or decoded off the loop's thread.
+  /// The source is new and its picture hasn't loaded yet: it is read at
+  /// its window's next draw, or decoded off the loop's thread.
   Loading,
-  /// The image was drawn from its source's picture.
+  /// The source's picture loaded, whether it was drawn or not.
   Ready,
   /// The source can't be read or decoded, or is past the size limits.
   Failed,
 }
 
 /// Writes `status` to image `id`'s status signal while it shows
-/// `source`, if that changes it. A renderer calls it while drawing, with
-/// [`ImageStatus::Ready`] when it draws the image from its source's
-/// picture and [`ImageStatus::Failed`] when that can't be loaded. A report
+/// `source`, if that changes it. A renderer calls it as it loads a
+/// picture, with [`ImageStatus::Ready`] when the image's source loaded and
+/// [`ImageStatus::Failed`] when it can't be, whether the image is drawn or
+/// not (see [`WindowView::loading_images`](crate::WindowView::loading_images)). A report
 /// about another source, an empty one, or an image without a `status`
 /// signal changes nothing. The platform then asks
 /// [`image_status_changed`] and runs the reactive flush.
@@ -110,6 +111,17 @@ fn watch_source(id: u64, source: &Path) {
       write_status(*signal, status);
     }
   });
+}
+
+/// Whether image `id` has a `status` signal that still says Loading.
+pub(crate) fn awaits_status(id: u64) -> bool {
+  WATCHED
+    .try_with(|watched| {
+      watched.borrow().iter().any(|(at, signal, _)| {
+        *at == id && untrack(|| signal.try_get()) == Some(ImageStatus::Loading)
+      })
+    })
+    .unwrap_or(false)
 }
 
 /// How many images have a status watched, for tests.

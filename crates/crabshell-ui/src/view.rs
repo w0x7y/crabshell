@@ -41,6 +41,22 @@ impl<'w> WindowView<'w> {
     NodeView::new(&self.tree, self.tree.root)
       .expect("invariant: the root node exists while the tree does")
   }
+
+  /// The window's images whose `status` signal still says Loading, hidden
+  /// ones too, at the box they were last laid out in. A renderer loads
+  /// those a draw skipped, such as one at opacity 0 or hidden until it is
+  /// Ready, so each still hears its status.
+  pub fn loading_images(&self) -> Vec<ImageView<'_>> {
+    self
+      .tree
+      .images
+      .iter()
+      .filter_map(|&id| match NodeView::new(&self.tree, id)?.content() {
+        Content::Image(image) if crate::image::awaits_status(image.id) => Some(image),
+        _ => None,
+      })
+      .collect()
+  }
 }
 
 /// One node of a laid-out window: a widget, or the window itself at the
