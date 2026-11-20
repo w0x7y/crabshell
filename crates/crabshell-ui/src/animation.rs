@@ -12,7 +12,7 @@ use crabshell_reactive::{Owner, ReadSignal, Signal, untrack};
 use crate::cx::Cx;
 use crate::geometry::Point;
 use crate::input::panic_message;
-use crate::prop::IntoProp;
+use crate::prop::{IntoProp, Prop, PropKind};
 use crate::style::Color;
 
 /// How an animation moves from its start to its end: what fraction of
@@ -332,6 +332,99 @@ const SPRING_MAX_STEP: f64 = 0.25;
 /// speed per second below which it counts as still.
 const SPRING_REST: (f64, f64) = (0.001, 0.01);
 
+/// One step of a [`Cx::sequence`]: a move to a value over a
+/// [`Transition`], or a hold that keeps the value for a while. Steps are
+/// built in `const`s, so a config keeps a whole sequence in a `const`
+/// array.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Step<T> {
+  to: Option<T>,
+  transition: Transition,
+}
+
+impl<T> Step<T> {
+  /// A move from wherever the value is to `value`, over `transition`,
+  /// after its delay.
+  pub const fn to(value: T, transition: Transition) -> Step<T> {
+    Step {
+      to: Some(value),
+      transition,
+    }
+  }
+
+  /// A pause of `ms` milliseconds that keeps the value where it is, as
+  /// Qt's `PauseAnimation`.
+  pub const fn hold(ms: u32) -> Step<T> {
+    Step {
+      to: None,
+      transition: Transition::new(0).delay(ms),
+    }
+  }
+
+  /// When it starts to move and when it ends, in microseconds after it
+  /// begins. A hold never moves, so both are its end.
+  fn times(&self) -> (u64, u64) {
+    let moves = u64::from(self.transition.delay) * 1000;
+    (moves, moves + u64::from(self.transition.ms) * 1000)
+  }
+}
+
+impl<T: Animate> IntoProp<Vec<Step<T>>> for Vec<Step<T>> {
+  fn into_prop(self) -> Prop<Vec<Step<T>>> {
+    Prop(PropKind::Value(self))
+  }
+}
+
+/// A fixed array of steps, such as a `const` sequence.
+impl<T: Animate, const N: usize> IntoProp<Vec<Step<T>>> for [Step<T>; N] {
+  fn into_prop(self) -> Prop<Vec<Step<T>>> {
+    Prop(PropKind::Value(self.into()))
+  }
+}
+
+/// Where a play of a sequence is at a time.
+enum Spot<T> {
+  /// Moving, here.
+  Moving(T),
+  /// Holding here until the time given, in microseconds, when the value
+  /// next changes.
+  Holding(T, u64),
+  /// Past its last step, here.
+  Ended(T),
+}
+
+/// Where a play of `steps`, begun with the value at `from`, is `at`
+/// microseconds in.
+fn spot<T: Animate>(steps: &[Step<T>], from: &T, at: u64) -> Spot<T> {
+  let mut from = from.clone();
+  let mut begins = 0;
+  for (i, step) in steps.iter().enumerate() {
+    let (moves, ends) = step.times();
+    if at < begins + moves {
+      // A pause goes on through the holds and delays right after it.
+      let mut until = begins + moves;
+      if step.to.is_none() {
+        for next in &steps[i + 1..] {
+          until += next.times().0;
+          if next.to.is_some() {
+            break;
+          }
+        }
+      }
+      return Spot::Holding(from, until);
+    }
+    if let Some(to) = &step.to {
+      if at < begins + ends {
+        let t = (at - begins - moves) as f32 / (ends - moves) as f32;
+        return Spot::Moving(from.lerp(to, step.transition.easing.value_at(t)));
+      }
+      from = to.clone();
+    }
+    begins += ends;
+  }
+  Spot::Ended(from)
+}
+
 /// A value an animation can move between two of: `lerp` gives the value
 /// `t` of the way from `self` to `to`, where `t` may stray a little past 0
 /// or 1 for an easing that overshoots.
@@ -371,10 +464,10 @@ impl Animate for Color {
 
 /// One running animation: advanced to a time, it says whether it still
 /// runs.
-type Step = Box<dyn FnMut(Instant) -> bool>;
+type Tick = Box<dyn FnMut(Instant) -> bool>;
 
 /// A step on the clock, named for log lines and counted in its item.
-type Running = (Rc<str>, Option<Busy>, Step);
+type Running = (Rc<str>, Option<Busy>, Tick);
 
 /// How many animations run inside one item of a list with an exit, and
 /// the item around it, so a leaving item knows when everything in it has
@@ -434,14 +527,57 @@ thread_local! {
   /// named for log lines.
   static RUNNING: RefCell<Vec<Running>> = const { RefCell::new(Vec::new()) };
   static WATCHES: RefCell<Vec<Watch>> = const { RefCell::new(Vec::new()) };
+  /// Steps taken off the clock through a pause, each until its time and
+  /// while its owner lasts. The timers wake them.
+  static ASLEEP: RefCell<Vec<(Instant, Owner, Running)>> = const { RefCell::new(Vec::new()) };
+  /// What the step now running asked with [`sleep_until`].
+  static SLEEP: Cell<Option<(Instant, Owner)>> = const { Cell::new(None) };
   /// When the clock last ticked.
   static LAST_TICK: Cell<Option<Instant>> = const { Cell::new(None) };
 }
 
 /// Starts `step`, named `label` for log lines and counted in `busy`'s
 /// item, at the next [`advance_animations`].
-pub(crate) fn start(label: Rc<str>, busy: Option<Busy>, step: Step) {
+pub(crate) fn start(label: Rc<str>, busy: Option<Busy>, step: Tick) {
   RUNNING.with(|running| running.borrow_mut().push((label, busy, step)));
+}
+
+/// Takes the step now running off the clock once it returns `true`, until
+/// `deadline`, so a pause wakes the loop once instead of every frame. It
+/// stays counted in its item, and is freed unwoken if `owner` goes.
+pub(crate) fn sleep_until(deadline: Instant, owner: Owner) {
+  SLEEP.with(|sleep| sleep.set(Some((deadline, owner))));
+}
+
+/// When the first sleeping step wakes, having freed those whose owner is
+/// gone.
+pub(crate) fn next_wake() -> Option<Instant> {
+  let gone = ASLEEP.with(|asleep| {
+    let mut asleep = asleep.borrow_mut();
+    let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut *asleep)
+      .into_iter()
+      .partition(|(_, owner, _)| owner.is_disposed());
+    *asleep = kept;
+    gone
+  });
+  for (_, _, (label, busy, step)) in gone {
+    drop(busy);
+    drop_isolated(&label, step);
+  }
+  ASLEEP.with(|asleep| asleep.borrow().iter().map(|(deadline, ..)| *deadline).min())
+}
+
+/// Puts the sleeping steps due at `now` back on the clock.
+pub(crate) fn wake(now: Instant) {
+  let due: Vec<Running> = ASLEEP.with(|asleep| {
+    let mut asleep = asleep.borrow_mut();
+    let (due, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut *asleep)
+      .into_iter()
+      .partition(|(deadline, ..)| *deadline <= now);
+    *asleep = kept;
+    due.into_iter().map(|(_, _, running)| running).collect()
+  });
+  RUNNING.with(|running| running.borrow_mut().extend(due));
 }
 
 /// Runs `done` at the first tick that finds nothing running in
@@ -508,8 +644,19 @@ pub fn advance_animations(now: Instant) -> bool {
   let steps = RUNNING.with(|running| std::mem::take(&mut *running.borrow_mut()));
   let mut kept = Vec::with_capacity(steps.len());
   for (label, busy, mut step) in steps {
-    match panic::catch_unwind(AssertUnwindSafe(|| step(now))) {
-      Ok(true) => kept.push((label, busy, step)),
+    let ran = panic::catch_unwind(AssertUnwindSafe(|| step(now)));
+    let sleep = SLEEP.with(Cell::take);
+    match ran {
+      Ok(true) => match sleep {
+        Some((deadline, owner)) => {
+          ASLEEP.with(|asleep| {
+            asleep
+              .borrow_mut()
+              .push((deadline, owner, (label, busy, step)));
+          });
+        }
+        None => kept.push((label, busy, step)),
+      },
       Ok(false) => drop_isolated(&label, step),
       Err(payload) => {
         tracing::error!(
@@ -536,7 +683,7 @@ pub fn advance_animations(now: Instant) -> bool {
 }
 
 /// Drops a finished step, and the user's values it holds, isolated.
-fn drop_isolated(label: &str, step: Step) {
+fn drop_isolated(label: &str, step: Tick) {
   if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(move || drop(step))) {
     tracing::error!(
       "dropping animation {label} panicked: {}",
@@ -978,5 +1125,174 @@ impl Cx {
       value: value.read_only(),
       running: running.read_only(),
     }
+  }
+
+  /// A value that plays `steps` one after another each time `trigger`'s
+  /// value changes, as Qt's `SequentialAnimation`: a shake on a wrong
+  /// password, bumped by a counter, or a pause and then a slide. It starts
+  /// at `initial`, and `trigger`'s first value plays nothing. Each step
+  /// moves from wherever the value is, so a new trigger mid-play starts
+  /// over from there, and once played the value rests at the last step's
+  /// target. `steps` is a value or a closure, read untracked as each play
+  /// starts; an empty list plays nothing.
+  ///
+  /// The [`Animation`]'s `running()` is true from the trigger until the
+  /// last step ends, holds included, so an effect on it runs what comes
+  /// after. A hold, or a delay, takes the value off the animation clock:
+  /// the loop sleeps until it ends instead of waking each frame. A panic in
+  /// `trigger` is logged with this call's place and stops the sequence
+  /// where it is for good; one in `steps` or a config's own `lerp` stops
+  /// that play.
+  ///
+  /// ```
+  /// use crabshell_ui::{Cx, Easing, Step, Transition};
+  ///
+  /// const SHAKE: [Step<f32>; 3] = [
+  ///     Step::to(-14.0, Transition::new(70).easing(Easing::OutQuad)),
+  ///     Step::to(12.0, Transition::new(90).easing(Easing::InOutQuad)),
+  ///     Step::to(0.0, Transition::new(95).easing(Easing::OutQuad)),
+  /// ];
+  ///
+  /// fn pill(cx: &Cx) {
+  ///     let wrong = cx.signal(0_u32); // bumped on each wrong password
+  ///     let shake = cx.sequence(0.0, move || wrong.get(), SHAKE);
+  ///     // Read `shake.value().get()` in a binding, such as a translate.
+  /// }
+  /// ```
+  #[track_caller]
+  pub fn sequence<T: Animate, K: PartialEq + 'static>(
+    &self,
+    initial: T,
+    mut trigger: impl FnMut() -> K + 'static,
+    steps: impl IntoProp<Vec<Step<T>>>,
+  ) -> Animation<T> {
+    let player = self.player("cx.sequence", initial, steps);
+    let mut last = None;
+    let mut broken = false;
+    let animation = player.animation();
+    self.effect(move || {
+      if broken {
+        return;
+      }
+      let Some(now) = guarded(&player.label, &mut trigger) else {
+        broken = true;
+        player.stop();
+        return;
+      };
+      if last.as_ref().is_some_and(|last| *last != now) {
+        player.play();
+      }
+      last = Some(now);
+    });
+    animation
+  }
+
+  /// The state of a [`Cx::sequence`], logged as `what` at the caller's
+  /// place.
+  #[track_caller]
+  fn player<T: Animate>(
+    &self,
+    what: &str,
+    initial: T,
+    steps: impl IntoProp<Vec<Step<T>>>,
+  ) -> Rc<Player<T>> {
+    Rc::new(Player {
+      label: format!("{what} at {}", std::panic::Location::caller()).into(),
+      steps: steps.into_prop().shared(),
+      value: self.signal(initial),
+      running: self.signal(false),
+      generation: Rc::new(Cell::new(0)),
+      owner: self.owner(),
+      activity: self.activity.clone(),
+    })
+  }
+}
+
+/// A sequence's value, its steps, and the play on the clock.
+struct Player<T: 'static> {
+  label: Rc<str>,
+  steps: Rc<dyn Fn() -> Vec<Step<T>>>,
+  value: Signal<T>,
+  running: Signal<bool>,
+  /// Bumped by each new play, so the one it replaces stops.
+  generation: Rc<Cell<u64>>,
+  owner: Owner,
+  activity: Option<Rc<Activity>>,
+}
+
+impl<T: Animate> Player<T> {
+  fn animation(&self) -> Animation<T> {
+    Animation {
+      value: self.value.read_only(),
+      running: self.running.read_only(),
+    }
+  }
+
+  /// Stops the play on the clock where it is.
+  fn stop(&self) {
+    self.generation.set(self.generation.get() + 1);
+    set_changed(self.running, false);
+  }
+
+  /// Starts a play of the steps from where the value is.
+  fn play(&self) {
+    self.stop();
+    let label = Rc::clone(&self.label);
+    // Read as each play starts, so a binding can pick the steps; the
+    // clones are a config's own.
+    let Some((steps, origin)) = guarded(&label, || {
+      let steps = untrack(&*self.steps);
+      let origin = untrack(|| self.value.try_get())?;
+      Some((steps, origin))
+    })
+    .flatten() else {
+      return;
+    };
+    if steps.is_empty() {
+      return;
+    }
+    set_changed(self.running, true);
+    let current = self.generation.get();
+    let generation = Rc::clone(&self.generation);
+    let (value, running, owner) = (self.value, self.running, self.owner);
+    let step_label = Rc::clone(&label);
+    let mut started = start_time();
+    start(
+      label,
+      self.activity.as_ref().map(Busy::new),
+      Box::new(move |now| {
+        if generation.get() != current {
+          return false;
+        }
+        let begun = *started.get_or_insert(now);
+        let at = now.saturating_duration_since(begun).as_micros();
+        let at = u64::try_from(at).unwrap_or(u64::MAX);
+        let spot = guarded(&step_label, || spot(&steps, &origin, at));
+        let (next, sleep) = match spot {
+          Some(Spot::Moving(next)) => (next, None),
+          Some(Spot::Holding(next, until)) => (next, Some(until)),
+          Some(Spot::Ended(next)) => {
+            set_changed(value, next);
+            running.try_set(false);
+            return false;
+          }
+          // A panicking `lerp` ends the play with `running` false, so
+          // whatever waits on it runs.
+          None => {
+            running.try_set(false);
+            return false;
+          }
+        };
+        // A value whose owner is gone stops its sequence.
+        if untrack(|| value.try_with(|_| ())).is_none() {
+          return false;
+        }
+        set_changed(value, next);
+        if let Some(until) = sleep {
+          sleep_until(begun + Duration::from_micros(until), owner);
+        }
+        true
+      }),
+    );
   }
 }

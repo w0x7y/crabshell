@@ -43,6 +43,7 @@ mod rich;
 mod screencopy;
 mod scroll;
 mod select;
+mod sequence;
 mod services;
 mod slider;
 mod style;

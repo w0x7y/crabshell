@@ -101,7 +101,7 @@ pub use access::{
   AccessEvent, AccessId, AccessNode, AccessRole, AccessText, AccessValue, Accessibility,
 };
 pub use animation::{
-  Animate, Animation, Easing, Spring, Transition, advance_animations, animating,
+  Animate, Animation, Easing, Spring, Step, Transition, advance_animations, animating,
 };
 pub use canvas::{Canvas, CanvasOp, Cap, Join, Paint, Path, PathCommand, Pen, Stroke};
 pub use capture::Capture;

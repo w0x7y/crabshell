@@ -156,21 +156,25 @@ fn set_running(signal: Signal<bool>, running: bool) {
   }
 }
 
-/// When the earliest running timer is due, for the platform to wake then.
-/// `None` means no timer runs and nothing needs waking. Timers whose
-/// context is gone are freed first, so they never wake the loop.
+/// When the earliest running timer, or animation asleep in a pause, is
+/// due, for the platform to wake then. `None` means none runs and nothing
+/// needs waking. Timers and animations whose context is gone are freed
+/// first, so they never wake the loop.
 pub fn next_timer() -> Option<Instant> {
   sweep();
-  TIMERS.with(|timers| {
+  let timer = TIMERS.with(|timers| {
     let timers = timers.borrow();
     timers.1.values().filter_map(|entry| entry.deadline).min()
-  })
+  });
+  timer.into_iter().chain(crate::animation::next_wake()).min()
 }
 
-/// Runs every timer due at `now`, earliest first. A timer started while
-/// they run first fires at a later call. One whose callback panics is
-/// logged and stops; the others still fire.
+/// Runs every timer due at `now`, earliest first, and puts the animations
+/// whose pause has ended back on the animation clock. A timer started
+/// while they run first fires at a later call. One whose callback panics
+/// is logged and stops; the others still fire.
 pub fn fire_timers(now: Instant) {
+  crate::animation::wake(now);
   sweep();
   let mut due: Vec<(Instant, u64)> = TIMERS.with(|timers| {
     let timers = timers.borrow();
