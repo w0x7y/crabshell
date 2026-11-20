@@ -121,8 +121,9 @@ impl Slider {
   /// below the range's end, as a brightness slider held to half in a power
   /// saver mode; the track still shows the whole range. `None`, the
   /// default, a cap that isn't a number or one past the end is the end,
-  /// and one under the start is the start. A value set from outside past
-  /// the cap shows where it is, and the next move from there lands at or
+  /// and one under the start is the start. With a step, a cap between
+  /// steps stops at the step under it. A value set from outside past the
+  /// cap shows where it is, and the next move from there lands at or
   /// under the cap.
   pub fn limit(mut self, max: impl IntoProp<Option<f32>>) -> Slider {
     self.props.limit = Some(max.into_prop());
@@ -264,11 +265,15 @@ impl Range {
     }
   }
 
-  /// The highest value a move can write: the limit within the range.
+  /// The highest value a move can write: the limit within the range,
+  /// down to a step when there is one, so the value stays on a step.
   fn cap(self) -> f32 {
     let (min, max) = self.bounds();
     match untrack(|| self.limit.try_get()).flatten() {
-      Some(limit) if limit < max => limit.max(min),
+      Some(limit) if limit < max => match self.snap() {
+        Some(step) => (min + ((limit - min) / step).floor() * step).max(min),
+        None => limit.max(min),
+      },
       _ => max,
     }
   }

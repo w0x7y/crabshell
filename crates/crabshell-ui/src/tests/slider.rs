@@ -418,6 +418,16 @@ fn a_plain_number_is_a_limit() {
 }
 
 #[test]
+fn a_limit_between_steps_stops_at_the_step_under_it() {
+  let mut h = Harness::new();
+  let value = h.cx.signal(0.0);
+  let window = window(&mut h, pixels_slider(value).step(5.0).limit(47.0));
+  press(&window, 119.0, 8.0);
+  release(&window);
+  assert_eq!(value.get(), 45.0);
+}
+
+#[test]
 fn a_panicking_limit_or_wheel_step_is_logged_with_its_path_and_the_window_runs_on() {
   let mut h = Harness::new();
   let (capped, stepped, other) = (h.cx.signal(0.0), h.cx.signal(0.0), h.cx.signal(0.0));
