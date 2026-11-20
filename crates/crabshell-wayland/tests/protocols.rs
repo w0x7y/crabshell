@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 use crabshell_reactive::Runtime;
 use crabshell_ui::{
-  Button, Color, Cx, DragContent, DragPhase, Edge, Output, PanelWindow, Region, Row, ScrollView,
-  Stack, Style, Text, TextInput, Window,
+  Button, Color, Cx, DragContent, DragPhase, Edge, Lock, Output, PanelWindow, Region, Row,
+  ScrollView, SessionLock, Stack, Style, Text, TextInput, Window,
 };
 use crabshell_wayland::{EventLoop, WindowId, Windowset};
 use fake::{Fake, Globals};
@@ -366,6 +366,24 @@ fn without_xdg_activation_no_token_is_asked_for() {
   assert!(
     !platform.request_activation_token(Some("org.example.App"), |_| { panic!("no token comes") })
   );
+}
+
+#[test]
+fn without_ext_session_lock_a_lock_is_refused_until_locked_turns_false() {
+  let (_fake, mut event_loop) = connect(Globals::default());
+  let runtime = Runtime::current();
+  let cx = Cx::new(runtime.new_owner());
+  let (on, refused) = (cx.signal(true), cx.signal(false));
+  let lock = Lock::new(
+    &cx,
+    SessionLock::new().locked(move || on.get()).refused(refused),
+  );
+  let locked = lock.locked();
+  event_loop.platform().add_session_lock(lock);
+  wait(&mut event_loop, "the refusal", |_| refused.get_untracked());
+  assert!(!locked.get_untracked());
+  on.set(false);
+  wait(&mut event_loop, "it to clear", |_| !refused.get_untracked());
 }
 
 #[test]

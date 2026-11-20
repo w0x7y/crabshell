@@ -31,6 +31,31 @@ fn locked_takes_a_value_or_follows_a_binding_from_the_next_flush() {
 }
 
 #[test]
+fn a_refusal_is_written_to_the_refused_signal_once_per_change() {
+  let h = Harness::new();
+  let refused = h.cx.signal(false);
+  let lock = Lock::new(&h.cx, SessionLock::new().locked(true).refused(refused));
+  let seen = Rc::new(RefCell::new(Vec::new()));
+  let log = Rc::clone(&seen);
+  h.cx.effect(move || log.borrow_mut().push(refused.get()));
+  h.runtime.flush();
+  lock.set_refused(true);
+  h.runtime.flush();
+  lock.set_refused(true);
+  h.runtime.flush();
+  lock.set_refused(false);
+  h.runtime.flush();
+  assert_eq!(*seen.borrow(), [false, true, false]);
+  // Without one, or once its owner is gone, nothing is written.
+  Lock::new(&h.cx, SessionLock::new()).set_refused(true);
+  let gone = h.cx.child();
+  let orphan = gone.signal(false);
+  let lock = Lock::new(&h.cx, SessionLock::new().refused(orphan));
+  gone.owner().dispose();
+  lock.set_refused(true);
+}
+
+#[test]
 fn each_outputs_surface_has_its_path_the_style_and_what_the_builder_made() {
   let mut h = Harness::new();
   let lock = Lock::new(

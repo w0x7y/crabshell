@@ -1008,8 +1008,10 @@ pub trait ShellExt {
   /// Locks the session while `lock`'s `locked` is true, and gives `true`
   /// while the compositor says it is locked. Every output gets a surface
   /// built by `lock`'s `surface`. A refusal, as when another program holds
-  /// the lock, is logged and retried the next time `locked` turns true.
-  /// Without `ext-session-lock-v1` it never locks, and that is logged once.
+  /// the lock, is logged, written to `lock`'s
+  /// [`refused`](SessionLock::refused) signal, and retried the next time
+  /// `locked` turns true. Without `ext-session-lock-v1` it never locks,
+  /// and that is logged once.
   ///
   /// If this context goes, or the shell exits or crashes, while locked, the
   /// session stays locked, as the protocol wants. So keep `locked` in a file

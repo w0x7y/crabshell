@@ -4327,6 +4327,8 @@ struct Locker {
   typed: Signal<String>,
   /// What the compositor says.
   locked: ReadSignal<bool>,
+  /// Its `refused`.
+  refusal: Signal<bool>,
   id: LockId,
 }
 
@@ -4336,10 +4338,12 @@ struct Locker {
 fn add_locker(event_loop: &mut EventLoop, cx: &Cx) -> Locker {
   let on = cx.signal(false);
   let typed = cx.signal(String::new());
+  let refusal = cx.signal(false);
   let lock = Lock::new(
     cx,
     SessionLock::new()
       .locked(move || on.get())
+      .refused(refusal)
       .style(Style::new().background(MAGENTA).color(Color::rgb(0, 0, 0)))
       .surface(move |_, output| {
         Column::new()
@@ -4354,6 +4358,7 @@ fn add_locker(event_loop: &mut EventLoop, cx: &Cx) -> Locker {
     on,
     typed,
     locked,
+    refusal,
     id,
   }
 }
@@ -4661,27 +4666,35 @@ fn a_lock_another_client_holds_is_refused_and_asked_again_later() {
   let held = add_locker(&mut holder, &cx);
   held.on.set(true);
   wait_locked(&mut holder, held, true);
+  assert!(!held.refusal.get_untracked(), "a lock that took");
 
   let mut second = sway.connect();
   let refused = add_locker(&mut second, &cx);
   refused.on.set(true);
   run_until(&mut second, "the refusal", |_| {
+    refused.refusal.get_untracked()
+  });
+  assert!(
     logs
       .text()
       .contains("the compositor refused or ended the session lock")
-  });
+  );
   assert!(!refused.locked.get_untracked());
   assert!(lock_surfaces(second.platform()).is_empty());
 
   held.on.set(false);
   wait_locked(&mut holder, held, false);
+  assert!(!held.refusal.get_untracked(), "an unlock isn't a refusal");
   // Still true: asked again only once it turns false and true.
   settle(&mut second);
   assert!(!refused.locked.get_untracked());
+  assert!(refused.refusal.get_untracked(), "until locked turns false");
   refused.on.set(false);
   settle(&mut second);
+  assert!(!refused.refusal.get_untracked(), "cleared with locked");
   refused.on.set(true);
   wait_locked(&mut second, refused, true);
+  assert!(!refused.refusal.get_untracked());
 }
 
 #[test]

@@ -91,9 +91,9 @@ impl Platform {
   /// every output a lock surface built from it, and unlocks when it turns
   /// false. Its `locked` signal says when the compositor has locked. If
   /// the compositor refuses, as when another program holds the lock,
-  /// that is logged and it asks again the next time `locked` turns true.
-  /// Without `ext-session-lock-v1`, that is logged once and it never
-  /// locks.
+  /// that is logged, its `refused` signal turns true, and it asks again
+  /// the next time `locked` turns true. Without `ext-session-lock-v1`,
+  /// that is logged once, `refused` turns true and it never locks.
   pub fn add_session_lock(&mut self, lock: Lock) -> LockId {
     let id = self.locks.next;
     self.locks.next += 1;
@@ -148,6 +148,10 @@ impl Platform {
       match (&held.state, wanted) {
         (State::Unlocked { refused: true }, false) => {
           held.state = State::Unlocked { refused: false };
+          if let Some(lock) = &held.lock {
+            lock.set_refused(false);
+          }
+          acted = true;
         }
         // Beside the old shell of a reload, which may hold the session.
         (State::Unlocked { refused: false }, true) if self.alone => {
@@ -171,7 +175,7 @@ impl Platform {
   /// a lock surface at once, as the protocol asks.
   fn lock_session(&mut self, index: usize) {
     let Some(manager) = self.locks.manager() else {
-      self.locks.held[index].state = State::Unlocked { refused: true };
+      self.end_session(index, true);
       return;
     };
     let held = &mut self.locks.held[index];
@@ -253,6 +257,9 @@ impl Platform {
         }
       }
       State::Unlocked { .. } => {}
+    }
+    if let Some(lock) = held.lock.as_ref().filter(|_| refused) {
+      lock.set_refused(true);
     }
     let surfaces = std::mem::take(&mut held.surfaces);
     if held.lock.is_none() {

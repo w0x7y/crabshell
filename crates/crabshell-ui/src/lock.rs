@@ -45,6 +45,7 @@ pub struct SessionLock {
   style: Option<Prop<Style>>,
   surface: Option<Build>,
   on_key: Option<OnKey>,
+  refused: Option<Signal<bool>>,
 }
 
 impl SessionLock {
@@ -57,6 +58,17 @@ impl SessionLock {
   /// after the user's password was checked.
   pub fn locked(mut self, locked: impl IntoProp<bool>) -> SessionLock {
     self.locked = Some(locked.into_prop());
+    self
+  }
+
+  /// Writes `refused` true when the compositor refuses the lock, as when
+  /// another program holds it, or ends it while `locked` is still true,
+  /// and when it lacks `ext-session-lock-v1`. It turns false again once
+  /// `locked` turns false, so a config can tell a refusal from "not
+  /// locked yet" and clear its own `locked` flag. Not set, nothing is
+  /// written.
+  pub fn refused(mut self, refused: Signal<bool>) -> SessionLock {
+    self.refused = Some(refused);
     self
   }
 
@@ -100,6 +112,8 @@ pub struct Lock {
   wanted: Signal<bool>,
   /// What the compositor says.
   locked: Signal<bool>,
+  /// The config's, from `refused`.
+  refused: Option<Signal<bool>>,
   /// Kept in the reactive runtime, which drops the user's closures when
   /// the lock's owner goes.
   parts: Signal<Parts>,
@@ -126,6 +140,7 @@ impl Lock {
     Lock {
       wanted,
       locked: cx.signal(false),
+      refused: lock.refused,
       parts: cx.signal((lock.style.map(Prop::shared), lock.surface, lock.on_key)),
       cx,
     }
@@ -146,6 +161,17 @@ impl Lock {
   pub fn set_locked(&self, locked: bool) {
     if untrack(|| self.locked.try_get()) == Some(!locked) {
       self.locked.set(locked);
+    }
+  }
+
+  /// Records whether the compositor refused or ended the lock, into the
+  /// `refused` signal when one was given and its owner lives; a value it
+  /// holds already is left alone.
+  pub fn set_refused(&self, refused: bool) {
+    if let Some(signal) = self.refused
+      && untrack(|| signal.try_get()) == Some(!refused)
+    {
+      signal.set(refused);
     }
   }
 
