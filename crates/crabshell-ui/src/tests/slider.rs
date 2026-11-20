@@ -375,3 +375,76 @@ fn a_wheel_step_moves_the_wheel_and_keys_while_a_drag_keeps_the_step() {
   window.pointer_scroll(wheel(-120));
   assert_eq!(bad.get(), 6.0);
 }
+
+#[test]
+fn a_wheel_step_with_a_step_moves_whole_steps_and_at_least_one() {
+  let mut h = Harness::new();
+  let (small, between) = (h.cx.signal(0.0), h.cx.signal(0.0));
+  let row = Row::new()
+    .align(Align::Start)
+    .child(
+      Slider::new(small)
+        .range(0.0, 100.0)
+        .step(10.0)
+        .wheel_step(4.0),
+    )
+    .child(
+      Slider::new(between)
+        .range(0.0, 100.0)
+        .step(10.0)
+        .wheel_step(25.0),
+    );
+  let window = h.window(h.panel().child(row), 300.0, 40.0);
+  window.pointer_motion(Point::new(60.0, 8.0));
+  window.pointer_scroll(wheel(-120));
+  assert_eq!(small.get(), 10.0, "under half a step still moves one");
+  window.pointer_scroll(wheel(-120));
+  assert_eq!(small.get(), 20.0);
+  window.pointer_motion(Point::new(180.0, 8.0));
+  window.pointer_scroll(wheel(-120));
+  assert_eq!(between.get(), 30.0, "two and a half steps round to three");
+  window.pointer_scroll(wheel(120));
+  assert_eq!(between.get(), 0.0);
+}
+
+#[test]
+fn a_plain_number_is_a_limit() {
+  let mut h = Harness::new();
+  let value = h.cx.signal(0.0);
+  let window = window(&mut h, pixels_slider(value).limit(50.0));
+  press(&window, 119.0, 8.0);
+  release(&window);
+  assert_eq!(value.get(), 50.0);
+}
+
+#[test]
+fn a_panicking_limit_or_wheel_step_is_logged_with_its_path_and_the_window_runs_on() {
+  let mut h = Harness::new();
+  let (capped, stepped, other) = (h.cx.signal(0.0), h.cx.signal(0.0), h.cx.signal(0.0));
+  let logs = capture_logs(|| {
+    let row = Row::new()
+      .align(Align::Start)
+      .child(pixels_slider(capped).limit(|| -> Option<f32> { panic!("limit failure") }))
+      .child(pixels_slider(stepped).wheel_step(|| -> f32 { panic!("wheel step failure") }))
+      .child(pixels_slider(other));
+    let window = h.window(h.panel().child(row), 400.0, 40.0);
+    press(&window, 119.0, 8.0);
+    release(&window);
+    window.pointer_motion(Point::new(130.0, 8.0));
+    window.pointer_scroll(wheel(-120));
+    press(&window, 300.0, 8.0);
+    release(&window);
+    h.frame(&window);
+  });
+  assert!(logs.contains("PanelWindow[DP-1]/Row/Slider[0]"), "{logs}");
+  assert!(logs.contains("limit failure"), "{logs}");
+  assert!(logs.contains("PanelWindow[DP-1]/Row/Slider[1]"), "{logs}");
+  assert!(logs.contains("wheel step failure"), "{logs}");
+  assert_eq!(capped.get(), 104.0, "a broken limit is the end");
+  assert!(
+    (stepped.get() - 5.2).abs() < 1e-4,
+    "a twentieth: {}",
+    stepped.get()
+  );
+  assert_eq!(other.get(), 52.0, "the other slider still works");
+}

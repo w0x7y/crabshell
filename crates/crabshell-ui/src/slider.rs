@@ -132,7 +132,9 @@ impl Slider {
   /// Sets how far one wheel notch or arrow key moves the value, so a
   /// slider of whole steps can move 5 a notch. By default, or when it
   /// isn't a number above 0, it is the step, or a twentieth of the range
-  /// without one. The value still snaps to the step.
+  /// without one. With a step, it is rounded to a whole number of steps,
+  /// at least one, so 4 on a step of 10 moves 10 and 25 moves 30 (half
+  /// rounds away from zero).
   pub fn wheel_step(mut self, step: impl IntoProp<f32>) -> Slider {
     self.props.wheel_step = Some(step.into_prop());
     self
@@ -248,13 +250,18 @@ impl Range {
     }
   }
 
-  /// One step of the wheel or the keys.
+  /// One step of the wheel or the keys: the wheel step in whole steps,
+  /// at least one, when there is a step.
   fn unit(self) -> f32 {
     let (min, max) = self.bounds();
-    untrack(|| self.wheel_step.try_get())
-      .filter(|step| step.is_finite() && *step > 0.0)
-      .or_else(|| self.snap())
-      .unwrap_or((max - min) / PARTS)
+    let wheel =
+      untrack(|| self.wheel_step.try_get()).filter(|step| step.is_finite() && *step > 0.0);
+    match (wheel, self.snap()) {
+      (Some(wheel), Some(step)) => (wheel / step).round().max(1.0) * step,
+      (Some(wheel), None) => wheel,
+      (None, Some(step)) => step,
+      (None, None) => (max - min) / PARTS,
+    }
   }
 
   /// The highest value a move can write: the limit within the range.

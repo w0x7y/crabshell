@@ -165,6 +165,13 @@ impl IntoProp<Option<Style>> for Style {
   }
 }
 
+/// A number where one is optional, such as a slider's `limit(50.0)`.
+impl IntoProp<Option<f32>> for f32 {
+  fn into_prop(self) -> Prop<Option<f32>> {
+    Prop(PropKind::Value(Some(self)))
+  }
+}
+
 impl IntoProp<Anchors> for Edge {
   fn into_prop(self) -> Prop<Anchors> {
     Prop(PropKind::Value(Anchors::from(self)))
