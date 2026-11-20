@@ -761,6 +761,9 @@ fn taffy_style(node: &Node, parent: Parent, size: crate::Size) -> taffy::Style {
       top: side(padding.top),
       bottom: side(padding.bottom),
     },
+    // taffy's default, static, isn't a containing block, so an absolute
+    // child would be placed from the window instead of its parent.
+    position: Position::Relative,
     ..taffy::Style::default()
   };
   match &node.kind {
@@ -873,7 +876,9 @@ fn taffy_style(node: &Node, parent: Parent, size: crate::Size) -> taffy::Style {
     // content needs.
     style.flex_shrink = 0.0;
   }
-  if matches!(parent, Parent::Stack | Parent::Window) {
+  // A cell would be an absolute child's containing block, not the
+  // parent's padding box.
+  if matches!(parent, Parent::Stack | Parent::Window) && !own.absolute() {
     let cell = Line {
       start: GridPlacement::from_line_index(1),
       end: GridPlacement::from_span(1),
