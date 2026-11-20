@@ -479,7 +479,10 @@ impl Fonts {
   /// outline's, or a bitmap's pixels' if it has no outline. `None` for a
   /// blank.
   fn glyph_ink(&mut self, scaler: &mut SwashCache, key: CacheKey) -> Option<Rect> {
-    let Some(commands) = scaler.get_outline_commands_uncached(&mut self.fonts, key) else {
+    // An empty outline may still draw, as a COLR glyph's layers do, so it
+    // goes to the bitmap path too.
+    let outline = scaler.get_outline_commands_uncached(&mut self.fonts, key);
+    let Some(commands) = outline.filter(|commands| !commands.is_empty()) else {
       #[cfg(test)]
       {
         self.glyphs_built.1 += 1;

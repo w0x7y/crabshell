@@ -494,26 +494,41 @@ fn a_color_bitmap_glyphs_ink_is_its_pixels() {
 }
 
 #[test]
+fn a_colr_glyphs_ink_is_its_color_layers() {
+  // A COLR font's base glyph is often an empty outline drawn by its
+  // layers; Twemoji is the one installed here, with LibreWolf.
+  let Ok(bytes) = std::fs::read("/opt/librewolf/fonts/TwemojiMozilla.ttf") else {
+    eprintln!("skipped: no Twemoji Mozilla");
+    return;
+  };
+  let h = Harness::new();
+  h.cx.add_font(Box::leak(bytes.into_boxed_slice()));
+  let measured = h.cx.measure_text("😀", Font::new("Twemoji Mozilla", 20.0));
+  let ink = measured.ink;
+  assert!(ink.width > 10.0 && ink.height > 10.0, "{measured:?}");
+}
+
+#[test]
 fn measuring_glyphs_again_builds_no_outlines_until_a_font_is_added() {
   let mut fonts = Fonts::new();
   let font = Font::new("sans-serif", 18.0);
   let first = fonts.measure("hello world", font);
   let built = fonts.glyphs_built;
-  // h, e, l, o, the space, w, r and d; the space draws nothing, so no
-  // bitmap is tried for it.
-  assert_eq!(built, (8, 0));
+  // h, e, l, o, w, r and d as outlines; the space's empty outline tries
+  // a bitmap once, as a COLR glyph's would, and is kept as blank.
+  assert_eq!(built, (7, 1));
   assert_eq!(fonts.measure("hello world", font), first);
   fonts.measure("held lower", font);
   assert_eq!(fonts.glyphs_built, built, "the same glyphs");
   fonts.measure("hello", Font::new("sans-serif", 20.0));
-  assert_eq!(fonts.glyphs_built, (12, 0), "another size");
+  assert_eq!(fonts.glyphs_built, (11, 1), "another size");
 
   let Some(bytes) = dejavu() else { return };
   fonts.add(bytes);
   fonts.measure("hello", font);
   assert_eq!(
     fonts.glyphs_built,
-    (16, 0),
+    (15, 1),
     "measured again after a font came"
   );
 }
