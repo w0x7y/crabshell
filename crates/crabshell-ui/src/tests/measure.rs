@@ -358,3 +358,137 @@ fn a_bundled_upright_face_leaves_italic_to_fontconfig() {
   assert!(faces.iter().all(|&(bundled, _)| bundled), "{faces:?}");
   assert!(!fonts.fontconfig_started());
 }
+
+/// The pixels the glyphs of the text at `[0, 0]` in `window` cover as
+/// swash rasterizes them unhinted at scale 1, from the text's corner:
+/// left, top, right and bottom. An oracle for `ink` that doesn't read
+/// outlines.
+fn rasterized(window: &Window, text: &TextSystem) -> (f32, f32, f32, f32) {
+  let view = window.view();
+  let Content::Text(shown) = node_at(view.root(), &[0, 0]).content() else {
+    panic!("a text node has text content");
+  };
+  let mut fonts = text.font_system();
+  let mut cache = cosmic_text::SwashCache::new();
+  let mut bounds = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+  for run in shown.runs() {
+    for glyph in run.glyphs.iter() {
+      // On a baseline at 0, which `physical` keeps whole.
+      let physical = glyph.physical((0.0, 0.0), 1.0);
+      let mut key = physical.cache_key;
+      key.flags |= cosmic_text::CacheKeyFlags::DISABLE_HINTING;
+      let image = cache
+        .get_image_uncached(&mut fonts, key)
+        .expect("the glyph rasterizes");
+      let left = (physical.x + image.placement.left) as f32;
+      let top = (physical.y - image.placement.top) as f32 + run.line_y;
+      bounds.0 = bounds.0.min(left);
+      bounds.1 = bounds.1.min(top);
+      bounds.2 = bounds.2.max(left + image.placement.width as f32);
+      bounds.3 = bounds.3.max(top + image.placement.height as f32);
+    }
+  }
+  bounds
+}
+
+#[test]
+fn ink_is_the_box_the_glyphs_draw() {
+  // Noto Sans Italic's f hangs left of its origin and past its advance,
+  // as a Nerd Font icon in a monospace cell does.
+  for (content, font) in [
+    ("f", Font::new("sans-serif", 40.0).italic()),
+    ("j", Font::new("sans-serif", 40.0)),
+    ("Hello", Font::new("sans-serif", 18.0)),
+  ] {
+    let mut h = Harness::new();
+    let window = text_window(&mut h, content, font);
+    let measured = h.cx.measure_text(content, font);
+    let ink = measured.ink;
+    let (left, top, right, bottom) = rasterized(&window, &h.text);
+    // Antialiasing rounds a pixel out on each side.
+    let near = |ink: f32, pixel: f32| (ink - pixel).abs() <= 1.0;
+    assert!(near(ink.x, left), "{content}: {ink:?} vs left {left}");
+    assert!(near(ink.y, top), "{content}: {ink:?} vs top {top}");
+    assert!(near(ink.right(), right), "{content}: {ink:?} vs {right}");
+    assert!(near(ink.bottom(), bottom), "{content}: {ink:?} vs {bottom}");
+    assert!(ink.width > 0.0 && ink.height > 0.0, "{ink:?}");
+  }
+  let h = Harness::new();
+  let italic = h
+    .cx
+    .measure_text("f", Font::new("sans-serif", 40.0).italic());
+  assert!(italic.ink.x < 0.0, "{italic:?}");
+  assert!(italic.ink.right() > italic.width, "{italic:?}");
+  let j = h.cx.measure_text("j", Font::new("sans-serif", 40.0));
+  assert!(j.ink.x < 0.0, "{j:?}");
+}
+
+#[test]
+fn ink_takes_each_line_and_no_blank() {
+  let h = Harness::new();
+  let font = Font::new("sans-serif", 20.0);
+  for blank in ["", " ", "  \t ", "\n"] {
+    assert_eq!(
+      h.cx.measure_text(blank, font).ink,
+      Rect::default(),
+      "{blank:?}"
+    );
+  }
+  let one = h.cx.measure_text("x", font);
+  let two = h.cx.measure_text("x\nx", font);
+  assert_eq!(two.ink.x, one.ink.x);
+  assert_eq!(two.ink.y, one.ink.y);
+  assert_eq!(two.ink.width, one.ink.width);
+  assert_eq!(two.ink.height, one.ink.height + one.line_height);
+  // A leading space moves the ink right by its advance.
+  let spaced = h.cx.measure_text(" x", font);
+  let space = h.cx.measure_text(" ", font).width;
+  assert!(
+    (spaced.ink.x - (one.ink.x + space)).abs() < 0.01,
+    "{spaced:?}"
+  );
+}
+
+#[test]
+fn a_curves_box_holds_where_it_turns_not_its_control_points() {
+  let bounds = |points: &[(f32, f32)]| {
+    let mut found = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    let mut add = |x: f32, y: f32| {
+      found = (
+        found.0.min(x),
+        found.1.min(y),
+        found.2.max(x),
+        found.3.max(y),
+      );
+    };
+    add(points[0].0, points[0].1);
+    crate::text::curve_extremes(points, &mut add);
+    found
+  };
+  // An icon converted from SVG often has no point on a curve's extremes.
+  assert_eq!(
+    bounds(&[(0.0, 0.0), (5.0, 10.0), (10.0, 0.0)]),
+    (0.0, 0.0, 10.0, 5.0)
+  );
+  assert_eq!(
+    bounds(&[(0.0, 0.0), (0.0, 10.0), (10.0, 10.0), (10.0, 0.0)]),
+    (0.0, 0.0, 10.0, 7.5)
+  );
+  let (left, _, right, _) = bounds(&[(0.0, 0.0), (-6.0, 4.0), (16.0, 4.0), (10.0, 0.0)]);
+  assert!(left < -1.0 && left > -6.0, "{left}");
+  assert!(right > 11.0 && right < 16.0, "{right}");
+  assert_eq!(bounds(&[(0.0, 0.0), (3.0, -4.0)]), (0.0, -4.0, 3.0, 0.0));
+}
+
+#[test]
+fn a_color_bitmap_glyphs_ink_is_its_pixels() {
+  let Some(bytes) = font_file("NotoColorEmoji.ttf") else {
+    return;
+  };
+  let h = Harness::new();
+  h.cx.add_font(bytes);
+  let measured = h.cx.measure_text("😀", Font::new("Noto Color Emoji", 20.0));
+  let ink = measured.ink;
+  assert!(ink.width > 10.0 && ink.height > 10.0, "{measured:?}");
+  assert!(ink.width <= measured.width + 2.0, "{measured:?}");
+}

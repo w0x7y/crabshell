@@ -21,8 +21,9 @@ use std::sync::Arc;
 
 use cosmic_text::fontdb::{self, Database, FaceInfo, ID, Query, Source};
 use cosmic_text::{
-  Align, Attrs, Buffer, Ellipsize, EllipsizeHeightLimit, Family, FeatureTag, FontFeatures,
-  FontSystem, LayoutGlyph, LayoutRun, Metrics, Shaping, Weight, Wrap,
+  Align, Attrs, Buffer, CacheKeyFlags, Command, Ellipsize, EllipsizeHeightLimit, Family,
+  FeatureTag, FontFeatures, FontSystem, LayoutGlyph, LayoutRun, Metrics, Shaping, SwashCache,
+  Weight, Wrap,
 };
 use fontconfig::{CharSet, FC_FAMILY, FC_SLANT, FC_SLANT_ITALIC, FC_WEIGHT, Fontconfig, Pattern};
 use taffy::AvailableSpace;
@@ -92,6 +93,137 @@ pub struct TextMetrics {
   pub descent: f32,
   /// The height of one line, as a `Text` with this font has.
   pub line_height: f32,
+  /// The tight box around the ink the glyphs draw, from the text's
+  /// top-left, as Qt's `tightBoundingRect`: `x` is negative when a glyph
+  /// hangs left of where the text starts, and the box can be wider than
+  /// [`width`](Self::width) when ink reaches past the last advance, as a
+  /// Nerd Font icon in a monospace cell does. Read from the unhinted
+  /// outlines, unrounded; a color bitmap glyph, such as an emoji, gives
+  /// its pixels' box. Empty text, or only blanks, gives an empty rect at
+  /// 0, 0.
+  pub ink: Rect,
+}
+
+/// The tight box around the ink of the glyphs `node` shows, from its
+/// top-left, or an empty rect at 0, 0 if they draw none.
+fn ink(node: &TextNode, fonts: &mut FontSystem) -> Rect {
+  let mut cache = SwashCache::new();
+  // Left, top, right and bottom.
+  let mut ink = [
+    f32::INFINITY,
+    f32::INFINITY,
+    f32::NEG_INFINITY,
+    f32::NEG_INFINITY,
+  ];
+  let mut add = |x: f32, y: f32| {
+    ink = [ink[0].min(x), ink[1].min(y), ink[2].max(x), ink[3].max(y)];
+  };
+  for run in node.runs() {
+    for glyph in run.glyphs.iter() {
+      let physical = glyph.physical((0.0, run.line_y), 1.0);
+      let x = glyph.x + glyph.font_size * glyph.x_offset;
+      let y = run.line_y + glyph.y - glyph.font_size * glyph.y_offset;
+      let mut key = physical.cache_key;
+      key.flags |= CacheKeyFlags::DISABLE_HINTING;
+      match cache.get_outline_commands_uncached(fonts, key) {
+        // Outlines rise up from the baseline.
+        Some(commands) if !commands.is_empty() => {
+          outline_extremes(&commands, |px, py| add(x + px, y - py));
+        }
+        // A bitmap: its pixels' box. A blank has none.
+        _ => {
+          let Some(image) = cache.get_image_uncached(fonts, physical.cache_key) else {
+            continue;
+          };
+          let placement = image.placement;
+          if placement.width == 0 || placement.height == 0 {
+            continue;
+          }
+          let left = (physical.x + placement.left) as f32;
+          let top = (physical.y - placement.top) as f32;
+          add(left, top);
+          add(left + placement.width as f32, top + placement.height as f32);
+        }
+      }
+    }
+  }
+  match ink[0] <= ink[2] {
+    true => Rect::new(ink[0], ink[1], ink[2] - ink[0], ink[3] - ink[1]),
+    false => Rect::default(),
+  }
+}
+
+/// Calls `add` with every point where the outline `commands` reach
+/// furthest along either axis.
+fn outline_extremes(commands: &[Command], mut add: impl FnMut(f32, f32)) {
+  let mut last = (0.0, 0.0);
+  for command in commands {
+    last = match *command {
+      Command::MoveTo(p) | Command::LineTo(p) => curve_extremes(&[last, (p.x, p.y)], &mut add),
+      Command::QuadTo(c, p) => curve_extremes(&[last, (c.x, c.y), (p.x, p.y)], &mut add),
+      Command::CurveTo(c1, c2, p) => {
+        curve_extremes(&[last, (c1.x, c1.y), (c2.x, c2.y), (p.x, p.y)], &mut add)
+      }
+      Command::Close => continue,
+    };
+  }
+}
+
+/// Calls `add` with the end of the line, quadratic or cubic Bézier
+/// through `points`, and with each point between its ends where it turns
+/// back on an axis. A curve's control points may lie outside it, so they
+/// aren't the box. Returns the end.
+pub(crate) fn curve_extremes(points: &[(f32, f32)], add: &mut impl FnMut(f32, f32)) -> (f32, f32) {
+  let end = points[points.len() - 1];
+  add(end.0, end.1);
+  let axis = |point: &(f32, f32), y: bool| if y { point.1 } else { point.0 };
+  let at = |t: f32, y: bool| -> f32 {
+    let u = 1.0 - t;
+    match points {
+      [a, b, c] => u * u * axis(a, y) + 2.0 * u * t * axis(b, y) + t * t * axis(c, y),
+      [a, b, c, d] => {
+        u * u * u * axis(a, y)
+          + 3.0 * u * u * t * axis(b, y)
+          + 3.0 * u * t * t * axis(c, y)
+          + t * t * t * axis(d, y)
+      }
+      _ => axis(&end, y),
+    }
+  };
+  for y in [false, true] {
+    let mut values = [0.0; 4];
+    for (value, point) in values.iter_mut().zip(points) {
+      *value = axis(point, y);
+    }
+    for t in turns(&values[..points.len()]).into_iter().flatten() {
+      add(at(t, false), at(t, true));
+    }
+  }
+  end
+}
+
+/// Where between 0 and 1 a quadratic or cubic Bézier with these values
+/// on one axis has a zero derivative.
+fn turns(values: &[f32]) -> [Option<f32>; 2] {
+  let inside = |t: f32| (t > 0.0 && t < 1.0).then_some(t);
+  // The derivative, over 2 or 3, is q t² + r t + s.
+  let (q, r, s) = match *values {
+    [a, b, c] => (0.0, a - 2.0 * b + c, b - a),
+    [a, b, c, d] => (-a + 3.0 * b - 3.0 * c + d, 2.0 * (a - 2.0 * b + c), b - a),
+    _ => return [None, None],
+  };
+  if q.abs() < 1e-6 {
+    return [(r.abs() >= 1e-6).then(|| -s / r).and_then(inside), None];
+  }
+  let discriminant = r * r - 4.0 * q * s;
+  if discriminant < 0.0 {
+    return [None, None];
+  }
+  let root = discriminant.sqrt();
+  [
+    inside((-r + root) / (2.0 * q)),
+    inside((-r - root) / (2.0 * q)),
+  ]
 }
 
 /// What a [`TextSystem`] holds.
@@ -321,6 +453,7 @@ impl Fonts {
       ascent,
       descent,
       line_height,
+      ink: ink(&node, &mut self.fonts),
     }
   }
 
