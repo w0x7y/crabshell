@@ -238,14 +238,32 @@ impl Notifications {
   /// logs that and does nothing.
   #[track_caller]
   pub fn on_closed(&self, handler: impl Fn(&Notification, CloseReason) + 'static) {
-    let at = Location::caller();
+    self.listen(Handler::Closed(Rc::new(handler)), Location::caller());
+  }
+
+  /// Calls `handler` with each notification as it arrives or is replaced,
+  /// as Quickshell's `onNotification`, for as long as the context
+  /// `cx.notifications()` was called on lives. It runs on the main thread
+  /// before [`popups`](Self::popups) shows it.
+  ///
+  /// If it panics, that is logged with where `on_notification` was
+  /// called, and it isn't called again. Called on a handle whose context
+  /// went, it logs that and does nothing.
+  #[track_caller]
+  pub fn on_notification(&self, handler: impl Fn(&Notification) + 'static) {
+    self.listen(Handler::Arrived(Rc::new(handler)), Location::caller());
+  }
+
+  /// Adds `handler` under the asking context's owner.
+  fn listen(&self, handler: Handler, at: &'static Location<'static>) {
     if self.owner.is_disposed() {
+      let name = handler.name();
       return tracing::warn!(
-        "notifications on_closed (called at {at}) on a context that is gone does nothing"
+        "notifications {name} (called at {at}) on a context that is gone does nothing"
       );
     }
     if let Some(service) = &self.service {
-      let id = service.listen(Rc::new(handler), at);
+      let id = service.listen(handler, at);
       // Dropped with the asking context's owner, which takes the handler away.
       self.owner.signal(Unlisten(Rc::clone(service), id));
     }
@@ -255,12 +273,29 @@ impl Notifications {
 /// What `on_closed` calls.
 type CloseHandler = Rc<dyn Fn(&Notification, CloseReason)>;
 
-/// A config's handler of closed notifications, from `on_closed`.
+/// What `on_closed` or `on_notification` calls.
+#[derive(Clone)]
+enum Handler {
+  Closed(CloseHandler),
+  Arrived(Rc<dyn Fn(&Notification)>),
+}
+
+impl Handler {
+  /// The method that gave it, for the log.
+  fn name(&self) -> &'static str {
+    match self {
+      Handler::Closed(_) => "on_closed",
+      Handler::Arrived(_) => "on_notification",
+    }
+  }
+}
+
+/// A config's handler, from `on_closed` or `on_notification`.
 #[derive(Clone)]
 struct Listener {
   id: u64,
-  handler: CloseHandler,
-  /// Where `on_closed` was called, for the log if it panics.
+  handler: Handler,
+  /// Where it was given, for the log if it panics.
   at: &'static Location<'static>,
 }
 
@@ -666,7 +701,7 @@ impl Service {
       (_, Timeout::Default) => Some(now + self.shared.config.popup_timeout),
       (_, Timeout::After(after)) => Some(now + after),
     };
-    let (id, dropped) = {
+    let (id, arrived, dropped) = {
       let mut state = self.state.borrow_mut();
       let Some(state) = state.as_mut() else {
         return 0;
@@ -678,6 +713,7 @@ impl Service {
         id => id,
       };
       notification.id = id;
+      let arrived = notification.clone();
       match state.history.iter().position(|kept| kept.id == id) {
         Some(at) => state.history[at] = notification,
         None => state.history.push(notification),
@@ -693,8 +729,14 @@ impl Service {
         .showing
         .retain(|(id, _)| history.iter().any(|kept| kept.id == *id));
       keep_pixels_within(&mut state.history, MAX_PIXELS_KEPT);
-      (id, dropped)
+      (id, arrived, dropped)
     };
+    // Before `closed` shows the lists, so a handler can hide its popup.
+    self.each_handler(|handler| {
+      if let Handler::Arrived(handler) = handler {
+        handler(&arrived);
+      }
+    });
     self.closed(Vec::new(), dropped, CloseReason::Expired);
     id
   }
@@ -759,8 +801,8 @@ impl Service {
     self.deliver(&closed, reason);
   }
 
-  /// Adds a config's close handler. Its id.
-  fn listen(&self, handler: CloseHandler, at: &'static Location<'static>) -> u64 {
+  /// Adds a config's handler. Its id.
+  fn listen(&self, handler: Handler, at: &'static Location<'static>) -> u64 {
     let mut state = self.state.borrow_mut();
     let state = state
       .as_mut()
@@ -785,28 +827,37 @@ impl Service {
     listeners.any(|listener| listener.id == id)
   }
 
-  /// Hands each of `closed` to the config's handlers, with nothing
-  /// borrowed, since a handler may call the service, and untracked, so
-  /// what one reads never reruns an effect that closed a notification. A
-  /// handler that panics is logged with where `on_closed` was called, and
-  /// taken away.
+  /// Hands each of `closed` to the config's close handlers.
   fn deliver(&self, closed: &[Notification], reason: CloseReason) {
-    let listeners = match self.state.borrow().as_ref() {
-      Some(state) if !closed.is_empty() => state.listeners.clone(),
-      _ => return,
-    };
     for gone in closed {
-      for Listener { id, handler, at } in &listeners {
-        // A handler before this one may have taken this one's context.
-        if !self.listening(*id) {
-          continue;
+      self.each_handler(|handler| {
+        if let Handler::Closed(handler) = handler {
+          handler(gone, reason);
         }
-        let run = AssertUnwindSafe(|| untrack(|| handler(gone, reason)));
-        if let Err(payload) = panic::catch_unwind(run) {
-          let message = panic_message(payload.as_ref());
-          tracing::error!("notifications on_closed (called at {at}) panicked: {message}");
-          drop(self.unlisten(*id));
-        }
+      });
+    }
+  }
+
+  /// Runs `call` on each of the config's handlers, with nothing borrowed,
+  /// since a handler may call the service, and untracked, so what one
+  /// reads never reruns an effect that changed the notifications. A
+  /// handler that panics is logged with where it was given, and taken
+  /// away.
+  fn each_handler(&self, call: impl Fn(&Handler)) {
+    let listeners = match self.state.borrow().as_ref() {
+      Some(state) => state.listeners.clone(),
+      None => return,
+    };
+    for Listener { id, handler, at } in &listeners {
+      // A handler before this one may have taken this one's context.
+      if !self.listening(*id) {
+        continue;
+      }
+      let run = AssertUnwindSafe(|| untrack(|| call(handler)));
+      if let Err(payload) = panic::catch_unwind(run) {
+        let (name, message) = (handler.name(), panic_message(payload.as_ref()));
+        tracing::error!("notifications {name} (called at {at}) panicked: {message}");
+        drop(self.unlisten(*id));
       }
     }
   }

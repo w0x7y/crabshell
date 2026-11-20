@@ -1459,3 +1459,52 @@ fn a_save_after_handing_over_still_names_the_shell_for_the_next() {
     "the second save stays armed"
   );
 }
+
+#[test]
+fn a_panicking_arrival_handler_is_logged_and_taken_away_and_the_rest_run_on() {
+  let shell = Harness::new(offline());
+  let notifications = shell.cx.notifications();
+  let server = service(&notifications);
+  let panics = Rc::new(Cell::new(0));
+  let counted = Rc::clone(&panics);
+  notifications.on_notification(move |arrived| {
+    counted.set(counted.get() + 1);
+    panic!("bad arrival of {}", arrived.summary);
+  });
+  let heard = Rc::new(Cell::new(0));
+  let sink = Rc::clone(&heard);
+  notifications.on_notification(move |_| sink.set(sink.get() + 1));
+  let mut id = 0;
+  let logs = capture_logs(|| id = server.notify(0, sample("first")));
+  let at = "notifications on_notification (called at crates/crabshell-services/src/notifications/tests.rs:";
+  assert!(logs.contains(at), "{logs}");
+  assert!(logs.contains("panicked: bad arrival of first"), "{logs}");
+  assert_eq!(ids(notifications.popups()), [id], "it still shows");
+  server.notify(0, sample("second"));
+  assert_eq!(
+    panics.get(),
+    1,
+    "a handler that panicked isn't called again"
+  );
+  assert_eq!(heard.get(), 2);
+}
+
+#[test]
+fn an_arrival_handler_goes_with_its_context() {
+  let shell = Harness::new(offline());
+  let notifications = shell.cx.notifications();
+  let server = service(&notifications);
+  let nodes = Runtime::current().node_count();
+  let child = shell.cx.child();
+  let heard = Rc::new(Cell::new(0));
+  let sink = Rc::clone(&heard);
+  child
+    .notifications()
+    .on_notification(move |_| sink.set(sink.get() + 1));
+  server.notify(0, sample("heard"));
+  child.owner().dispose();
+  assert_eq!(Runtime::current().node_count(), nodes);
+  assert_eq!(Rc::strong_count(&heard), 1, "the handler was dropped");
+  server.notify(0, sample("unheard"));
+  assert_eq!(heard.get(), 1);
+}
