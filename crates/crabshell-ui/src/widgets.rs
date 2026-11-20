@@ -16,7 +16,7 @@ use crate::dnd::DragContent;
 use crate::geometry::{Point, Rect, Size};
 use crate::image::ImageTransition;
 use crate::input::{
-  CursorShape, Drag, DragValue, DropTarget, Handler, Handlers, LinkHandler, Wheel,
+  CursorShape, Drag, DragValue, DropTarget, Handler, Handlers, LinkHandler, PointerButton, Wheel,
 };
 use crate::keyboard::KeyEvent;
 use crate::keyed::{self, KeyedList, KeyedMount};
@@ -1222,6 +1222,17 @@ impl Button {
   /// [`Cx::start_move`](crate::Cx::start_move), as a title bar does.
   pub fn on_press(mut self, handler: impl Fn(&Cx) + 'static) -> Button {
     self.button.handlers.press = Some(Rc::new(Handler::new(handler)));
+    self
+  }
+
+  /// Runs `handler` with the button as soon as any pointer button goes
+  /// down over this button, as a `MouseArea` taking every button: a click
+  /// catcher that closes a panel at the first press. A left press or a
+  /// touch runs it after `on_press`. It runs only for the press that
+  /// starts a hold, not for a second button pressed while one is held, and
+  /// not for a press on a scroll bar.
+  pub fn on_any_press(mut self, handler: impl Fn(&Cx, PointerButton) + 'static) -> Button {
+    self.button.handlers.any_press = Some(Rc::new(Handler::new(handler)));
     self
   }
 

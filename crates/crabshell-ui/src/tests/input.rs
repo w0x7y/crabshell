@@ -202,6 +202,64 @@ fn right_and_middle_buttons() {
 }
 
 #[test]
+fn any_press_runs_as_each_button_goes_down() {
+  let mut h = Harness::new();
+  let pressed = Rc::new(RefCell::new(Vec::new()));
+  let presses = Counter::default();
+  let (log, p) = (Rc::clone(&pressed), presses.clone());
+  let window = two_buttons(
+    &mut h,
+    Button::new(square())
+      .on_press(move |_| p.hit())
+      .on_any_press(move |_, button| log.borrow_mut().push(button)),
+    Button::new(square()),
+  );
+  window.pointer_motion(center(&window, &[0, 0]));
+  for button in [
+    PointerButton::Left,
+    PointerButton::Right,
+    PointerButton::Middle,
+    PointerButton::Back,
+    PointerButton::Forward,
+  ] {
+    window.pointer_button(button, true);
+    assert_eq!(pressed.borrow().last(), Some(&button), "at the press");
+    window.pointer_button(button, false);
+  }
+  assert_eq!(pressed.borrow().len(), 5, "once each, none at the release");
+  assert_eq!(presses.get(), 1, "on_press still runs for the left only");
+
+  // A press beside the button runs nothing.
+  window.pointer_motion(center(&window, &[0, 1]));
+  click(&window, PointerButton::Right);
+  assert_eq!(pressed.borrow().len(), 5);
+}
+
+#[test]
+fn a_panicking_any_press_handler_is_logged_with_its_name() {
+  let mut h = Harness::new();
+  let others = Counter::default();
+  let o = others.clone();
+  let window = two_buttons(
+    &mut h,
+    Button::new(square()).on_any_press(|_, _| panic!("press failure")),
+    Button::new(square()).on_click(move |_| o.hit()),
+  );
+  let logs = capture_logs(|| {
+    window.pointer_motion(center(&window, &[0, 0]));
+    click(&window, PointerButton::Right);
+    window.pointer_motion(center(&window, &[0, 1]));
+    click(&window, PointerButton::Left);
+  });
+  assert_eq!(others.get(), 1, "the rest keeps running");
+  assert!(
+    logs.contains("handler PanelWindow[DP-1]/Row/Button[0].on_any_press panicked and is disabled"),
+    "{logs}"
+  );
+  assert!(logs.contains("press failure"), "{logs}");
+}
+
+#[test]
 fn the_pressed_style_shows_while_held_over_the_button() {
   let mut h = Harness::new();
   let window = two_buttons(

@@ -73,6 +73,7 @@ impl<F: ?Sized> Handler<F> {
 pub(crate) type ClickHandler = Rc<Handler<dyn Fn(&Cx)>>;
 type ScrollHandler = Rc<Handler<dyn Fn(&Cx, i32)>>;
 pub(crate) type WheelHandler = Rc<Handler<dyn Fn(&Cx, Wheel)>>;
+pub(crate) type AnyPressHandler = Rc<Handler<dyn Fn(&Cx, PointerButton)>>;
 pub(crate) type DragHandler = Rc<Handler<dyn Fn(&Cx, Drag)>>;
 pub(crate) type LinkHandler = Rc<Handler<dyn Fn(&Cx, &str)>>;
 
@@ -97,6 +98,7 @@ pub(crate) type DropHandler = Rc<Handler<dyn Fn(&Cx, &dyn Any)>>;
 pub(crate) struct Handlers {
   pub(crate) click: Option<ClickHandler>,
   pub(crate) press: Option<ClickHandler>,
+  pub(crate) any_press: Option<AnyPressHandler>,
   pub(crate) release: Option<ClickHandler>,
   pub(crate) double_click: Option<ClickHandler>,
   pub(crate) long_press: Option<ClickHandler>,
@@ -959,14 +961,16 @@ impl Tree {
     if button == PointerButton::Middle && self.press_middle(id, at) {
       self.primary = Some(Clipboard::Paste);
     }
+    let any = self.call(id, Action::AnyPress(button));
     if button != PointerButton::Left {
-      return Vec::new();
+      return any.into_iter().collect();
     }
     self.pointer.link = self.link_under(id, at);
     if self.selects(id) {
       self.press_text(id, at, time);
     }
     let mut calls: Vec<Call> = self.call(id, Action::Press).into_iter().collect();
+    calls.extend(any);
     if self.has(id, |h| h.long_press.is_some()) {
       self.arm_long_press(id);
     }
@@ -1466,6 +1470,7 @@ pub(crate) fn local(node: &Node, point: Point) -> Option<Point> {
 pub(crate) enum Action {
   Click,
   Press,
+  AnyPress(PointerButton),
   Release,
   DoubleClick,
   LongPress,
@@ -1496,6 +1501,7 @@ pub(crate) struct Call {
 /// A handler picked for a [`Call`], with what it gets.
 enum Picked {
   Plain(ClickHandler, &'static str),
+  AnyPress(AnyPressHandler, PointerButton),
   Scroll(ScrollHandler, i32),
   Wheel(WheelHandler, Wheel),
   Drag(DragHandler, Drag),
@@ -1529,6 +1535,7 @@ impl Call {
         match &self.action {
           Action::Click => plain(&h.click, "on_click"),
           Action::Press => plain(&h.press, "on_press"),
+          Action::AnyPress(button) => h.any_press.clone().map(|f| Picked::AnyPress(f, *button)),
           Action::Release => plain(&h.release, "on_release"),
           Action::DoubleClick => plain(&h.double_click, "on_double_click"),
           Action::LongPress => plain(&h.long_press, "on_long_press"),
@@ -1564,6 +1571,9 @@ impl Call {
     match picked {
       Picked::Plain(handler, name) => {
         run_isolated(path, name, handler, |f| f(cx));
+      }
+      Picked::AnyPress(handler, button) => {
+        run_isolated(path, "on_any_press", handler, |f| f(cx, button));
       }
       Picked::Scroll(handler, steps) => {
         run_isolated(path, "on_scroll", handler, |f| f(cx, steps));

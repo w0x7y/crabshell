@@ -1225,6 +1225,38 @@ impl Cx {
     animation
   }
 
+  /// A value that plays `steps` once, starting as soon as it is made: an
+  /// entrance that plays each time its widget is built, such as a card
+  /// that waits its turn with a [`Step::hold`] and then fades in. It
+  /// starts at `initial`, and once played it rests at the last step's
+  /// target. `steps` is a value or a closure, read untracked once, now; an
+  /// empty list plays nothing. Holds sleep off the clock as in
+  /// [`Cx::sequence`], and the [`Animation`]'s `running()` is true until
+  /// the last step ends. To play again on a change, use
+  /// [`Cx::sequence`]. A panic in `steps` or a config's own `lerp` is
+  /// logged with this call's place and stops the play.
+  ///
+  /// ```
+  /// use crabshell_ui::{Cx, Easing, Step, Transition};
+  ///
+  /// const FADE: Transition = Transition::new(200).easing(Easing::OutCubic);
+  ///
+  /// fn card(cx: &Cx, index: u32) {
+  ///     let opacity = cx.sequence_now(0.0, [Step::hold(index * 40), Step::to(1.0, FADE)]);
+  ///     // Read `opacity.value().get()` in a binding.
+  /// }
+  /// ```
+  #[track_caller]
+  pub fn sequence_now<T: Animate>(
+    &self,
+    initial: T,
+    steps: impl IntoProp<Vec<Step<T>>>,
+  ) -> Animation<T> {
+    let player = self.player("cx.sequence_now", initial, steps);
+    player.play(false);
+    player.animation()
+  }
+
   /// A value that plays `steps` over and over while `running` gives
   /// `true`, each round with its holds, as a `SequentialAnimation` with
   /// infinite loops: a pulse while something loads. It starts at
@@ -1271,7 +1303,8 @@ impl Cx {
     animation
   }
 
-  /// The state [`Cx::sequence`] and [`Cx::sequence_loop`] share, logged as
+  /// The state [`Cx::sequence`], [`Cx::sequence_now`] and
+  /// [`Cx::sequence_loop`] share, logged as
   /// `what` at the caller's place.
   #[track_caller]
   fn player<T: Animate>(

@@ -398,6 +398,7 @@ fn everything_goes_with_its_owner_asleep_or_moving() {
     [Step::hold(1000), Step::to(1.0, Transition::new(10))],
   );
   let pulse = child.sequence_loop(0.0, || true, [Step::to(1.0, Transition::new(100))]);
+  let entrance = child.sequence_now(0.0, [Step::hold(1000), Step::to(1.0, Transition::new(10))]);
   h.runtime.flush();
   go.set(1);
   h.runtime.flush();
@@ -413,6 +414,7 @@ fn everything_goes_with_its_owner_asleep_or_moving() {
   assert!(!tick(start, 10), "nothing runs");
   assert!(moving.value().try_get().is_none() && asleep.value().try_get().is_none());
   assert!(pulse.value().try_get().is_none());
+  assert!(entrance.value().try_get().is_none());
 }
 
 #[test]
@@ -505,4 +507,42 @@ fn a_panicking_partial_eq_at_the_end_of_a_play_ends_running() {
   h.runtime.flush();
   assert!(!seq.running().get(), "and running ends");
   assert!(!animating());
+}
+
+#[test]
+fn a_sequence_made_now_plays_its_entrance_at_once_then_sleeps() {
+  let h = Harness::new();
+  let linear = Transition::new(200).easing(Easing::Linear);
+  // A card's staggered entrance: wait its turn, then fade in.
+  let card = h
+    .cx
+    .sequence_now(0.0, [Step::hold(120), Step::to(1.0, linear)]);
+  assert!(card.running().get(), "running from when it is made");
+  assert_eq!(card.value().get(), 0.0);
+  let start = Instant::now();
+  assert!(!tick(start, 0), "the hold takes it off the clock");
+  assert_eq!(next_timer(), Some(at(start, 120)));
+  assert!(tick(start, 120));
+  tick(start, 220);
+  assert!(close(card.value().get(), 0.5), "{}", card.value().get());
+  assert!(!tick(start, 320), "the clock stops at the end");
+  h.runtime.flush();
+  assert_eq!(card.value().get(), 1.0);
+  assert!(!card.running().get());
+  assert!(!animating() && next_timer().is_none(), "settled, it sleeps");
+}
+
+#[test]
+fn a_panicking_steps_binding_made_now_is_logged_and_never_runs() {
+  let h = Harness::new();
+  let logs = capture_logs(|| {
+    let broken = h
+      .cx
+      .sequence_now(0.0, || -> Vec<Step<f32>> { panic!("steps failure") });
+    assert!(!broken.running().get());
+  });
+  assert!(logs.contains("animation cx.sequence_now at "), "{logs}");
+  assert!(logs.contains("tests/sequence.rs"), "{logs}");
+  assert!(logs.contains("steps failure"), "{logs}");
+  assert!(!animating() && next_timer().is_none());
 }
