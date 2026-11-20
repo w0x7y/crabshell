@@ -1180,15 +1180,61 @@ impl Cx {
         return;
       };
       if last.as_ref().is_some_and(|last| *last != now) {
-        player.play();
+        player.play(false);
       }
       last = Some(now);
     });
     animation
   }
 
-  /// The state of a [`Cx::sequence`], logged as `what` at the caller's
-  /// place.
+  /// A value that plays `steps` over and over while `running` gives
+  /// `true`, each round with its holds, as a `SequentialAnimation` with
+  /// infinite loops: a pulse while something loads. It starts at
+  /// `initial`; round 0 moves from where the value is, and each later
+  /// round from the last step's target. When `running` turns `false`, the
+  /// round it is in runs to its end and the value rests at the last step's
+  /// target; `true` again before then keeps it going, and after it starts
+  /// again at round 0. A round of no time plays once. Holds sleep off the
+  /// clock as in [`Cx::sequence`]. A panic in `running` is logged with
+  /// this call's place and ends it after its round.
+  ///
+  /// ```
+  /// use crabshell_ui::{Cx, Easing, Step, Transition};
+  ///
+  /// const SINE: Transition = Transition::new(1100).easing(Easing::InOutSine);
+  ///
+  /// fn tile(cx: &Cx, index: u32) {
+  ///     let loading = cx.signal(true);
+  ///     let steps = [Step::hold(index * 140), Step::to(0.4, SINE), Step::to(1.0, SINE)];
+  ///     let opacity = cx.sequence_loop(1.0, move || loading.get(), steps);
+  /// }
+  /// ```
+  #[track_caller]
+  pub fn sequence_loop<T: Animate>(
+    &self,
+    initial: T,
+    mut running: impl FnMut() -> bool + 'static,
+    steps: impl IntoProp<Vec<Step<T>>>,
+  ) -> Animation<T> {
+    let player = self.player("cx.sequence_loop", initial, steps);
+    let mut broken = false;
+    let animation = player.animation();
+    self.effect(move || {
+      let on = !broken
+        && guarded(&player.label, &mut running).unwrap_or_else(|| {
+          broken = true;
+          false
+        });
+      player.wanted.set(on);
+      if on && untrack(|| player.running.try_get()) == Some(false) {
+        player.play(true);
+      }
+    });
+    animation
+  }
+
+  /// The state [`Cx::sequence`] and [`Cx::sequence_loop`] share, logged as
+  /// `what` at the caller's place.
   #[track_caller]
   fn player<T: Animate>(
     &self,
@@ -1202,6 +1248,7 @@ impl Cx {
       value: self.signal(initial),
       running: self.signal(false),
       generation: Rc::new(Cell::new(0)),
+      wanted: Rc::new(Cell::new(false)),
       owner: self.owner(),
       activity: self.activity.clone(),
     })
@@ -1216,6 +1263,8 @@ struct Player<T: 'static> {
   running: Signal<bool>,
   /// Bumped by each new play, so the one it replaces stops.
   generation: Rc<Cell<u64>>,
+  /// What a loop's `running` last gave.
+  wanted: Rc<Cell<bool>>,
   owner: Owner,
   activity: Option<Rc<Activity>>,
 }
@@ -1234,16 +1283,19 @@ impl<T: Animate> Player<T> {
     set_changed(self.running, false);
   }
 
-  /// Starts a play of the steps from where the value is.
-  fn play(&self) {
+  /// Starts a play of the steps from where the value is, looping while
+  /// `wanted` if `looping`.
+  fn play(&self, looping: bool) {
     self.stop();
     let label = Rc::clone(&self.label);
     // Read as each play starts, so a binding can pick the steps; the
     // clones are a config's own.
-    let Some((steps, origin)) = guarded(&label, || {
+    let Some((steps, origin, last)) = guarded(&label, || {
       let steps = untrack(&*self.steps);
       let origin = untrack(|| self.value.try_get())?;
-      Some((steps, origin))
+      let last = steps.iter().rev().find_map(|step| step.to.clone());
+      let last = last.unwrap_or_else(|| origin.clone());
+      Some((steps, origin, last))
     })
     .flatten() else {
       return;
@@ -1251,12 +1303,15 @@ impl<T: Animate> Player<T> {
     if steps.is_empty() {
       return;
     }
+    let length: u64 = steps.iter().map(|step| step.times().1).sum();
+    let looping = looping && length > 0;
     set_changed(self.running, true);
     let current = self.generation.get();
-    let generation = Rc::clone(&self.generation);
+    let (generation, wanted) = (Rc::clone(&self.generation), Rc::clone(&self.wanted));
     let (value, running, owner) = (self.value, self.running, self.owner);
     let step_label = Rc::clone(&label);
     let mut started = start_time();
+    let mut round = 0;
     start(
       label,
       self.activity.as_ref().map(Busy::new),
@@ -1267,10 +1322,22 @@ impl<T: Animate> Player<T> {
         let begun = *started.get_or_insert(now);
         let at = now.saturating_duration_since(begun).as_micros();
         let at = u64::try_from(at).unwrap_or(u64::MAX);
-        let spot = guarded(&step_label, || spot(&steps, &origin, at));
+        let (now_round, within) = if looping {
+          (at / length, at % length)
+        } else {
+          (0, at)
+        };
+        let ended = now_round > round && !wanted.get();
+        round = now_round;
+        let spot = guarded(&step_label, || {
+          if ended {
+            return Spot::Ended(last.clone());
+          }
+          spot(&steps, if round == 0 { &origin } else { &last }, within)
+        });
         let (next, sleep) = match spot {
           Some(Spot::Moving(next)) => (next, None),
-          Some(Spot::Holding(next, until)) => (next, Some(until)),
+          Some(Spot::Holding(next, until)) => (next, Some(round * length + until)),
           Some(Spot::Ended(next)) => {
             set_changed(value, next);
             running.try_set(false);

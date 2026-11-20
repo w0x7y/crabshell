@@ -180,10 +180,83 @@ fn a_hold_between_moves_sleeps_and_a_late_wake_lands_on_the_timeline() {
 }
 
 #[test]
+fn a_loop_plays_its_rounds_with_their_pauses_and_finishes_the_round_when_stopped() {
+  let h = Harness::new();
+  let loading = h.cx.signal(false);
+  let sine = Transition::new(1100).easing(Easing::InOutSine);
+  let pulse = h.cx.sequence_loop(
+    1.0,
+    move || loading.get(),
+    [Step::hold(280), Step::to(0.4, sine), Step::to(1.0, sine)],
+  );
+  h.runtime.flush();
+  assert!(!animating() && next_timer().is_none());
+
+  loading.set(true);
+  h.runtime.flush();
+  let start = Instant::now();
+  assert!(!tick(start, 0), "round 0's pause sleeps");
+  assert_eq!(next_timer(), Some(at(start, 280)));
+  assert!(tick(start, 280));
+  tick(start, 830);
+  assert!(close(pulse.value().get(), 0.7), "{}", pulse.value().get());
+  tick(start, 1380);
+  assert!(close(pulse.value().get(), 0.4));
+  // Round 1 begins at 2480 with its own pause.
+  assert!(!tick(start, 2480));
+  assert_eq!(pulse.value().get(), 1.0);
+  assert_eq!(next_timer(), Some(at(start, 2760)));
+  assert!(pulse.running().get());
+
+  // Stopped mid-round, the round runs to its end and rests at its last
+  // step's target.
+  loading.set(false);
+  h.runtime.flush();
+  assert!(tick(start, 2760));
+  tick(start, 3310);
+  assert!(close(pulse.value().get(), 0.7));
+  assert!(!tick(start, 4960), "the clock stops at the round's end");
+  h.runtime.flush();
+  assert_eq!(pulse.value().get(), 1.0);
+  assert!(!pulse.running().get());
+  assert!(!animating() && next_timer().is_none(), "stopped, it sleeps");
+
+  // Started again it plays from round 0.
+  loading.set(true);
+  h.runtime.flush();
+  let again = at(start, 6000);
+  assert!(!tick(again, 0));
+  assert_eq!(next_timer(), Some(at(again, 280)));
+}
+
+#[test]
+fn a_loop_restarted_before_its_round_ends_never_stops() {
+  let h = Harness::new();
+  let on = h.cx.signal(true);
+  let linear = Transition::new(100).easing(Easing::Linear);
+  let pulse = h
+    .cx
+    .sequence_loop(0.0, move || on.get(), [Step::to(1.0, linear)]);
+  h.runtime.flush();
+  let start = Instant::now();
+  tick(start, 0);
+  tick(start, 50);
+  on.set(false);
+  h.runtime.flush();
+  on.set(true);
+  h.runtime.flush();
+  // Round 1 starts from round 0's end, 1, and goes to 1.
+  assert!(tick(start, 150));
+  assert!(tick(start, 250));
+  assert_eq!(pulse.value().get(), 1.0);
+  assert!(pulse.running().get());
+}
+
+#[test]
 fn a_sequence_of_no_time_jumps_and_an_empty_one_never_runs() {
   let h = Harness::new();
   let on = h.cx.signal(false);
-  let jump = h.cx.sequence(
+  let jump = h.cx.sequence_loop(
     0.0,
     move || on.get(),
     [
@@ -197,7 +270,7 @@ fn a_sequence_of_no_time_jumps_and_an_empty_one_never_runs() {
   h.runtime.flush();
   assert!(!empty.running().get(), "nothing to play");
   let start = Instant::now();
-  assert!(!tick(start, 0), "it ends at its first tick");
+  assert!(!tick(start, 0), "a loop of no time plays once");
   h.runtime.flush();
   assert_eq!(jump.value().get(), 3.0);
   assert!(!jump.running().get() && !animating());
@@ -277,8 +350,17 @@ fn a_panicking_trigger_is_logged_with_its_call_site_and_only_that_sequence_stops
 }
 
 #[test]
-fn a_panicking_steps_binding_is_logged_and_plays_nothing() {
+fn a_panicking_running_closure_or_steps_binding_is_logged_and_stops_it() {
   let h = Harness::new();
+  let fail = h.cx.signal(false);
+  let pulse = h.cx.sequence_loop(
+    0.0,
+    move || {
+      assert!(!fail.get(), "running failure");
+      true
+    },
+    [Step::to(1.0, Transition::new(100))],
+  );
   let go = h.cx.signal(0_u32);
   let steps = h.cx.sequence(
     0.0,
@@ -286,13 +368,20 @@ fn a_panicking_steps_binding_is_logged_and_plays_nothing() {
     || -> Vec<Step<f32>> { panic!("steps failure") },
   );
   h.runtime.flush();
+  let start = Instant::now();
+  tick(start, 0);
   let logs = capture_logs(|| {
+    fail.set(true);
     go.set(1);
     h.runtime.flush();
   });
-  assert!(logs.contains("animation cx.sequence at "), "{logs}");
-  assert!(logs.contains("steps failure"), "{logs}");
-  assert!(!steps.running().get() && !animating());
+  assert!(logs.contains("animation cx.sequence_loop at "), "{logs}");
+  assert!(logs.contains("running failure") && logs.contains("steps failure"));
+  assert!(!steps.running().get());
+  // The loop finishes its round, as one stopped would.
+  assert!(!tick(start, 100));
+  assert_eq!(pulse.value().get(), 1.0);
+  assert!(!pulse.running().get() && !animating());
 }
 
 #[test]
@@ -308,6 +397,7 @@ fn everything_goes_with_its_owner_asleep_or_moving() {
     move || go.get(),
     [Step::hold(1000), Step::to(1.0, Transition::new(10))],
   );
+  let pulse = child.sequence_loop(0.0, || true, [Step::to(1.0, Transition::new(100))]);
   h.runtime.flush();
   go.set(1);
   h.runtime.flush();
@@ -322,4 +412,5 @@ fn everything_goes_with_its_owner_asleep_or_moving() {
   );
   assert!(!tick(start, 10), "nothing runs");
   assert!(moving.value().try_get().is_none() && asleep.value().try_get().is_none());
+  assert!(pulse.value().try_get().is_none());
 }
