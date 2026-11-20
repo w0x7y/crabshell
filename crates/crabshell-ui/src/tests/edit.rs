@@ -35,7 +35,7 @@ fn at(text: &str, cursor: usize) -> Edit {
     text: text.to_owned(),
     cursor,
     anchor: None,
-    multiline: false,
+    ..Edit::default()
   }
 }
 

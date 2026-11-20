@@ -1033,12 +1033,37 @@ impl Tree {
           (move || signal.get()).into_prop(),
           "text",
           |tree, id, value| {
+            let mut cut = false;
             tree.update_input(id, |input| {
-              input.edit.set_text(value);
+              cut = input.edit.set_text(value);
               input.refresh();
             });
+            if cut {
+              tree.write_back(id);
+            }
           },
         );
+        self.bind_opt(id, props.max_length, "max_length", |tree, id, value| {
+          let mut cut = false;
+          tree.update_input(id, |input| {
+            input.edit.max_length = value;
+            cut = input.edit.fit();
+            input.refresh();
+          });
+          if cut {
+            tree.write_back(id);
+          }
+        });
+        self.bind_opt(id, props.read_only, "read_only", |tree, id, value| {
+          tree.update_input(id, |input| {
+            input.edit.read_only = value;
+            // What an input method was composing goes with its edits.
+            if value {
+              input.preedit = None;
+              input.refresh();
+            }
+          });
+        });
         self.bind_opt(id, props.placeholder, "placeholder", |tree, id, value| {
           let mut renamed = false;
           tree.update_input(id, |input| {
@@ -1585,6 +1610,14 @@ impl Tree {
       self.reveal = Some(id);
     }
     self.field_changed(id, before);
+  }
+
+  /// Writes field `id`'s text to its signal, after `max_length` cut it.
+  fn write_back(&self, id: NodeId) {
+    if let Some(NodeKind::Input(input)) = self.node(id).map(|node| &node.kind) {
+      // A signal whose owner is gone just isn't written.
+      input.signal.try_set(input.edit.text.clone());
+    }
   }
 
   pub(crate) fn update_image(&mut self, id: NodeId, f: impl FnOnce(&mut ImageNode) -> Change) {

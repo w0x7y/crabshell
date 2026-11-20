@@ -147,6 +147,12 @@ impl IntoProp<Option<Region>> for Region {
   }
 }
 
+impl IntoProp<Option<usize>> for usize {
+  fn into_prop(self) -> Prop<Option<usize>> {
+    Prop(PropKind::Value(Some(self)))
+  }
+}
+
 impl IntoProp<Option<Color>> for Color {
   fn into_prop(self) -> Prop<Option<Color>> {
     Prop(PropKind::Value(Some(self)))

@@ -443,6 +443,25 @@ fn a_slider_is_one_object_that_takes_the_focus() {
 }
 
 #[test]
+fn a_read_only_field_is_not_editable() {
+  let (mut harness, access) = harness();
+  let on = harness.cx.signal(true);
+  let field = TextInput::new(harness.cx.signal(String::new())).read_only(move || on.get());
+  let window = harness.window(harness.panel().child(Row::new().child(field)), 300.0, 30.0);
+  access.listen(true);
+  let field = |access: &Accessibility| {
+    let root = access.node(access.windows()[0]).expect("the window");
+    let row = access.node(root.children[0]).expect("the row");
+    access.node(row.children[0]).expect("the field")
+  };
+  assert_eq!(field(&access).role, AccessRole::Entry);
+  assert!(!field(&access).editable);
+  on.set(false);
+  harness.frame(&window);
+  assert!(field(&access).editable);
+}
+
+#[test]
 fn a_window_leaves_the_list_when_dropped() {
   let (mut harness, access) = harness();
   let clicks = Counter::default();

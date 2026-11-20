@@ -36,6 +36,8 @@ pub(crate) struct InputProps {
   /// A text area: many lines.
   pub(crate) multiline: bool,
   pub(crate) wrap: Option<Prop<bool>>,
+  pub(crate) max_length: Option<Prop<Option<usize>>>,
+  pub(crate) read_only: Option<Prop<bool>>,
 }
 
 /// A one-line text field. It takes the keyboard focus when clicked, when
@@ -73,6 +75,8 @@ impl TextInput {
         on_accept: None,
         multiline: false,
         wrap: None,
+        max_length: None,
+        read_only: None,
       },
       common: Common::default(),
     }
@@ -88,6 +92,26 @@ impl TextInput {
   /// the text.
   pub fn password(mut self, password: impl IntoProp<bool>) -> TextInput {
     self.input.password = Some(password.into_prop());
+    self
+  }
+
+  /// Lets the field hold at most `max` characters, or any number with
+  /// `None`, the default. Typing, pasting and an input method stop
+  /// there, cutting what they bring between graphemes. Text set from
+  /// outside, or already there when the limit drops, is cut to it, and
+  /// the cut text is written back to the signal.
+  pub fn max_length(mut self, max: impl IntoProp<Option<usize>>) -> TextInput {
+    self.input.max_length = Some(max.into_prop());
+    self
+  }
+
+  /// While on, off by default, the field takes no edits: typing,
+  /// deleting, cutting, pasting and input methods leave it alone, and
+  /// their keys go on to the window's `on_key`. The caret, selection and
+  /// Ctrl+C still work, though a password never copies, Enter still runs
+  /// `on_accept`, and text set from outside still shows.
+  pub fn read_only(mut self, on: impl IntoProp<bool>) -> TextInput {
+    self.input.read_only = Some(on.into_prop());
     self
   }
 
@@ -155,7 +179,8 @@ pub struct FieldState {
 
 impl Window {
   /// The focused text field, while the window has the keyboard, for an
-  /// input method. Never a password: input methods learn what is typed.
+  /// input method. Never a password, as input methods learn what is
+  /// typed, and never a read-only field, which takes no text.
   pub fn field(&self) -> Option<FieldState> {
     let tree = self.tree.borrow();
     if !tree.keyboard.entered {
@@ -165,7 +190,7 @@ impl Window {
     let NodeKind::Input(input) = &tree.node(id)?.kind else {
       return None;
     };
-    (!input.password).then(|| FieldState {
+    (!input.password && !input.edit.read_only).then(|| FieldState {
       field: u64::from(id),
       text: input.edit.text.clone(),
       cursor: input.edit.cursor,
@@ -229,7 +254,7 @@ impl Window {
     let Some(id) = tree.keyboard.focused else {
       return;
     };
-    if matches!(tree.node(id).map(|node| &node.kind), Some(NodeKind::Input(input)) if input.password)
+    if matches!(tree.node(id).map(|node| &node.kind), Some(NodeKind::Input(input)) if input.password || input.edit.read_only)
     {
       return;
     }
@@ -247,7 +272,7 @@ impl Window {
   }
 
   /// As [`edit_field`](Self::edit_field), into a password field too when
-  /// `passwords`.
+  /// `passwords`. A read-only field is left alone.
   fn change_field(&self, passwords: bool, change: impl FnOnce(&mut Edit)) {
     let write = {
       let mut tree = borrow(&self.tree);
@@ -255,7 +280,9 @@ impl Window {
         return;
       };
       let before = match tree.node(id).map(|node| &node.kind) {
-        Some(NodeKind::Input(input)) if passwords || !input.password => input.edit.text.clone(),
+        Some(NodeKind::Input(input)) if (passwords || !input.password) && !input.edit.read_only => {
+          input.edit.text.clone()
+        }
         _ => return,
       };
       let mut write = None;

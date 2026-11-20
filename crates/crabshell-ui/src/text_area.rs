@@ -53,6 +53,8 @@ impl TextArea {
         on_accept: None,
         multiline: true,
         wrap: None,
+        max_length: None,
+        read_only: None,
       },
       common: Common::default(),
     }
@@ -61,6 +63,26 @@ impl TextArea {
   /// Sets the text shown, dimmed, while the area is empty.
   pub fn placeholder(mut self, text: impl IntoProp<String>) -> TextArea {
     self.input.placeholder = Some(text.into_prop());
+    self
+  }
+
+  /// Lets the area hold at most `max` characters, a line break counting
+  /// as one, or any number with `None`, the default. Typing, pasting and
+  /// an input method stop there, cutting what they bring between
+  /// graphemes. Text set from outside, or already there when the limit
+  /// drops, is cut to it, and the cut text is written back to the signal.
+  pub fn max_length(mut self, max: impl IntoProp<Option<usize>>) -> TextArea {
+    self.input.max_length = Some(max.into_prop());
+    self
+  }
+
+  /// While on, off by default, the area takes no edits: typing, Enter
+  /// and Tab, deleting, cutting, pasting and input methods leave it
+  /// alone, and their keys go on to the window's `on_key`. The caret,
+  /// selection and Ctrl+C still work, Ctrl+Enter still runs `on_accept`,
+  /// and text set from outside still shows.
+  pub fn read_only(mut self, on: impl IntoProp<bool>) -> TextArea {
+    self.input.read_only = Some(on.into_prop());
     self
   }
 

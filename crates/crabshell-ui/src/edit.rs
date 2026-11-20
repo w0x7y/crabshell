@@ -21,6 +21,10 @@ pub(crate) struct Edit {
   pub(crate) anchor: Option<usize>,
   /// Keeps line breaks, and Enter types one.
   pub(crate) multiline: bool,
+  /// At most this many characters.
+  pub(crate) max_length: Option<usize>,
+  /// Keys that would edit are left for others.
+  pub(crate) read_only: bool,
 }
 
 /// What a key did.
@@ -43,19 +47,23 @@ pub(crate) enum Keyed {
 }
 
 impl Edit {
-  /// Takes `text` from outside, with the caret at its end. Text that
-  /// typing just wrote comes back the same and changes nothing.
-  pub(crate) fn set_text(&mut self, text: String) {
-    let text = match self.clean(&text) {
+  /// Takes `text` from outside, with the caret at its end, cut to the
+  /// maximum length. Text that typing just wrote comes back the same and
+  /// changes nothing. Returns whether it was cut.
+  pub(crate) fn set_text(&mut self, text: String) -> bool {
+    let mut text = match self.clean(&text) {
       Cow::Borrowed(_) => text,
       Cow::Owned(cleaned) => cleaned,
     };
-    if text == self.text {
-      return;
+    let fits = self.fitting(&text, 0);
+    let cut = fits < text.len();
+    text.truncate(fits);
+    if text != self.text {
+      self.text = text;
+      self.cursor = self.text.len();
+      self.anchor = None;
     }
-    self.text = text;
-    self.cursor = self.text.len();
-    self.anchor = None;
+    cut
   }
 
   /// The selected bytes, if any.
@@ -76,10 +84,44 @@ impl Edit {
     }
   }
 
-  /// Replaces the selection, or inserts at the caret.
+  /// Cuts the text to [`max_length`](Self::max_length), if it is longer.
+  /// Returns whether it was.
+  pub(crate) fn fit(&mut self) -> bool {
+    let fits = self.fitting(&self.text, 0);
+    if fits == self.text.len() {
+      return false;
+    }
+    self.text.truncate(fits);
+    self.cursor = self.cursor.min(fits);
+    self.anchor = self.anchor.map(|anchor| anchor.min(fits));
+    true
+  }
+
+  /// How many bytes of `text`, in whole graphemes, fit beside `kept`
+  /// other characters within the maximum length.
+  fn fitting(&self, text: &str, kept: usize) -> usize {
+    let Some(max) = self.max_length else {
+      return text.len();
+    };
+    let mut room = max.saturating_sub(kept);
+    let mut end = 0;
+    for grapheme in text.graphemes(true) {
+      let count = grapheme.chars().count();
+      if count > room {
+        break;
+      }
+      room -= count;
+      end += grapheme.len();
+    }
+    end
+  }
+
+  /// Replaces the selection, or inserts at the caret, as much as fits.
   pub(crate) fn insert(&mut self, text: &str) {
     let text = &*self.clean(text);
     let range = self.selection().unwrap_or(self.cursor..self.cursor);
+    let kept = self.text.chars().count() - self.text[range.clone()].chars().count();
+    let text = &text[..self.fitting(text, kept)];
     self.text.replace_range(range.clone(), text);
     self.cursor = range.start + text.len();
     self.anchor = None;
@@ -87,25 +129,20 @@ impl Edit {
 
   /// What `event` does. Ctrl moves and deletes by word, and Shift extends
   /// the selection. Copying and cutting need `copyable`, which a password
-  /// isn't.
+  /// isn't. Read-only, a key that would edit is unused.
   pub(crate) fn key(&mut self, event: &KeyEvent, copyable: bool) -> Keyed {
     let modifiers = event.modifiers;
     let word = modifiers.ctrl;
     let command = modifiers.ctrl && !modifiers.alt;
+    // Shift+Tab and Ctrl+Tab still move the focus out.
+    let tab =
+      self.multiline && !modifiers.shift && !modifiers.ctrl && !modifiers.alt && !modifiers.logo;
     let before = self.clone();
     match &event.key {
+      _ if self.read_only && self.edits(event, tab) => return Keyed::Unused,
       Key::Enter if self.multiline && !modifiers.ctrl => self.insert("\n"),
       Key::Enter => return Keyed::Accept,
-      // Shift+Tab and Ctrl+Tab still move the focus out.
-      Key::Tab
-        if self.multiline
-          && !modifiers.shift
-          && !modifiers.ctrl
-          && !modifiers.alt
-          && !modifiers.logo =>
-      {
-        self.insert("\t");
-      }
+      Key::Tab if tab => self.insert("\t"),
       Key::Character('c' | 'C' | 'x' | 'X') if command && !copyable => return Keyed::Moved,
       Key::Character('c' | 'C') if command => {
         return match self.selection() {
@@ -143,6 +180,22 @@ impl Edit {
       Keyed::Edited
     } else {
       Keyed::Moved
+    }
+  }
+
+  /// Whether `event` would change the text, as [`key`](Self::key) reads
+  /// it, with `tab` true if Tab types one.
+  fn edits(&self, event: &KeyEvent, tab: bool) -> bool {
+    let modifiers = event.modifiers;
+    let command = modifiers.ctrl && !modifiers.alt;
+    match &event.key {
+      Key::Enter => self.multiline && !modifiers.ctrl,
+      Key::Tab if tab => true,
+      Key::Character('x' | 'X' | 'v' | 'V') if command => true,
+      Key::Character('c' | 'C' | 'a' | 'A') if command => false,
+      Key::Backspace | Key::Delete => true,
+      Key::Left | Key::Right | Key::Home | Key::End => false,
+      _ => event.text.is_some() && !modifiers.ctrl && !modifiers.alt && !modifiers.logo,
     }
   }
 

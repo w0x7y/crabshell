@@ -13,6 +13,7 @@ mod dnd;
 mod drop;
 mod edit;
 mod elided;
+mod field_options;
 mod floating;
 mod flow;
 mod geometry;

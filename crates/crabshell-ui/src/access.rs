@@ -307,7 +307,11 @@ impl Accessibility {
       _ => (true, false),
     };
     let (editable, multi_line, text) = match &node.kind {
-      NodeKind::Input(input) => (true, input.edit.multiline, Some(input.access_text())),
+      NodeKind::Input(input) => (
+        !input.edit.read_only,
+        input.edit.multiline,
+        Some(input.access_text()),
+      ),
       _ => (false, false, None),
     };
     let focusable = match role {
