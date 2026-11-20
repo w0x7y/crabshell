@@ -8,6 +8,7 @@ use cosmic_text::{Buffer, LayoutGlyph};
 use crate::canvas::CanvasOp;
 use crate::geometry::{Affine, Point, Rect, Size};
 use crate::image::ImageTransition;
+use crate::region::Region;
 use crate::rich::Span;
 use crate::screencopy::CaptureFrame;
 use crate::select::{highlights, text_selection};
@@ -103,6 +104,13 @@ impl<'a> NodeView<'a> {
   /// [`TextView::color`] has the color text is drawn in.
   pub fn style(&self) -> Style {
     self.node.shown_style()
+  }
+
+  /// The region the node and everything inside it show within, in its
+  /// own logical pixels from its rectangle's top-left corner, from
+  /// `mask_region`. Draw nothing outside it or outside the rectangle.
+  pub fn mask_region(&self) -> Option<&'a Region> {
+    self.node.mask_region.as_ref()
   }
 
   /// The children, in drawing order: by their style's `z`, lowest

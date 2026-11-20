@@ -18,23 +18,34 @@
 /// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct Region {
-  shape: Shape,
-  ops: Vec<(Op, Region)>,
+  shape: RegionShape,
+  ops: Vec<(RegionOp, Region)>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-enum Shape {
+/// The shape a [`Region`] starts from, for a renderer that draws one:
+/// see [`Region::shape`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RegionShape {
+  /// No area.
   Empty,
-  /// Corner radii clockwise from the top left.
+  /// A rectangle as `[left, top, right, bottom]`, with its corner radii
+  /// clockwise from the top left as given, before
+  /// [`Radii::fit`](crate::Radii::fit).
   Rect([i32; 4], [f32; 4]),
+  /// The ellipse filling `[left, top, right, bottom]`.
   Ellipse([i32; 4]),
 }
 
+/// How a region is joined to the one before it: see [`Region::joined`].
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Op {
-  Add,
+pub enum RegionOp {
+  /// [`Region::union`].
+  Union,
+  /// [`Region::subtract`].
   Subtract,
+  /// [`Region::intersect`].
   Intersect,
+  /// [`Region::xor`].
   Xor,
 }
 
@@ -45,7 +56,7 @@ impl Region {
   /// No area at all: a window masked with it lets every click through.
   pub fn empty() -> Region {
     Region {
-      shape: Shape::Empty,
+      shape: RegionShape::Empty,
       ops: Vec::new(),
     }
   }
@@ -53,7 +64,7 @@ impl Region {
   /// The rectangle at `x`, `y`, relative to the window's top left.
   pub fn rect(x: i32, y: i32, width: u32, height: u32) -> Region {
     Region {
-      shape: Shape::Rect(bounds(x, y, width, height), [0.0; 4]),
+      shape: RegionShape::Rect(bounds(x, y, width, height), [0.0; 4]),
       ops: Vec::new(),
     }
   }
@@ -61,7 +72,7 @@ impl Region {
   /// The ellipse that fills the rectangle at `x`, `y`.
   pub fn ellipse(x: i32, y: i32, width: u32, height: u32) -> Region {
     Region {
-      shape: Shape::Ellipse(bounds(x, y, width, height)),
+      shape: RegionShape::Ellipse(bounds(x, y, width, height)),
       ops: Vec::new(),
     }
   }
@@ -82,7 +93,7 @@ impl Region {
     bottom_right: f32,
     bottom_left: f32,
   ) -> Region {
-    if let Shape::Rect(_, radii) = &mut self.shape {
+    if let RegionShape::Rect(_, radii) = &mut self.shape {
       *radii = [top_left, top_right, bottom_right, bottom_left];
     }
     self
@@ -90,27 +101,38 @@ impl Region {
 
   /// Adds `other`'s area.
   pub fn union(self, other: Region) -> Region {
-    self.then(Op::Add, other)
+    self.then(RegionOp::Union, other)
   }
 
   /// Removes `other`'s area.
   pub fn subtract(self, other: Region) -> Region {
-    self.then(Op::Subtract, other)
+    self.then(RegionOp::Subtract, other)
   }
 
   /// Keeps only the area also in `other`.
   pub fn intersect(self, other: Region) -> Region {
-    self.then(Op::Intersect, other)
+    self.then(RegionOp::Intersect, other)
   }
 
   /// Keeps the area in exactly one of the two.
   pub fn xor(self, other: Region) -> Region {
-    self.then(Op::Xor, other)
+    self.then(RegionOp::Xor, other)
   }
 
-  fn then(mut self, op: Op, other: Region) -> Region {
+  fn then(mut self, op: RegionOp, other: Region) -> Region {
     self.ops.push((op, other));
     self
+  }
+
+  /// The shape the region starts from, for a renderer.
+  pub fn shape(&self) -> RegionShape {
+    self.shape
+  }
+
+  /// Each region joined to [`shape`](Self::shape) and how, in the order
+  /// the calls made them, for a renderer.
+  pub fn joined(&self) -> impl Iterator<Item = (RegionOp, &Region)> {
+    self.ops.iter().map(|(op, region)| (*op, region))
   }
 
   /// The region inside a `width` by `height` window as rectangles
@@ -146,16 +168,16 @@ impl Region {
   /// The columns covered on the row whose center is at `y`.
   fn spans(&self, y: f32) -> Spans {
     let mut spans = match self.shape {
-      Shape::Empty => Spans::new(),
-      Shape::Rect(rect, radii) => rect_spans(rect, radii, y),
-      Shape::Ellipse(rect) => ellipse_spans(rect, y),
+      RegionShape::Empty => Spans::new(),
+      RegionShape::Rect(rect, radii) => rect_spans(rect, radii, y),
+      RegionShape::Ellipse(rect) => ellipse_spans(rect, y),
     };
     for (op, other) in &self.ops {
       let keep = match op {
-        Op::Add => |a, b| a || b,
-        Op::Subtract => |a, b: bool| a && !b,
-        Op::Intersect => |a, b| a && b,
-        Op::Xor => |a, b| a != b,
+        RegionOp::Union => |a, b| a || b,
+        RegionOp::Subtract => |a, b: bool| a && !b,
+        RegionOp::Intersect => |a, b| a && b,
+        RegionOp::Xor => |a, b| a != b,
       };
       spans = combine(&spans, &other.spans(y), keep);
     }

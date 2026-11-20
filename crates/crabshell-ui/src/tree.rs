@@ -197,6 +197,8 @@ pub(crate) struct Node {
   pub(crate) measured: Option<Size>,
   /// What a screen reader calls it, when a config named it.
   pub(crate) accessible_name: Option<String>,
+  /// Where it and everything inside it show, in its own logical pixels.
+  pub(crate) mask_region: Option<Region>,
 }
 
 pub(crate) enum NodeKind {
@@ -495,6 +497,7 @@ impl Node {
       measure: None,
       measured: None,
       accessible_name: None,
+      mask_region: None,
     }
   }
 
@@ -930,6 +933,16 @@ impl Tree {
       "accessible_name",
       set_accessible_name,
     );
+    self.bind_opt(id, common.mask_region, "mask_region", |tree, id, region| {
+      tree.update(id, |node| {
+        if node.mask_region == region {
+          Change::None
+        } else {
+          node.mask_region = region;
+          Change::Paint
+        }
+      });
+    });
     self.bind_kind(id, kind);
     self.mount_children(id, children, &cx, &path);
     id

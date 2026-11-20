@@ -88,6 +88,7 @@ pub(crate) struct Common {
   pub(crate) geometry: Option<Signal<Rect>>,
   pub(crate) mapped_geometry: Option<Signal<Rect>>,
   pub(crate) accessible_name: Option<Prop<String>>,
+  pub(crate) mask_region: Option<Prop<Option<crate::Region>>>,
   /// Told the widget's size after each layout that changes it, with the
   /// tree released. Lists measure their rows with it; configs have
   /// `geometry`.
@@ -398,8 +399,8 @@ macro_rules! container_methods {
   };
 }
 
-/// The `visible`, `geometry`, `mapped_geometry` and `accessible_name`
-/// methods every widget has.
+/// The `visible`, `geometry`, `mapped_geometry`, `accessible_name` and
+/// `mask_region` methods every widget has.
 macro_rules! visibility_methods {
   () => {
     /// Shows or hides the widget. Hidden, it is taken out of the layout,
@@ -441,6 +442,26 @@ macro_rules! visibility_methods {
     /// button needs one to be read at all.
     pub fn accessible_name(mut self, name: impl $crate::IntoProp<String>) -> Self {
       self.common.accessible_name = Some(name.into_prop());
+      self
+    }
+
+    /// Keeps the widget and everything inside it only within `region`,
+    /// given in the widget's own logical pixels from its top-left
+    /// corner, with antialiased edges and rounded corners. Nothing shows
+    /// outside the widget's box, as with a style's
+    /// [`mask`](crate::Style::mask), and both apply when both are set.
+    /// `None`, the default, keeps it all.
+    ///
+    /// It changes only what is drawn: the pointer still hits the whole
+    /// widget, so a click in a hole reaches it. A window's own
+    /// [`mask`](crate::PanelWindow::mask) is what lets clicks through.
+    ///
+    /// A new region repaints the widget's painted area, its box unless
+    /// its children overflow it, and never lays the window out, so a
+    /// region that changes every frame of an animation costs a repaint
+    /// of that area each frame.
+    pub fn mask_region(mut self, region: impl $crate::IntoProp<Option<$crate::Region>>) -> Self {
+      self.common.mask_region = Some(region.into_prop());
       self
     }
   };

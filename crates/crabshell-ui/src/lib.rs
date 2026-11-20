@@ -115,7 +115,7 @@ pub use lock::{Lock, SessionLock};
 pub use menu::{Menu, MenuEntry, MenuToggle};
 pub use popup::{Adjust, Placement, PopupWindow};
 pub use prop::{IntoProp, Prop};
-pub use region::Region;
+pub use region::{Region, RegionOp, RegionShape};
 pub use rich::{MARKUP_CAP, Span, parse_markup};
 pub use screencopy::{CaptureFrame, CaptureRequest, CaptureSource, ScreencopyView};
 pub use scroll::{ListView, ScrollView};

@@ -30,6 +30,7 @@ mod links;
 mod lists;
 mod lock;
 mod markup;
+mod mask_region;
 mod measure;
 mod menu;
 mod placement;
