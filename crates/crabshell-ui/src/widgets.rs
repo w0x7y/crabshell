@@ -178,6 +178,7 @@ pub(crate) struct ImageProps {
   pub(crate) blur: Option<Prop<f32>>,
   pub(crate) playing: Option<Prop<bool>>,
   pub(crate) transition: Option<Prop<ImageTransition>>,
+  pub(crate) status: Option<Signal<crate::ImageStatus>>,
 }
 
 /// The filters an [`Image`] is drawn through, for the renderer. Each
@@ -986,6 +987,7 @@ impl Image {
         blur: None,
         playing: None,
         transition: None,
+        status: None,
       },
       common: Common::default(),
     }
@@ -1068,6 +1070,26 @@ impl Image {
   /// only the renderer learns the file is bad.
   pub fn transition(mut self, transition: impl IntoProp<ImageTransition>) -> Image {
     self.image.transition = Some(transition.into_prop());
+    self
+  }
+
+  /// Shares where the picture is, as Qt's `Image.status`, so a config can
+  /// fade album art in once it is drawn or show a glyph when a picture
+  /// can't be read: [`ImageStatus::Empty`] for an empty path,
+  /// [`ImageStatus::Loading`] from each new source until it is drawn,
+  /// [`ImageStatus::Ready`] once it is drawn from the picture, and
+  /// [`ImageStatus::Failed`] when the file can't be read or decoded or is
+  /// past the size limits. Only a draw says Ready or Failed, so an image
+  /// never drawn, hidden or out of view, stays Loading; a picture decoded
+  /// again at another size stays Ready. Written only on a change; the
+  /// signal belongs to the config, and the image repaints nothing for it.
+  ///
+  /// [`ImageStatus::Empty`]: crate::ImageStatus::Empty
+  /// [`ImageStatus::Loading`]: crate::ImageStatus::Loading
+  /// [`ImageStatus::Ready`]: crate::ImageStatus::Ready
+  /// [`ImageStatus::Failed`]: crate::ImageStatus::Failed
+  pub fn status(mut self, status: Signal<crate::ImageStatus>) -> Image {
+    self.image.status = Some(status);
     self
   }
 

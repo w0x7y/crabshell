@@ -115,12 +115,12 @@ pub mod prelude {
     Adjust, Align, Anchors, Animate, Animation, Border, Button, Canvas, Cap, Capture,
     CaptureSource, Color, Column, CursorShape, Cx, Drag, DragContent, DragPhase, Easing, Edge,
     Elide, Fit, FloatingWindow, Font, FontFeature, Gradient, GradientShape, Grid, GridView, Icon,
-    IconPixels, IconSource, Image, ImageTransition, IntoProp, Join, Justify, Key, KeyEvent,
-    KeyboardFocus, Layer, ListView, Margins, Mask, Menu, MenuEntry, MenuToggle, Modifiers, Output,
-    Padding, Paint, PanelWindow, Path, Pen, Point, PopupWindow, Radii, Rect, Region, Row,
-    ScreencopyView, ScrollSource, ScrollView, SessionLock, Shadow, Size, Slider, Spacer, Span,
-    Spring, Stack, Step, Stroke, Style, Text, TextAlign, TextArea, TextInput, TextMetrics, Timer,
-    Transition, Wheel, WheelAxis, Widget, parse_markup,
+    IconPixels, IconSource, Image, ImageStatus, ImageTransition, IntoProp, Join, Justify, Key,
+    KeyEvent, KeyboardFocus, Layer, ListView, Margins, Mask, Menu, MenuEntry, MenuToggle,
+    Modifiers, Output, Padding, Paint, PanelWindow, Path, Pen, Point, PopupWindow, Radii, Rect,
+    Region, Row, ScreencopyView, ScrollSource, ScrollView, SessionLock, Shadow, Size, Slider,
+    Spacer, Span, Spring, Stack, Step, Stroke, Style, Text, TextAlign, TextArea, TextInput,
+    TextMetrics, Timer, Transition, Wheel, WheelAxis, Widget, parse_markup,
   };
   pub use crabshell_wayland::{OutputInfo, Toplevel, Windowset, WindowsetProjection};
   /// For [`cx.after`](Cx::after) and [`cx.interval`](Cx::interval).

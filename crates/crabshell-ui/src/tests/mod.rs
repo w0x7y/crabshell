@@ -20,6 +20,7 @@ mod geometry;
 mod grid;
 mod grid_view;
 mod image;
+mod image_status;
 mod image_transition;
 mod input;
 mod invalidation;

@@ -2,10 +2,12 @@
 //! image's transition to a new source, and what the platform asks of an
 //! image: a repaint of one GIF's box when its next frame is due.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use crabshell_reactive::{Signal, untrack};
 
 use crate::animation::{self, Transition};
 use crate::tree::{Change, ImageNode, NodeId, NodeKind, Tree, borrow, replace};
@@ -29,6 +31,91 @@ thread_local! {
   /// Images whose transition's new source the renderer is decoding, with
   /// that source, until the picture comes in.
   static DECODING: RefCell<Vec<(u64, PathBuf)>> = const { RefCell::new(Vec::new()) };
+  /// The images with a `status` signal: their id, the signal and the
+  /// source they show.
+  static WATCHED: RefCell<Vec<(u64, Signal<ImageStatus>, PathBuf)>> =
+    const { RefCell::new(Vec::new()) };
+  /// A report changed a status signal since [`image_status_changed`]
+  /// last ran.
+  static STATUS_CHANGED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Where an [`Image`](crate::Image)'s picture is, as Qt's `Image.status`,
+/// written to the signal [`Image::status`](crate::Image::status) takes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ImageStatus {
+  /// The source is an empty path, so nothing is shown. The default.
+  #[default]
+  Empty,
+  /// The source is new and its picture hasn't been drawn yet: it is read
+  /// at the next draw, or decoded off the loop's thread.
+  Loading,
+  /// The image was drawn from its source's picture.
+  Ready,
+  /// The source can't be read or decoded, or is past the size limits.
+  Failed,
+}
+
+/// Writes `status` to image `id`'s status signal while it shows
+/// `source`, if that changes it. A renderer calls it while drawing, with
+/// [`ImageStatus::Ready`] when it draws the image from its source's
+/// picture and [`ImageStatus::Failed`] when that can't be loaded. A report
+/// about another source, an empty one, or an image without a `status`
+/// signal changes nothing. The platform then asks
+/// [`image_status_changed`] and runs the reactive flush.
+pub fn image_status(id: u64, source: &Path, status: ImageStatus) {
+  if source.as_os_str().is_empty() {
+    return;
+  }
+  let _ = WATCHED.try_with(|watched| {
+    for (_, signal, _) in watched
+      .borrow()
+      .iter()
+      .filter(|(at, _, shown)| *at == id && shown == source)
+    {
+      if write_status(*signal, status) {
+        STATUS_CHANGED.with(|changed| changed.set(true));
+      }
+    }
+  });
+}
+
+/// Whether a report since the last call changed an image's status
+/// signal, so the platform runs the reactive flush for what reads it.
+pub fn image_status_changed() -> bool {
+  STATUS_CHANGED.with(|changed| changed.replace(false))
+}
+
+/// Writes `status` to `signal` if that changes it, and says whether it
+/// did.
+fn write_status(signal: Signal<ImageStatus>, status: ImageStatus) -> bool {
+  untrack(|| signal.try_get()) != Some(status) && signal.try_set(status)
+}
+
+/// Watches image `id`'s status with `signal`, from its source's binding.
+fn watch(id: u64, signal: Signal<ImageStatus>) {
+  WATCHED.with(|watched| watched.borrow_mut().push((id, signal, PathBuf::new())));
+}
+
+/// Image `id` shows `source` now: its status goes back to Loading, or to
+/// Empty for an empty path.
+fn watch_source(id: u64, source: &Path) {
+  WATCHED.with(|watched| {
+    for (_, signal, shown) in watched.borrow_mut().iter_mut().filter(|(at, ..)| *at == id) {
+      source.clone_into(shown);
+      let status = match source.as_os_str().is_empty() {
+        true => ImageStatus::Empty,
+        false => ImageStatus::Loading,
+      };
+      write_status(*signal, status);
+    }
+  });
+}
+
+/// How many images have a status watched, for tests.
+#[cfg(test)]
+pub(crate) fn watched_images() -> usize {
+  WATCHED.with(|watched| watched.borrow().len())
 }
 
 /// The ids of images removed, or in windows dropped, since the last call,
@@ -122,6 +209,7 @@ impl Drop for ImageNode {
     // A report about it would wait for a tick that never comes.
     let _ = FAILED.try_with(|failed| failed.borrow_mut().retain(|(id, _)| *id != self.id));
     decoded(self.id);
+    let _ = WATCHED.try_with(|watched| watched.borrow_mut().retain(|(id, ..)| *id != self.id));
   }
 }
 
@@ -243,6 +331,11 @@ fn repaint<T: PartialEq>(slot: &mut T, value: T) -> Change {
 impl Tree {
   pub(crate) fn bind_image(&mut self, id: NodeId, props: ImageProps) {
     self.images.push(id);
+    if let (Some(signal), Some(NodeKind::Image(image))) =
+      (props.status, self.node(id).map(|node| &node.kind))
+    {
+      watch(image.id, signal);
+    }
     self.bind(id, props.source, "image", |tree, id, value| {
       let mut started = None;
       // A new picture of the same size only needs a repaint.
@@ -254,6 +347,7 @@ impl Tree {
         if image.source.as_ref() == Some(&value) {
           return Change::None;
         }
+        watch_source(image.id, &value);
         let old = image.source.replace(value);
         let transition = image
           .transition

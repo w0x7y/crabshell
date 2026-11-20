@@ -112,7 +112,10 @@ pub use dnd::{DragContent, DragOut, DropSpot};
 pub use floating::{FloatingConfig, FloatingWindow, WindowRequest};
 pub use geometry::{Affine, Point, Rect, Size};
 pub use grid_view::GridView;
-pub use image::{ImageTransition, dropped_images, image_source_decoding, image_source_failed};
+pub use image::{
+  ImageStatus, ImageTransition, dropped_images, image_source_decoding, image_source_failed,
+  image_status, image_status_changed,
+};
 pub use input::{CursorShape, Drag, DragPhase, PointerButton, ScrollSource, Wheel, WheelAxis};
 pub use keyboard::{Clipboard, Key, KeyEvent, Modifiers};
 pub use lock::{Lock, SessionLock};
