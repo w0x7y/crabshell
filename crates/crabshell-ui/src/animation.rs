@@ -527,11 +527,10 @@ thread_local! {
   /// named for log lines.
   static RUNNING: RefCell<Vec<Running>> = const { RefCell::new(Vec::new()) };
   static WATCHES: RefCell<Vec<Watch>> = const { RefCell::new(Vec::new()) };
-  /// Steps taken off the clock through a pause, each until its time and
-  /// while its owner lasts. The timers wake them.
-  static ASLEEP: RefCell<Vec<(Instant, Owner, Running)>> = const { RefCell::new(Vec::new()) };
+  /// Steps taken off the clock through a pause. The timers wake them.
+  static ASLEEP: RefCell<Vec<Sleeper>> = const { RefCell::new(Vec::new()) };
   /// What the step now running asked with [`sleep_until`].
-  static SLEEP: Cell<Option<(Instant, Owner)>> = const { Cell::new(None) };
+  static SLEEP: Cell<Option<Nap>> = const { Cell::new(None) };
   /// When the clock last ticked.
   static LAST_TICK: Cell<Option<Instant>> = const { Cell::new(None) };
 }
@@ -542,42 +541,84 @@ pub(crate) fn start(label: Rc<str>, busy: Option<Busy>, step: Tick) {
   RUNNING.with(|running| running.borrow_mut().push((label, busy, step)));
 }
 
-/// Takes the step now running off the clock once it returns `true`, until
-/// `deadline`, so a pause wakes the loop once instead of every frame. It
-/// stays counted in its item, and is freed unwoken if `owner` goes.
-pub(crate) fn sleep_until(deadline: Instant, owner: Owner) {
-  SLEEP.with(|sleep| sleep.set(Some((deadline, owner))));
+/// A pause a step asked for: until when, the owner whose going frees it,
+/// and the play it belongs to, as its generation cell and the number it
+/// started at, so a play replaced while asleep is freed too.
+pub(crate) struct Nap {
+  pub(crate) deadline: Instant,
+  pub(crate) owner: Owner,
+  pub(crate) play: (Rc<Cell<u64>>, u64),
 }
 
-/// When the first sleeping step wakes, having freed those whose owner is
-/// gone.
-pub(crate) fn next_wake() -> Option<Instant> {
+/// A step asleep through its pause.
+struct Sleeper {
+  nap: Nap,
+  running: Running,
+}
+
+impl Nap {
+  /// Whether nothing waits for it any more.
+  fn stale(&self) -> bool {
+    self.owner.is_disposed() || self.play.0.get() != self.play.1
+  }
+}
+
+/// Takes the step now running off the clock once it returns `true`, until
+/// the nap's deadline, so a pause wakes the loop once instead of every
+/// frame. It stays counted in its item, and is freed unwoken once stale.
+pub(crate) fn sleep_until(nap: Nap) {
+  SLEEP.with(|sleep| sleep.set(Some(nap)));
+}
+
+/// Frees the sleeping steps whose owner is gone or whose play was
+/// replaced, dropping them with the table released.
+fn sweep_asleep() {
   let gone = ASLEEP.with(|asleep| {
     let mut asleep = asleep.borrow_mut();
     let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut *asleep)
       .into_iter()
-      .partition(|(_, owner, _)| owner.is_disposed());
+      .partition(|sleeper| sleeper.nap.stale());
     *asleep = kept;
     gone
   });
-  for (_, _, (label, busy, step)) in gone {
+  for Sleeper {
+    running: (label, busy, step),
+    ..
+  } in gone
+  {
     drop(busy);
     drop_isolated(&label, step);
   }
-  ASLEEP.with(|asleep| asleep.borrow().iter().map(|(deadline, ..)| *deadline).min())
 }
 
-/// Puts the sleeping steps due at `now` back on the clock.
+/// When the first sleeping step wakes, having freed the stale ones.
+pub(crate) fn next_wake() -> Option<Instant> {
+  sweep_asleep();
+  ASLEEP.with(|asleep| {
+    let asleep = asleep.borrow();
+    asleep.iter().map(|sleeper| sleeper.nap.deadline).min()
+  })
+}
+
+/// Puts the sleeping steps due at `now` back on the clock, having freed
+/// the stale ones.
 pub(crate) fn wake(now: Instant) {
+  sweep_asleep();
   let due: Vec<Running> = ASLEEP.with(|asleep| {
     let mut asleep = asleep.borrow_mut();
     let (due, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut *asleep)
       .into_iter()
-      .partition(|(deadline, ..)| *deadline <= now);
+      .partition(|sleeper| sleeper.nap.deadline <= now);
     *asleep = kept;
-    due.into_iter().map(|(_, _, running)| running).collect()
+    due.into_iter().map(|sleeper| sleeper.running).collect()
   });
   RUNNING.with(|running| running.borrow_mut().extend(due));
+}
+
+/// How many steps sleep, for tests.
+#[cfg(test)]
+pub(crate) fn asleep() -> usize {
+  ASLEEP.with(|asleep| asleep.borrow().len())
 }
 
 /// Runs `done` at the first tick that finds nothing running in
@@ -648,12 +689,9 @@ pub fn advance_animations(now: Instant) -> bool {
     let sleep = SLEEP.with(Cell::take);
     match ran {
       Ok(true) => match sleep {
-        Some((deadline, owner)) => {
-          ASLEEP.with(|asleep| {
-            asleep
-              .borrow_mut()
-              .push((deadline, owner, (label, busy, step)));
-          });
+        Some(nap) => {
+          let running = (label, busy, step);
+          ASLEEP.with(|asleep| asleep.borrow_mut().push(Sleeper { nap, running }));
         }
         None => kept.push((label, busy, step)),
       },
@@ -1339,7 +1377,8 @@ impl<T: Animate> Player<T> {
           Some(Spot::Moving(next)) => (next, None),
           Some(Spot::Holding(next, until)) => (next, Some(round * length + until)),
           Some(Spot::Ended(next)) => {
-            set_changed(value, next);
+            // A config's own `PartialEq` runs in the write.
+            guarded(&step_label, || set_changed(value, next));
             running.try_set(false);
             return false;
           }
@@ -1354,9 +1393,16 @@ impl<T: Animate> Player<T> {
         if untrack(|| value.try_with(|_| ())).is_none() {
           return false;
         }
-        set_changed(value, next);
+        if guarded(&step_label, || set_changed(value, next)).is_none() {
+          running.try_set(false);
+          return false;
+        }
         if let Some(until) = sleep {
-          sleep_until(begun + Duration::from_micros(until), owner);
+          sleep_until(Nap {
+            deadline: begun + Duration::from_micros(until),
+            owner,
+            play: (Rc::clone(&generation), current),
+          });
         }
         true
       }),

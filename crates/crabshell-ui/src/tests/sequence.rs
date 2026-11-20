@@ -414,3 +414,74 @@ fn everything_goes_with_its_owner_asleep_or_moving() {
   assert!(moving.value().try_get().is_none() && asleep.value().try_get().is_none());
   assert!(pulse.value().try_get().is_none());
 }
+
+#[test]
+fn a_play_replaced_in_its_hold_frees_its_sleeper_so_it_never_wakes() {
+  let h = Harness::new();
+  let moves = h.cx.signal(0_u32);
+  let fade = h.cx.sequence(
+    1.0,
+    move || moves.get(),
+    [Step::hold(5000), Step::to(0.0, Transition::new(100))],
+  );
+  h.runtime.flush();
+  let start = Instant::now();
+  // A pointer at 125 Hz restarts the idle fade every 8 ms.
+  for n in 1..=125 {
+    moves.set(n);
+    h.runtime.flush();
+    assert!(
+      !tick(start, u64::from(n) * 8),
+      "each play sleeps in its hold"
+    );
+  }
+  assert_eq!(crate::animation::asleep(), 1, "only the last play sleeps");
+  assert_eq!(
+    next_timer(),
+    Some(at(start, 1000 + 5000)),
+    "and only it wakes"
+  );
+  assert!(fade.running().get() && fade.value().get() == 1.0);
+}
+
+/// A value whose `PartialEq`, a config's own, panics near 0.5.
+#[derive(Clone, Debug)]
+struct Touchy(f32);
+
+impl PartialEq for Touchy {
+  fn eq(&self, other: &Touchy) -> bool {
+    for side in [self.0, other.0] {
+      assert!((side - 0.5).abs() > 0.1, "eq failure");
+    }
+    self.0 == other.0
+  }
+}
+
+impl crate::Animate for Touchy {
+  fn lerp(&self, to: &Touchy, t: f32) -> Touchy {
+    Touchy(self.0 + (to.0 - self.0) * t)
+  }
+}
+
+#[test]
+fn a_panicking_partial_eq_is_logged_and_running_ends() {
+  let h = Harness::new();
+  let go = h.cx.signal(0_u32);
+  let linear = Transition::new(100).easing(Easing::Linear);
+  let seq = h.cx.sequence(
+    Touchy(0.0),
+    move || go.get(),
+    [Step::to(Touchy(1.0), linear)],
+  );
+  h.runtime.flush();
+  go.set(1);
+  h.runtime.flush();
+  let start = Instant::now();
+  tick(start, 0);
+  let logs = capture_logs(|| assert!(!tick(start, 50), "the play stops"));
+  assert!(logs.contains("animation cx.sequence at "), "{logs}");
+  assert!(logs.contains("eq failure"), "{logs}");
+  h.runtime.flush();
+  assert!(!seq.running().get(), "and running ends");
+  assert!(!animating());
+}
