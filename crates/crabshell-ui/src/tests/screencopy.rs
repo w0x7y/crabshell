@@ -435,3 +435,42 @@ fn a_view_removed_while_shown_writes_false() {
   h.frame(&window);
   assert!(!on_screen.get());
 }
+
+#[test]
+fn a_view_that_draws_nothing_isnt_shown() {
+  let mut h = Harness::new();
+  let on_screen = h.cx.signal(false);
+  let part = h.cx.signal(Some(Rect::new(5.0, 0.0, 1.0, 1.0)));
+  let view = ScreencopyView::new(output("DP-2"))
+    .crop(move || part.get())
+    .shown(on_screen)
+    .style(BOX);
+  let window = h.window(h.panel().child(view), 100.0, 50.0);
+  let id = window.captures()[0].id;
+  let present = |window: &crate::Window| {
+    window.frame_committed();
+    window.frame_presented();
+  };
+  window.show_capture(id, frame(10));
+  present(&window);
+  assert!(!on_screen.get(), "a crop outside the frame");
+  part.set(Some(Rect::new(f32::NAN, 0.0, 1.0, 1.0)));
+  h.frame(&window);
+  present(&window);
+  assert!(!on_screen.get(), "a crop that isn't finite");
+  part.set(Some(Rect::new(1.0, 0.0, 1.0, 1.0)));
+  h.frame(&window);
+  present(&window);
+  assert!(on_screen.get(), "the frame's right pixel");
+
+  // Pixels that don't fill the frame's size draw nothing.
+  part.set(None);
+  h.frame(&window);
+  let short = CaptureFrame {
+    rgba: Rc::from([0; 4]),
+    ..frame(20)
+  };
+  window.show_capture(id, short);
+  present(&window);
+  assert!(!on_screen.get(), "a frame missing pixels");
+}

@@ -103,7 +103,9 @@ impl ScreencopyView {
   /// says. The part is cut to the frame, and one wholly outside it draws
   /// nothing. `None`, the default, shows the whole frame. A view of a
   /// source with a crop asks for the source's whole frame, at its own
-  /// resolution, so the part stays sharp.
+  /// resolution, so the part stays sharp. A window's logical pixels are
+  /// taken at the largest output scale, so with outputs of mixed scales
+  /// a crop of a window on a smaller-scale one misses its mark.
   pub fn crop(mut self, rect: impl IntoProp<Option<Rect>>) -> ScreencopyView {
     self.props.crop = Some(rect.into_prop());
     self
@@ -169,13 +171,52 @@ pub struct CaptureFrame {
   pub height: u32,
   /// The source's whole width in logical pixels, which a
   /// [`crop`](ScreencopyView::crop) is given in. A frame scaled down for
-  /// a small view keeps its source's.
+  /// a small view keeps its source's. An output's is its logical size;
+  /// a window's is its pixels divided by the largest output scale, which
+  /// is wrong for a window on a smaller-scale output when scales are
+  /// mixed.
   pub logical_width: u32,
-  /// The source's whole height in logical pixels.
+  /// The source's whole height in logical pixels, as for
+  /// [`logical_width`](Self::logical_width).
   pub logical_height: u32,
   /// Premultiplied RGBA, row by row: `width * height * 4` bytes. Shared,
   /// so a renderer can tell a new frame from the one it already scaled.
   pub rgba: Rc<[u8]>,
+}
+
+impl CaptureFrame {
+  /// The part of the frame a view with `crop` draws, in the frame's
+  /// pixels: left, top, width and height. The crop, in the source's
+  /// logical pixels, is rounded to whole pixels and cut to the frame.
+  /// `None` when the view draws nothing: a crop wholly outside the frame
+  /// or not finite, or pixels that don't fill the frame's size.
+  #[doc(hidden)]
+  pub fn drawn_part(&self, crop: Option<Rect>) -> Option<[u32; 4]> {
+    let pixels = u64::from(self.width) * u64::from(self.height) * 4;
+    if self.width == 0 || self.height == 0 || self.rgba.len() as u64 != pixels {
+      return None;
+    }
+    let Some(crop) = crop else {
+      return Some([0, 0, self.width, self.height]);
+    };
+    let sides = [crop.x, crop.y, crop.width, crop.height];
+    if !sides.iter().all(|side| side.is_finite()) {
+      return None;
+    }
+    let (width, height) = (self.width as f32, self.height as f32);
+    let across = width / self.logical_width.max(1) as f32;
+    let down = height / self.logical_height.max(1) as f32;
+    let left = (crop.x * across).round().max(0.0);
+    let top = (crop.y * down).round().max(0.0);
+    let right = (crop.right() * across).round().min(width);
+    let bottom = (crop.bottom() * down).round().min(height);
+    if right <= left || bottom <= top {
+      return None;
+    }
+    // Within the frame, so `as` keeps every value.
+    let [left, top, right, bottom] = [left, top, right, bottom].map(|side| side as u32);
+    Some([left, top, right - left, bottom - top])
+  }
 }
 
 /// One view the platform captures for, from [`Window::captures`].
@@ -467,14 +508,20 @@ impl Window {
     let mut tree = borrow(&self.tree);
     let views = tree.captures.clone();
     for id in views {
-      let placed = tree.node(id).is_some_and(|node| node.rect.is_some()) && tree.in_sight(id);
+      let placed = tree
+        .node(id)
+        .is_some_and(|node| node.rect.is_some() && !node.content.is_empty())
+        && tree.in_sight(id);
       let Some(node) = tree.node_mut(id) else {
         continue;
       };
       let NodeKind::Capture(capture) = &mut node.kind else {
         continue;
       };
-      let seen = next(capture, placed && capture.frame.is_some());
+      // What the renderer draws of it, which may be nothing.
+      let frame = capture.frame.as_ref();
+      let picture = frame.is_some_and(|frame| frame.drawn_part(capture.crop).is_some());
+      let seen = next(capture, placed && picture);
       if let Some(shown) = capture.shown
         && (seen == Seen::Shown) != (capture.seen == Seen::Shown)
       {

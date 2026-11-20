@@ -10,8 +10,8 @@ use std::collections::HashMap;
 
 use cosmic_text::{FontSystem, LayoutGlyph, SwashCache, SwashContent, SwashImage};
 use crabshell_ui::{
-  Affine, CaptureFrame, CaptureView, Color, Content, IconView, ImageView, InputView, NodeView,
-  Radii, Rect, Shadow, Size, Span, Style, TextSystem, TextView, WindowView,
+  Affine, CaptureView, Color, Content, IconView, ImageView, InputView, NodeView, Radii, Rect,
+  Shadow, Size, Span, Style, TextSystem, TextView, WindowView,
 };
 use tiny_skia::{
   FillRule, FilterQuality, LineCap, LineJoin, Mask, Paint, PathBuilder, PathSegment, Pixmap,
@@ -1492,13 +1492,16 @@ impl Painter<'_> {
       return;
     };
     let frame = capture.frame;
-    let crop = match capture.crop {
-      Some(crop) => match crop_pixels(frame, crop) {
-        Some(crop) => Some(crop),
-        None => return,
-      },
-      None => None,
+    // The same test `shown` makes, so a view that draws nothing isn't
+    // shown.
+    let Some([left, top, part_width, part_height]) = frame.drawn_part(capture.crop) else {
+      return;
     };
+    let crop = capture.crop.and_then(|_| {
+      // Within the frame, which is at most 8192 pixels a side.
+      let sides = [left, top, part_width, part_height].map(|side| side as i32);
+      tiny_skia::IntRect::from_xywh(sides[0], sides[1], part_width, part_height)
+    });
     let size = (width, height);
     if let Some(pixels) = self
       .icons
@@ -2011,25 +2014,4 @@ pub(crate) fn fill_opaque(pixmap: &mut PixmapMut<'_>, area: tiny_skia::Rect, col
     row[left * 4..right * 4].as_chunks_mut::<4>().0.fill(pixel);
   }
   true
-}
-
-/// `crop`, in the source's logical pixels, as the whole pixels of `frame`
-/// it covers, cut to the frame; `None` if none is left, or the crop isn't
-/// finite.
-fn crop_pixels(frame: &CaptureFrame, crop: Rect) -> Option<tiny_skia::IntRect> {
-  let sides = [crop.x, crop.y, crop.width, crop.height];
-  if !sides.iter().all(|side| side.is_finite()) {
-    return None;
-  }
-  let across = frame.width as f32 / frame.logical_width.max(1) as f32;
-  let down = frame.height as f32 / frame.logical_height.max(1) as f32;
-  let left = (crop.x * across).round().max(0.0);
-  let top = (crop.y * down).round().max(0.0);
-  let right = (crop.right() * across).round().min(frame.width as f32);
-  let bottom = (crop.bottom() * down).round().min(frame.height as f32);
-  if right <= left || bottom <= top {
-    return None;
-  }
-  // Within the frame, so these fit an i32.
-  tiny_skia::IntRect::from_ltrb(left as i32, top as i32, right as i32, bottom as i32)
 }
