@@ -358,6 +358,8 @@ pub(crate) struct ButtonNode {
   pub(crate) handlers: Signal<Handlers>,
   /// Written while the pointer is over the button or inside it.
   pub(crate) hover_signal: Option<Signal<bool>>,
+  /// Written while a left press on the button is held.
+  pub(crate) pressed_signal: Option<Signal<bool>>,
   /// Written with where the pointer is while it is over the button or
   /// dragging it.
   pub(crate) position_signal: Option<Signal<Option<Point>>>,
@@ -896,6 +898,7 @@ impl Tree {
         focus_style: Style::new(),
         handlers: cx.signal(std::mem::take(&mut props.handlers)),
         hover_signal: props.hovered,
+        pressed_signal: props.pressed,
         position_signal: props.position,
         drag_data: props
           .drag_data

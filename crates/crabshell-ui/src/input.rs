@@ -303,6 +303,19 @@ pub(crate) struct Press {
   /// The drag left the window and goes on as the platform's, so a
   /// pointer leave doesn't end it.
   pub(crate) out: bool,
+  /// The button's `pressed` signal, for a left press.
+  signal: Option<Signal<bool>>,
+}
+
+impl Press {
+  /// Writes `held` to the button's `pressed` signal, if that changes it.
+  fn write(self, held: bool) {
+    if let Some(signal) = self.signal
+      && untrack(|| signal.try_get()) != Some(held)
+    {
+      signal.try_set(held);
+    }
+  }
 }
 
 /// Where the pointer is and what it is doing.
@@ -376,8 +389,8 @@ impl Pointer {
     let source_gone = self
       .pressed
       .is_some_and(|press| removed.contains(&press.id));
-    if source_gone {
-      self.pressed = None;
+    if source_gone && let Some(press) = self.pressed.take() {
+      press.write(false);
     }
     if source_gone || self.drop_over.is_some_and(|(id, _)| removed.contains(&id)) {
       self.set_drop_over(None);
@@ -878,9 +891,11 @@ impl Tree {
   fn set_pressed(&mut self, pressed: Option<Press>) {
     let old = std::mem::replace(&mut self.pointer.pressed, pressed);
     if let Some(old) = old {
+      old.write(false);
       self.set_button_state(old.id, |button| button.pressed = false);
     }
     if let Some(new) = pressed {
+      new.write(true);
       self.set_button_state(new.id, |button| button.pressed = true);
     }
   }
@@ -926,6 +941,10 @@ impl Tree {
       return Vec::new();
     };
     let start = self.button_local(id, at).unwrap_or_default();
+    let signal = match &self.node(id).map(|node| &node.kind) {
+      Some(NodeKind::Button(node)) if button == PointerButton::Left => node.pressed_signal,
+      _ => None,
+    };
     self.set_pressed(Some(Press {
       id,
       button,
@@ -935,6 +954,7 @@ impl Tree {
       dragging: false,
       long_pressed: false,
       out: false,
+      signal,
     }));
     if button == PointerButton::Middle && self.press_middle(id, at) {
       self.primary = Some(Clipboard::Paste);

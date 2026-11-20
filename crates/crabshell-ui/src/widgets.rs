@@ -229,6 +229,7 @@ pub(crate) struct ButtonProps {
   pub(crate) pressed_style: Option<Prop<Style>>,
   pub(crate) focus_style: Option<Prop<Style>>,
   pub(crate) hovered: Option<Signal<bool>>,
+  pub(crate) pressed: Option<Signal<bool>>,
   pub(crate) position: Option<Signal<Option<Point>>>,
   pub(crate) enabled: Option<Prop<bool>>,
   pub(crate) focus: Option<Prop<bool>>,
@@ -1117,6 +1118,7 @@ impl Button {
         pressed_style: None,
         focus_style: None,
         hovered: None,
+        pressed: None,
         position: None,
         enabled: None,
         focus: None,
@@ -1147,6 +1149,21 @@ impl Button {
   /// release.
   pub fn hovered(mut self, hovered: Signal<bool>) -> Button {
     self.button.hovered = Some(hovered);
+    self
+  }
+
+  /// Shares whether the button is held: the button sets `pressed` to
+  /// `true` at a left press or touch on it and back to `false` at the
+  /// release, wherever the pointer is then, as Qt's `MouseArea.pressed`,
+  /// so a config can scale what is inside it while it is held. A press
+  /// that is cancelled lets go too: the pointer leaves the window, a
+  /// scroll view takes the drag, or the button is turned off, hidden or
+  /// removed. The button's own drag keeps it held. A press on a button
+  /// inside it holds that one instead. Written only on a change; the
+  /// signal belongs to the config, and the button repaints nothing for
+  /// it.
+  pub fn pressed(mut self, pressed: Signal<bool>) -> Button {
+    self.button.pressed = Some(pressed);
     self
   }
 
