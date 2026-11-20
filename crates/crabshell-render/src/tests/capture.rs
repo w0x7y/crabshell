@@ -85,6 +85,8 @@ fn solid(width: u32, height: u32, rgba: [u8; 4]) -> CaptureFrame {
   CaptureFrame {
     width,
     height,
+    logical_width: width,
+    logical_height: height,
     rgba: Rc::from(rgba.repeat((width * height) as usize)),
   }
 }
@@ -166,6 +168,17 @@ fn a_turned_frame_is_turned_back_upright() {
   assert_eq!(turned(2, true), ((2, 1), [red.to_vec(), blue.to_vec()]));
   let (size, sideways) = turned(1, false);
   assert_eq!(size, (1, 2));
+  let turn = Turn {
+    quarters: 1,
+    flipped: false,
+  };
+  let frame = capture_frame(&pixels, 2, 1, PixelFormat::Argb8888, false, turn, (1, 1));
+  let frame = frame.expect("a frame");
+  assert_eq!(
+    (frame.logical_width, frame.logical_height),
+    (1, 2),
+    "the source's whole size, upright"
+  );
   let (_, other) = turned(3, false);
   assert_eq!(
     sideways,

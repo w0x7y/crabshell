@@ -5,7 +5,8 @@ use std::rc::Rc;
 
 use super::{Harness, capture_logs, node_at};
 use crate::{
-  CaptureFrame, CaptureRequest, CaptureSource, Content, Row, ScreencopyView, Size, Style,
+  CaptureFrame, CaptureRequest, CaptureSource, Content, Rect, Row, ScreencopyView, Size, Style,
+  deliver_capture, wanted_captures,
 };
 
 const BOX: Style = Style::new().width(100.0).height(50.0);
@@ -19,6 +20,8 @@ fn frame(gray: u8) -> CaptureFrame {
   CaptureFrame {
     width: 2,
     height: 1,
+    logical_width: 2,
+    logical_height: 1,
     rgba: Rc::from([gray, gray, gray, 255].repeat(2)),
   }
 }
@@ -212,4 +215,151 @@ fn a_view_scaled_up_asks_for_a_frame_as_large_as_it_is_drawn() {
       "outer scale {scale}"
     );
   }
+}
+
+/// The one capture waiting for a frame: the number it is asked under.
+fn asked_for(source: &CaptureSource) -> u64 {
+  let wanted = wanted_captures();
+  let [(asked, wanted_source)] = &wanted[..] else {
+    panic!("{wanted:?}");
+  };
+  assert_eq!(wanted_source, source);
+  *asked
+}
+
+#[test]
+fn views_of_a_capture_share_its_one_frame_and_refresh_asks_again() {
+  let mut h = Harness::new();
+  let source = h.cx.signal(output("DP-2"));
+  let capture = h.cx.capture(move || source.get());
+  let ready = capture.ready();
+  let row = Row::new()
+    .child(ScreencopyView::of(capture).style(BOX))
+    .child(ScreencopyView::of(capture).style(BOX));
+  let window = h.window(h.panel().child(row), 200.0, 50.0);
+  assert!(window.captures().is_empty(), "the views capture nothing");
+  let asked = asked_for(&output("DP-2"));
+  assert!(!ready.get());
+  window.take_damage();
+
+  assert!(deliver_capture(asked, frame(10)));
+  assert!(wanted_captures().is_empty(), "one frame");
+  h.frame(&window);
+  assert!(ready.get());
+  assert_eq!(shown(&window, &[0, 0]), Some(frame(10)));
+  assert_eq!(shown(&window, &[0, 1]), Some(frame(10)));
+  let boxes = [[0, 0], [0, 1]].map(|path| node_at(window.view().root(), &path).bounds());
+  assert_eq!(window.take_damage(), boxes, "only the views repaint");
+
+  // The old frame stays until the new one lands.
+  capture.refresh();
+  let again = asked_for(&output("DP-2"));
+  assert_ne!(again, asked);
+  h.frame(&window);
+  assert!(!ready.get());
+  assert_eq!(shown(&window, &[0, 1]), Some(frame(10)));
+  assert!(
+    !deliver_capture(asked, frame(30)),
+    "asked before the refresh"
+  );
+  assert!(deliver_capture(again, frame(20)));
+  h.frame(&window);
+  assert!(ready.get());
+  assert_eq!(shown(&window, &[0, 0]), Some(frame(20)));
+  assert_eq!(shown(&window, &[0, 1]), Some(frame(20)));
+
+  // A new source drops the frame.
+  source.set(output("DP-3"));
+  h.frame(&window);
+  assert!(!ready.get());
+  assert_eq!(shown(&window, &[0, 0]), None);
+  asked_for(&output("DP-3"));
+}
+
+#[test]
+fn a_capture_goes_with_its_context() {
+  let mut h = Harness::new();
+  let before = h.runtime.node_count();
+  let cx = h.cx.child();
+  let capture = cx.capture(output("DP-2"));
+  let window = h.window(
+    h.panel().child(ScreencopyView::of(capture).style(BOX)),
+    100.0,
+    50.0,
+  );
+  let asked = asked_for(&output("DP-2"));
+  assert!(deliver_capture(asked, frame(10)));
+  h.frame(&window);
+  drop(window);
+  cx.owner().dispose();
+  assert_eq!(h.runtime.node_count(), before);
+  assert!(wanted_captures().is_empty());
+  // A handle outliving it does nothing.
+  capture.refresh();
+  assert!(wanted_captures().is_empty());
+  assert!(!deliver_capture(asked, frame(10)));
+}
+
+#[test]
+fn a_panicking_capture_source_is_logged_where_it_was_made_and_the_rest_goes_on() {
+  let mut h = Harness::new();
+  let fail = h.cx.signal(false);
+  let failing = h.cx.capture(move || {
+    assert!(!fail.get(), "capture source failure");
+    output("DP-2")
+  });
+  let other = h.cx.capture(output("DP-3"));
+  let row = Row::new()
+    .child(ScreencopyView::of(failing).style(BOX))
+    .child(ScreencopyView::of(other).style(BOX));
+  let window = h.window(h.panel().child(row), 300.0, 50.0);
+  let logs = capture_logs(|| {
+    fail.set(true);
+    h.frame(&window);
+  });
+  assert!(
+    logs.contains("effect cx.capture source at crates/crabshell-ui/src/tests/screencopy.rs:"),
+    "{logs}"
+  );
+  assert!(logs.contains("panicked and is disabled"), "{logs}");
+  // It keeps its source, and the other capture is untouched.
+  let sources: Vec<CaptureSource> = wanted_captures()
+    .into_iter()
+    .map(|(_, source)| source)
+    .collect();
+  assert_eq!(sources, [output("DP-2"), output("DP-3")]);
+  let asked = wanted_captures()[1].0;
+  assert!(deliver_capture(asked, frame(10)));
+  h.frame(&window);
+  assert_eq!(shown(&window, &[0, 1]), Some(frame(10)));
+}
+
+#[test]
+fn a_crop_draws_that_part_and_asks_for_the_whole_frame() {
+  let mut h = Harness::new();
+  let part = h.cx.signal(None);
+  let view = ScreencopyView::new(output("DP-2"))
+    .crop(move || part.get())
+    .style(BOX);
+  let window = h.window(h.panel().child(view), 100.0, 50.0);
+  assert_eq!(window.captures()[0].size, Size::new(100.0, 50.0));
+  let id = window.captures()[0].id;
+  window.show_capture(id, frame(10));
+  window.take_damage();
+
+  let corner = Rect::new(0.0, 0.0, 1.0, 1.0);
+  part.set(Some(corner));
+  h.frame(&window);
+  let crop = match node_at(window.view().root(), &[0]).content() {
+    Content::Capture(capture) => capture.crop,
+    _ => panic!("no frame"),
+  };
+  assert_eq!(crop, Some(corner));
+  let bounds = node_at(window.view().root(), &[0]).bounds();
+  assert_eq!(window.take_damage(), [bounds]);
+  assert_eq!(
+    window.captures()[0].size,
+    Size::new(f32::INFINITY, f32::INFINITY),
+    "the whole frame"
+  );
 }

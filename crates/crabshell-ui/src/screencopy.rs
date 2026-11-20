@@ -5,7 +5,8 @@
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::geometry::{Affine, Size};
+use crate::capture::Capture;
+use crate::geometry::{Affine, Rect, Size};
 use crate::prop::{IntoProp, Prop};
 use crate::style::Style;
 use crate::tree::{Change, NodeId, NodeKind, Tree, borrow, replace};
@@ -15,6 +16,11 @@ use crate::window::Window;
 /// Numbers every view mounted, in every window, so a platform's capture
 /// and a renderer's cache can't mix two up.
 static NEXT_VIEW: AtomicU64 = AtomicU64::new(0);
+
+/// A number no view or capture request had before.
+pub(crate) fn next_id() -> u64 {
+  NEXT_VIEW.fetch_add(1, Ordering::Relaxed)
+}
 
 /// What a [`ScreencopyView`] shows.
 #[non_exhaustive]
@@ -27,7 +33,10 @@ pub enum CaptureSource {
 }
 
 pub(crate) struct ScreencopyProps {
-  pub(crate) source: Prop<CaptureSource>,
+  /// `None` for a view of a [`Capture`].
+  pub(crate) source: Option<Prop<CaptureSource>>,
+  pub(crate) capture: Option<Capture>,
+  pub(crate) crop: Option<Prop<Option<Rect>>>,
   pub(crate) live: Option<Prop<bool>>,
   pub(crate) paint_cursors: Option<Prop<bool>>,
   pub(crate) fit: Option<Prop<Fit>>,
@@ -60,15 +69,40 @@ impl ScreencopyView {
   /// A view of `source`: a [`CaptureSource`], or a closure that returns
   /// one.
   pub fn new(source: impl IntoProp<CaptureSource>) -> ScreencopyView {
+    ScreencopyView::with(Some(source.into_prop()), None)
+  }
+
+  /// A view of `capture`'s frame, which it shares with every other view
+  /// of it; the view captures nothing itself, so `live` and
+  /// `paint_cursors` do nothing. It draws nothing while the capture has
+  /// no frame.
+  pub fn of(capture: Capture) -> ScreencopyView {
+    ScreencopyView::with(None, Some(capture))
+  }
+
+  fn with(source: Option<Prop<CaptureSource>>, capture: Option<Capture>) -> ScreencopyView {
     ScreencopyView {
       props: ScreencopyProps {
-        source: source.into_prop(),
+        source,
+        capture,
+        crop: None,
         live: None,
         paint_cursors: None,
         fit: None,
       },
       common: Common::default(),
     }
+  }
+
+  /// Shows only this part of the frame, in the source's logical pixels,
+  /// as an output's windows are placed, filling the view's box as `fit`
+  /// says. The part is cut to the frame, and one wholly outside it draws
+  /// nothing. `None`, the default, shows the whole frame. A view of a
+  /// source with a crop asks for the source's whole frame, at its own
+  /// resolution, so the part stays sharp.
+  pub fn crop(mut self, rect: impl IntoProp<Option<Rect>>) -> ScreencopyView {
+    self.props.crop = Some(rect.into_prop());
+    self
   }
 
   /// Whether each change to the source shows, rather than only the first
@@ -117,6 +151,12 @@ pub struct CaptureFrame {
   pub width: u32,
   /// The height in pixels.
   pub height: u32,
+  /// The source's whole width in logical pixels, which a
+  /// [`crop`](ScreencopyView::crop) is given in. A frame scaled down for
+  /// a small view keeps its source's.
+  pub logical_width: u32,
+  /// The source's whole height in logical pixels.
+  pub logical_height: u32,
   /// Premultiplied RGBA, row by row: `width * height * 4` bytes. Shared,
   /// so a renderer can tell a new frame from the one it already scaled.
   pub rgba: Rc<[u8]>,
@@ -135,7 +175,8 @@ pub struct CaptureRequest {
   pub paint_cursors: bool,
   /// The view's content box at the last layout, in logical pixels, times
   /// the zoom the renderer draws it at inside transforms that scale it
-  /// up, from [`Affine::layer_zoom`]: a frame needn't be larger.
+  /// up, from [`Affine::layer_zoom`]: a frame needn't be larger. Infinite
+  /// for a view with a crop, which needs the source's whole frame.
   pub size: Size,
 }
 
@@ -146,19 +187,30 @@ pub(crate) struct CaptureNode {
   pub(crate) live: bool,
   pub(crate) paint_cursors: bool,
   pub(crate) fit: Fit,
+  pub(crate) crop: Option<Rect>,
   pub(crate) frame: Option<CaptureFrame>,
 }
 
 impl CaptureNode {
   pub(crate) fn new() -> CaptureNode {
     CaptureNode {
-      id: NEXT_VIEW.fetch_add(1, Ordering::Relaxed),
+      id: next_id(),
       source: None,
       live: false,
       paint_cursors: false,
       fit: Fit::default(),
+      crop: None,
       frame: None,
     }
+  }
+
+  /// Shows `frame`, and returns whether that changed what shows.
+  fn show(&mut self, frame: Option<CaptureFrame>) -> bool {
+    if self.frame == frame {
+      return false;
+    }
+    self.frame = frame;
+    true
   }
 }
 
@@ -167,17 +219,32 @@ impl Tree {
   /// shows; the platform reads the rest when it next captures.
   pub(crate) fn bind_capture(&mut self, id: NodeId, props: ScreencopyProps) {
     self.captures.push(id);
-    self.bind(id, props.source, "source", |tree, id, value| {
+    if let Some(capture) = props.capture {
+      let frame = (move || capture.frame()).into_prop();
+      self.bind(id, frame, "frame", |tree, id, frame| {
+        tree.update_capture(id, |capture| match capture.show(frame) {
+          true => Change::Paint,
+          false => Change::None,
+        });
+      });
+    }
+    self.bind_opt(id, props.source, "source", |tree, id, value| {
       tree.update_capture(id, |capture| {
         if capture.source.as_ref() == Some(&value) {
           return Change::None;
         }
         capture.source = Some(value);
         // The old source's frame isn't this one's.
-        match capture.frame.take() {
-          Some(_) => Change::Paint,
-          None => Change::None,
+        match capture.show(None) {
+          true => Change::Paint,
+          false => Change::None,
         }
+      });
+    });
+    self.bind_opt(id, props.crop, "crop", |tree, id, value| {
+      tree.update_capture(id, |capture| match replace(&mut capture.crop, value) {
+        Change::None => Change::None,
+        _ => Change::Paint,
       });
     });
     self.bind_opt(id, props.live, "live", |tree, id, value| {
@@ -275,12 +342,16 @@ impl Window {
           return None;
         }
         let zoom = tree.zoom(id);
+        let size = match capture.crop {
+          Some(_) => Size::new(f32::INFINITY, f32::INFINITY),
+          None => Size::new(content.width * zoom, content.height * zoom),
+        };
         Some(CaptureRequest {
           id: capture.id,
           source: capture.source.clone()?,
           live: capture.live,
           paint_cursors: capture.paint_cursors,
-          size: Size::new(content.width * zoom, content.height * zoom),
+          size,
         })
       })
       .collect()
@@ -300,13 +371,12 @@ impl Window {
       return false;
     };
     let mut shown = false;
-    tree.update(node, |node| match &mut node.kind {
-      NodeKind::Capture(capture) if capture.frame.as_ref() != Some(&frame) => {
-        capture.frame = Some(frame);
-        shown = true;
-        Change::Paint
+    tree.update_capture(node, |capture| {
+      shown = capture.show(Some(frame));
+      match shown {
+        true => Change::Paint,
+        false => Change::None,
       }
-      _ => Change::None,
     });
     shown
   }

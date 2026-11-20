@@ -32,8 +32,10 @@ impl Turn {
 /// The frame a view keeps of a `width` by `height` buffer of premultiplied
 /// pixels in `format`, which the compositor `turn`ed. With `opaque`, as in
 /// `XRGB8888` and `XBGR8888`, the fourth byte is ignored. The frame is
-/// turned back upright and scaled down to [`frame_size`] for `cover`.
-/// `None` if `pixels` doesn't hold `width * height` pixels.
+/// turned back upright and scaled down to [`frame_size`] for `cover`. Its
+/// logical size is the source's upright size in pixels, for the platform
+/// to replace with the source's logical one. `None` if `pixels` doesn't
+/// hold `width * height` pixels.
 pub fn capture_frame(
   pixels: &[u8],
   width: u32,
@@ -75,10 +77,16 @@ pub fn capture_frame(
       pixel.swap(0, 2);
     }
   }
+  let (logical_width, logical_height) = match turn.sideways() {
+    true => (height, width),
+    false => (width, height),
+  };
   let (width, height, rgba) = upright(kept_width, kept_height, kept.take(), turn);
   Some(CaptureFrame {
     width,
     height,
+    logical_width,
+    logical_height,
     rgba: Rc::from(rgba),
   })
 }

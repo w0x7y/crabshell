@@ -214,6 +214,7 @@ impl<'a> NodeView<'a> {
           frame,
           rect: self.node.content,
           fit: capture.fit,
+          crop: capture.crop,
         }),
         None => Content::None,
       },
@@ -421,4 +422,7 @@ pub struct CaptureView<'a> {
   pub rect: Rect,
   /// How the frame fills the box.
   pub fit: Fit,
+  /// The part of the frame shown, in the source's logical pixels; `None`
+  /// for all of it.
+  pub crop: Option<Rect>,
 }

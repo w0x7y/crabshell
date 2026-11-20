@@ -60,6 +60,7 @@
 mod access;
 mod animation;
 mod canvas;
+mod capture;
 mod cx;
 mod dnd;
 mod edit;
@@ -103,6 +104,7 @@ pub use animation::{
   Animate, Animation, Easing, Spring, Transition, advance_animations, animating,
 };
 pub use canvas::{Canvas, CanvasOp, Cap, Join, Paint, Path, PathCommand, Pen, Stroke};
+pub use capture::{Capture, deliver_capture, wanted_captures};
 pub use cx::Cx;
 pub use dnd::{DragContent, DragOut, DropSpot};
 pub use floating::{FloatingConfig, FloatingWindow, WindowRequest};
