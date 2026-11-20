@@ -115,7 +115,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-crabshell = "0.8"
+crabshell = "0.9"
 
 [profile.dev]
 opt-level = 1
@@ -1374,7 +1374,7 @@ The baseline is Quickshell running the same bar, with workspaces, tray, volume a
 
 | Metric                                          | Target                                                     | Measured                                                                     | How to measure                                                      |
 | ----------------------------------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| Idle memory (RSS), v0.1 bar on one 1080p output | 30 MB or less, and at most a quarter of Quickshell's       | 21.7 MiB, 17% of Quickshell's 125.2 MiB; the counter example 19.4 MiB        | `ps -o rss= -p <pid>` after 60 s idle                               |
+| Idle memory (RSS), v0.1 bar on one 1080p output | 30 MB or less, and at most a quarter of Quickshell's       | 22.2 MiB, 18% of Quickshell's 125.2 MiB; the counter example 19.9 MiB        | `ps -o rss= -p <pid>` after 60 s idle                               |
 | Idle wakeups                                    | 1 per minute with a minute clock and nothing else changing | The bar: 2 context switches at the minute boundary, none between. Counter: 0 | `perf stat -e 'syscalls:sys_exit_epoll_wait' -p <pid> -- sleep 300` |
 | Startup to first frame                          | 100 ms or less                                             | 12 to 18 ms for the counter, counted from the first start                    | The shell logs the time from `main` to its first committed buffer   |
 | Workspace switch to screen                      | Within one frame, 16 ms at 60 Hz                           | Median 0.6 ms, slowest 0.8 ms                                                | The shell logs the time from the IPC event to the commit            |
@@ -1383,7 +1383,7 @@ The baseline is Quickshell running the same bar, with workspaces, tray, volume a
 | Back after `kill -9`                            | 2 s or less                                                | 1.03 s                                                                       | `crates/crabshell-cli/tests/exit_check.rs`                          |
 | Supervisor RSS with the shell up                | No target                                                  | 5.6 MiB                                                                      | `ps -o rss= -p <pid>`                                               |
 
-Measured on 2026-11-18 in release builds on headless Sway, after Phase 19. The counter's 19.4 MiB is up from 18.0 MiB at 0.7: reading whether a screen reader is on costs 0.3 to 0.5 MiB of it, and runs vary by about as much again. The memory, wakeup and first-frame rows come from `measure_the_counter_bar` on one 1920×1080 output at scale 1. The last four rows are the template bar under `crabshell run`, from the CLI's exit check. Phase 0 was the go/no-go gate: the spike used 13.2 MiB against Quickshell 0.3.2's 125.2 MiB for the same bar, with the full data in `spike/RESULTS.md`.
+Memory rows measured on 2026-11-20 in release builds on headless Sway, at 0.9; the others on 2026-11-18, after Phase 19. The counter's 19.9 MiB is up from 19.5 MiB at 0.8.2, run back to back, mostly the larger `Style` (a gradient holds eight colors, a center and a radius) and a mask region on every widget; it was 18.0 MiB at 0.7, before reading whether a screen reader is on. The memory, wakeup and first-frame rows come from `measure_the_counter_bar` on one 1920×1080 output at scale 1. The last four rows are the template bar under `crabshell run`, from the CLI's exit check. Phase 0 was the go/no-go gate: the spike used 13.2 MiB against Quickshell 0.3.2's 125.2 MiB for the same bar, with the full data in `spike/RESULTS.md`.
 
 This table holds the latest numbers. A change that moves one updates its row; older runs are in git history.
 
