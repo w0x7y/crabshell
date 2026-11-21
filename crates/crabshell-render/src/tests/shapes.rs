@@ -862,3 +862,55 @@ fn an_opaque_whole_pixel_fill_matches_the_path_fill() {
     translucent
   ));
 }
+
+/// A layer is blended in at an opacity and through a mask as tiny-skia's
+/// `draw_pixmap` blends it, within a level, at offsets that leave part of
+/// it outside the pixmap.
+#[test]
+fn a_layer_blends_in_as_tiny_skia_draws_it() {
+  // Premultiplied pixels of every kind: clear, faint, half and opaque.
+  let mut layer = tiny_skia::Pixmap::new(40, 30).expect("a layer");
+  for (at, pixel) in layer.pixels_mut().iter_mut().enumerate() {
+    let alpha = [0, 1, 37, 128, 200, 255][at % 6];
+    let channel = |seed: usize| ((at * seed) % 256).min(alpha as usize) as u8;
+    *pixel =
+      tiny_skia::PremultipliedColorU8::from_rgba(channel(7), channel(13), channel(29), alpha)
+        .expect("premultiplied");
+  }
+  let mut under = tiny_skia::Pixmap::new(64, 64).expect("a pixmap");
+  for (at, pixel) in under.pixels_mut().iter_mut().enumerate() {
+    let alpha = [255, 90, 0][at % 3];
+    let channel = (at % 200).min(alpha as usize) as u8;
+    *pixel = tiny_skia::PremultipliedColorU8::from_rgba(channel, alpha / 2, 0, alpha)
+      .expect("premultiplied");
+  }
+  let mut mask = tiny_skia::Mask::new(64, 64).expect("a mask");
+  let circle = tiny_skia::PathBuilder::from_circle(30.0, 30.0, 25.0).expect("a circle");
+  let at = tiny_skia::Transform::identity();
+  mask.fill_path(&circle, tiny_skia::FillRule::Winding, true, at);
+  for (x, y) in [(0, 0), (10, 20), (-15, -8), (40, 50)] {
+    for opacity in [1.0, 0.999, 0.6, 0.25, 0.004] {
+      for mask in [None, Some(&mask)] {
+        let mut expected = under.clone();
+        let paint = tiny_skia::PixmapPaint {
+          opacity,
+          ..tiny_skia::PixmapPaint::default()
+        };
+        expected.draw_pixmap(x, y, layer.as_ref(), &paint, at, mask);
+        let mut drawn = under.clone();
+        crate::draw::composite(&mut drawn.as_mut(), (x, y), &layer, opacity, mask);
+        let worst = drawn
+          .data()
+          .iter()
+          .zip(expected.data())
+          .map(|(a, b)| a.abs_diff(*b))
+          .max();
+        assert!(
+          worst <= Some(1),
+          "at {x},{y}, opacity {opacity}, masked {}: off by {worst:?}",
+          mask.is_some()
+        );
+      }
+    }
+  }
+}

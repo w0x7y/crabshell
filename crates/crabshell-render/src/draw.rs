@@ -633,12 +633,7 @@ impl Painter<'_> {
       self.work.layer_pixels += u64::from(layer.width()) * u64::from(layer.height());
       let mut inner = self.on(self.grid.moved(x, y));
       inner.layer_contents(&mut layer.as_mut(), node, &style, shadow, region);
-      let paint = PixmapPaint {
-        opacity,
-        ..PixmapPaint::default()
-      };
-      let (x, y) = (x as i32, y as i32);
-      pixmap.draw_pixmap(x, y, layer.as_ref(), &paint, Transform::identity(), None);
+      composite(pixmap, (x as i32, y as i32), &layer, opacity, None);
     } else {
       self.node_contents(pixmap, node, &style);
     }
@@ -810,19 +805,27 @@ impl Painter<'_> {
     inner.clip = None;
     let shadow = effects::cast_by_content(style);
     inner.layer_contents(&mut layer.as_mut(), node, style, shadow, None);
+    let at = to_pixmap.pre_translate(x, y);
+    if at.is_identity() || at.is_translate() {
+      // tiny-skia samples a moved pixmap at the nearest pixel, whatever the
+      // quality asked for, which puts it at this whole-pixel offset.
+      let offset = ((at.tx - 0.5).ceil(), (at.ty - 0.5).ceil());
+      // `as` saturates; a layer that far off misses the pixmap.
+      composite(
+        pixmap,
+        (offset.0 as i32, offset.1 as i32),
+        &layer,
+        opacity,
+        None,
+      );
+      return;
+    }
     let paint = PixmapPaint {
       opacity,
       quality: FilterQuality::Bilinear,
       ..PixmapPaint::default()
     };
-    pixmap.draw_pixmap(
-      0,
-      0,
-      layer.as_ref(),
-      &paint,
-      to_pixmap.pre_translate(x, y),
-      None,
-    );
+    pixmap.draw_pixmap(0, 0, layer.as_ref(), &paint, at, None);
   }
 
   fn node_contents(&mut self, pixmap: &mut PixmapMut<'_>, node: NodeView<'_>, style: &Style) {
@@ -918,14 +921,7 @@ impl Painter<'_> {
       return;
     };
     mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
-    pixmap.draw_pixmap(
-      x as i32,
-      y as i32,
-      layer.as_ref(),
-      &PixmapPaint::default(),
-      Transform::identity(),
-      Some(&mask),
-    );
+    composite(pixmap, (x as i32, y as i32), &layer, 1.0, Some(&mask));
   }
 
   /// A widget's rectangle on the pixel grid and each corner's radius in
@@ -1602,7 +1598,7 @@ impl Painter<'_> {
       .icons
       .capture(capture.id, frame, size, capture.fit, crop)
     {
-      draw_at(pixmap, x, y, pixels);
+      transition::blit(pixmap, (x, y), pixels);
     }
   }
 
@@ -1648,22 +1644,10 @@ impl Painter<'_> {
       _ => icon.source,
     };
     if let Some(image) = self.icons.get(source, sizes, icon.tint) {
-      pixmap.draw_pixmap(
-        x as i32,
-        y as i32,
-        image.as_ref(),
-        &PixmapPaint::default(),
-        Transform::identity(),
-        None,
-      );
+      // `as` saturates, so a huge offset stays in range.
+      transition::blit(pixmap, (x as i32, y as i32), image);
     }
   }
-}
-
-/// Draws `pixels` unscaled with its corner at `x`, `y`.
-fn draw_at(pixmap: &mut PixmapMut<'_>, x: i32, y: i32, pixels: &Pixmap) {
-  let paint = PixmapPaint::default();
-  pixmap.draw_pixmap(x, y, pixels.as_ref(), &paint, Transform::identity(), None);
 }
 
 /// Whether any of `area` lies inside the pixmap.
@@ -1784,6 +1768,49 @@ fn over(data: &mut [u8], index: usize, source: [u8; 4]) {
   let rest = 255 - source[3];
   for (channel, value) in data[index..index + 4].iter_mut().zip(source) {
     *channel = value.saturating_add(mul(*channel, rest));
+  }
+}
+
+/// Blends the premultiplied `layer` over the pixmap with its corner at
+/// `left`, `top`, at `opacity` and through `mask`, which is the pixmap's
+/// size. tiny-skia's `draw_pixmap` gives the same within a level at a
+/// whole-pixel offset, through a float pipeline several times slower,
+/// which a layer the size of the screen notices.
+pub(crate) fn composite(
+  pixmap: &mut PixmapMut<'_>,
+  (left, top): (i32, i32),
+  layer: &Pixmap,
+  opacity: f32,
+  mask: Option<&Mask>,
+) {
+  if opacity >= 1.0 && mask.is_none() {
+    transition::blit(pixmap, (left, top), layer);
+    return;
+  }
+  let width = layer.width() as usize;
+  let Some((x0, x1, y0, y1)) = overlap(pixmap, left, top, layer.width(), layer.height()) else {
+    return;
+  };
+  // In 65536ths, so an opacity near 0 or 1 isn't rounded a level off.
+  let scale = (opacity.clamp(0.0, 1.0) * 65536.0).round() as u32;
+  let stride = pixmap.width() as usize;
+  let mask = mask.map(Mask::data);
+  let data = pixmap.data_mut();
+  let source = layer.data();
+  for y in y0..y1 {
+    // `overlap` keeps these inside the pixmap.
+    let start =
+      (i64::from(top) + y as i64) as usize * stride + (i64::from(left) + x0 as i64) as usize;
+    let row = &source[(y * width + x0) * 4..(y * width + x1) * 4];
+    for (index, pixel) in row.as_chunks::<4>().0.iter().enumerate() {
+      let coverage = mask.map_or(255, |mask| mask[start + index]);
+      if pixel[3] == 0 || coverage == 0 {
+        continue;
+      }
+      let faded =
+        pixel.map(|channel| mul(((u32::from(channel) * scale + 32768) >> 16) as u8, coverage));
+      over(data, (start + index) * 4, faded);
+    }
   }
 }
 

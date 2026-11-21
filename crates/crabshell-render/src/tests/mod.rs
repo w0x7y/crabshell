@@ -9,6 +9,7 @@
 //! the snowman.
 
 mod animation;
+mod bench;
 mod canvas;
 mod capture;
 mod colors;

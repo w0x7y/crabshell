@@ -232,3 +232,39 @@ fn text_scaled_up_draws_as_sharp_as_text_that_size() {
     );
   }
 }
+
+/// A widget moved by part of a pixel lands where tiny-skia's nearest
+/// sampling puts a moved layer, its edge on the pixel whose middle the
+/// moved edge passes, at its opacity.
+#[test]
+fn a_widget_moved_by_part_of_a_pixel_lands_on_the_nearest_pixel() {
+  for (scale, moved, edge) in [
+    (1.0, 0.4, 10),
+    (1.0, 0.6, 11),
+    (2.0, 0.3, 21),
+    (2.0, -0.4, 19),
+  ] {
+    let mut scene = Scene::new();
+    let panel = scene.panel().child(
+      Row::new().padding(0, 10).align(Align::Start).child(
+        Row::new().style(
+          Style::new()
+            .width(20.0)
+            .height(10.0)
+            .background(Color::rgb(255, 0, 0))
+            .translate(moved, 0.0)
+            .opacity(0.6),
+        ),
+      ),
+    );
+    let window = scene.window(panel, 64.0, 10.0);
+    let drawn = scene.full(&window, scale);
+    let y = 5;
+    assert_eq!(drawn.pixel(edge - 1, y), [0; 4], "moved {moved} at {scale}");
+    assert_eq!(
+      drawn.pixel(edge, y),
+      [153, 0, 0, 153],
+      "moved {moved} at {scale}"
+    );
+  }
+}
