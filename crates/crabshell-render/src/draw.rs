@@ -110,6 +110,8 @@ pub struct Renderer {
   /// The bytes every window's kept layers hold, against
   /// [`kept::KEPT_LIMIT`].
   kept: Arc<AtomicU64>,
+  /// Counts icon theme changes, which no kept layer outlives.
+  theme: u64,
 }
 
 /// What drawing has cost so far, for tests to check that a draw stays
@@ -140,6 +142,7 @@ impl Renderer {
       scratch: Vec::new(),
       work: Work::default(),
       kept: Arc::default(),
+      theme: 0,
     }
   }
 
@@ -198,9 +201,11 @@ impl Renderer {
     }
   }
 
-  /// Sets the icon theme names are looked up in.
+  /// Sets the icon theme names are looked up in. Every window's kept
+  /// layers are dropped at its next draw, so a fade shows the new icons.
   pub fn set_icon_theme(&mut self, theme: impl Into<String>) {
     self.icons.set_theme(theme.into());
+    self.theme += 1;
   }
 
   /// The lookup icon names go through, which follows
@@ -371,7 +376,7 @@ impl Renderer {
     }
     self.icons.start_frame(history.id(), view.has_images());
     let plan = history.plan(damage, scale, width, height, age);
-    history.kept.start(&self.kept);
+    history.kept.start(&self.kept, self.theme);
     let tile = tile_side();
     let mut tiles: Vec<(u32, u32)> = Vec::new();
     for area in plan.repaint.iter().filter(|area| area.area() > 0) {

@@ -24,6 +24,8 @@ pub(crate) struct Kept {
   pub(super) frame: u64,
   /// Counts the bytes kept against the renderer's [`KEPT_LIMIT`].
   pub(super) budget: Arc<AtomicU64>,
+  /// The renderer's icon theme changes at the last draw.
+  theme: u64,
   pub(super) seen: HashMap<String, Seen>,
   /// The small blurred boxes large shadows are drawn from, with the draw
   /// that last used each.
@@ -43,10 +45,15 @@ impl std::fmt::Debug for Kept {
 }
 
 impl Kept {
-  /// Starts a draw, counting what it keeps against `budget`.
-  pub(super) fn start(&mut self, budget: &Arc<AtomicU64>) {
+  /// Starts a draw, counting what it keeps against `budget`. A layer
+  /// drawn before the icon theme's `theme`th change is dropped.
+  pub(super) fn start(&mut self, budget: &Arc<AtomicU64>, theme: u64) {
     self.frame += 1;
     self.budget = Arc::clone(budget);
+    if self.theme != theme {
+      self.theme = theme;
+      self.seen.clear();
+    }
   }
 
   /// Ends a draw: what it didn't visit is dropped.

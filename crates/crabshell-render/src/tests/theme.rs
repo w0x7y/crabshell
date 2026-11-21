@@ -611,3 +611,45 @@ fn the_icon_lookup_reaches_inherited_themes_and_hicolor() {
   );
   assert_eq!(found("absent"), None);
 }
+
+#[test]
+fn a_new_icon_theme_shows_in_a_kept_layer() {
+  let tree = Tree::new("kept");
+  let index = "[Icon Theme]\nDirectories=scalable/apps\n[scalable/apps]\nSize=16\nType=Scalable\nMinSize=8\nMaxSize=512\n";
+  let square = |fill: &str| {
+    format!(
+      "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><rect width='16' height='16' fill='{fill}'/></svg>"
+    )
+  };
+  tree
+    .file("data/icons/red/index.theme", index)
+    .file("data/icons/red/scalable/apps/mark.svg", &square("#ff0000"))
+    .file("data/icons/blue/index.theme", index)
+    .file("data/icons/blue/scalable/apps/mark.svg", &square("#0000ff"));
+  let mut scene = Scene::new();
+  scene.renderer = Renderer::with_icon_dirs(tree.bases());
+  scene.renderer.set_icon_theme("red");
+  let opacity = scene.cx.signal(0.9_f32);
+  let panel = scene.panel().child(
+    crabshell_ui::Stack::new()
+      .style(move || Style::new().opacity(opacity.get()))
+      .child(Icon::new("mark").size(24)),
+  );
+  let window = scene.window(panel, 40.0, 30.0);
+  let mut history = crate::DamageHistory::new();
+  let mut buffer = super::Buffer::new(&window, 1.0);
+  for value in [0.9, 0.8, 0.7] {
+    opacity.set(value);
+    scene.frame(&window);
+    scene.draw(&window, &mut history, &mut buffer);
+  }
+  assert!(scene.renderer.kept_bytes() > 0, "kept");
+  scene.renderer.set_icon_theme("blue");
+  opacity.set(0.6);
+  scene.frame(&window);
+  // Whole, as the platform repaints every window for a new theme.
+  buffer.age = crate::BufferAge::default();
+  scene.draw(&window, &mut history, &mut buffer);
+  let pixel = buffer.pixel(12, 12);
+  assert!(pixel[2] > 100 && pixel[0] < 20, "blue: {pixel:?}");
+}
