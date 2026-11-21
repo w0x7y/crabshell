@@ -535,8 +535,9 @@ impl Tree {
 impl Window {
   /// Repaints the box of image `id`, as when the renderer says a GIF's
   /// next frame is due or a picture it decoded came in, which also ends
-  /// its transition's wait for it, and returns whether it did. An image in another
-  /// window, removed, hidden or not laid out yet repaints nothing.
+  /// its transition's wait for it, and returns whether it did. An image in
+  /// another window, removed, hidden, not laid out yet, or at opacity 0 or
+  /// under a widget at opacity 0 repaints nothing: the renderer skips it.
   pub fn repaint_image(&self, id: u64) -> bool {
     let mut tree = borrow(&self.tree);
     let found = tree.images.iter().copied().find(|&node| {
@@ -545,7 +546,7 @@ impl Window {
     });
     // A picture that came in ends any wait for it.
     decoded(id);
-    let Some(node) = found else {
+    let Some(node) = found.filter(|&node| !tree.transparent(node)) else {
       return false;
     };
     tree.invalidate(node, Change::Paint);

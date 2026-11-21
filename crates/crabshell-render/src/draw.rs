@@ -94,6 +94,8 @@ struct Work {
   layer_pixels: u64,
   /// Nodes drawn.
   nodes: u64,
+  /// Nodes looked through for images a draw skips.
+  skipped: u64,
   /// Pixels of alpha content shadows were blurred over.
   blurred: u64,
   /// Pixels gradients were worked out for. A `Cell`, since a ramp is
@@ -130,6 +132,12 @@ impl Renderer {
   #[cfg(test)]
   pub(crate) fn work(&self) -> (u64, u64, u64) {
     (self.work.layer_pixels, self.work.nodes, self.work.blurred)
+  }
+
+  /// The nodes looked through for images a draw skips so far, for tests.
+  #[cfg(test)]
+  pub(crate) fn skipped_nodes(&self) -> u64 {
+    self.work.skipped
   }
 
   /// The pixels gradients were worked out for so far, for tests.
@@ -319,7 +327,7 @@ impl Renderer {
         bytes: pixels.len(),
       });
     }
-    self.icons.start_frame(history.id());
+    self.icons.start_frame(history.id(), view.has_images());
     let plan = history.plan(damage, scale, width, height, age);
     let mut tiles: Vec<(u32, u32)> = Vec::new();
     for area in plan.repaint.iter().filter(|area| area.area() > 0) {
@@ -366,6 +374,7 @@ impl Renderer {
         fonts: &mut fonts,
         work: &mut self.work,
         casts: &mut casts,
+        clip: Some(Rect::new(0.0, 0.0, view.size().width, view.size().height)),
       };
       painter.node(&mut pixmap, view.root());
       copy(&self.scratch, area, pixels, width, format);
@@ -548,6 +557,10 @@ struct Painter<'a> {
   work: &'a mut Work,
   /// The cells of content shadows cast in this draw.
   casts: &'a mut HashMap<CastKey, effects::Cast>,
+  /// Where the clipping widgets around what is drawn and the window's
+  /// edges let anything show, in logical pixels; `None` inside a
+  /// transform, whose coordinates are its own.
+  clip: Option<Rect>,
 }
 
 /// A cell of a content shadow cast in a draw: its widget's path, and the
@@ -564,6 +577,7 @@ impl Painter<'_> {
       fonts: &mut *self.fonts,
       work: &mut *self.work,
       casts: &mut *self.casts,
+      clip: self.clip,
     }
   }
 
@@ -631,14 +645,32 @@ impl Painter<'_> {
   }
 
   /// Loads the pictures of the images in `node` and everything inside it
-  /// shown, which this draw skips, at the size drawing them would give,
-  /// so a later reveal draws them on its first frame.
+  /// that a reveal would draw, which this draw skips, at the size drawing
+  /// them would give, so the reveal draws them on its first frame. Each
+  /// node skipped is looked through once a draw, and none in a window
+  /// without images.
   fn skip(&mut self, node: NodeView<'_>) {
-    let mut grid = self.grid;
+    if self.icons.look_through(node.path()) {
+      let (grid, clip) = (self.grid, self.clip);
+      self.skipped(node, grid, clip);
+    }
+  }
+
+  /// [`skip`](Self::skip)'s walk of `node` on `grid`, loading the images
+  /// that show within `clip`.
+  fn skipped(&mut self, node: NodeView<'_>, mut grid: Grid, mut clip: Option<Rect>) {
+    self.work.skipped += 1;
     if let Some(transform) = node.transform() {
       (grid.linear, grid.zoom, grid.scale) = grid.through(transform);
+      // shortcut: the clip isn't carried into a transform's coordinates, so
+      // a transformed subtree loads what clips cut away; map it if that costs.
+      clip = None;
     }
-    if let Content::Image(image) = node.content() {
+    let shows =
+      |clip: Option<Rect>, rect: Rect| clip.is_none_or(|clip| !clip.intersect(rect).is_empty());
+    if let Content::Image(image) = node.content()
+      && shows(clip, image.rect)
+    {
       let (width, height) = (
         (image.rect.width * grid.scale).round(),
         (image.rect.height * grid.scale).round(),
@@ -649,9 +681,14 @@ impl Painter<'_> {
         self.icons.skipped(&image, size, grid.scale);
       }
     }
-    let mut inner = self.on(grid);
+    if node.clips() {
+      let rect = node.rect();
+      clip = Some(clip.map_or(rect, |clip| clip.intersect(rect)));
+    }
     for child in node.children() {
-      inner.skip(child);
+      if shows(clip, child.bounds()) {
+        self.skipped(child, grid, clip);
+      }
     }
   }
 
@@ -770,6 +807,7 @@ impl Painter<'_> {
       top: y,
       ..self.grid
     });
+    inner.clip = None;
     let shadow = effects::cast_by_content(style);
     inner.layer_contents(&mut layer.as_mut(), node, style, shadow, None);
     let paint = PixmapPaint {
@@ -837,7 +875,9 @@ impl Painter<'_> {
       return;
     };
     let corners = inset(corners, width);
-    self.through_mask(pixmap, node.rect(), (inside, corners), |painter, layer| {
+    let rect = node.rect();
+    self.through_mask(pixmap, rect, (inside, corners), |painter, layer| {
+      painter.clip = painter.clip.map(|clip| clip.intersect(rect));
       for child in node.children() {
         painter.node(layer, child);
       }

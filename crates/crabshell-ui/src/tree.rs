@@ -651,6 +651,22 @@ impl Tree {
     true
   }
 
+  /// Whether node `id` or a node above it is drawn at opacity 0, as the
+  /// renderer reads it, so nothing in it shows.
+  pub(crate) fn transparent(&self, id: NodeId) -> bool {
+    let mut at = Some(id);
+    while let Some(current) = at {
+      let opacity = self
+        .node(current)
+        .and_then(|node| node.shown_style().opacity);
+      if opacity.is_some_and(|opacity| opacity <= 0.0) {
+        return true;
+      }
+      at = self.taffy.parent(current);
+    }
+    false
+  }
+
   /// Gives the focus to the first field in Tab order under `id`, just
   /// shown, whose `focus` is still true, as it asked while hidden.
   pub(crate) fn focus_shown_field(&mut self, id: NodeId) {

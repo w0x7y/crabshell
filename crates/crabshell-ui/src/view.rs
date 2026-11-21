@@ -41,6 +41,11 @@ impl<'w> WindowView<'w> {
       .expect("invariant: the root node exists while the tree does")
   }
 
+  /// Whether the window has any [`Image`](crate::Image), shown or not.
+  pub fn has_images(&self) -> bool {
+    !self.tree.images.is_empty()
+  }
+
   /// The window's images whose `status` signal still says Loading, hidden
   /// ones too, at the box they were last laid out in. The platform has the
   /// renderer load them when

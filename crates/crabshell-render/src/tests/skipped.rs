@@ -6,7 +6,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use crabshell_reactive::Signal;
-use crabshell_ui::{Align, Content, Fit, Image, Region, Row, Style};
+use crabshell_ui::{Align, Column, Content, Fit, Image, Region, Row, ScrollView, Style};
 
 use super::{Buffer, Scene, fixture};
 
@@ -132,10 +132,8 @@ fn a_large_skipped_image_is_decoded_once_on_the_worker() {
     .recv_timeout(Duration::from_secs(20))
     .expect("the worker wakes the loop");
   assert_eq!(scene.renderer.take_decoded(), [id]);
-  assert!(window.repaint_image(id));
-  scene.frame(&window);
-  scene.draw(&window, &mut history, &mut buffer);
   assert!(!scene.renderer.decoding(), "no new job");
+  assert!(!window.repaint_image(id), "nothing to show for it");
   scene.frame(&window);
   assert!(!window.has_damage(), "idle");
 
@@ -146,4 +144,70 @@ fn a_large_skipped_image_is_decoded_once_on_the_worker() {
   assert!(!scene.renderer.waits_for_pictures());
   assert!(!scene.renderer.decoding());
   assert_eq!(scene.renderer.decoded_off_thread(), 1, "decoded once");
+}
+
+#[test]
+fn a_skipped_subtree_is_looked_through_once_a_draw_and_not_without_images() {
+  for with_image in [false, true] {
+    let mut scene = Scene::new();
+    let row = || Row::new().style(Style::new().width(100.0).height(1.0));
+    let rows = (0..1000).fold(Column::new(), |column, _| column.child(row()));
+    let mut row = Row::new()
+      .align(Align::Start)
+      .child(rows.style(Style::new().opacity(0.0)));
+    if with_image {
+      row = row.child(Image::new(fixture("stripes.png")).width(40).height(20));
+    }
+    let window = scene.window(scene.panel().child(row), 1920.0, 1080.0);
+    scene.full(&window, 1.0);
+    let looked = scene.renderer.skipped_nodes();
+    match with_image {
+      false => assert_eq!(looked, 0, "a window without images"),
+      true => assert_eq!(looked, 1001, "the column and its rows, once"),
+    }
+  }
+}
+
+#[test]
+fn a_skipped_scroll_view_or_one_inside_a_scroll_view_loads_only_what_it_shows() {
+  for transparent_view in [true, false] {
+    let mut scene = Scene::new();
+    let shown = scene.cx.signal(false);
+    let opacity = opacity(shown);
+    // Each of its own height, so each is a picture of its own.
+    let images = (0..20).fold(Column::new(), |column, at| {
+      column.child(
+        Image::new(fixture("stripes.png"))
+          .width(100)
+          .height(40 + at),
+      )
+    });
+    let view = match transparent_view {
+      true => ScrollView::new(images)
+        .style(move || Style::new().width(100.0).height(50.0).opacity(opacity())),
+      false => ScrollView::new(images.style(move || Style::new().opacity(opacity())))
+        .style(Style::new().width(100.0).height(50.0)),
+    };
+    let row = Row::new().align(Align::Start).child(view);
+    let window = scene.window(scene.panel().child(row), 200.0, 100.0);
+    scene.full(&window, 1.0);
+    let name = if transparent_view {
+      "the view"
+    } else {
+      "inside it"
+    };
+    assert_eq!(
+      scene.renderer.rasterized_icons(),
+      2,
+      "{name}: the two it shows"
+    );
+    shown.set(true);
+    scene.frame(&window);
+    scene.full(&window, 1.0);
+    assert_eq!(
+      scene.renderer.rasterized_icons(),
+      2,
+      "{name}: what a reveal draws"
+    );
+  }
 }

@@ -106,6 +106,10 @@ pub(crate) struct Icons {
   memo: Option<Memo>,
   /// The images this draw skipped and loaded already.
   skipped: HashSet<u64>,
+  /// The paths of the widgets this draw skipped and looked through.
+  looked: HashSet<String>,
+  /// Whether the window drawn has images to look for.
+  images: bool,
 }
 
 /// The pictures an image showed in a draw: its own and the one its
@@ -392,6 +396,8 @@ impl Icons {
       waited: false,
       memo: None,
       skipped: HashSet::new(),
+      looked: HashSet::new(),
+      images: false,
     }
   }
 
@@ -489,9 +495,11 @@ impl Icons {
     ready
   }
 
-  /// Starts a draw of the window whose damage history is `window`.
-  pub(crate) fn start_frame(&mut self, window: u64) {
+  /// Starts a draw of the window whose damage history is `window`, which
+  /// has `images` or not.
+  pub(crate) fn start_frame(&mut self, window: u64, images: bool) {
     self.window = window;
+    self.images = images;
     self.waited = false;
   }
 
@@ -742,6 +750,12 @@ impl Icons {
       let size = (pixels(image.rect.width), pixels(image.rect.height));
       self.unseen(image, size, scale);
     }
+  }
+
+  /// Whether a draw that skips the widget at `path` should look through
+  /// it for images: once a draw, and never in a window without any.
+  pub(crate) fn look_through(&mut self, path: &str) -> bool {
+    self.images && !self.looked.contains(path) && self.looked.insert(path.to_owned())
   }
 
   /// Loads `image`, which this draw skips at opacity 0 or cut out by its
@@ -1389,6 +1403,7 @@ impl Icons {
     // It matches only within a draw, and would keep a gone image's pixels.
     self.memo = None;
     self.skipped.clear();
+    self.looked.clear();
     self.let_go_of_left_pictures();
     self.drop_unreachable_pixels();
     let recent = self.frame.saturating_sub(RECENT - 1);
