@@ -428,6 +428,10 @@ API rules settled in 0.9.1, from finishing that port:
 - `SessionLock::refused(signal)` is written `true` when the compositor refuses the lock, as when another locker holds it, or ends it while `locked` is still true, and `false` once `locked` turns false, so a config can clear its own flag: `cx.effect(move || if refused.get() { locked.set(false) })`.
 - The prelude adds `PointerButton`.
 
+API rules settled in 0.9.2:
+
+- `Image::from_source(source)` shows an `IconSource`, or a closure returning `Option<IconSource>` such as a notification's `image`: raw pixels, a file, or an icon name looked up at the box's larger side. `None` is `Empty`. Fit, filters, `transition` and `status` work as for a file. Pixels keep an `Icon`'s caps, 512 a side and `width * height * 4` bytes.
+
 ## Process model and reload
 
 Two processes run. The `crabshell` CLI, installed once per machine, is the supervisor. The shell is the user's own compiled binary, which links the `crabshell` library.
@@ -925,6 +929,7 @@ Rules settled while building `crabshell-render` (0.9 gap fixes):
 - A crop maps to frame pixels through the frame's logical size, rounded to whole pixels and cut to the frame. A crop wholly outside the frame, or not finite, draws nothing. The kept copy is the cropped part scaled to the box, and it is let go once the view is dropped.
 - A field's selection is drawn in `InputView::selection_color`, and the glyphs `TextView::selected_color` names in the selected text color; a selectable `Text` keeps a third of its color.
 - The renderer tells an image's status `Ready` when its source's picture loads and `Failed` when the file can't be read or decoded or is refused by a cap, drawn or not, and nothing while the picture is decoded off the thread, until it comes in. `Renderer::load_images` loads a window's images whose status waits, at their laid-out size or one pixel; a job for an earlier source doesn't hold it back, and that job's report is dropped.
+- An `Image` of raw pixels is scaled on the loop's thread, once per size, fit and filters, and cached by the pixels' shared allocation; the raw bytes count toward the cache's 32 MiB, and an entry whose pixels nothing else holds is dropped at the end of the frame. A source with the same bytes keeps the picture shown. An icon name is looked up in the theme at the box's larger side and the scale rounded up, then decoded as that file, so it can use the worker. An empty path or name is `Empty` and is never logged.
 
 ## Wayland platform
 

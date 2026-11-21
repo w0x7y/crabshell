@@ -496,6 +496,14 @@ Icon::new(move || if muted.get() { "audio-volume-muted" } else { "audio-volume-h
           is too large. Fade album art in on <code>Ready</code> with its
           opacity, or show a glyph on <code>Failed</code>.
         </p>
+        <p>
+          <code>Image::from_source(source)</code> takes an
+          <code>IconSource</code> instead of a path: raw pixels, a file or a
+          theme icon name. A notification's picture often comes as pixels, so
+          <code>Image::from_source(move || n.get().image).fit(Fit::Cover)</code>
+          in a box with <code>radius</code> and <code>clip(true)</code> shows it
+          as a rounded tile.
+        </p>
         <pre><code class="rs">let status = cx.signal(ImageStatus::Empty);
 let shown = cx.animate(
   move || if status.get() == ImageStatus::Ready { 1.0 } else { 0.0 },
