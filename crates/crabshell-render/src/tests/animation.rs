@@ -343,7 +343,7 @@ fn red(icons: &mut crate::icons::Icons, image: &ImageView<'_>) -> u8 {
 }
 
 /// Red for 50 ms, then green for 100 ms, for ever.
-fn red_then_green(name: &str) -> Removed {
+pub(super) fn red_then_green(name: &str) -> Removed {
   file(
     name,
     &encode(

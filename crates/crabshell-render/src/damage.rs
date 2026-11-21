@@ -133,7 +133,9 @@ pub struct BufferAge {
 /// the history that drew it.
 static HISTORIES: AtomicU64 = AtomicU64::new(0);
 
-/// What changed in one window's recent frames. Keep one per window.
+/// What changed in one window's recent frames, and the layers the
+/// renderer keeps while something in it fades or moves. Keep one per
+/// window; dropping it frees them.
 #[derive(Debug)]
 pub struct DamageHistory {
   id: u64,
@@ -144,6 +146,8 @@ pub struct DamageHistory {
   shape: Option<(u32, u32, u32)>,
   /// The damage of recent frames, oldest first.
   recent: VecDeque<(u64, Vec<PixelRect>)>,
+  /// The layers the renderer keeps for the window's next draw.
+  pub(crate) kept: crate::draw::Kept,
 }
 
 /// What one frame repaints and reports.
@@ -176,6 +180,7 @@ impl DamageHistory {
       next: 0,
       shape: None,
       recent: VecDeque::new(),
+      kept: crate::draw::Kept::default(),
     }
   }
 

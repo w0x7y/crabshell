@@ -23,6 +23,7 @@ mod glyphs;
 mod golden;
 mod icons;
 mod images;
+mod kept;
 mod mask_regions;
 mod pixel_images;
 mod repaint;

@@ -1177,6 +1177,11 @@ impl Icons {
     playback.frame
   }
 
+  /// Whether image `id` is an animation that was drawn.
+  pub(crate) fn animates(&self, id: u64) -> bool {
+    self.playbacks.contains_key(&id)
+  }
+
   /// When the next frame of an animation is due. One drawn since the last
   /// call is due its frame's delay after the frame was, or after `now` if
   /// that has passed. `None` while none plays.

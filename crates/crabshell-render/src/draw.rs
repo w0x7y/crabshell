@@ -7,6 +7,8 @@
 //! and PNG decoding all work in the RGBA order they share.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use cosmic_text::{FontSystem, LayoutGlyph, SwashCache, SwashContent, SwashImage};
 use crabshell_ui::{
@@ -25,13 +27,34 @@ use crate::theme::IconLookup;
 mod canvas;
 mod effects;
 mod gradient;
+mod kept;
 mod transition;
+
+#[cfg(test)]
+pub(crate) use kept::KEPT_LIMIT;
+pub(crate) use kept::Kept;
+use kept::{Area, Layer, Seen, Want};
 
 /// The side of a tile, in buffer pixels. tiny-skia cuts a curve where it
 /// leaves the pixmap, which changes the antialiasing beside the cut, so
 /// every pixel is drawn in the same tile whatever the damage, and a repaint
 /// matches drawing everything.
 const TILE: u32 = 64;
+
+#[cfg(test)]
+thread_local! {
+  /// The tile side for this thread's draws, which a test sets larger to
+  /// draw a reference with no seams.
+  pub(crate) static TILE_SIDE: std::cell::Cell<u32> = const { std::cell::Cell::new(TILE) };
+}
+
+/// The side of a tile: [`TILE`], or what a test set.
+fn tile_side() -> u32 {
+  #[cfg(test)]
+  return TILE_SIDE.get();
+  #[cfg(not(test))]
+  TILE
+}
 
 /// How many glyph images cosmic-text's cache may hold after a draw before
 /// it is cleared. A bar needs a few hundred; the cache never shrinks itself.
@@ -83,6 +106,9 @@ pub struct Renderer {
   /// between frames.
   scratch: Vec<u8>,
   work: Work,
+  /// The bytes every window's kept layers hold, against
+  /// [`kept::KEPT_LIMIT`].
+  kept: Arc<AtomicU64>,
 }
 
 /// What drawing has cost so far, for tests to check that a draw stays
@@ -112,7 +138,22 @@ impl Renderer {
       icons: Icons::new(),
       scratch: Vec::new(),
       work: Work::default(),
+      kept: Arc::default(),
     }
+  }
+
+  /// The bytes kept layers hold for every window, for tests.
+  #[cfg(test)]
+  pub(crate) fn kept_bytes(&self) -> u64 {
+    self.kept.load(std::sync::atomic::Ordering::Relaxed)
+  }
+
+  /// Counts `bytes` as kept, for tests of the budget.
+  #[cfg(test)]
+  pub(crate) fn spend_kept(&self, bytes: u64) {
+    self
+      .kept
+      .fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
   }
 
   /// How many times an image's file was looked up, for tests.
@@ -329,11 +370,13 @@ impl Renderer {
     }
     self.icons.start_frame(history.id(), view.has_images());
     let plan = history.plan(damage, scale, width, height, age);
+    history.kept.start(&self.kept);
+    let tile = tile_side();
     let mut tiles: Vec<(u32, u32)> = Vec::new();
     for area in plan.repaint.iter().filter(|area| area.area() > 0) {
-      for row in area.y / TILE..=(area.y + area.height - 1) / TILE {
+      for row in area.y / tile..=(area.y + area.height - 1) / tile {
         tiles
-          .extend((area.x / TILE..=(area.x + area.width - 1) / TILE).map(|column| (row, column)));
+          .extend((area.x / tile..=(area.x + area.width - 1) / tile).map(|column| (row, column)));
       }
     }
     tiles.sort_unstable();
@@ -342,9 +385,9 @@ impl Renderer {
     let mut fonts = text.font_system();
     for &(row, column) in &tiles {
       self.icons.start_tile((row, column));
-      let (x, y) = (column * TILE, row * TILE);
+      let (x, y) = (column * tile, row * tile);
       let size = (width.saturating_sub(x), height.saturating_sub(y));
-      let area = PixelRect::new(x, y, TILE.min(size.0), TILE.min(size.1));
+      let area = PixelRect::new(x, y, tile.min(size.0), tile.min(size.1));
       self.scratch.clear();
       self.scratch.resize(area.area() as usize * 4, 0);
       let Some(mut pixmap) = PixmapMut::from_bytes(&mut self.scratch, area.width, area.height)
@@ -374,11 +417,14 @@ impl Renderer {
         fonts: &mut fonts,
         work: &mut self.work,
         casts: &mut casts,
+        kept: &mut history.kept,
         clip: Some(Rect::new(0.0, 0.0, view.size().width, view.size().height)),
+        extent: [0, 0, width, height],
       };
       painter.node(&mut pixmap, view.root());
       copy(&self.scratch, area, pixels, width, format);
     }
+    history.kept.end();
     self.icons.repainted(&tiles);
     self.icons.end_frame();
     if self.glyphs.image_cache.len() > GLYPH_CACHE_LIMIT {
@@ -557,10 +603,16 @@ struct Painter<'a> {
   work: &'a mut Work,
   /// The cells of content shadows cast in this draw.
   casts: &'a mut HashMap<CastKey, effects::Cast>,
+  /// The window's layers kept from its last draw, for this one.
+  kept: &'a mut Kept,
   /// Where the clipping widgets around what is drawn and the window's
   /// edges let anything show, in logical pixels; `None` inside a
   /// transform, whose coordinates are its own.
   clip: Option<Rect>,
+  /// Outside a transform, the buffer pixels the layers being drawn into
+  /// may hold, left, top, right and bottom, whatever the tile: a kept
+  /// layer is cut where they are.
+  extent: [u32; 4],
 }
 
 /// A cell of a content shadow cast in a draw: its widget's path, and the
@@ -577,7 +629,28 @@ impl Painter<'_> {
       fonts: &mut *self.fonts,
       work: &mut *self.work,
       casts: &mut *self.casts,
+      kept: &mut *self.kept,
       clip: self.clip,
+      extent: self.extent,
+    }
+  }
+
+  /// The extent within a layer that holds what lands in `rect`.
+  fn narrowed(&self, rect: Rect) -> [u32; 4] {
+    let window = Grid {
+      left: 0.0,
+      top: 0.0,
+      ..self.grid
+    };
+    let [left, top, right, bottom] = self.extent;
+    match window.cover(rect, window.width, window.height) {
+      Some((x, y, width, height)) => [
+        left.max(x),
+        top.max(y),
+        right.min(x + width),
+        bottom.min(y + height),
+      ],
+      None => [0; 4],
     }
   }
 
@@ -626,12 +699,16 @@ impl Painter<'_> {
       || matches!(region, Some(effects::Cover::Part(_)))
       || shadow.is_some()
     {
+      if opacity < 1.0 && self.kept_fade(pixmap, node, &style, shadow, opacity) {
+        return;
+      }
       // The layer covers only what the subtree paints in this area.
       let Some(mut layer) = Pixmap::new(width, height) else {
         return;
       };
       self.work.layer_pixels += u64::from(layer.width()) * u64::from(layer.height());
       let mut inner = self.on(self.grid.moved(x, y));
+      inner.extent = inner.narrowed(node.bounds());
       inner.layer_contents(&mut layer.as_mut(), node, &style, shadow, region);
       composite(pixmap, (x as i32, y as i32), &layer, opacity, None);
     } else {
@@ -685,6 +762,177 @@ impl Painter<'_> {
         self.skipped(child, grid, clip);
       }
     }
+  }
+
+  /// Whether this draw blends `node`'s layer from the last instead of
+  /// drawing it, which is decided on the node's first visit: only when
+  /// the last draw drew it through a layer too, nothing inside it changed
+  /// since, and its own `transform` did, or without one its `opacity`.
+  /// Outside a transform, where `want` says where the layer goes now;
+  /// `fill` draws it over an area.
+  fn keeps(
+    &mut self,
+    node: NodeView<'_>,
+    (opacity, transform): (f32, Option<Affine>),
+    want: Want,
+    fill: impl FnOnce(&mut Painter<'_>, Area) -> Option<Pixmap>,
+  ) -> bool {
+    let frame = self.kept.frame;
+    if let Some(seen) = self.kept.seen.get(node.path())
+      && seen.frame == frame
+    {
+      return seen.layer.is_some();
+    }
+    let seen = self.kept.seen.remove(node.path());
+    let revision = node.revision();
+    // A transformed layer kept is drawn whole, without the seams of one
+    // cut to each tile, so it is kept only while the transform moves,
+    // when those seams move too; a still one fading draws as before.
+    let keep = seen.as_ref().is_some_and(|seen| {
+      seen.revision == revision
+        && match transform {
+          Some(_) => seen.transform != transform,
+          None => seen.opacity != opacity,
+        }
+    });
+    let Want { needed, whole, at } = want;
+    let fits = |layer: &Layer| layer.area.holds(&needed) && layer.at == at;
+    let mut layer = seen
+      .and_then(|seen| seen.layer)
+      .filter(|layer| keep && fits(layer));
+    let pixels = |area: &Area| u64::from(area.width) * u64::from(area.height);
+    // All of it when it fits, so a layer that moves into view needn't be
+    // drawn again.
+    let area = [whole, needed]
+      .into_iter()
+      .find(|area| pixels(area) <= LAYER_LIMIT);
+    if keep
+      && layer.is_none()
+      && let Some(area) = area
+    {
+      // A transform inside takes its zoom from the one moving around it.
+      let (nested, playing) = self.inside(node);
+      let refused = playing || nested && transform.is_some();
+      let held = (!refused).then(|| self.kept.hold(pixels(&area) * 4));
+      if let Some(held) = held.flatten()
+        && let Some(pixmap) = fill(self, area)
+      {
+        layer = Some(Layer {
+          pixmap,
+          area,
+          at,
+          _held: held,
+        });
+      }
+    }
+    let kept = layer.is_some();
+    self.kept.seen.insert(
+      node.path().to_owned(),
+      Seen {
+        frame,
+        revision,
+        opacity,
+        transform,
+        layer,
+      },
+    );
+    kept
+  }
+
+  /// Whether anything inside `node` has a transform of its own, and
+  /// whether a GIF plays inside it, which a kept layer would stop.
+  fn inside(&self, node: NodeView<'_>) -> (bool, bool) {
+    node
+      .children()
+      .fold((false, false), |(nested, playing), child| {
+        let (deeper, plays) = self.inside(child);
+        let gif = matches!(child.content(), Content::Image(image) if self.icons.animates(image.id));
+        (
+          nested || deeper || child.transform().is_some(),
+          playing || plays || gif,
+        )
+      })
+  }
+
+  /// Blends `node`'s kept layer in at `opacity`, if this draw keeps one,
+  /// drawn over all of the window it can show in a tile at a time as
+  /// each tile's own layer is, so the pixels match.
+  fn kept_fade(
+    &mut self,
+    pixmap: &mut PixmapMut<'_>,
+    node: NodeView<'_>,
+    style: &Style,
+    shadow: Option<Shadow>,
+    opacity: f32,
+  ) -> bool {
+    let Some(clip) = self.clip else {
+      return false;
+    };
+    let window = Grid {
+      left: 0.0,
+      top: 0.0,
+      ..self.grid
+    };
+    let Some((x, y, width, height)) =
+      window.cover(node.bounds().intersect(clip), window.width, window.height)
+    else {
+      return false;
+    };
+    let area = Area {
+      x: x as i32,
+      y: y as i32,
+      width,
+      height,
+    };
+    let want = Want {
+      needed: area,
+      whole: area,
+      at: (window.scale, window.zoom),
+    };
+    let fill = |painter: &mut Painter<'_>, _: Area| {
+      let mut kept = Pixmap::new(width, height)?;
+      let side = tile_side();
+      for row in y / side..=(y + height - 1) / side {
+        for column in x / side..=(x + width - 1) / side {
+          // What the tile's own layer holds: the tile, cut where the
+          // layers around are.
+          let [ex, ey, ex1, ey1] = painter.extent;
+          let (left, top) = ((column * side).max(ex), (row * side).max(ey));
+          let right = ((column + 1) * side).min(window.width).min(ex1);
+          let bottom = ((row + 1) * side).min(window.height).min(ey1);
+          if left >= right || top >= bottom {
+            continue;
+          }
+          let tile = window.moved(left, top);
+          let size = (right - left, bottom - top);
+          let Some((dx, dy, w, h)) = tile.cover(node.bounds(), size.0, size.1) else {
+            continue;
+          };
+          let mut layer = Pixmap::new(w, h)?;
+          painter.work.layer_pixels += u64::from(w) * u64::from(h);
+          let extent = painter.narrowed(node.bounds());
+          let mut inner = painter.on(tile.moved(dx, dy));
+          inner.extent = extent;
+          inner.layer_contents(&mut layer.as_mut(), node, style, shadow, None);
+          let at = ((left + dx) as i32 - area.x, (top + dy) as i32 - area.y);
+          transition::blit(&mut kept.as_mut(), at, &layer);
+        }
+      }
+      Some(kept)
+    };
+    if !self.keeps(node, (opacity, None), want, fill) {
+      return false;
+    }
+    let Some(layer) = self.kept.layer(node.path()) else {
+      return false;
+    };
+    // The grid's corner is a whole pixel.
+    let at = (
+      layer.area.x - self.grid.left as i32,
+      layer.area.y - self.grid.top as i32,
+    );
+    composite(pixmap, at, &layer.pixmap, opacity, None);
+    true
   }
 
   /// What `node_contents` draws into a fresh `layer`, kept only where the
@@ -903,10 +1151,13 @@ impl Painter<'_> {
     if !visible(pixmap, shape) {
       return;
     }
+    let extent = self.narrowed(cover);
     if covers(pixmap, shape, corners) {
       // The mask would keep everything, so the layer adds nothing.
       let grid = self.grid;
-      draw(&mut self.on(grid), pixmap);
+      let mut inner = self.on(grid);
+      inner.extent = extent;
+      draw(&mut inner, pixmap);
       return;
     }
     let (Some(mut mask), Some((x, y, layer_width, layer_height))) = (
@@ -920,6 +1171,7 @@ impl Painter<'_> {
     };
     self.work.layer_pixels += u64::from(layer_width) * u64::from(layer_height);
     let mut inner = self.on(self.grid.moved(x, y));
+    inner.extent = extent;
     draw(&mut inner, &mut layer.as_mut());
     let mut path = PathBuilder::new();
     rounded_rect(&mut path, shape, corners);
