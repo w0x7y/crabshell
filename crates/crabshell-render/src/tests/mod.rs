@@ -179,13 +179,13 @@ fn node_at<'a>(root: crabshell_ui::NodeView<'a>, path: &[usize]) -> crabshell_ui
   })
 }
 
-/// A file in `tests/fixtures`.
 /// The file at `path` as an image's source, for an `ImageView` that
 /// outlives the call.
 fn file_source(path: &Path) -> &'static crabshell_ui::IconSource {
   Box::leak(Box::new(crabshell_ui::IconSource::File(path.to_owned())))
 }
 
+/// A file in `tests/fixtures`.
 fn fixture(name: &str) -> PathBuf {
   Path::new(env!("CARGO_MANIFEST_DIR"))
     .join("tests/fixtures")

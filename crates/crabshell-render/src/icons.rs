@@ -318,7 +318,7 @@ impl Eq for Shared {}
 
 impl Hash for Shared {
   fn hash<H: Hasher>(&self, state: &mut H) {
-    (Rc::as_ptr(&self.0) as *const u8 as usize, self.0.len()).hash(state);
+    (address(&self.0), self.0.len()).hash(state);
   }
 }
 
@@ -335,6 +335,14 @@ struct Entry {
 }
 
 impl Key {
+  /// The raw pixels the key holds, which stay alive while it is kept.
+  fn pixels(&self) -> Option<&Rc<[u8]>> {
+    match self {
+      Key::Picture { data, .. } | Key::Pixels { data, .. } => Some(&data.0),
+      _ => None,
+    }
+  }
+
   /// Whether both are the same image file, as last modified.
   fn same_file(&self, other: &Key) -> bool {
     match (self, other) {
@@ -805,10 +813,8 @@ impl Icons {
   pub(crate) fn cached_bytes(&self) -> usize {
     self
       .cache
-      .values()
-      .filter_map(|entry| entry.frames.as_ref())
-      .flat_map(|frames| &frames.frames)
-      .map(|frame| frame.pixmap.data().len())
+      .iter()
+      .map(|(key, entry)| bytes(key, entry))
       .sum()
   }
 
@@ -1297,10 +1303,30 @@ impl Icons {
       .cache
       .iter()
       .filter(|(key, entry)| entry.used >= recent || waiting.contains(key))
-      .filter_map(|(_, entry)| entry.frames.as_ref())
-      .flat_map(|frames| &frames.frames)
-      .map(|frame| frame.pixmap.data().len())
+      .map(|(key, entry)| bytes(key, entry))
       .sum()
+  }
+
+  /// Drops each picture and failure keyed by raw pixels that only this
+  /// cache still holds: nothing can show those pixels again, and the key
+  /// would keep the config's buffer alive.
+  fn drop_unreachable_pixels(&mut self) {
+    let mut held: HashMap<usize, usize> = HashMap::new();
+    for key in self.cache.keys().chain(&self.failed) {
+      if let Some(data) = key.pixels() {
+        *held.entry(address(data)).or_default() += 1;
+      }
+    }
+    if held.is_empty() {
+      return;
+    }
+    let gone = |key: &Key| {
+      key
+        .pixels()
+        .is_some_and(|data| Rc::strong_count(data) <= held[&address(data)])
+    };
+    self.cache.retain(|key, _| !gone(key));
+    self.failed.retain(|key| !gone(key));
   }
 
   /// Drops what views `gone` kept.
@@ -1342,7 +1368,10 @@ impl Icons {
   /// number, since each is as large as its view.
   pub(crate) fn end_frame(&mut self) {
     self.modified.clear();
+    // It matches only within a draw, and would keep a gone image's pixels.
+    self.memo = None;
     self.let_go_of_left_pictures();
+    self.drop_unreachable_pixels();
     let recent = self.frame.saturating_sub(RECENT - 1);
     self.captures.retain(|_, kept| kept.used >= recent);
     for playback in self.playbacks.values() {
@@ -1366,10 +1395,8 @@ impl Icons {
     self.masked.retain(|_, when| *when >= recent);
     let bytes: usize = self
       .cache
-      .values()
-      .filter_map(|entry| entry.frames.as_ref())
-      .flat_map(|frames| &frames.frames)
-      .map(|frame| frame.pixmap.data().len())
+      .iter()
+      .map(|(key, entry)| bytes(key, entry))
       .sum();
     if self.cache.len() > CAPACITY || bytes > MAX_CACHED_BYTES {
       let oldest = self.frame.saturating_sub(RECENT - 1);
@@ -1377,6 +1404,26 @@ impl Icons {
     }
     self.frame += 1;
   }
+}
+
+/// The bytes the picture cached under `key` keeps: its frames, and the
+/// raw pixels of an image's picture.
+fn bytes(key: &Key, entry: &Entry) -> usize {
+  let frames: usize = entry
+    .frames
+    .iter()
+    .flat_map(|frames| &frames.frames)
+    .map(|frame| frame.pixmap.data().len())
+    .sum();
+  match key {
+    Key::Picture { data, .. } => frames + data.0.len(),
+    _ => frames,
+  }
+}
+
+/// Where `data` is, which tells allocations apart while they live.
+fn address(data: &Rc<[u8]>) -> usize {
+  Rc::as_ptr(data) as *const u8 as usize
 }
 
 /// Frame `index` of the picture cached under `key`.

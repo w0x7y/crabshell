@@ -236,3 +236,36 @@ fn a_transition_leaves_one_set_of_pixels_for_another() {
     "both pictures drawn"
   );
 }
+
+#[test]
+fn a_gone_images_pixels_leave_the_cache() {
+  let mut scene = Scene::new();
+  let data: Rc<[u8]> = Rc::from(vec![255; 512 * 512 * 4]);
+  // A strong count here would be the config still holding the pixels.
+  let weak = Rc::downgrade(&data);
+  let pixels = IconSource::Pixels(IconPixels {
+    width: 512,
+    height: 512,
+    data,
+  });
+  let source = scene.cx.signal(Some(pixels));
+  let status = scene.cx.signal(ImageStatus::Empty);
+  let window = tile(&mut scene, move || source.get(), status);
+  scene.full(&window, 1.0);
+  assert_eq!(status.get(), ImageStatus::Ready);
+  assert!(
+    scene.renderer.cached_bytes() > 512 * 512 * 4,
+    "counts the bytes"
+  );
+  source.set(None);
+  scene.frame(&window);
+  scene.full(&window, 1.0);
+  assert_eq!(weak.strong_count(), 0, "the image let go of them");
+  drop(window);
+  let other = scene.window(scene.panel().child(Row::new()), 20.0, 20.0);
+  for _ in 0..3 {
+    scene.full(&other, 1.0);
+  }
+  assert_eq!(weak.strong_count(), 0, "nothing holds the pixels");
+  assert!(scene.renderer.cached_bytes() < 512 * 512 * 4);
+}

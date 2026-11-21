@@ -159,6 +159,12 @@ impl Renderer {
     self.icons.lookup()
   }
 
+  /// The bytes the icon cache keeps, for tests.
+  #[cfg(test)]
+  pub(crate) fn cached_bytes(&self) -> usize {
+    self.icons.cached_bytes()
+  }
+
   /// The number of rasterized icons cached, for tests.
   #[cfg(test)]
   pub(crate) fn cached_icons(&self) -> usize {
