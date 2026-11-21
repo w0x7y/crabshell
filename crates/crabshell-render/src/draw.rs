@@ -903,6 +903,12 @@ impl Painter<'_> {
     if !visible(pixmap, shape) {
       return;
     }
+    if covers(pixmap, shape, corners) {
+      // The mask would keep everything, so the layer adds nothing.
+      let grid = self.grid;
+      draw(&mut self.on(grid), pixmap);
+      return;
+    }
     let (Some(mut mask), Some((x, y, layer_width, layer_height))) = (
       Mask::new(pixmap.width(), pixmap.height()),
       self.grid.cover(cover, pixmap.width(), pixmap.height()),
@@ -967,6 +973,7 @@ impl Painter<'_> {
     }
 
     if let Some(color) = style.background
+      && !(covers(pixmap, area, corners) && fill_all(pixmap, color))
       && !(corners == [0.0; 4] && fill_opaque(pixmap, area, color))
     {
       let mut path = PathBuilder::new();
@@ -986,6 +993,16 @@ impl Painter<'_> {
     }
     if let Some(border) = style.border {
       let width = self.border_width(style);
+      let inner = tiny_skia::Rect::from_ltrb(
+        area.left() + width,
+        area.top() + width,
+        area.right() - width,
+        area.bottom() - width,
+      );
+      // A ring whose hole covers the pixmap has nothing in it.
+      if inner.is_some_and(|inner| covers(pixmap, inner, inset(corners, width))) {
+        return;
+      }
       let dashed = width >= 1.0
         && style.border_dash.is_some_and(|dash| {
           self.dashed_border(pixmap, (area, corners), width, border.color, dash)
@@ -995,12 +1012,7 @@ impl Painter<'_> {
         // A ring: the outer shape with the inner one cut out.
         let mut path = PathBuilder::new();
         rounded_rect(&mut path, area, corners);
-        if let Some(inner) = tiny_skia::Rect::from_ltrb(
-          area.left() + width,
-          area.top() + width,
-          area.right() - width,
-          area.bottom() - width,
-        ) {
+        if let Some(inner) = inner {
           rounded_rect(&mut path, inner, inset(corners, width));
         }
         fill(pixmap, path, border.color, FillRule::EvenOdd);
@@ -1650,6 +1662,27 @@ impl Painter<'_> {
   }
 }
 
+/// Whether the rectangle `shape` with `corners` covers every pixel of the
+/// pixmap whole: its edges are at or past the pixmap's, and no corner's
+/// curve reaches into it.
+fn covers(pixmap: &PixmapMut<'_>, shape: tiny_skia::Rect, corners: Corners) -> bool {
+  let (width, height) = (pixmap.width() as f32, pixmap.height() as f32);
+  let (left, top, right, bottom) = (shape.left(), shape.top(), shape.right(), shape.bottom());
+  if !(left <= 0.0 && top <= 0.0 && right >= width && bottom >= height) {
+    return false;
+  }
+  // Each corner's curve stays inside the square of its radius.
+  corners.iter().enumerate().all(|(index, &radius)| {
+    let x = if matches!(index, 0 | 3) {
+      left
+    } else {
+      right - radius
+    };
+    let y = if index < 2 { top } else { bottom - radius };
+    radius <= 0.0 || x + radius <= 0.0 || x >= width || y + radius <= 0.0 || y >= height
+  })
+}
+
 /// Whether any of `area` lies inside the pixmap.
 fn visible(pixmap: &PixmapMut<'_>, area: tiny_skia::Rect) -> bool {
   area.right() > 0.0
@@ -2105,6 +2138,33 @@ pub(crate) fn fit_dash(perimeter: f32, on: f32, off: f32) -> Option<(f32, f32)> 
   let count = (perimeter / period).round().max(1.0);
   let stretch = perimeter / (count * period);
   Some((on * stretch, off * stretch))
+}
+
+/// Fills the whole pixmap with `color`, blended over what is there, as
+/// tiny-skia's antialiased path fill gives a shape covering it, within a
+/// level, without its raster pipeline. `true`, so `draw_box` chains it as
+/// it does `fill_opaque`.
+pub(crate) fn fill_all(pixmap: &mut PixmapMut<'_>, color: Color) -> bool {
+  let alpha = color.a;
+  let source = [
+    mul(color.r, alpha),
+    mul(color.g, alpha),
+    mul(color.b, alpha),
+    alpha,
+  ];
+  let pixels = pixmap.data_mut().as_chunks_mut::<4>().0;
+  match alpha {
+    0 => {}
+    255 => pixels.fill(source),
+    _ => {
+      let rest = 255 - alpha;
+      for pixel in pixels {
+        *pixel =
+          std::array::from_fn(|channel| source[channel].saturating_add(mul(pixel[channel], rest)));
+      }
+    }
+  }
+  true
 }
 
 /// Fills `area` with the opaque `color` straight into the pixels, as

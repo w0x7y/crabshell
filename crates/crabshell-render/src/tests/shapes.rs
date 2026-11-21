@@ -914,3 +914,41 @@ fn a_layer_blends_in_as_tiny_skia_draws_it() {
     }
   }
 }
+
+/// A color filling a whole pixmap blends over every pixel as tiny-skia's
+/// path fill of a shape covering it does, within a level.
+#[test]
+fn a_fill_of_the_whole_pixmap_matches_the_path_fill() {
+  for color in [
+    Color::rgba(255, 255, 255, 48),
+    Color::rgba(250, 179, 135, 170),
+    Color::rgba(3, 200, 90, 1),
+    Color::rgb(30, 102, 245),
+    Color::rgba(30, 102, 245, 0),
+  ] {
+    let mut path = tiny_skia::Pixmap::new(64, 64).expect("a pixmap");
+    for (at, pixel) in path.pixels_mut().iter_mut().enumerate() {
+      let alpha = [255, 90, 0, 7][at % 4];
+      let channel = (at % 251).min(alpha as usize) as u8;
+      *pixel = tiny_skia::PremultipliedColorU8::from_rgba(channel, alpha / 3, channel / 2, alpha)
+        .expect("premultiplied");
+    }
+    let mut direct = path.clone();
+    let mut paint = tiny_skia::Paint::default();
+    paint.set_color_rgba8(color.r, color.g, color.b, color.a);
+    paint.anti_alias = true;
+    let mut shape = tiny_skia::PathBuilder::new();
+    shape.push_circle(32.0, 32.0, 60.0);
+    let shape = shape.finish().expect("a circle");
+    let at = tiny_skia::Transform::identity();
+    path.fill_path(&shape, &paint, tiny_skia::FillRule::Winding, at, None);
+    assert!(crate::draw::fill_all(&mut direct.as_mut(), color));
+    let worst = direct
+      .data()
+      .iter()
+      .zip(path.data())
+      .map(|(a, b)| a.abs_diff(*b))
+      .max();
+    assert!(worst <= Some(1), "{color:?} is off by {worst:?}");
+  }
+}

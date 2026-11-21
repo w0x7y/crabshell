@@ -1543,3 +1543,52 @@ fn content_shadows() {
       )
   });
 }
+
+/// A translucent rounded box with a border, larger than a tile at every
+/// scale, clipping a translucent band wider than itself, over two
+/// colors: the tiles inside it are filled and clipped without paths.
+#[test]
+fn large_boxes() {
+  check_at(&ALL_SCALES, "large_boxes", 300.0, 200.0, |scene| {
+    scene
+      .panel()
+      .style(Style::new().background(Color::hex("#1e1e2e")))
+      .child(
+        Stack::new()
+          .child(
+            Row::new().style(
+              Style::new()
+                .left(150.0)
+                .top(0.0)
+                .width(150.0)
+                .height(200.0)
+                .background(Color::hex("#f38ba8")),
+            ),
+          )
+          .child(
+            Stack::new()
+              .style(
+                Style::new()
+                  .left(12.0)
+                  .top(12.0)
+                  .width(276.0)
+                  .height(176.0)
+                  .radius(28.0)
+                  .background(Color::rgba(255, 255, 255, 48))
+                  .border(3.0, Color::rgba(250, 179, 135, 170))
+                  .clip(true),
+              )
+              .child(
+                Row::new().style(
+                  Style::new()
+                    .left(-20.0)
+                    .top(60.0)
+                    .width(400.0)
+                    .height(50.0)
+                    .background(Color::rgba(137, 180, 250, 120)),
+                ),
+              ),
+          ),
+      )
+  });
+}
