@@ -991,33 +991,47 @@ impl Painter<'_> {
     let Grid {
       scale, left, top, ..
     } = self.grid;
-    let (linear, zoom, layer_scale) = self.grid.through(transform);
+    let zoomed = self.grid.through(transform);
+    let layer_scale = zoomed.2;
     // From the node's own pixels, zoomed, to its parent's.
     let device = Transform::from_scale(scale, scale)
       .pre_concat(Transform::from_row(sx, ky, kx, sy, tx, ty))
       .pre_scale(1.0 / layer_scale, 1.0 / layer_scale);
     let to_pixmap = device.post_translate(-left, -top);
-    let Some(back) = to_pixmap.invert() else {
-      return;
-    };
-    let inner = node.inner_bounds();
-    let shown = tiny_skia::Rect::from_xywh(0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32)
-      .and_then(|rect| rect.transform(back));
-    let drawn = tiny_skia::Rect::from_xywh(
-      inner.x * layer_scale,
-      inner.y * layer_scale,
-      inner.width * layer_scale,
-      inner.height * layer_scale,
-    );
-    let Some(area) = shown
-      .zip(drawn)
-      .and_then(|(shown, drawn)| shown.intersect(&drawn))
-      .and_then(|area| area.outset(LAYER_MARGIN, LAYER_MARGIN))
-      .and_then(|area| area.round_out())
+    if let Some(clip) = self.clip {
+      // All of the window it can show in, for a layer kept.
+      let shown = tiny_skia::Rect::from_ltrb(
+        (clip.x * scale).floor(),
+        (clip.y * scale).floor(),
+        (clip.right() * scale).ceil(),
+        (clip.bottom() * scale).ceil(),
+      );
+      let needed = shown.and_then(|shown| layer_area(node, device, Some(shown), layer_scale));
+      let whole = layer_area(node, device, None, layer_scale);
+      if let (Some(needed), Some(whole)) = (needed, whole) {
+        let want = Want {
+          needed,
+          whole,
+          at: (layer_scale, zoomed.1),
+        };
+        let fill =
+          |painter: &mut Painter<'_>, area| painter.transformed_layer(node, style, area, zoomed);
+        if self.keeps(node, (opacity, Some(transform)), want, fill)
+          && let Some(layer) = self.kept.layer(node.path())
+        {
+          let corner = (layer.area.x as f32, layer.area.y as f32);
+          let at = to_pixmap.pre_translate(corner.0, corner.1);
+          blend_transformed(pixmap, &layer.pixmap, at, opacity);
+          return;
+        }
+      }
+    }
+    let shown = tiny_skia::Rect::from_xywh(0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32);
+    let Some(area) = shown.and_then(|shown| layer_area(node, to_pixmap, Some(shown), layer_scale))
     else {
       return;
     };
-    let pixels = u64::from(area.width()) * u64::from(area.height());
+    let pixels = u64::from(area.width) * u64::from(area.height);
     if pixels > LAYER_LIMIT {
       tracing::debug!(
         "{} is transformed into a layer too large to draw",
@@ -1025,11 +1039,24 @@ impl Painter<'_> {
       );
       return;
     }
-    let Some(mut layer) = Pixmap::new(area.width(), area.height()) else {
+    let Some(layer) = self.transformed_layer(node, style, area, zoomed) else {
       return;
     };
-    self.work.layer_pixels += pixels;
-    let (x, y) = (area.x() as f32, area.y() as f32);
+    let at = to_pixmap.pre_translate(area.x as f32, area.y as f32);
+    blend_transformed(pixmap, &layer, at, opacity);
+  }
+
+  /// `node`'s layer over `area`, in its own pixels at the scale and zoom
+  /// `through` worked out, with the transforms around it.
+  fn transformed_layer(
+    &mut self,
+    node: NodeView<'_>,
+    style: &Style,
+    area: Area,
+    (linear, zoom, layer_scale): (Affine, f32, f32),
+  ) -> Option<Pixmap> {
+    let mut layer = Pixmap::new(area.width, area.height)?;
+    self.work.layer_pixels += u64::from(area.width) * u64::from(area.height);
     let (width, height) = if zoom == self.grid.zoom {
       (self.grid.width, self.grid.height)
     } else {
@@ -1046,34 +1073,14 @@ impl Painter<'_> {
       linear,
       width,
       height,
-      left: x,
-      top: y,
+      left: area.x as f32,
+      top: area.y as f32,
       ..self.grid
     });
     inner.clip = None;
     let shadow = effects::cast_by_content(style);
     inner.layer_contents(&mut layer.as_mut(), node, style, shadow, None);
-    let at = to_pixmap.pre_translate(x, y);
-    if at.is_identity() || at.is_translate() {
-      // tiny-skia samples a moved pixmap at the nearest pixel, whatever the
-      // quality asked for, which puts it at this whole-pixel offset.
-      let offset = ((at.tx - 0.5).ceil(), (at.ty - 0.5).ceil());
-      // `as` saturates; a layer that far off misses the pixmap.
-      composite(
-        pixmap,
-        (offset.0 as i32, offset.1 as i32),
-        &layer,
-        opacity,
-        None,
-      );
-      return;
-    }
-    let paint = PixmapPaint {
-      opacity,
-      quality: FilterQuality::Bilinear,
-      ..PixmapPaint::default()
-    };
-    pixmap.draw_pixmap(0, 0, layer.as_ref(), &paint, at, None);
+    Some(layer)
   }
 
   fn node_contents(&mut self, pixmap: &mut PixmapMut<'_>, node: NodeView<'_>, style: &Style) {
@@ -2077,6 +2084,61 @@ fn over(data: &mut [u8], index: usize, source: [u8; 4]) {
   for (channel, value) in data[index..index + 4].iter_mut().zip(source) {
     *channel = value.saturating_add(mul(*channel, rest));
   }
+}
+
+/// The pixels a layer of `node` at `layer_scale` holds so that what
+/// `to_target` maps into `shown`, or all of it, comes out whole: its inner
+/// bounds there, and a margin where tiny-skia cuts its curves. `None` if
+/// none show.
+fn layer_area(
+  node: NodeView<'_>,
+  to_target: Transform,
+  shown: Option<tiny_skia::Rect>,
+  layer_scale: f32,
+) -> Option<Area> {
+  let inner = node.inner_bounds();
+  let drawn = tiny_skia::Rect::from_xywh(
+    inner.x * layer_scale,
+    inner.y * layer_scale,
+    inner.width * layer_scale,
+    inner.height * layer_scale,
+  )?;
+  let drawn = match shown {
+    Some(shown) => shown.transform(to_target.invert()?)?.intersect(&drawn)?,
+    None => drawn,
+  };
+  let area = drawn.outset(LAYER_MARGIN, LAYER_MARGIN)?.round_out()?;
+  Some(Area {
+    x: area.x(),
+    y: area.y(),
+    width: area.width(),
+    height: area.height(),
+  })
+}
+
+/// Blends a transformed `layer` in at `opacity`, its corner going where
+/// `at` says, filtered bilinearly.
+fn blend_transformed(pixmap: &mut PixmapMut<'_>, layer: &Pixmap, at: Transform, opacity: f32) {
+  if at.is_identity() || at.is_translate() {
+    // tiny-skia samples a moved pixmap at the nearest pixel, whatever the
+    // quality asked for, which puts it at this whole-pixel offset.
+    let offset = ((at.tx - 0.5).ceil(), (at.ty - 0.5).ceil());
+    // `as` saturates; a layer that far off misses the pixmap.
+    composite(
+      pixmap,
+      (offset.0 as i32, offset.1 as i32),
+      layer,
+      opacity,
+      None,
+    );
+    return;
+  }
+  let paint = PixmapPaint {
+    opacity,
+    quality: FilterQuality::Bilinear,
+    ..PixmapPaint::default()
+  };
+  pixmap.draw_pixmap(0, 0, layer.as_ref(), &paint, at, None);
 }
 
 /// Blends the premultiplied `layer` over the pixmap with its corner at

@@ -154,7 +154,7 @@ fn draw_and_compare(
 
 #[test]
 fn a_kept_layer_draws_what_drawing_it_again_would_at_every_scale() {
-  for (shrinks, scale) in [false]
+  for (shrinks, scale) in [false, true]
     .into_iter()
     .flat_map(|shrinks| SCALES.map(|scale| (shrinks, scale)))
   {
@@ -210,6 +210,28 @@ fn a_kept_fade_in_a_rounded_clip_draws_what_drawing_it_again_would() {
 }
 
 #[test]
+fn a_moving_layer_with_a_transform_inside_is_drawn_as_usual() {
+  for scale in SCALES {
+    let mut scene = Scene::new();
+    let knobs = Knobs {
+      nested: true,
+      ..Knobs::new(&scene)
+    };
+    let window = window(&mut scene, knobs);
+    let mut history = DamageHistory::new();
+    let mut buffer = Buffer::new(&window, scale);
+    // The text's zoom goes from 2 to 1.75 and 1.5 as the stack shrinks,
+    // which a kept layer would leave where it was.
+    for (step, shrink) in [1.0, 0.95, 0.85, 0.8, 0.7, 0.65].into_iter().enumerate() {
+      knobs.scale.set(shrink);
+      let label = format!("scale {scale}, step {step}");
+      draw_and_compare(&mut scene, &window, &mut history, &mut buffer, &label);
+      assert_eq!(scene.renderer.kept_bytes(), 0, "{label}");
+    }
+  }
+}
+
+#[test]
 fn a_change_inside_a_kept_layer_shows() {
   for scale in SCALES {
     let mut scene = Scene::new();
@@ -219,10 +241,12 @@ fn a_change_inside_a_kept_layer_shows() {
     let mut buffer = Buffer::new(&window, scale);
     for (step, opacity) in [0.9, 0.8, 0.7].into_iter().enumerate() {
       knobs.opacity.set(opacity);
+      knobs.scale.set(1.0 - 0.05 * step as f32);
       let label = format!("scale {scale}, step {step}");
       draw_and_compare(&mut scene, &window, &mut history, &mut buffer, &label);
     }
     knobs.opacity.set(0.6);
+    knobs.scale.set(0.85);
     knobs.shade.set(250);
     let label = format!("scale {scale}, the box inside changed");
     draw_and_compare(&mut scene, &window, &mut history, &mut buffer, &label);
@@ -304,6 +328,21 @@ fn a_layer_past_the_renderers_budget_is_drawn_as_usual() {
     draw_and_compare(&mut scene, &window, &mut history, &mut buffer, "over");
   }
   assert_eq!(scene.renderer.kept_bytes(), crate::draw::KEPT_LIMIT - 100);
+}
+
+#[test]
+fn a_still_transform_fading_draws_as_before() {
+  let mut scene = Scene::new();
+  let knobs = Knobs::new(&scene);
+  knobs.scale.set(0.9);
+  let window = window(&mut scene, knobs);
+  let mut history = DamageHistory::new();
+  let mut buffer = Buffer::new(&window, 1.5);
+  for opacity in [0.9, 0.8, 0.7] {
+    knobs.opacity.set(opacity);
+    draw_and_compare(&mut scene, &window, &mut history, &mut buffer, "fading");
+    assert_eq!(scene.renderer.kept_bytes(), 0);
+  }
 }
 
 #[test]
