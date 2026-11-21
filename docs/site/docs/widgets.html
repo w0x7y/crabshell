@@ -504,6 +504,13 @@ Icon::new(move || if muted.get() { "audio-volume-muted" } else { "audio-volume-h
           in a box with <code>radius</code> and <code>clip(true)</code> shows it
           as a rounded tile.
         </p>
+        <p>
+          An image at opacity 0, under a parent at opacity 0, or masked out by
+          its mask region isn't drawn, but its picture is still decoded at its
+          size and cached, so showing or moving it later draws it on the very
+          first frame. A hidden image (<code>visible(false)</code>) decodes
+          nothing unless it has a <code>status</code> signal.
+        </p>
         <pre><code class="rs">let status = cx.signal(ImageStatus::Empty);
 let shown = cx.animate(
   move || if status.get() == ImageStatus::Ready { 1.0 } else { 0.0 },

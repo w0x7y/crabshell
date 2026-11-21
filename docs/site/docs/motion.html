@@ -243,6 +243,12 @@ let steps = [Step::hold(index * 140), Step::to(0.4, SINE), Step::to(1.0, SINE)];
 let pulse = cx.sequence_loop(1.0, move || loading.get(), steps);
 Row::new().style(move || TILE.opacity(pulse.value().get()))</code></pre>
         <p>
+          Steps at the start of a sequence that take no time,
+          <code>Step::to(v, Transition::new(0))</code>, land in the same flush
+          that changes the trigger, before anything is drawn, so a
+          jump-then-slide never shows the old value for a frame.
+        </p>
+        <p>
           <code>cx.sequence_now(initial, steps)</code> has no trigger: it plays
           once, as soon as it is made. Use it for an entrance that plays each
           time a panel opens and builds its contents, with a hold per item for a

@@ -432,6 +432,11 @@ API rules settled in 0.9.2:
 
 - `Image::from_source(source)` shows an `IconSource`, or a closure returning `Option<IconSource>` such as a notification's `image`: raw pixels, a file, or an icon name looked up at the box's larger side. `None` is `Empty`. Fit, filters, `transition` and `status` work as for a file. Pixels keep an `Icon`'s caps, 512 a side and `width * height * 4` bytes.
 
+API rules settled in 0.9.3:
+
+- An `Image` at opacity 0, or cut out by its mask region, still loads its picture at its drawn size, status or not, so binding opacity keeps pictures warm; `visible(false)` loads nothing without a status.
+- A sequence's leading steps of 0 ms and no delay land in the flush that starts its play, so a jump-then-slide never shows the old value for a frame. A play of no time never turns `running()` true.
+
 ## Process model and reload
 
 Two processes run. The `crabshell` CLI, installed once per machine, is the supervisor. The shell is the user's own compiled binary, which links the `crabshell` library.
@@ -788,6 +793,7 @@ Rules settled while building `crabshell-ui` (0.9 gap fixes):
 - Every node is `position: relative` to taffy, so a parent is always its absolute children's containing block; taffy's default, static, placed them from the window. An absolute child of a `Stack`, a `Grid` or the window gets no cell placement, so its insets, and its alignment along an axis with no inset, measure from the parent's padding box, not the cell's content box.
 - `cx.sequence_now` reads its steps once, untracked, as it is made, and plays at once. It is logged as `animation cx.sequence_now at <file:line>`.
 - `on_any_press` runs at the press that starts a hold, after `on_press` for the left button, and never for a second button while one is held or for a left press or touch on a scroll bar.
+- A play's leading steps of 0 ms and no delay land in the flush that starts it, so that turn's layout and draw already show them. A play of no time ends in that flush and never starts the clock. A 0 ms transition with no delay on `cx.animate` lands the same way.
 
 ## Rendering
 
@@ -930,6 +936,7 @@ Rules settled while building `crabshell-render` (0.9 gap fixes):
 - A field's selection is drawn in `InputView::selection_color`, and the glyphs `TextView::selected_color` names in the selected text color; a selectable `Text` keeps a third of its color.
 - The renderer tells an image's status `Ready` when its source's picture loads and `Failed` when the file can't be read or decoded or is refused by a cap, drawn or not, and nothing while the picture is decoded off the thread, until it comes in. `Renderer::load_images` loads a window's images whose status waits, at their laid-out size or one pixel; a job for an earlier source doesn't hold it back, and that job's report is dropped.
 - An `Image` of raw pixels is scaled on the loop's thread, once per size, fit and filters, and cached by the pixels' shared allocation; the raw bytes count toward the cache's 32 MiB, and an entry whose pixels nothing else holds is dropped at the end of the frame. A source with the same bytes keeps the picture shown. An icon name is looked up in the theme at the box's larger side and the scale rounded up, then decoded as that file, so it can use the worker. An empty path or name is `Empty` and is never logged.
+- A subtree a draw skips at opacity 0, or cut out by its mask region, is looked through once a draw, within its clips and the window, and only when the window holds an image; each Image a reveal would draw is loaded at the size drawing it would give, scale and transform zoom included, through the same cache and worker path as a drawn one. It never plays a GIF or holds a first frame.
 
 ## Wayland platform
 
