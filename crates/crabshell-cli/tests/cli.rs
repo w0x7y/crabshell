@@ -51,6 +51,10 @@ fn init_writes_the_template_once_and_never_overwrites() {
     "\""
   );
   assert!(manifest.contains(release), "{manifest}");
+  // Dependencies build as release does, checks off, so a dev shell draws
+  // as fast as a release one.
+  let dependencies = "[profile.dev.package.\"*\"]\nopt-level = 3\ndebug-assertions = false\noverflow-checks = false\n";
+  assert!(manifest.ends_with(dependencies), "{manifest}");
   let main = std::fs::read_to_string(home.config().join("src/main.rs")).expect("written");
   assert!(main.contains("crabshell::run(|cx| cx.per_output(bar));"));
 

@@ -122,6 +122,8 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+debug-assertions = false
+overflow-checks = false
 ```
 
 The whole v0.1 bar as a user writes it:
