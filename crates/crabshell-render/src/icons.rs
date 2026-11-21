@@ -106,8 +106,9 @@ pub(crate) struct Icons {
   memo: Option<Memo>,
   /// The images this draw skipped and loaded already.
   skipped: HashSet<u64>,
-  /// The paths of the widgets this draw skipped and looked through.
-  looked: HashSet<String>,
+  /// The paths of the widgets this draw looked through, and whether
+  /// captures were marked used there.
+  looked: HashMap<String, bool>,
   /// Whether the window drawn has images to look for.
   images: bool,
 }
@@ -398,7 +399,7 @@ impl Icons {
       waited: false,
       memo: None,
       skipped: HashSet::new(),
-      looked: HashSet::new(),
+      looked: HashMap::new(),
       images: false,
     }
   }
@@ -757,15 +758,21 @@ impl Icons {
   /// Whether a draw that skips the widget at `path` should look through
   /// it for images: once a draw, and never in a window without any.
   pub(crate) fn look_through(&mut self, path: &str) -> bool {
-    self.images && !self.looked.contains(path) && self.looked.insert(path.to_owned())
+    if !self.images || self.looked.contains_key(path) {
+      return false;
+    }
+    self.looked.insert(path.to_owned(), false);
+    true
   }
 
   /// Whether a draw that blends a kept layer for `path` should look
   /// through it to keep cached pictures and captures alive: once a draw.
   pub(crate) fn keep_through(&mut self, path: &str) -> bool {
-    (self.images || !self.captures.is_empty())
-      && !self.looked.contains(path)
-      && self.looked.insert(path.to_owned())
+    if !(self.images || !self.captures.is_empty()) || self.looked.get(path) == Some(&true) {
+      return false;
+    }
+    self.looked.insert(path.to_owned(), true);
+    true
   }
 
   /// Marks `view`'s scaled capture used by this draw, so a kept layer

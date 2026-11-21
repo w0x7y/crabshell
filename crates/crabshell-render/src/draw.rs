@@ -2172,10 +2172,6 @@ pub(crate) fn blend_transformed(
   at: Transform,
   opacity: f32,
 ) {
-  if at.kx == 0.0 && at.ky == 0.0 && at.sx > 0.0 && at.sy > 0.0 && !at.is_translate() {
-    blend_scaled(pixmap, layer, at, opacity);
-    return;
-  }
   if at.is_identity() || at.is_translate() {
     // tiny-skia samples a moved pixmap at the nearest pixel, whatever the
     // quality asked for, which puts it at this whole-pixel offset.
@@ -2188,6 +2184,10 @@ pub(crate) fn blend_transformed(
       opacity,
       None,
     );
+    return;
+  }
+  if at.kx == 0.0 && at.ky == 0.0 && at.sx > 0.0 && at.sy > 0.0 {
+    blend_scaled(pixmap, layer, at, opacity);
     return;
   }
   let paint = PixmapPaint {
