@@ -446,6 +446,9 @@ impl Tree {
       let value = filter_value(value, 0.0);
       tree.update_image(id, |image| repaint(&mut image.filters.blur, value));
     });
+    self.bind_opt(id, props.decode_size, "decode_size", |tree, id, value| {
+      tree.update_image(id, |image| repaint(&mut image.filters.decode_size, value));
+    });
     self.bind_opt(id, props.playing, "playing", |tree, id, value| {
       tree.update_image(id, |image| repaint(&mut image.playing, value));
     });

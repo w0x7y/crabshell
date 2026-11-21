@@ -171,6 +171,13 @@ impl IntoProp<Option<Style>> for Style {
   }
 }
 
+/// A size where one is optional, such as an image's `decode_size((960, 540))`.
+impl IntoProp<Option<(u32, u32)>> for (u32, u32) {
+  fn into_prop(self) -> Prop<Option<(u32, u32)>> {
+    Prop(PropKind::Value(Some(self)))
+  }
+}
+
 /// A number where one is optional, such as a slider's `limit(50.0)`.
 impl IntoProp<Option<f32>> for f32 {
   fn into_prop(self) -> Prop<Option<f32>> {

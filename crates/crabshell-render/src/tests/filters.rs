@@ -13,6 +13,7 @@ const NONE: ImageFilters = ImageFilters {
   contrast: 1.0,
   saturation: 1.0,
   blur: 0.0,
+  decode_size: None,
 };
 
 /// One premultiplied pixel run through `filters`.

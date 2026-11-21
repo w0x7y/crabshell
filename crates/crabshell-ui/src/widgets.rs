@@ -176,6 +176,7 @@ pub(crate) struct ImageProps {
   pub(crate) contrast: Option<Prop<f32>>,
   pub(crate) saturation: Option<Prop<f32>>,
   pub(crate) blur: Option<Prop<f32>>,
+  pub(crate) decode_size: Option<Prop<Option<(u32, u32)>>>,
   pub(crate) playing: Option<Prop<bool>>,
   pub(crate) transition: Option<Prop<ImageTransition>>,
   pub(crate) status: Option<Signal<crate::ImageStatus>>,
@@ -197,6 +198,10 @@ pub struct ImageFilters {
   /// A Gaussian blur's standard deviation in logical pixels, as CSS's
   /// `blur()`.
   pub blur: f32,
+  /// The most pixels across and down the picture is made at before the
+  /// other filters run, from [`Image::decode_size`]; a side of 0 doesn't
+  /// limit that side.
+  pub decode_size: Option<(u32, u32)>,
 }
 
 impl Default for ImageFilters {
@@ -207,6 +212,7 @@ impl Default for ImageFilters {
       contrast: 1.0,
       saturation: 1.0,
       blur: 0.0,
+      decode_size: None,
     }
   }
 }
@@ -995,6 +1001,7 @@ impl Image {
         contrast: None,
         saturation: None,
         blur: None,
+        decode_size: None,
         playing: None,
         transition: None,
         status: None,
@@ -1086,6 +1093,25 @@ impl Image {
   /// blurred GIF shows its first frame, still.
   pub fn blur(mut self, blur: impl IntoProp<f32>) -> Image {
     self.image.blur = Some(blur.into_prop());
+    self
+  }
+
+  /// Makes the picture at most `width` by `height` pixels, then runs the
+  /// filters and scales the result up to the box, as Qt's `sourceSize`.
+  /// A wallpaper blurred behind a lock screen can be made at half the
+  /// screen's size, which blurs four times faster and looks the same.
+  /// The size is in the picture's pixels, not logical ones, and the
+  /// picture keeps the box's shape and `fit`; a side of 0 doesn't limit
+  /// that side, and a size at least the box's in buffer pixels changes
+  /// nothing. `None`, the default, makes the picture at the box's size.
+  ///
+  /// The file is still read whole; what shrinks is the scaling and the
+  /// filters after it. The cache keeps the picture at the box's size,
+  /// so it saves time, not memory. A new size makes the picture again,
+  /// as a new box size does: a [`status`](Image::status) stays Ready,
+  /// and the box shows the old picture until the new one comes in.
+  pub fn decode_size(mut self, size: impl IntoProp<Option<(u32, u32)>>) -> Image {
+    self.image.decode_size = Some(size.into_prop());
     self
   }
 

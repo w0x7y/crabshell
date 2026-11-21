@@ -70,6 +70,7 @@ fn filter_values_reach_the_view_and_ones_that_arent_numbers_count_as_unchanged()
       contrast: 2.0,
       saturation: 0.0,
       blur: 4.0,
+      decode_size: None,
     }
   );
   assert!(!playing);
@@ -346,4 +347,38 @@ fn an_image_of_a_source_shows_it_and_a_panicking_one_is_logged_with_its_path() {
     "{logs}"
   );
   assert_eq!(source_at(0), pixels, "keeps its last source");
+}
+
+#[test]
+fn a_decode_size_reaches_the_view_and_a_change_repaints_only_the_image() {
+  let mut h = Harness::new();
+  let size = h.cx.signal(None::<(u32, u32)>);
+  let row = Row::new()
+    .child(
+      Image::new("a.png")
+        .width(20)
+        .height(20)
+        .decode_size((960, 0)),
+    )
+    .child(
+      Image::new("a.png")
+        .width(20)
+        .height(20)
+        .decode_size(move || size.get()),
+    );
+  let window = h.window(h.panel().child(row), 200.0, 30.0);
+  assert_eq!(image_at(&window, &[0, 0]).0.decode_size, Some((960, 0)));
+  assert_eq!(image_at(&window, &[0, 1]).0.decode_size, None);
+  let image = super::rect_at(&window, &[0, 1]);
+  window.take_damage();
+
+  size.set(Some((10, 10)));
+  h.runtime.flush();
+  assert!(!window.needs_layout());
+  assert_eq!(window.take_damage(), vec![image]);
+  assert_eq!(image_at(&window, &[0, 1]).0.decode_size, Some((10, 10)));
+
+  size.set(Some((10, 10)));
+  h.frame(&window);
+  assert!(!window.has_damage(), "the same size again changes nothing");
 }
