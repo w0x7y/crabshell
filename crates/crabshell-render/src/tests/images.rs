@@ -289,3 +289,20 @@ fn an_image_is_copied_where_opaque_and_blended_where_not() {
   assert_eq!(buffer.pixel(2, 0), [0, 100, 128, 255], "half over green");
   let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A picture scaled to its own size, as a screenshot is for a view of
+/// the whole output, is its own pixels under every fit.
+#[test]
+fn a_picture_scaled_to_its_own_size_keeps_its_pixels() {
+  let mut picture = Pixmap::new(5, 3).expect("a picture");
+  for (at, pixel) in picture.pixels_mut().iter_mut().enumerate() {
+    let alpha = [255, 128, 0][at % 3];
+    let channel = (at * 40 % 256).min(alpha as usize) as u8;
+    *pixel = tiny_skia::PremultipliedColorU8::from_rgba(channel, 0, alpha / 2, alpha)
+      .expect("premultiplied");
+  }
+  for fit in [Fit::Fill, Fit::Contain, Fit::Cover] {
+    let scaled = scale(picture.as_ref(), 5, 3, fit).expect("scaled");
+    assert!(scaled == picture, "{fit:?}");
+  }
+}

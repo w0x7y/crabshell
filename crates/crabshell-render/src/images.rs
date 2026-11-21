@@ -212,6 +212,10 @@ pub(crate) fn scale(
   height: u32,
   fit: Fit,
 ) -> Result<Pixmap, String> {
+  // Every fit places a picture of the box's size as it is.
+  if (image.width(), image.height()) == (width, height) {
+    return Ok(image.to_owned());
+  }
   let mut halved;
   let mut image = image;
   loop {

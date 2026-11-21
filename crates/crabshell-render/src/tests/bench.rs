@@ -312,5 +312,27 @@ fn time_the_animated_scenes() {
       lock(scene, &wallpaper, fade)
     });
   }
+  // The bloom's first frame: a new screenshot every draw, kept again.
+  let mut scene = Scene::new();
+  let panel = bloom(&scene, &wallpaper, 0.0);
+  let window = scene.window(panel, 1920.0, 1032.0);
+  let id = window.captures()[0].id;
+  let fastest = (0..5)
+    .map(|_| {
+      let rgba: Rc<[u8]> = Rc::from(frame.rgba.to_vec());
+      window.show_capture(
+        id,
+        CaptureFrame {
+          rgba,
+          ..frame.clone()
+        },
+      );
+      scene.frame(&window);
+      let start = std::time::Instant::now();
+      scene.full(&window, 1.0);
+      start.elapsed().as_secs_f64() * 1000.0
+    })
+    .fold(f64::INFINITY, f64::min);
+  println!("bloom with a new screenshot: {fastest:.1} ms");
   std::fs::remove_dir_all(&dir).ok();
 }
