@@ -719,7 +719,8 @@ impl Painter<'_> {
 
   /// Loads the pictures of the images in `node` and everything inside it
   /// that a reveal would draw, which this draw skips, at the size drawing
-  /// them would give, so the reveal draws them on its first frame. Each
+  /// them would give, so the reveal draws them on its first frame, and a
+  /// kept layer keeps them cached while it blends in. Each
   /// node skipped is looked through once a draw, and none in a window
   /// without images.
   fn skip(&mut self, node: NodeView<'_>) {
@@ -924,6 +925,7 @@ impl Painter<'_> {
     if !self.keeps(node, (opacity, None), want, fill) {
       return false;
     }
+    self.skip(node);
     let Some(layer) = self.kept.layer(node.path()) else {
       return false;
     };
@@ -1017,13 +1019,14 @@ impl Painter<'_> {
         };
         let fill =
           |painter: &mut Painter<'_>, area| painter.transformed_layer(node, style, area, zoomed);
-        if self.keeps(node, (opacity, Some(transform)), want, fill)
-          && let Some(layer) = self.kept.layer(node.path())
-        {
-          let corner = (layer.area.x as f32, layer.area.y as f32);
-          let at = to_pixmap.pre_translate(corner.0, corner.1);
-          blend_transformed(pixmap, &layer.pixmap, at, opacity);
-          return;
+        if self.keeps(node, (opacity, Some(transform)), want, fill) {
+          self.skip(node);
+          if let Some(layer) = self.kept.layer(node.path()) {
+            let corner = (layer.area.x as f32, layer.area.y as f32);
+            let at = to_pixmap.pre_translate(corner.0, corner.1);
+            blend_transformed(pixmap, &layer.pixmap, at, opacity);
+            return;
+          }
         }
       }
     }
