@@ -1592,3 +1592,59 @@ fn large_boxes() {
       )
   });
 }
+
+/// Translucent boxes larger than a tile casting cut-out shadows, one
+/// blurred and one sharp, over two colors: tiles the box covers skip the
+/// shadow, and edge tiles skip the columns it covers. A third casts a
+/// blurred shadow that isn't cut out, which shows through it.
+#[test]
+fn large_cut_out_shadows() {
+  check_at(
+    &ALL_SCALES,
+    "large_cut_out_shadows",
+    300.0,
+    500.0,
+    |scene| {
+      let glass = |top: f32, shadow: Shadow| {
+        Row::new().style(
+          Style::new()
+            .left(40.0)
+            .top(top)
+            .width(220.0)
+            .height(130.0)
+            .radius(22.0)
+            .background(Color::rgba(255, 255, 255, 40))
+            .shadow(shadow),
+        )
+      };
+      scene
+        .panel()
+        .style(Style::new().background(Color::hex("#cdd6f4")))
+        .child(
+          Stack::new()
+            .child(
+              Row::new().style(
+                Style::new()
+                  .left(150.0)
+                  .top(0.0)
+                  .width(150.0)
+                  .height(500.0)
+                  .background(Color::hex("#89b4fa")),
+              ),
+            )
+            .child(glass(
+              24.0,
+              Shadow::new(0.0, 10.0, 32.0, Color::rgba(0, 0, 0, 128)).cut_out(),
+            ))
+            .child(glass(
+              190.0,
+              Shadow::new(8.0, 8.0, 0.0, Color::rgba(0, 0, 0, 100)).cut_out(),
+            ))
+            .child(glass(
+              350.0,
+              Shadow::new(0.0, 10.0, 32.0, Color::rgba(0, 0, 0, 128)),
+            )),
+        )
+    },
+  );
+}

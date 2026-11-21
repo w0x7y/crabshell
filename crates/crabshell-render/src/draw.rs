@@ -1162,6 +1162,9 @@ impl Painter<'_> {
     let Some((area, corners)) = self.box_shape(rect, style) else {
       return;
     };
+    if shadow.cut_out && covers(pixmap, area, corners) {
+      return;
+    }
     // The shape in buffer pixels.
     let spread = shadow.spread * scale;
     let Some(shape) = tiny_skia::Rect::from_ltrb(
@@ -1211,26 +1214,46 @@ impl Painter<'_> {
       return;
     }
     let blurred = BlurredBox::new(shape, corners, sigma);
-    let mut mask = Vec::with_capacity(columns.len() * rows.len());
-    for row in rows.clone() {
-      let xs = columns.clone().map(|column| left + column as f32 + 0.5);
-      blurred.row(top + row as f32 + 0.5, xs, &mut mask);
-    }
-    if let Some(cut) = cut {
-      let stride = pixmap.width() as usize;
-      let under = rows.clone().flat_map(|row| {
-        columns
-          .clone()
-          .map(move |column| row as usize * stride + column as usize)
-      });
-      for (alpha, at) in mask.iter_mut().zip(under) {
-        *alpha = mul(*alpha, 255 - cut.data()[at]);
+    let stride = pixmap.width() as usize;
+    // A cut-out shadow leaves a column the box covers in every row clear,
+    // so only the runs of columns between them are worked out.
+    let clear = |column: u32| {
+      cut.as_ref().is_some_and(|cut| {
+        let at = |row: u32| row as usize * stride + column as usize;
+        rows.clone().all(|row| cut.data()[at(row)] == 255)
+      })
+    };
+    let mut start = columns.start;
+    while start < columns.end {
+      if clear(start) {
+        start += 1;
+        continue;
       }
+      let end = (start + 1..columns.end)
+        .find(|&column| clear(column))
+        .unwrap_or(columns.end);
+      let run = start..end;
+      start = end;
+      let mut mask = Vec::with_capacity(run.len() * rows.len());
+      for row in rows.clone() {
+        let xs = run.clone().map(|column| left + column as f32 + 0.5);
+        blurred.row(top + row as f32 + 0.5, xs, &mut mask);
+      }
+      if let Some(cut) = &cut {
+        let under = rows.clone().flat_map(|row| {
+          run
+            .clone()
+            .map(move |column| row as usize * stride + column as usize)
+        });
+        for (alpha, at) in mask.iter_mut().zip(under) {
+          *alpha = mul(*alpha, 255 - cut.data()[at]);
+        }
+      }
+      let width = run.len() as u32;
+      let height = rows.len() as u32;
+      let (x, y) = (run.start as i32, rows.start as i32);
+      blend_mask(pixmap, x, y, width, height, &mask, shadow.color);
     }
-    let width = columns.len() as u32;
-    let height = rows.len() as u32;
-    let (x, y) = (columns.start as i32, rows.start as i32);
-    blend_mask(pixmap, x, y, width, height, &mask, shadow.color);
   }
 
   /// An inset `shadow` inside `area` with `corners`, within a border
