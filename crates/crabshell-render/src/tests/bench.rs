@@ -8,8 +8,8 @@
 use std::rc::Rc;
 
 use crabshell_ui::{
-  CaptureFrame, CaptureSource, Color, Column, Fit, Font, Image, PanelWindow, Rect, Region, Row,
-  ScreencopyView, Shadow, Stack, Style, Text, Window,
+  CaptureFrame, CaptureSource, Color, Column, Fit, Font, Image, ImageFilters, PanelWindow, Rect,
+  Region, Row, ScreencopyView, Shadow, Stack, Style, Text, Window,
 };
 
 use super::{Scene, write_png};
@@ -334,5 +334,20 @@ fn time_the_animated_scenes() {
     })
     .fold(f64::INFINITY, f64::min);
   println!("bloom with a new screenshot: {fastest:.1} ms");
+  // The lock's wallpaper, as the worker makes it: read, scaled to the box
+  // and blurred, at the box's size and at half of it.
+  for decode_size in [None, Some((1020, 600))] {
+    let filters = ImageFilters {
+      saturation: 0.2,
+      blur: 32.0,
+      decode_size,
+      ..ImageFilters::default()
+    };
+    let start = std::time::Instant::now();
+    crate::images::filtered(&wallpaper, (2040, 1200), Fit::Cover, &filters, 1.0)
+      .expect("the wallpaper");
+    let took = start.elapsed().as_secs_f64() * 1000.0;
+    println!("lock wallpaper made at {decode_size:?}: {took:.0} ms");
+  }
   std::fs::remove_dir_all(&dir).ok();
 }

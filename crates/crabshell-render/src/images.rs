@@ -44,7 +44,9 @@ pub(crate) fn filtered(
 }
 
 /// `picture` scaled to `width` by `height` as `fit` says, through
-/// `filters` at `scale`.
+/// `filters` at `scale`. With a decode size smaller than the box, the
+/// picture is made at that size, the box's shape kept, filtered there and
+/// stretched up to the box.
 pub(crate) fn finish(
   picture: &Picture,
   (width, height): (u32, u32),
@@ -52,6 +54,37 @@ pub(crate) fn finish(
   filters: &ImageFilters,
   scale: f32,
 ) -> Result<Pixmap, String> {
+  if let Some(sides) = filters.decode_size {
+    // A side of 0 doesn't limit that side.
+    let limit = |most: u32, side: u32| match most {
+      0 => 1.0,
+      _ => most as f32 / side as f32,
+    };
+    let factor = limit(sides.0, width).min(limit(sides.1, height));
+    if factor < 1.0 {
+      // `as` saturates, and each side is at least a pixel.
+      let small = (
+        ((width as f32 * factor).round() as u32).max(1),
+        ((height as f32 * factor).round() as u32).max(1),
+      );
+      let filters = ImageFilters {
+        decode_size: None,
+        ..*filters
+      };
+      let made = finish(picture, small, fit, &filters, scale * factor)?;
+      let mut pixmap = Pixmap::new(width, height).ok_or("an image with no pixels")?;
+      let paint = PixmapPaint {
+        quality: FilterQuality::Bilinear,
+        ..PixmapPaint::default()
+      };
+      let stretch = Transform::from_scale(
+        width as f32 / small.0 as f32,
+        height as f32 / small.1 as f32,
+      );
+      pixmap.draw_pixmap(0, 0, made.as_ref(), &paint, stretch, None);
+      return Ok(pixmap);
+    }
+  }
   if fit != Fit::Contain || filters.blur == 0.0 {
     let mut pixmap = draw(picture, width, height, fit)?;
     crate::filters::apply(&mut pixmap, filters, scale);

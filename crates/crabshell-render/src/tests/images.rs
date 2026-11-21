@@ -306,3 +306,46 @@ fn a_picture_scaled_to_its_own_size_keeps_its_pixels() {
     assert!(scaled == picture, "{fit:?}");
   }
 }
+
+/// A decode size makes the picture that small, keeping the box's shape,
+/// then scales it up to the box; one at least the box's size, or with
+/// sides of 0, changes nothing. The cache keeps the two apart.
+#[test]
+fn a_decode_size_makes_the_picture_small_then_scales_it_up() {
+  let stripes = fixture("stripes.png");
+  let at = |decode_size| {
+    let filters = ImageFilters {
+      decode_size,
+      ..ImageFilters::default()
+    };
+    filtered(&stripes, (40, 20), Fit::Fill, &filters, 1.0).expect("decoded")
+  };
+  let full = at(None);
+  assert_pixel(&full, (9, 10), RED, "full size");
+  // Four pixels across, one a stripe of ten, blend where they meet once
+  // scaled up.
+  let coarse = at(Some((4, 2)));
+  assert_eq!((coarse.width(), coarse.height()), (40, 20));
+  let first = coarse.pixel(0, 10).expect("inside");
+  assert!(first.red() > 200 && first.green() < 50, "red: {first:?}");
+  let edge = coarse.pixel(9, 10).expect("inside");
+  assert!(
+    edge.red() < 200 && edge.green() > 50,
+    "red meets green: {edge:?}"
+  );
+  assert!(at(Some((4, 0))) == coarse, "a side of 0 doesn't limit it");
+  for unlimited in [(40, 20), (100, 0), (0, 0)] {
+    assert!(at(Some(unlimited)) == full, "{unlimited:?}");
+  }
+
+  let mut icons = icons();
+  let sizes = [None, Some((4, 2))].map(|decode_size| {
+    let filters = ImageFilters {
+      decode_size,
+      ..ImageFilters::default()
+    };
+    let picture = icons.picture(&view(&stripes, Fit::Fill, filters), (40, 20), 1.0);
+    picture.expect("cached").pixel(9, 10).expect("inside")
+  });
+  assert_ne!(sizes[0], sizes[1], "cached apart");
+}

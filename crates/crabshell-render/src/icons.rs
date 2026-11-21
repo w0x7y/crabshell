@@ -292,6 +292,7 @@ enum Key {
 struct FilterKey {
   tint: Option<Color>,
   numbers: [u32; 4],
+  decode_size: Option<(u32, u32)>,
 }
 
 impl FilterKey {
@@ -305,6 +306,7 @@ impl FilterKey {
         filters.blur * scale,
       ]
       .map(f32::to_bits),
+      decode_size: filters.decode_size,
     }
   }
 }
