@@ -269,11 +269,92 @@ fn a_sequence_of_no_time_jumps_and_an_empty_one_never_runs() {
   on.set(true);
   h.runtime.flush();
   assert!(!empty.running().get(), "nothing to play");
-  let start = Instant::now();
-  assert!(!tick(start, 0), "a loop of no time plays once");
-  h.runtime.flush();
+  // A loop of no time plays once, in the flush, and never ticks.
   assert_eq!(jump.value().get(), 3.0);
   assert!(!jump.running().get() && !animating());
+}
+
+/// Rime's wallpaper picker: the strip jumps a thumbnail aside, then
+/// slides back.
+#[test]
+fn leading_no_time_steps_land_in_the_triggers_flush_and_the_next_moves_from_there() {
+  let h = Harness::new();
+  let index = h.cx.signal(0_u32);
+  let linear = Transition::new(200).easing(Easing::Linear);
+  let slide = h.cx.sequence(
+    0.0,
+    move || index.get(),
+    [
+      Step::to(70.0, Transition::new(0)),
+      Step::to(140.0, Transition::new(0)),
+      Step::to(0.0, linear),
+    ],
+  );
+  let seen = Rc::new(RefCell::new(Vec::new()));
+  let log = Rc::clone(&seen);
+  let value = slide.value();
+  h.cx.effect(move || log.borrow_mut().push(value.get()));
+  h.runtime.flush();
+
+  index.set(1);
+  h.runtime.flush();
+  // Before any tick, so a layout in this turn already sees it.
+  assert_eq!(slide.value().get(), 140.0);
+  assert!(slide.running().get());
+  assert_eq!(*seen.borrow(), [0.0, 140.0], "never the old value after");
+  let start = Instant::now();
+  assert!(tick(start, 0));
+  assert_eq!(slide.value().get(), 140.0);
+  tick(start, 100);
+  assert!(close(slide.value().get(), 70.0), "{}", slide.value().get());
+  assert!(!tick(start, 200), "the clock stops at the end");
+  h.runtime.flush();
+  assert_eq!(slide.value().get(), 0.0);
+  assert!(!slide.running().get());
+  assert!(!animating() && next_timer().is_none(), "settled, it sleeps");
+
+  // A 0 ms step after a delay waits it out.
+  let late = h.cx.sequence(
+    0.0,
+    move || index.get(),
+    [Step::to(5.0, Transition::new(0).delay(50))],
+  );
+  h.runtime.flush();
+  index.set(2);
+  h.runtime.flush();
+  assert_eq!(late.value().get(), 0.0);
+  assert_eq!(slide.value().get(), 140.0);
+}
+
+#[test]
+fn a_sequence_now_and_a_loops_first_round_land_their_leading_no_time_steps_at_once() {
+  let h = Harness::new();
+  let linear = Transition::new(100).easing(Easing::Linear);
+  let pop = h.cx.sequence_now(
+    1.0,
+    [Step::to(0.88, Transition::new(0)), Step::to(1.0, linear)],
+  );
+  assert_eq!(pop.value().get(), 0.88, "as soon as it is made");
+  assert!(pop.running().get());
+
+  let on = h.cx.signal(false);
+  let pulse = h.cx.sequence_loop(
+    0.0,
+    move || on.get(),
+    [Step::to(1.0, Transition::new(0)), Step::to(0.0, linear)],
+  );
+  h.runtime.flush();
+  on.set(true);
+  h.runtime.flush();
+  assert_eq!(pulse.value().get(), 1.0);
+  let start = Instant::now();
+  tick(start, 0);
+  tick(start, 50);
+  assert!(close(pop.value().get(), 0.94), "{}", pop.value().get());
+  assert!(close(pulse.value().get(), 0.5), "{}", pulse.value().get());
+  // Round 1 jumps again at its start.
+  tick(start, 100);
+  assert_eq!(pulse.value().get(), 1.0);
 }
 
 #[test]
@@ -492,21 +573,55 @@ fn a_panicking_partial_eq_is_logged_and_running_ends() {
 fn a_panicking_partial_eq_at_the_end_of_a_play_ends_running() {
   let h = Harness::new();
   let go = h.cx.signal(0_u32);
-  // One step of 0 ms: the play's only write is the one at its end.
+  // Only the write at its end reaches 0.5.
   let seq = h.cx.sequence(
     Touchy(0.0),
     move || go.get(),
-    [Step::to(Touchy(0.5), Transition::new(0))],
+    [Step::to(
+      Touchy(0.5),
+      Transition::new(10).easing(Easing::Linear),
+    )],
   );
   h.runtime.flush();
   go.set(1);
   h.runtime.flush();
   let start = Instant::now();
-  let logs = capture_logs(|| assert!(!tick(start, 0), "the play stops"));
+  assert!(tick(start, 0));
+  let logs = capture_logs(|| assert!(!tick(start, 10), "the play stops"));
   assert!(logs.contains("eq failure"), "{logs}");
   h.runtime.flush();
   assert!(!seq.running().get(), "and running ends");
   assert!(!animating());
+}
+
+#[test]
+fn a_panicking_partial_eq_in_a_leading_no_time_step_is_logged_and_only_that_play_stops() {
+  let h = Harness::new();
+  let go = h.cx.signal(0_u32);
+  let seq = h.cx.sequence(
+    Touchy(0.0),
+    move || go.get(),
+    [
+      Step::to(Touchy(0.5), Transition::new(0)),
+      Step::to(Touchy(1.0), Transition::new(100)),
+    ],
+  );
+  let fine = h
+    .cx
+    .sequence(0.0, move || go.get(), [Step::to(3.0, Transition::new(0))]);
+  h.runtime.flush();
+  go.set(1);
+  let logs = capture_logs(|| h.runtime.flush());
+  assert!(logs.contains("animation cx.sequence at "), "{logs}");
+  assert!(logs.contains("tests/sequence.rs"), "{logs}");
+  assert!(logs.contains("eq failure"), "{logs}");
+  assert!(!seq.running().get(), "the play never starts");
+  assert_eq!(fine.value().get(), 3.0, "the other one plays");
+  assert!(!animating());
+  // The next trigger plays again.
+  go.set(2);
+  let logs = capture_logs(|| h.runtime.flush());
+  assert!(logs.contains("eq failure"), "{logs}");
 }
 
 #[test]

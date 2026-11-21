@@ -201,7 +201,9 @@ fn bezier(x: f32, (x0, y0): (f32, f32), segment: [f32; 6]) -> f32 {
 /// first. Copy it into styles and constants like a color.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Transition {
-  /// The time it takes, in milliseconds. 0 jumps straight to the end.
+  /// The time it takes, in milliseconds. 0 with no delay jumps straight
+  /// to the end in the flush that sets the new target, so the same turn's
+  /// layout and draw already show it and the clock never runs.
   pub ms: u32,
   /// How it moves.
   pub easing: Easing,
@@ -787,6 +789,8 @@ impl Cx {
   /// A value that follows `target`, moving to each new one over
   /// `transition` instead of jumping. It starts at `target`'s first value.
   /// A new target while it moves starts a new animation from where it is.
+  /// A 0 ms transition with no delay lands in the flush that changes the
+  /// target, so the same turn's layout and draw already show it.
   /// The animation goes when this context's owner does. It is
   /// [`Cx::animation`]'s value.
   ///
@@ -1172,15 +1176,19 @@ impl Cx {
   /// moves from wherever the value is, so a new trigger mid-play starts
   /// over from there, and once played the value rests at the last step's
   /// target. `steps` is a value or a closure, read untracked as each play
-  /// starts; an empty list plays nothing.
+  /// starts; an empty list plays nothing. The steps at the start that take
+  /// no time, 0 ms with no delay, land in the flush where `trigger`
+  /// changes, so the same turn's layout and draw already show the value
+  /// they leave and the next step moves from there; a play of no time at
+  /// all ends in that flush, and the clock never runs.
   ///
   /// The [`Animation`]'s `running()` is true from the trigger until the
   /// last step ends, holds included, so an effect on it runs what comes
   /// after. A hold, or a delay, takes the value off the animation clock:
   /// the loop sleeps until it ends instead of waking each frame. A panic in
   /// `trigger` is logged with this call's place and stops the sequence
-  /// where it is for good; one in `steps` or a config's own `lerp` stops
-  /// that play.
+  /// where it is for good; one in `steps` or a config's own `lerp`,
+  /// `clone` or `PartialEq` stops that play.
   ///
   /// ```
   /// use crabshell_ui::{Cx, Easing, Step, Transition};
@@ -1230,7 +1238,8 @@ impl Cx {
   /// that waits its turn with a [`Step::hold`] and then fades in. It
   /// starts at `initial`, and once played it rests at the last step's
   /// target. `steps` is a value or a closure, read untracked once, now; an
-  /// empty list plays nothing. Holds sleep off the clock as in
+  /// empty list plays nothing. Steps at the start that take no time land
+  /// at once, as in [`Cx::sequence`]. Holds sleep off the clock as in
   /// [`Cx::sequence`], and the [`Animation`]'s `running()` is true until
   /// the last step ends. To play again on a change, use
   /// [`Cx::sequence`]. A panic in `steps` or a config's own `lerp` is
@@ -1264,8 +1273,11 @@ impl Cx {
   /// round from the last step's target. When `running` turns `false`, the
   /// round it is in runs to its end and the value rests at the last step's
   /// target; `true` again before then keeps it going, and after it starts
-  /// again at round 0. A round of no time plays once. Holds sleep off the
-  /// clock as in [`Cx::sequence`]. A panic in `running` is logged with
+  /// again at round 0. Round 0's steps at the start that take no time land
+  /// in the flush where `running` turns `true`, as in [`Cx::sequence`]; a
+  /// later round's land at its first tick. A round of no time plays once,
+  /// in that flush. Holds sleep off the clock as in [`Cx::sequence`]. A
+  /// panic in `running` is logged with
   /// this call's place and ends it after its round.
   ///
   /// ```
@@ -1366,16 +1378,27 @@ impl<T: Animate> Player<T> {
       let origin = untrack(|| self.value.try_get())?;
       let last = steps.iter().rev().find_map(|step| step.to.clone());
       let last = last.unwrap_or_else(|| origin.clone());
+      // The steps that take no time land in this flush, so a layout or
+      // draw in this turn already sees them; the clock's first tick, a
+      // frame later, would show the old value once.
+      let leading = steps
+        .iter()
+        .take_while(|step| step.transition.is_instant())
+        .filter_map(|step| step.to.clone())
+        .last();
+      if let Some(leading) = leading {
+        set_changed(self.value, leading);
+      }
       Some((steps, origin, last))
     })
     .flatten() else {
       return;
     };
-    if steps.is_empty() {
+    let length: u64 = steps.iter().map(|step| step.times().1).sum();
+    // A play of no time has ended already, with nothing for the clock.
+    if length == 0 {
       return;
     }
-    let length: u64 = steps.iter().map(|step| step.times().1).sum();
-    let looping = looping && length > 0;
     set_changed(self.running, true);
     let current = self.generation.get();
     let (generation, wanted) = (Rc::clone(&self.generation), Rc::clone(&self.wanted));
