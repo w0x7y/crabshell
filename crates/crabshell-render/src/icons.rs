@@ -760,6 +760,22 @@ impl Icons {
     self.images && !self.looked.contains(path) && self.looked.insert(path.to_owned())
   }
 
+  /// Whether a draw that blends a kept layer for `path` should look
+  /// through it to keep cached pictures and captures alive: once a draw.
+  pub(crate) fn keep_through(&mut self, path: &str) -> bool {
+    (self.images || !self.captures.is_empty())
+      && !self.looked.contains(path)
+      && self.looked.insert(path.to_owned())
+  }
+
+  /// Marks `view`'s scaled capture used by this draw, so a kept layer
+  /// around it doesn't let it fall out of the cache.
+  pub(crate) fn keep_capture(&mut self, view: u64) {
+    if let Some(kept) = self.captures.get_mut(&view) {
+      kept.used = self.frame;
+    }
+  }
+
   /// Loads `image`, which this draw skips at opacity 0 or cut out by its
   /// mask region, at `size`, the size a draw would give it, once a frame,
   /// so showing it draws it from the cache.

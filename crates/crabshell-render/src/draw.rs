@@ -731,13 +731,29 @@ impl Painter<'_> {
   fn skip(&mut self, node: NodeView<'_>) {
     if self.icons.look_through(node.path()) {
       let (grid, clip) = (self.grid, self.clip);
-      self.skipped(node, grid, clip);
+      self.skipped(node, grid, clip, false);
+    }
+  }
+
+  /// Keeps the cached pictures and scaled captures inside a kept layer
+  /// marked used for this draw, once a draw.
+  fn keep_inside(&mut self, node: NodeView<'_>) {
+    if self.icons.keep_through(node.path()) {
+      let (grid, clip) = (self.grid, self.clip);
+      self.skipped(node, grid, clip, true);
     }
   }
 
   /// [`skip`](Self::skip)'s walk of `node` on `grid`, loading the images
-  /// that show within `clip`.
-  fn skipped(&mut self, node: NodeView<'_>, mut grid: Grid, mut clip: Option<Rect>) {
+  /// that show within `clip`, and with `captures` marking scaled captures
+  /// used too.
+  fn skipped(
+    &mut self,
+    node: NodeView<'_>,
+    mut grid: Grid,
+    mut clip: Option<Rect>,
+    captures: bool,
+  ) {
     self.work.skipped += 1;
     if let Some(transform) = node.transform() {
       (grid.linear, grid.zoom, grid.scale) = grid.through(transform);
@@ -747,18 +763,22 @@ impl Painter<'_> {
     }
     let shows =
       |clip: Option<Rect>, rect: Rect| clip.is_none_or(|clip| !clip.intersect(rect).is_empty());
-    if let Content::Image(image) = node.content()
-      && shows(clip, image.rect)
-    {
-      let (width, height) = (
-        (image.rect.width * grid.scale).round(),
-        (image.rect.height * grid.scale).round(),
-      );
-      if width >= 1.0 && height >= 1.0 {
-        // `as` saturates, so a huge box stays in range.
-        let size = (width as u32, height as u32);
-        self.icons.skipped(&image, size, grid.scale);
+    match node.content() {
+      Content::Image(image) if shows(clip, image.rect) => {
+        let (width, height) = (
+          (image.rect.width * grid.scale).round(),
+          (image.rect.height * grid.scale).round(),
+        );
+        if width >= 1.0 && height >= 1.0 {
+          // `as` saturates, so a huge box stays in range.
+          let size = (width as u32, height as u32);
+          self.icons.skipped(&image, size, grid.scale);
+        }
       }
+      Content::Capture(capture) if captures && shows(clip, capture.rect) => {
+        self.icons.keep_capture(capture.id);
+      }
+      _ => {}
     }
     if node.clips() {
       let rect = node.rect();
@@ -766,7 +786,7 @@ impl Painter<'_> {
     }
     for child in node.children() {
       if shows(clip, child.bounds()) {
-        self.skipped(child, grid, clip);
+        self.skipped(child, grid, clip, captures);
       }
     }
   }
@@ -847,16 +867,20 @@ impl Painter<'_> {
   }
 
   /// Whether anything inside `node` has a transform of its own, and
-  /// whether a GIF plays inside it, which a kept layer would stop.
+  /// whether `node` or anything inside it is a playing GIF or a
+  /// transitioning image, which a kept layer would stop or evict.
   fn inside(&self, node: NodeView<'_>) -> (bool, bool) {
+    let active = matches!(
+      node.content(),
+      Content::Image(image) if self.icons.animates(image.id) || image.leaving.is_some()
+    );
     node
       .children()
-      .fold((false, false), |(nested, playing), child| {
+      .fold((false, active), |(nested, playing), child| {
         let (deeper, plays) = self.inside(child);
-        let gif = matches!(child.content(), Content::Image(image) if self.icons.animates(image.id));
         (
           nested || deeper || child.transform().is_some(),
-          playing || plays || gif,
+          playing || plays,
         )
       })
   }
@@ -930,7 +954,7 @@ impl Painter<'_> {
     if !self.keeps(node, (opacity, None), want, fill) {
       return false;
     }
-    self.skip(node);
+    self.keep_inside(node);
     let Some(layer) = self.kept.layer(node.path()) else {
       return false;
     };
@@ -1025,7 +1049,7 @@ impl Painter<'_> {
         let fill =
           |painter: &mut Painter<'_>, area| painter.transformed_layer(node, style, area, zoomed);
         if self.keeps(node, (opacity, Some(transform)), want, fill) {
-          self.skip(node);
+          self.keep_inside(node);
           if let Some(layer) = self.kept.layer(node.path()) {
             let corner = (layer.area.x as f32, layer.area.y as f32);
             let at = to_pixmap.pre_translate(corner.0, corner.1);
@@ -2202,6 +2226,9 @@ fn blend_scaled(pixmap: &mut PixmapMut<'_>, layer: &Pixmap, at: Transform, opaci
   };
   let (x0, columns) = taps(at.sx, at.tx, layer.width(), pixmap.width());
   let (y0, rows) = taps(at.sy, at.ty, layer.height(), pixmap.height());
+  if columns.is_empty() || rows.is_empty() {
+    return;
+  }
   let opacity = opacity.clamp(0.0, 1.0);
   let stride = pixmap.width() as usize;
   let width = layer.width() as usize;

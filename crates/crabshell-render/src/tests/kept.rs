@@ -555,3 +555,191 @@ fn text_shaped_again_inside_a_kept_layer_shows() {
     "moved to the end",
   );
 }
+
+#[test]
+fn a_shrinking_kept_layer_past_a_tiles_edge_never_panics() {
+  for display_scale in [1.0, 2.0] {
+    let mut scene = Scene::new();
+    let scale = scene.cx.signal(0.42_f32);
+    let box_ = Stack::new()
+      .style(move || {
+        Style::new()
+          .left(20.95)
+          .top(0.0)
+          .width(40.0)
+          .height(100.0)
+          .background(Color::rgb(200, 60, 40))
+          .scale(scale.get())
+      })
+      .child(
+        Row::new().style(
+          Style::new()
+            .width(20.0)
+            .height(20.0)
+            .background(Color::rgb(255, 255, 255)),
+        ),
+      );
+    let window = scene.window(scene.panel().child(box_), 80.0, 100.0);
+    let mut history = DamageHistory::new();
+    let mut buffer = Buffer::new(&window, display_scale);
+    for value in [0.42, 0.41, 0.40] {
+      scale.set(value);
+      draw_and_compare(&mut scene, &window, &mut history, &mut buffer, "edge");
+    }
+  }
+}
+
+#[test]
+fn a_fading_or_moving_gif_image_itself_keeps_playing() {
+  let gif = super::animation::red_then_green("kept-self");
+  for moves in [false, true] {
+    let mut scene = Scene::new();
+    let opacity = scene.cx.signal(0.9_f32);
+    let scale = scene.cx.signal(0.95_f32);
+    let path = gif.to_path_buf();
+    let image = crabshell_ui::Image::new(path)
+      .width(20)
+      .height(20)
+      .style(move || {
+        if moves {
+          Style::new().scale(scale.get())
+        } else {
+          Style::new().opacity(opacity.get())
+        }
+      });
+    let window = scene.window(scene.panel().child(image), 40.0, 40.0);
+    let mut history = DamageHistory::new();
+    let mut buffer = Buffer::new(&window, 1.0);
+    for step in 0..3 {
+      opacity.set(0.9 - step as f32 * 0.1);
+      scale.set(0.95 - step as f32 * 0.05);
+      draw_and_compare(&mut scene, &window, &mut history, &mut buffer, "gif-self");
+      assert_eq!(scene.renderer.kept_bytes(), 0, "moves {moves}");
+      let now = std::time::Instant::now();
+      assert!(
+        scene.renderer.next_image_frame(now).is_some(),
+        "it plays, moves {moves}"
+      );
+    }
+  }
+}
+
+#[test]
+fn a_delayed_image_transition_inside_a_fading_stack_keeps_the_old_picture() {
+  use crabshell_ui::{Easing, ImageTransition, Transition, advance_animations};
+  use std::time::{Duration, Instant};
+
+  let red = red_png("trans-red");
+  let blue_path = std::env::temp_dir().join(format!(
+    "crabshell-kept-{}-trans-blue.png",
+    std::process::id()
+  ));
+  super::write_png(&blue_path, &[0, 0, 255, 255].repeat(16), 4, 4);
+  let blue = super::Removed(blue_path);
+
+  let mut scene = Scene::new();
+  scene.renderer.decode_off_thread();
+  let opacity = scene.cx.signal(0.9_f32);
+  let source = scene.cx.signal(red.to_path_buf());
+  let stack = Stack::new()
+    .style(move || {
+      Style::new()
+        .width(300.0)
+        .height(300.0)
+        .opacity(opacity.get())
+    })
+    .child(
+      crabshell_ui::Image::new(move || source.get())
+        .width(300)
+        .height(300)
+        .transition(ImageTransition::crossfade(
+          Transition::new(100).delay(500).easing(Easing::Linear),
+        )),
+    );
+  let window = scene.window(scene.panel().child(stack), 300.0, 300.0);
+  let mut history = DamageHistory::new();
+  let mut buffer = Buffer::new(&window, 1.0);
+  scene.draw(&window, &mut history, &mut buffer);
+  take_pictures(&mut scene, &window);
+  scene.frame(&window);
+  scene.draw(&window, &mut history, &mut buffer);
+
+  source.set(blue.to_path_buf());
+  scene.frame(&window);
+  let start = Instant::now();
+  advance_animations(start);
+  scene.draw(&window, &mut history, &mut buffer);
+  take_pictures(&mut scene, &window);
+  scene.frame(&window);
+  // During the 500 ms delay the new picture is ready and t stays 0.
+  for frame in 0..4 {
+    opacity.set(0.89 - frame as f32 * 0.01);
+    advance_animations(start + Duration::from_millis((frame + 1) * 16));
+    scene.frame(&window);
+    scene.draw(&window, &mut history, &mut buffer);
+  }
+  // Crossfade halfway at 550 ms, settled at opacity 1.
+  opacity.set(1.0);
+  advance_animations(start + Duration::from_millis(550));
+  scene.frame(&window);
+  scene.draw(&window, &mut history, &mut buffer);
+  assert!(!scene.renderer.decoding(), "old picture stayed cached");
+  let pixel = buffer.pixel(150, 150);
+  assert!(
+    pixel[0] > 100 && pixel[2] > 100 && pixel[3] == 255,
+    "blended red and blue, got {pixel:?}"
+  );
+}
+
+#[test]
+fn a_capture_in_a_kept_layer_stays_cached_through_a_long_fade_or_move() {
+  use crabshell_ui::{CaptureFrame, CaptureSource, ScreencopyView};
+  use std::rc::Rc;
+
+  for moves in [false, true] {
+    let mut scene = Scene::new();
+    let opacity = scene.cx.signal(0.9_f32);
+    let scale = scene.cx.signal(1.0_f32);
+    let stack = Stack::new()
+      .style(move || {
+        let style = Style::new().width(60.0).height(40.0);
+        if moves {
+          style.scale(scale.get())
+        } else {
+          style.opacity(opacity.get())
+        }
+      })
+      .child(
+        ScreencopyView::new(CaptureSource::Output(String::from("DP-1")))
+          .style(Style::new().width(60.0).height(40.0)),
+      );
+    let window = scene.window(scene.panel().child(stack), 60.0, 40.0);
+    let id = window.captures()[0].id;
+    window.show_capture(
+      id,
+      CaptureFrame {
+        width: 16,
+        height: 16,
+        logical_width: 16,
+        logical_height: 16,
+        rgba: Rc::from([0, 200, 100, 255].repeat(256)),
+      },
+    );
+    let mut history = DamageHistory::new();
+    let mut buffer = Buffer::new(&window, 1.0);
+    scene.draw(&window, &mut history, &mut buffer);
+    assert_eq!(scene.renderer.cached_captures(), 1);
+    for frame in 0..20 {
+      opacity.set(0.9 - frame as f32 * 0.01);
+      scale.set(0.99 - frame as f32 * 0.01);
+      scene.frame(&window);
+      scene.draw(&window, &mut history, &mut buffer);
+    }
+    assert!(scene.renderer.kept_bytes() > 0, "kept, moves {moves}");
+    assert_eq!(
+      scene.renderer.cached_captures(),
+      1,
+      "capture stayed cached, moves {moves}"
+    );
+  }
+}
