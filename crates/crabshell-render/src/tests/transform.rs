@@ -268,3 +268,50 @@ fn a_widget_moved_by_part_of_a_pixel_lands_on_the_nearest_pixel() {
     );
   }
 }
+
+#[test]
+fn a_scaled_layer_blends_as_tiny_skias_bilinear_pipeline_does() {
+  use tiny_skia::{FilterQuality, IntSize, Pixmap, PixmapPaint, Transform};
+  // Premultiplied pixels of every kind, a clear margin round them.
+  let (width, height) = (37u32, 23u32);
+  let pixels: Vec<u8> = (0..width * height)
+    .flat_map(|at| {
+      let (x, y) = (at % width, at / width);
+      let edge = x < 2 || y < 2 || x >= width - 2 || y >= height - 2;
+      let alpha = if edge { 0 } else { (at * 37 % 256) as u8 };
+      let channel = |n: u32| ((at * n % 256) as u8).min(alpha);
+      [channel(11), channel(53), channel(97), alpha]
+    })
+    .collect();
+  let layer =
+    Pixmap::from_vec(pixels, IntSize::from_wh(width, height).expect("a size")).expect("a layer");
+  let under: Vec<u8> = (0..64u32 * 48)
+    .flat_map(|at| [(at % 251) as u8, (at % 7 * 30) as u8, 200, 255])
+    .collect();
+  let mut worst = 0;
+  for (scale, x, y) in [
+    (0.8, 3.3, 4.7),
+    (0.95, -5.25, 1.0),
+    (1.3, 10.5, -3.6),
+    (0.37, 20.0, 20.0),
+    (1.75, 0.1, 0.9),
+  ] {
+    for opacity in [1.0, 0.61, 0.07] {
+      let at = Transform::from_row(scale, 0.0, 0.0, scale * 1.1, x, y);
+      let mut ours = under.clone();
+      let mut theirs = under.clone();
+      let mut pixmap = tiny_skia::PixmapMut::from_bytes(&mut ours, 64, 48).expect("a pixmap");
+      crate::draw::blend_transformed(&mut pixmap, &layer, at, opacity);
+      let mut pixmap = tiny_skia::PixmapMut::from_bytes(&mut theirs, 64, 48).expect("a pixmap");
+      let paint = PixmapPaint {
+        opacity,
+        quality: FilterQuality::Bilinear,
+        ..PixmapPaint::default()
+      };
+      pixmap.draw_pixmap(0, 0, layer.as_ref(), &paint, at, None);
+      let differs = ours.iter().zip(&theirs).map(|(a, b)| a.abs_diff(*b));
+      worst = worst.max(differs.max().unwrap_or(0));
+    }
+  }
+  assert!(worst <= 1, "off by {worst}");
+}

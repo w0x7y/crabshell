@@ -2118,7 +2118,16 @@ fn layer_area(
 
 /// Blends a transformed `layer` in at `opacity`, its corner going where
 /// `at` says, filtered bilinearly.
-fn blend_transformed(pixmap: &mut PixmapMut<'_>, layer: &Pixmap, at: Transform, opacity: f32) {
+pub(crate) fn blend_transformed(
+  pixmap: &mut PixmapMut<'_>,
+  layer: &Pixmap,
+  at: Transform,
+  opacity: f32,
+) {
+  if at.kx == 0.0 && at.ky == 0.0 && at.sx > 0.0 && at.sy > 0.0 && !at.is_translate() {
+    blend_scaled(pixmap, layer, at, opacity);
+    return;
+  }
   if at.is_identity() || at.is_translate() {
     // tiny-skia samples a moved pixmap at the nearest pixel, whatever the
     // quality asked for, which puts it at this whole-pixel offset.
@@ -2139,6 +2148,82 @@ fn blend_transformed(pixmap: &mut PixmapMut<'_>, layer: &Pixmap, at: Transform, 
     ..PixmapPaint::default()
   };
   pixmap.draw_pixmap(0, 0, layer.as_ref(), &paint, at, None);
+}
+
+/// [`blend_transformed`] for a transform that only scales and moves:
+/// tiny-skia's pipeline gives the same within a level, twice as slow,
+/// which a layer the size of a window notices. Each pixel whose middle
+/// lands on the layer mixes the four layer pixels around where it lands,
+/// the edge ones past it. Each layer row is mixed across once, for the
+/// two pixmap rows that need it, then mixed down and blended in.
+fn blend_scaled(pixmap: &mut PixmapMut<'_>, layer: &Pixmap, at: Transform, opacity: f32) {
+  // Along one axis: the first pixel, then for each the two layer pixels it
+  // mixes and how far it is from the first to the second.
+  let taps = |scale: f32, offset: f32, length: u32, limit: u32| {
+    let start = (offset - 0.5).ceil().max(0.0);
+    let end = (offset + length as f32 * scale - 0.5)
+      .ceil()
+      .min(limit as f32);
+    let last = length as usize - 1;
+    // `as` saturates, so a far-off layer gives an empty range.
+    let taps: Vec<(usize, usize, f32)> = (start as u32..end.max(start) as u32)
+      .map(|pixel| {
+        let x = (pixel as f32 + 0.5 - offset) / scale - 0.5;
+        let floor = x.floor();
+        let index = |at: f32| (at.max(0.0) as usize).min(last);
+        (index(floor), index(floor + 1.0), x - floor)
+      })
+      .collect();
+    (start as usize, taps)
+  };
+  let (x0, columns) = taps(at.sx, at.tx, layer.width(), pixmap.width());
+  let (y0, rows) = taps(at.sy, at.ty, layer.height(), pixmap.height());
+  let opacity = opacity.clamp(0.0, 1.0);
+  let stride = pixmap.width() as usize;
+  let width = layer.width() as usize;
+  let source = layer.data().as_chunks::<4>().0;
+  let data = pixmap.data_mut().as_chunks_mut::<4>().0;
+  // Layer row `index` mixed across at the columns, in levels.
+  let across = |index: usize, mixed: &mut Vec<[f32; 4]>| {
+    let row = &source[index * width..(index + 1) * width];
+    mixed.clear();
+    mixed.extend(columns.iter().map(|&(left, right, t)| {
+      let (a, b) = (row[left], row[right]);
+      std::array::from_fn(|channel| {
+        let (a, b) = (f32::from(a[channel]), f32::from(b[channel]));
+        a + (b - a) * t
+      })
+    }));
+  };
+  let (mut upper, mut lower) = (Vec::new(), Vec::new());
+  let (mut upper_row, mut lower_row) = (usize::MAX, usize::MAX);
+  for (y, &(top, bottom, down)) in rows.iter().enumerate() {
+    if upper_row != top {
+      if lower_row == top {
+        std::mem::swap(&mut upper, &mut lower);
+        std::mem::swap(&mut upper_row, &mut lower_row);
+      } else {
+        across(top, &mut upper);
+        upper_row = top;
+      }
+    }
+    if lower_row != bottom {
+      across(bottom, &mut lower);
+      lower_row = bottom;
+    }
+    let (near, far) = ((1.0 - down) * opacity, down * opacity);
+    let start = (y0 + y) * stride + x0;
+    let target = &mut data[start..start + columns.len()];
+    for ((to, a), b) in target.iter_mut().zip(&upper).zip(&lower) {
+      let mixed: [f32; 4] = std::array::from_fn(|channel| a[channel] * near + b[channel] * far);
+      // Over what is there, which keeps 1 less the alpha of itself.
+      let rest = 1.0 - mixed[3] * (1.0 / 255.0);
+      *to = std::array::from_fn(|channel| {
+        // `as` saturates below 0.
+        (mixed[channel] + f32::from(to[channel]) * rest + 0.5).min(255.0) as u8
+      });
+    }
+  }
 }
 
 /// Blends the premultiplied `layer` over the pixmap with its corner at
