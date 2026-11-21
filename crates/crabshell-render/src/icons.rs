@@ -104,6 +104,8 @@ pub(crate) struct Icons {
   /// What the last still image drawn showed, so its other tiles in the
   /// same draw skip the lookups.
   memo: Option<Memo>,
+  /// The images this draw skipped and loaded already.
+  skipped: HashSet<u64>,
 }
 
 /// The pictures an image showed in a draw: its own and the one its
@@ -389,6 +391,7 @@ impl Icons {
       decoded_off_thread: 0,
       waited: false,
       memo: None,
+      skipped: HashSet::new(),
     }
   }
 
@@ -729,36 +732,51 @@ impl Icons {
   }
 
   /// Loads each of `images`, whose status waits, at its box's size at
-  /// `scale` or one pixel, and tells its status: Ready or Failed at once,
-  /// or when the worker is done. One the worker already decodes from its
-  /// current source waits for that job; one mid-decode on an earlier
-  /// source doesn't hold it back: that job's report is dropped, as the
-  /// image shows another source now. A hidden or transparent
-  /// image would never load otherwise, and a config may show it only once
-  /// it is Ready.
+  /// `scale` or one pixel, as [`unseen`](Self::unseen) does. A hidden or
+  /// transparent image would never load otherwise, and a config may show
+  /// it only once it is Ready.
   pub(crate) fn load_unseen(&mut self, images: &[ImageView<'_>], scale: f32) {
     for image in images {
-      // A draw already sent this source to the worker for it, maybe at a
-      // transform's scale; loading it here too would cancel that job.
-      let sent = self.pending.values().any(|(_, waiting)| {
-        waiting
-          .iter()
-          .any(|(id, source)| *id == image.id && source == image.source)
-      });
-      if sent {
-        continue;
-      }
       // `as` saturates, and NaN is 0.
       let pixels = |length: f32| ((length * scale).round() as u32).max(1);
       let size = (pixels(image.rect.width), pixels(image.rect.height));
-      let key = self.load(image.source, image, size, scale, true, Some(image.id));
-      if let Some(entry) = self.cache.get(&key) {
-        let status = match entry.frames {
-          Some(_) => ImageStatus::Ready,
-          None => ImageStatus::Failed,
-        };
-        crabshell_ui::image_status(image.id, image.source, status);
-      }
+      self.unseen(image, size, scale);
+    }
+  }
+
+  /// Loads `image`, which this draw skips at opacity 0 or cut out by its
+  /// mask region, at `size`, the size a draw would give it, once a frame,
+  /// so showing it draws it from the cache.
+  pub(crate) fn skipped(&mut self, image: &ImageView<'_>, size: (u32, u32), scale: f32) {
+    if self.skipped.insert(image.id) {
+      self.unseen(image, size, scale);
+    }
+  }
+
+  /// Loads `image`, not drawn, at `size`, marked used by this draw, and
+  /// tells its status: Ready or Failed at once, or when the worker is
+  /// done. One the worker already decodes from its current source waits
+  /// for that job; one mid-decode on an earlier source doesn't hold it
+  /// back: that job's report is dropped, as the image shows another
+  /// source now.
+  fn unseen(&mut self, image: &ImageView<'_>, size: (u32, u32), scale: f32) {
+    // A draw already sent this source to the worker for it, maybe at a
+    // transform's scale; loading it here too would cancel that job.
+    let sent = self.pending.values().any(|(_, waiting)| {
+      waiting
+        .iter()
+        .any(|(id, source)| *id == image.id && source == image.source)
+    });
+    if sent {
+      return;
+    }
+    let key = self.load(image.source, image, size, scale, true, Some(image.id));
+    if let Some(entry) = self.cache.get(&key) {
+      let status = match entry.frames {
+        Some(_) => ImageStatus::Ready,
+        None => ImageStatus::Failed,
+      };
+      crabshell_ui::image_status(image.id, image.source, status);
     }
   }
 
@@ -1370,6 +1388,7 @@ impl Icons {
     self.modified.clear();
     // It matches only within a draw, and would keep a gone image's pixels.
     self.memo = None;
+    self.skipped.clear();
     self.let_go_of_left_pictures();
     self.drop_unreachable_pixels();
     let recent = self.frame.saturating_sub(RECENT - 1);

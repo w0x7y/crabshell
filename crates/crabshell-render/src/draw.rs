@@ -281,6 +281,9 @@ impl Renderer {
   /// repaints that, plus what changed in frames this buffer missed
   /// according to `history`, or the whole buffer when that is more than
   /// half of it or the buffer is new. Text and glyphs come from `text`.
+  /// An image in that area it skips, at opacity 0 or cut out by its mask
+  /// region, still has its picture loaded at the size drawing it would
+  /// give, once a draw, so revealing it draws it on its first frame.
   ///
   /// Commit the buffer after every successful draw, in order: the history
   /// counts each one as a frame the compositor showed.
@@ -495,6 +498,25 @@ impl Grid {
     (left < right && top < bottom).then(|| (left, top, right - left, bottom - top))
   }
 
+  /// The transforms around a node moved by `transform`, without their
+  /// moves, and the zoom and scale its layer is drawn at.
+  fn through(&self, transform: Affine) -> (Affine, f32, f32) {
+    let (outer, inner) = (self.linear, transform);
+    let linear = Transform::from_row(outer.sx, outer.ky, outer.kx, outer.sy, 0.0, 0.0).pre_concat(
+      Transform::from_row(inner.sx, inner.ky, inner.kx, inner.sy, 0.0, 0.0),
+    );
+    let linear = Affine {
+      sx: linear.sx,
+      ky: linear.ky,
+      kx: linear.kx,
+      sy: linear.sy,
+      tx: 0.0,
+      ty: 0.0,
+    };
+    let zoom = linear.layer_zoom();
+    (linear, zoom, self.scale / self.zoom * zoom)
+  }
+
   /// This grid for a pixmap placed at `x`, `y` within this one.
   fn moved(&self, x: u32, y: u32) -> Grid {
     Grid {
@@ -566,6 +588,7 @@ impl Painter<'_> {
       opacity.clamp(0.0, 1.0)
     };
     if opacity == 0.0 {
+      self.skip(node);
       return;
     }
     let shadow = effects::cast_by_content(&style);
@@ -579,6 +602,7 @@ impl Painter<'_> {
         inner.region_cover(width, height, node.rect(), region)
       });
     if matches!(region, Some(effects::Cover::Clear)) {
+      self.skip(node);
       return;
     }
     if let Some(transform) = node.transform() {
@@ -603,6 +627,31 @@ impl Painter<'_> {
       pixmap.draw_pixmap(x, y, layer.as_ref(), &paint, Transform::identity(), None);
     } else {
       self.node_contents(pixmap, node, &style);
+    }
+  }
+
+  /// Loads the pictures of the images in `node` and everything inside it
+  /// shown, which this draw skips, at the size drawing them would give,
+  /// so a later reveal draws them on its first frame.
+  fn skip(&mut self, node: NodeView<'_>) {
+    let mut grid = self.grid;
+    if let Some(transform) = node.transform() {
+      (grid.linear, grid.zoom, grid.scale) = grid.through(transform);
+    }
+    if let Content::Image(image) = node.content() {
+      let (width, height) = (
+        (image.rect.width * grid.scale).round(),
+        (image.rect.height * grid.scale).round(),
+      );
+      if width >= 1.0 && height >= 1.0 {
+        // `as` saturates, so a huge box stays in range.
+        let size = (width as u32, height as u32);
+        self.icons.skipped(&image, size, grid.scale);
+      }
+    }
+    let mut inner = self.on(grid);
+    for child in node.children() {
+      inner.skip(child);
     }
   }
 
@@ -662,19 +711,7 @@ impl Painter<'_> {
     let Grid {
       scale, left, top, ..
     } = self.grid;
-    let outer = self.grid.linear;
-    let linear = Transform::from_row(outer.sx, outer.ky, outer.kx, outer.sy, 0.0, 0.0)
-      .pre_concat(Transform::from_row(sx, ky, kx, sy, 0.0, 0.0));
-    let linear = Affine {
-      sx: linear.sx,
-      ky: linear.ky,
-      kx: linear.kx,
-      sy: linear.sy,
-      tx: 0.0,
-      ty: 0.0,
-    };
-    let zoom = linear.layer_zoom();
-    let layer_scale = scale / self.grid.zoom * zoom;
+    let (linear, zoom, layer_scale) = self.grid.through(transform);
     // From the node's own pixels, zoomed, to its parent's.
     let device = Transform::from_scale(scale, scale)
       .pre_concat(Transform::from_row(sx, ky, kx, sy, tx, ty))

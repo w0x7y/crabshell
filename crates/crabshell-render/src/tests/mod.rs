@@ -26,6 +26,7 @@ mod mask_regions;
 mod pixel_images;
 mod repaint;
 mod shapes;
+mod skipped;
 mod status;
 mod theme;
 mod transform;

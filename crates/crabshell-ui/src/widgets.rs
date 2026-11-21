@@ -963,6 +963,15 @@ impl Icon {
 /// delays, looping as the file says. The filters run once on the picture
 /// at the size drawn, and the result is cached, so a filtered image costs
 /// what a plain one does to draw.
+///
+/// An image the renderer skips, at opacity 0, under an ancestor at
+/// opacity 0, or cut out by its mask region, still loads its picture at
+/// the size it would be drawn at whenever its area is repainted, with or
+/// without a [`status`](Image::status), and the cache keeps it as it
+/// keeps a drawn one, so revealing or moving it draws it on its first
+/// frame. That is the way to keep pictures warm. A GIF doesn't play
+/// there. A hidden image, with `visible` false, loads nothing unless it
+/// has a status.
 pub struct Image {
   image: ImageProps,
   common: Common,
@@ -1110,9 +1119,10 @@ impl Image {
   /// missing, or it is past the size limits. Each new source is loaded in
   /// the loop turn that set it, whether the image is drawn or not, so its
   /// own status can show it: one at opacity 0 or cut out by its mask
-  /// region loads at its size, and one hidden or of no size at the box it
-  /// was last laid out in, or one pixel if it has none. A hidden image is decoded again
-  /// at its size once shown, so binding its opacity to Ready is the cheap
+  /// region loads at its size, as it does without a status, and one
+  /// hidden or of no size at the box it was last laid out in, or one
+  /// pixel if it has none. A hidden image is decoded again at its size
+  /// once shown, so binding its opacity to Ready is the cheap
   /// way to fade it in. A picture decoded again at another size stays
   /// Ready. Written only on a change; the signal belongs to the config,
   /// and the image repaints nothing for it.
