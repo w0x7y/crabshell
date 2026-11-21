@@ -1853,19 +1853,35 @@ pub(crate) fn composite(
   let mask = mask.map(Mask::data);
   let data = pixmap.data_mut();
   let source = layer.data();
+  // Without branches, so the loops vectorize; a clear pixel or one the
+  // mask leaves out blends as nothing.
+  let fade = |pixel: [u8; 4], coverage: u8| {
+    pixel.map(|channel| mul(((u32::from(channel) * scale + 32768) >> 16) as u8, coverage))
+  };
+  let blend = |to: &mut [u8; 4], from: [u8; 4]| {
+    let rest = 255 - from[3];
+    *to = std::array::from_fn(|channel| from[channel].saturating_add(mul(to[channel], rest)));
+  };
   for y in y0..y1 {
     // `overlap` keeps these inside the pixmap.
     let start =
       (i64::from(top) + y as i64) as usize * stride + (i64::from(left) + x0 as i64) as usize;
-    let row = &source[(y * width + x0) * 4..(y * width + x1) * 4];
-    for (index, pixel) in row.as_chunks::<4>().0.iter().enumerate() {
-      let coverage = mask.map_or(255, |mask| mask[start + index]);
-      if pixel[3] == 0 || coverage == 0 {
-        continue;
+    let end = start + (x1 - x0);
+    let row = source[(y * width + x0) * 4..(y * width + x1) * 4]
+      .as_chunks::<4>()
+      .0;
+    let target = data[start * 4..end * 4].as_chunks_mut::<4>().0;
+    match mask {
+      Some(mask) => {
+        for ((to, from), &coverage) in target.iter_mut().zip(row).zip(&mask[start..end]) {
+          blend(to, fade(*from, coverage));
+        }
       }
-      let faded =
-        pixel.map(|channel| mul(((u32::from(channel) * scale + 32768) >> 16) as u8, coverage));
-      over(data, (start + index) * 4, faded);
+      None => {
+        for (to, from) in target.iter_mut().zip(row) {
+          blend(to, fade(*from, 255));
+        }
+      }
     }
   }
 }
