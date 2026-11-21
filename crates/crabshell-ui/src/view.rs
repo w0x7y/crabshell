@@ -120,6 +120,15 @@ impl<'a> NodeView<'a> {
     self.node.transform
   }
 
+  /// A number that changes whenever anything the node and everything
+  /// inside it draw changes, but for the node's own opacity and
+  /// transform: a style, text, a picture or frame coming in, a child
+  /// added, removed or moved, a scroll, a hover. A renderer that kept the
+  /// node's layer may blend it in again while this stays the same.
+  pub fn revision(&self) -> u64 {
+    self.node.revision
+  }
+
   /// The style in effect, with a button's hover and pressed styles laid
   /// over its own. Inherited fields aren't filled in;
   /// [`TextView::color`] has the color text is drawn in.

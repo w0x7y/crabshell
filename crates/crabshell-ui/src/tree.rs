@@ -64,6 +64,8 @@ pub(crate) struct Tree {
   pub(crate) scrolled: bool,
   /// Areas to repaint, gathered since the renderer last took them.
   pub(crate) damage: Vec<Rect>,
+  /// Counts the changes to what nodes draw, for their `revision`.
+  pub(crate) revision: u64,
   pub(crate) pointer: Pointer,
   pub(crate) keyboard: Keyboard,
   /// Popups its widgets opened, until the platform takes them.
@@ -198,6 +200,9 @@ pub(crate) struct Node {
   pub(crate) accessible_name: Option<String>,
   /// Where it and everything inside it show, in its own logical pixels.
   pub(crate) mask_region: Option<Region>,
+  /// The tree's `revision` when what it and everything inside it draw
+  /// last changed, but for its own opacity and transform.
+  pub(crate) revision: u64,
 }
 
 pub(crate) enum NodeKind {
@@ -499,6 +504,7 @@ impl Node {
       measured: None,
       accessible_name: None,
       mask_region: None,
+      revision: 0,
     }
   }
 
@@ -614,6 +620,7 @@ impl Tree {
       needs_place: false,
       scrolled: false,
       damage: Vec::new(),
+      revision: 0,
       pointer: Pointer::default(),
       keyboard: Keyboard::default(),
       popups: Vec::new(),
@@ -1329,6 +1336,8 @@ impl Tree {
       .taffy
       .set_children(parent, &children)
       .expect("invariant: every node in a child group is in the tree");
+    // A reorder may move nothing, yet draws the children in a new order.
+    self.touch(parent, true);
     self.needs_layout = true;
     if let Some(before) = before {
       self.children_changed(parent, &before, &children);
@@ -1423,11 +1432,58 @@ impl Tree {
     change
   }
 
+  /// [`update`](Self::update) for a change to what node `id` shows of its
+  /// style, which may move only its opacity and transform: the renderer
+  /// blends a layer it kept through those, so its `revision` stays.
+  fn update_shown(&mut self, id: NodeId, f: impl FnOnce(&mut Node) -> Change) -> Change {
+    let Some(node) = self.node_mut(id) else {
+      return Change::None;
+    };
+    let before = node.shown_style();
+    let change = f(node);
+    let after = node.shown_style();
+    if change != Change::None && !before.inherits_like(&after) {
+      self.touch_inside(id);
+    }
+    let own = !before.same_but_layering(&after);
+    self.invalidate_drawn(id, change, own);
+    change
+  }
+
+  /// Records that what node `id` draws changed, with everything around it,
+  /// in their `revision`s; `own` false leaves its own, for a change only to
+  /// its opacity or transform.
+  pub(crate) fn touch(&mut self, id: NodeId, own: bool) {
+    self.revision += 1;
+    let now = self.revision;
+    let mut at = if own { Some(id) } else { self.taffy.parent(id) };
+    while let Some(current) = at {
+      if let Some(node) = self.node_mut(current) {
+        node.revision = now;
+      }
+      at = self.taffy.parent(current);
+    }
+  }
+
+  /// [`touch`](Self::touch) for node `id` and everything inside it, whose
+  /// text inherits what changed.
+  fn touch_inside(&mut self, id: NodeId) {
+    self.touch(id, true);
+    let now = self.revision;
+    let mut pending = vec![id];
+    while let Some(next) = pending.pop() {
+      if let Some(node) = self.node_mut(next) {
+        node.revision = now;
+      }
+      pending.extend(self.taffy.children(next).unwrap_or_default());
+    }
+  }
+
   /// Runs `f` on node `id` and works out from the style in effect before
   /// and after whether the change needs a layout or only a repaint.
   pub(crate) fn update_style(&mut self, id: NodeId, f: impl FnOnce(&mut Node)) -> Change {
     let mut fade = None;
-    let change = self.update(id, |node| {
+    let change = self.update_shown(id, |node| {
       let shown = node.shown_style();
       let before = node.effective_style();
       // A state style showed over its own, and now none does.
@@ -1500,7 +1556,7 @@ impl Tree {
         let waiting = transition.waiting(begun, now);
         let (t, ended) = transition.progress(begun, now);
         let mut mine = false;
-        tree.update(id, |node| {
+        tree.update_shown(id, |node| {
           if node
             .fade
             .as_ref()
@@ -1690,6 +1746,15 @@ impl Tree {
 
   /// Records that node `id` needs a repaint, or the window a layout.
   pub(crate) fn invalidate(&mut self, id: NodeId, change: Change) {
+    self.invalidate_drawn(id, change, true);
+  }
+
+  /// [`invalidate`](Self::invalidate), touching node `id`'s own `revision`
+  /// only if `own`.
+  fn invalidate_drawn(&mut self, id: NodeId, change: Change, own: bool) {
+    if change != Change::None {
+      self.touch(id, own);
+    }
     match change {
       Change::None => {}
       Change::Paint | Change::Place => {

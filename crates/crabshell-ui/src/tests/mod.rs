@@ -41,6 +41,7 @@ mod popup;
 mod pressed;
 mod primary;
 mod region;
+mod revision;
 mod rich;
 mod screencopy;
 mod scroll;

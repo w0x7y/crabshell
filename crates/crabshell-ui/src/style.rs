@@ -1650,6 +1650,27 @@ impl Style {
       .any(f32::is_finite)
   }
 
+  /// Whether the two styles differ at most in opacity and transform, which
+  /// the renderer blends a widget's layer through.
+  pub(crate) fn same_but_layering(&self, other: &Style) -> bool {
+    let layered = Style {
+      opacity: other.opacity,
+      translate: other.translate,
+      scale: other.scale,
+      rotate: other.rotate,
+      origin: other.origin,
+      ..*self
+    };
+    layered == *other
+  }
+
+  /// Whether the two styles hand text inside the same color and lines.
+  pub(crate) fn inherits_like(&self, other: &Style) -> bool {
+    self.color == other.color
+      && self.underline == other.underline
+      && self.strikethrough == other.strikethrough
+  }
+
   /// Whether the two styles move the widget the same way where it is
   /// drawn.
   pub(crate) fn same_transform(&self, other: &Style) -> bool {

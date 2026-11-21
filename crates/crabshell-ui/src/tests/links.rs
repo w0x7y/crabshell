@@ -332,9 +332,12 @@ fn a_hovered_link_lights_up_and_repaints_only_itself() {
   assert!(!lit(&window, &[0, 0], 1));
   assert!(window.take_damage().is_empty(), "nothing lit or unlit");
 
+  let revision = |window: &Window| node_at(window.view().root(), &[0, 0]).revision();
+  let unlit = revision(&window);
   window.pointer_motion(link);
   assert!(lit(&window, &[0, 0], 1));
   assert!(!lit(&window, &[0, 0], 0));
+  assert_ne!(revision(&window), unlit, "a renderer's kept layer is stale");
   let damage = window.take_damage();
   assert!(!damage.is_empty());
   // The link's area, not the plain words before it.

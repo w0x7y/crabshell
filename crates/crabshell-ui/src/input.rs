@@ -683,6 +683,7 @@ impl Tree {
       .chain(index)
       .flat_map(|index| text.link_areas(index))
       .collect();
+    self.touch(id, true);
     for area in areas {
       let area = self.window_area(id, area);
       add_damage(&mut self.damage, area);

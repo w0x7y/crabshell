@@ -532,6 +532,8 @@ impl Tree {
       node.measured = Some(size);
       self.measured.push((Rc::clone(measure), size));
     }
+    // Moved within its own coordinates, not by a transform around it.
+    let moved = node.rect != Some(rect) || node.painted != painted || node.changed;
     node.clips = clips;
     node.casts = casts;
     node.rect = Some(rect);
@@ -546,6 +548,9 @@ impl Tree {
     node.window_bounds = window_bounds;
     node.window_painted = window_painted;
     node.changed = false;
+    if moved {
+      self.touch(id, true);
+    }
     bounds
   }
 }
