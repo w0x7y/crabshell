@@ -198,9 +198,9 @@ pub struct ImageFilters {
   /// A Gaussian blur's standard deviation in logical pixels, as CSS's
   /// `blur()`.
   pub blur: f32,
-  /// The most pixels across and down the picture is made at before the
-  /// other filters run, from [`Image::decode_size`]; a side of 0 doesn't
-  /// limit that side.
+  /// The most logical pixels across and down the picture is made at
+  /// before the other filters run, from [`Image::decode_size`]; a side of
+  /// 0 doesn't limit that side.
   pub decode_size: Option<(u32, u32)>,
 }
 
@@ -1100,10 +1100,13 @@ impl Image {
   /// filters and scales the result up to the box, as Qt's `sourceSize`.
   /// A wallpaper blurred behind a lock screen can be made at half the
   /// screen's size, which blurs four times faster and looks the same.
-  /// The size is in the picture's pixels, not logical ones, and the
-  /// picture keeps the box's shape and `fit`; a side of 0 doesn't limit
-  /// that side, and a size at least the box's in buffer pixels changes
-  /// nothing. `None`, the default, makes the picture at the box's size.
+  /// The size is in logical pixels, as the box's, so at scale 2
+  /// `decode_size((960, 540))` makes a 1920x1080 picture. The picture
+  /// keeps the box's shape and `fit`, worked out at the small size, so a
+  /// [`Fit::Contain`] picture's edges land on the small picture's pixels.
+  /// A side of 0 doesn't limit that side, and a size at least the box's
+  /// changes nothing. `None`, the default, makes the picture at the box's
+  /// size.
   ///
   /// The file is still read whole; what shrinks is the scaling and the
   /// filters after it. The cache keeps the picture at the box's size,

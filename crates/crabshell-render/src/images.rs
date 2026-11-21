@@ -44,9 +44,9 @@ pub(crate) fn filtered(
 }
 
 /// `picture` scaled to `width` by `height` as `fit` says, through
-/// `filters` at `scale`. With a decode size smaller than the box, the
-/// picture is made at that size, the box's shape kept, filtered there and
-/// stretched up to the box.
+/// `filters` at `scale`. With a decode size, in logical pixels, smaller
+/// than the box, the picture is made at that size times `scale`, the box's
+/// shape kept, filtered there and stretched up to the box.
 pub(crate) fn finish(
   picture: &Picture,
   (width, height): (u32, u32),
@@ -55,10 +55,10 @@ pub(crate) fn finish(
   scale: f32,
 ) -> Result<Pixmap, String> {
   if let Some(sides) = filters.decode_size {
-    // A side of 0 doesn't limit that side.
+    // A side of 0 doesn't limit that side; the size is logical, as the box's.
     let limit = |most: u32, side: u32| match most {
       0 => 1.0,
-      _ => most as f32 / side as f32,
+      _ => most as f32 * scale / side as f32,
     };
     let factor = limit(sides.0, width).min(limit(sides.1, height));
     if factor < 1.0 {

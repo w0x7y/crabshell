@@ -334,6 +334,13 @@ fn a_decode_size_makes_the_picture_small_then_scales_it_up() {
     "red meets green: {edge:?}"
   );
   assert!(at(Some((4, 0))) == coarse, "a side of 0 doesn't limit it");
+  // The size is logical: at scale 2 the same size makes the picture twice as fine.
+  let filters = ImageFilters {
+    decode_size: Some((2, 1)),
+    ..ImageFilters::default()
+  };
+  let doubled = filtered(&stripes, (40, 20), Fit::Fill, &filters, 2.0).expect("decoded");
+  assert!(doubled == coarse, "logical at scale 2");
   for unlimited in [(40, 20), (100, 0), (0, 0)] {
     assert!(at(Some(unlimited)) == full, "{unlimited:?}");
   }
