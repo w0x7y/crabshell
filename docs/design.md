@@ -106,7 +106,7 @@ A config is a normal Cargo project in `~/.config/crabshell/`, created from a tem
     └── main.rs
 ```
 
-The template's `Cargo.toml` compiles dependencies once with full optimization and the config itself at `opt-level = 1`, so edits rebuild fast and the shell still runs fast.
+The template's `Cargo.toml` compiles dependencies once with full optimization and without debug assertions or overflow checks, as release does, and the config itself at `opt-level = 1`, so edits rebuild fast and the shell still runs fast.
 
 ```toml
 [package]
@@ -796,6 +796,7 @@ Rules settled while building `crabshell-ui` (0.9 gap fixes):
 - `cx.sequence_now` reads its steps once, untracked, as it is made, and plays at once. It is logged as `animation cx.sequence_now at <file:line>`.
 - `on_any_press` runs at the press that starts a hold, after `on_press` for the left button, and never for a second button while one is held or for a left press or touch on a scroll bar.
 - A play's leading steps of 0 ms and no delay land in the flush that starts it, so that turn's layout and draw already show them. A play of no time ends in that flush and never starts the clock. A 0 ms transition with no delay on `cx.animate` lands the same way.
+- Every node has a `revision` (`NodeView::revision`) that changes whenever anything it or its subtree draws changes, including text reshaped for an inherited style or added font, while its own opacity and transform leave it unchanged.
 
 ## Rendering
 
@@ -939,6 +940,14 @@ Rules settled while building `crabshell-render` (0.9 gap fixes):
 - The renderer tells an image's status `Ready` when its source's picture loads and `Failed` when the file can't be read or decoded or is refused by a cap, drawn or not, and nothing while the picture is decoded off the thread, until it comes in. `Renderer::load_images` loads a window's images whose status waits, at their laid-out size or one pixel; a job for an earlier source doesn't hold it back, and that job's report is dropped.
 - An `Image` of raw pixels is scaled on the loop's thread, once per size, fit and filters, and cached by the pixels' shared allocation; the raw bytes count toward the cache's 32 MiB, and an entry whose pixels nothing else holds is dropped at the end of the frame. A source with the same bytes keeps the picture shown. An icon name is looked up in the theme at the box's larger side and the scale rounded up, then decoded as that file, so it can use the worker. An empty path or name is `Empty` and is never logged.
 - A subtree a draw skips at opacity 0, or cut out by its mask region, is looked through once a draw, within its clips and the window, and only when the window holds an image; each Image a reveal would draw is loaded at the size drawing it would give, scale and transform zoom included, through the same cache and worker path as a drawn one. It never plays a GIF or holds a first frame.
+- A layer, a moved layer and a picture are blended in by an integer premultiplied source-over loop at an opacity and through an optional mask. It matches tiny-skia's `draw_pixmap` within a level, and it vectorizes. A transform that tiny-skia sees as an identity or pure translation is blitted at `(tx - 0.5).ceil()`, as its nearest sampling places it. A transform that only scales and moves uses a separable float bilinear blend within a level of tiny-skia; any other transform goes through `draw_pixmap` bilinearly.
+- A tile that a rounded box covers whole, with no corner curve reaching into it, has its children drawn straight in with no clip layer or mask. Its background is filled without a path. The border ring is skipped where its hole covers the tile.
+- A cut-out shadow is skipped in a tile its box covers whole. In an edge tile, only the runs of columns the box doesn't cover in every row are worked out. `large_boxes@*.png` and `large_cut_out_shadows@*.png` pin both at all five scales.
+- A picture already the box's size is copied, not resampled.
+- With a decode size smaller than the box in logical pixels (multiplied by the output scale), the picture is made at that size, keeping the box's shape. The filters run there with the blur scaled to match, and the result is stretched up to the box bilinearly, once. A side of 0 doesn't limit that side. The cache keys the picture by the decode size and keeps it at the box's size.
+- A layer drawn for opacity or a transform is kept between draws while the node's `revision` stays and its own opacity (or, with a transform, its transform) changes, and the renderer's icon theme has not changed. It is dropped when a draw of its window doesn't draw it through a layer, and never holds a playing GIF or a transitioning image. While kept, its images and scaled captures stay marked used so they aren't evicted. Kept layers and shadow patches share 32 MiB per renderer.
+- A kept transformed layer is drawn whole, so it shows none of the seams a layer cut to each tile shows (up to 14/255 at a chopped rounded corner). For that reason it is kept only while its transform moves.
+- A blurred outer shadow whose box is at least twice its largest corner plus its blur's reach, plus two, on each side, is drawn from a patch of that size, within 1/255.
 
 ## Wayland platform
 

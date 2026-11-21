@@ -346,12 +346,15 @@ crabshell = "0.9"
 opt-level = 1
 
 [profile.dev.package."*"]
-opt-level = 3</code></pre>
+opt-level = 3
+debug-assertions = false
+overflow-checks = false</code></pre>
         <p>
           <code>crabshell run</code> builds with cargo's dev profile. The two
-          profile sections compile every dependency with full optimization,
-          once, and your own crate lightly, so an edit rebuilds in under a
-          second. Keep them.
+          profile sections compile every dependency with full optimization and
+          without debug assertions or overflow checks, once, and your own crate
+          lightly, so an edit rebuilds in under a second while drawing runs at
+          release speed. Keep them.
         </p>
         <p>
           The package name is yours, and so is anything under
