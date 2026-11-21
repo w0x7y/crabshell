@@ -779,7 +779,9 @@ impl<T> Animation<T> {
 
   /// `true` from the moment a new target starts it, through its delay,
   /// until it settles there. It turns `false` once per animation, so an
-  /// effect on it is the place for what follows.
+  /// effect on it is the place for what follows; one that takes no time,
+  /// a 0 ms target or a sequence of only 0 ms steps, never turns it true,
+  /// so read its trigger too if what follows must run after it.
   pub fn running(&self) -> ReadSignal<bool> {
     self.running
   }
