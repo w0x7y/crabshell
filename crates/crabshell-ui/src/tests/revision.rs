@@ -234,3 +234,41 @@ fn a_layered_node_moved_by_its_sibling_gets_a_new_revision() {
   assert_ne!(after.0, before.0, "its layer would be drawn where it was");
   assert_ne!(after.1, before.1);
 }
+
+#[test]
+fn text_shaped_again_for_an_inherited_style_moves_the_revisions_around_it() {
+  use crate::TextAlign;
+  let mut h = Harness::new();
+  let end = h.cx.signal(false);
+  let outer = Stack::new()
+    .style(move || {
+      let align = if end.get() {
+        TextAlign::End
+      } else {
+        TextAlign::Start
+      };
+      Style::new().width(200.0).height(40.0).text_align(align)
+    })
+    .child(
+      Stack::new()
+        .style(Style::new().width(200.0).height(40.0).opacity(0.5))
+        // A box of its own, so only its glyphs move.
+        .child(Text::new("ab").style(Style::new().width(200.0).height(30.0))),
+    );
+  let window = h.window(h.panel().child(outer), 200.0, 40.0);
+  let layered = |window: &Window| {
+    let view = window.view();
+    let root = view.root();
+    (
+      node_at(root, &[0, 0]).revision(),
+      node_at(root, &[0, 0, 0]).revision(),
+    )
+  };
+  let before = layered(&window);
+
+  end.set(true);
+  h.frame(&window);
+  let after = layered(&window);
+  assert_ne!(after.0, before.0, "its layer holds the old glyphs");
+  assert_ne!(after.1, before.1);
+}

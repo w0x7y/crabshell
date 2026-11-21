@@ -249,6 +249,10 @@ impl Tree {
     } else if reshaped || changed {
       let _ = self.taffy.mark_dirty(id);
     }
+    // New glyphs in the same box move nothing a layout sees.
+    if reshaped {
+      self.touch(id, true);
+    }
     for child in self.taffy.children(id).unwrap_or_default() {
       self.sync(child, child_parent, inherited, text);
     }

@@ -122,9 +122,11 @@ impl<'a> NodeView<'a> {
 
   /// A number that changes whenever anything the node and everything
   /// inside it draw changes, but for the node's own opacity and
-  /// transform: a style, text, a picture or frame coming in, a child
-  /// added, removed or moved, a scroll, a hover. A renderer that kept the
-  /// node's layer may blend it in again while this stays the same.
+  /// transform: a style, its own or one its text inherits, text shaped
+  /// again, a picture or frame coming in, a child added, removed or
+  /// moved, a scroll, a hover. A renderer that kept the node's layer may
+  /// blend it in again while this stays the same. What only the renderer
+  /// knows, such as its icon theme, it tracks itself.
   pub fn revision(&self) -> u64 {
     self.node.revision
   }
