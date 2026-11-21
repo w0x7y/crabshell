@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crabshell_ui::Affine;
 use tiny_skia::Pixmap;
 
+use super::patched::{Key, Patch};
+
 /// The most bytes one renderer keeps for all its windows, 32 MiB: two
 /// 1080p screens of layers. Past it, a layer is drawn as usual.
 pub(crate) const KEPT_LIMIT: u64 = 32 << 20;
@@ -23,12 +25,20 @@ pub(crate) struct Kept {
   /// Counts the bytes kept against the renderer's [`KEPT_LIMIT`].
   pub(super) budget: Arc<AtomicU64>,
   pub(super) seen: HashMap<String, Seen>,
+  /// The small blurred boxes large shadows are drawn from, with the draw
+  /// that last used each.
+  pub(super) patches: HashMap<Key, (u64, Patch)>,
 }
 
 impl std::fmt::Debug for Kept {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     let layers = self.seen.values().filter(|seen| seen.layer.is_some());
-    write!(f, "Kept {{ layers: {} }}", layers.count())
+    let patches = self.patches.len();
+    write!(
+      f,
+      "Kept {{ layers: {}, patches: {patches} }}",
+      layers.count()
+    )
   }
 }
 
@@ -43,6 +53,24 @@ impl Kept {
   pub(super) fn end(&mut self) {
     let frame = self.frame;
     self.seen.retain(|_, seen| seen.frame == frame);
+    self.patches.retain(|_, (used, _)| *used == frame);
+  }
+
+  /// The small box a large shadow of `key` is drawn from, worked out on
+  /// its first use, or `None` past the budget.
+  pub(super) fn patch(&mut self, key: Key) -> Option<&Patch> {
+    #[cfg(test)]
+    if !PATCHES.get() {
+      return None;
+    }
+    let frame = self.frame;
+    if !self.patches.contains_key(&key) {
+      let held = self.hold(Patch::bytes(&key))?;
+      self.patches.insert(key, (frame, Patch::new(&key, held)));
+    }
+    let (used, patch) = self.patches.get_mut(&key)?;
+    *used = frame;
+    Some(patch)
   }
 
   /// The layer kept for the node at `path` in this draw.
@@ -59,6 +87,13 @@ impl Kept {
     };
     (total <= KEPT_LIMIT).then_some(held)
   }
+}
+
+#[cfg(test)]
+thread_local! {
+  /// Whether this thread's draws draw large shadows from patches, which a
+  /// test turns off to draw them pixel by pixel.
+  pub(crate) static PATCHES: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
 /// What a draw of a window saw of a node drawn through a layer for its

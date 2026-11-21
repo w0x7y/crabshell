@@ -25,6 +25,7 @@ mod icons;
 mod images;
 mod kept;
 mod mask_regions;
+mod patched;
 mod pixel_images;
 mod repaint;
 mod shapes;

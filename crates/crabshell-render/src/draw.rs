@@ -28,12 +28,13 @@ mod canvas;
 mod effects;
 mod gradient;
 mod kept;
+mod patched;
 mod transition;
 
-#[cfg(test)]
-pub(crate) use kept::KEPT_LIMIT;
 pub(crate) use kept::Kept;
 use kept::{Area, Layer, Seen, Want};
+#[cfg(test)]
+pub(crate) use kept::{KEPT_LIMIT, PATCHES};
 
 /// The side of a tile, in buffer pixels. tiny-skia cuts a curve where it
 /// leaves the pixmap, which changes the antialiasing beside the cut, so
@@ -1409,8 +1410,10 @@ impl Painter<'_> {
   /// `shadow` of the box `rect` with `style`'s corners. A sharp one is a
   /// filled shape; a blurred one is worked out pixel by pixel in buffer
   /// pixels, so every tile agrees, and only within one and a half blurs
-  /// of its shape, past which it fades below a 255th.
-  fn shadow(&self, pixmap: &mut PixmapMut<'_>, rect: Rect, style: &Style, shadow: &Shadow) {
+  /// of its shape, past which it fades below a 255th. A large one is
+  /// drawn from a small one of its corners, blur and place within a pixel,
+  /// worked out once while drawing keeps using it.
+  fn shadow(&mut self, pixmap: &mut PixmapMut<'_>, rect: Rect, style: &Style, shadow: &Shadow) {
     let Grid {
       scale, left, top, ..
     } = self.grid;
@@ -1472,7 +1475,10 @@ impl Painter<'_> {
     if columns.is_empty() || rows.is_empty() {
       return;
     }
-    let blurred = BlurredBox::new(shape, corners, sigma);
+    let patch = patched::Patch::key(shape, corners, sigma).and_then(|key| self.kept.patch(key));
+    let blurred = patch
+      .is_none()
+      .then(|| BlurredBox::new(shape, corners, sigma));
     let stride = pixmap.width() as usize;
     // A cut-out shadow leaves a column the box covers in every row clear,
     // so only the runs of columns between them are worked out.
@@ -1495,8 +1501,18 @@ impl Painter<'_> {
       start = end;
       let mut mask = Vec::with_capacity(run.len() * rows.len());
       for row in rows.clone() {
-        let xs = run.clone().map(|column| left + column as f32 + 0.5);
-        blurred.row(top + row as f32 + 0.5, xs, &mut mask);
+        match (patch, &blurred) {
+          (Some(patch), _) => {
+            // The grid's corner is a whole pixel.
+            let columns = run.clone().map(|column| left as i64 + i64::from(column));
+            patch.row(shape, top as i64 + i64::from(row), columns, &mut mask);
+          }
+          (None, Some(blurred)) => {
+            let xs = run.clone().map(|column| left + column as f32 + 0.5);
+            blurred.row(top + row as f32 + 0.5, xs, &mut mask);
+          }
+          (None, None) => {}
+        }
       }
       if let Some(cut) = &cut {
         let under = rows.clone().flat_map(|row| {
