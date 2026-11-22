@@ -6,7 +6,7 @@
 
 use tiny_skia::{FillRule, IntSize, Mask, PathBuilder, Pixmap, Transform};
 
-use crate::draw::{composite, composite_within, over_word, rounded_rect};
+use crate::draw::{composite, composite_within, floor_byte, over_word, rounded_rect};
 use crate::draw::{straight_inside, straight_rows};
 
 const SCALES: [f32; 5] = [1.0, 1.25, 1.5, 1.75, 2.0];
@@ -108,6 +108,35 @@ fn a_blend_of_whole_words_matches_the_blend_channel_by_channel() {
       }
     }
   }
+}
+
+#[test]
+fn a_level_is_floored_as_a_cast_floors_it() {
+  let mut checks = 0;
+  // Every value it is given lies from 0 to 255.
+  let mut check = |value: f32| {
+    if value <= 255.0 {
+      assert_eq!(floor_byte(value), value as u8, "{value}");
+      checks += 1;
+    }
+  };
+  for level in 0..=255u32 {
+    let whole = level as f32;
+    check(whole);
+    check(f32::from_bits(whole.to_bits() + 1));
+    if level > 0 {
+      check(f32::from_bits(whole.to_bits() - 1));
+    }
+    for step in 1..64 {
+      check(whole + step as f32 / 64.0);
+    }
+  }
+  let mut bits = 0;
+  while f32::from_bits(bits) < 256.0 {
+    check(f32::from_bits(bits));
+    bits += 4099;
+  }
+  assert!(checks > 250_000, "{checks}");
 }
 
 #[test]

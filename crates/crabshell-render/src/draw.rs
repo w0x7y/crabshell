@@ -2339,7 +2339,7 @@ fn blend_scaled(pixmap: &mut PixmapMut<'_>, layer: &Pixmap, at: Transform, opaci
       })
     }));
   };
-  let (mut upper, mut lower) = (Vec::new(), Vec::new());
+  let (mut upper, mut lower, mut faded) = (Vec::new(), Vec::new(), Vec::new());
   let (mut upper_row, mut lower_row) = (usize::MAX, usize::MAX);
   for (y, &(top, bottom, down)) in rows.iter().enumerate() {
     if upper_row != top {
@@ -2356,18 +2356,33 @@ fn blend_scaled(pixmap: &mut PixmapMut<'_>, layer: &Pixmap, at: Transform, opaci
       lower_row = bottom;
     }
     let (near, far) = ((1.0 - down) * opacity, down * opacity);
+    // Mixed down and faded, rounded to levels channel by channel, then
+    // blended over what is there a pixel at a time, both of which
+    // vectorize.
+    faded.clear();
+    let lanes = upper.as_flattened().iter().zip(lower.as_flattened());
+    faded.extend(lanes.map(|(&a, &b)| floor_byte((a * near + b * far + 0.5).min(255.0))));
     let start = (y0 + y) * stride + x0;
     let target = &mut data[start..start + columns.len()];
-    for ((to, a), b) in target.iter_mut().zip(&upper).zip(&lower) {
-      let mixed: [f32; 4] = std::array::from_fn(|channel| a[channel] * near + b[channel] * far);
-      // Over what is there, which keeps 1 less the alpha of itself.
-      let rest = 1.0 - mixed[3] * (1.0 / 255.0);
-      *to = std::array::from_fn(|channel| {
-        // `as` saturates below 0.
-        (mixed[channel] + f32::from(to[channel]) * rest + 0.5).min(255.0) as u8
-      });
+    for (to, from) in target.iter_mut().zip(faded.as_chunks::<4>().0) {
+      *to = over_word(u32::from_le_bytes(*to), u32::from_le_bytes(*from)).to_le_bytes();
     }
   }
+}
+
+/// `value as u8` for a value from 0 to 255, in steps that vectorize,
+/// which a cast doesn't: adding 2^23 leaves the value rounded to a whole
+/// number in the low bits of the sum, one too many where it rounded up.
+/// Only that range: 256 and up wrap, and a negative value or NaN is junk.
+pub(crate) fn floor_byte(value: f32) -> u8 {
+  debug_assert!(
+    (0.0..=255.0).contains(&value),
+    "floor_byte takes 0 to 255, not {value}"
+  );
+  const WHOLE: f32 = 8_388_608.0;
+  let shifted = value + WHOLE;
+  let up = u32::from(shifted - WHOLE > value);
+  (shifted.to_bits().wrapping_sub(up) & 0xff) as u8
 }
 
 /// The premultiplied pixel `from` over `to`, as little-endian words of
