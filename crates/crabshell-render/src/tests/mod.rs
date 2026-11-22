@@ -31,6 +31,7 @@ mod repaint;
 mod shapes;
 mod skipped;
 mod status;
+mod straight;
 mod theme;
 mod transform;
 mod transitions;

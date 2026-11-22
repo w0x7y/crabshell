@@ -11,11 +11,33 @@ use super::{over, overlap};
 /// opaque are copied, others blended over. tiny-skia's `draw_pixmap`
 /// gives the same at a whole-pixel offset, through a raster pipeline
 /// several times slower, which a 1080p wallpaper notices.
-pub(super) fn blit(pixmap: &mut PixmapMut<'_>, (left, top): (i32, i32), picture: &Pixmap) {
+pub(super) fn blit(pixmap: &mut PixmapMut<'_>, at: (i32, i32), picture: &Pixmap) {
+  let whole = [0, 0, pixmap.width(), pixmap.height()];
+  blit_within(pixmap, at, picture, whole);
+}
+
+/// [`blit`] of only what lands within `area` of the pixmap: its left,
+/// top, right and bottom pixel edges.
+pub(super) fn blit_within(
+  pixmap: &mut PixmapMut<'_>,
+  (left, top): (i32, i32),
+  picture: &Pixmap,
+  [area_left, area_top, area_right, area_bottom]: [u32; 4],
+) {
   let (width, height) = (picture.width(), picture.height());
   let Some((x0, x1, y0, y1)) = overlap(pixmap, left, top, width, height) else {
     return;
   };
+  // The picture's pixels that land in the area.
+  let from = |edge: u32, at: i32| (i64::from(edge) - i64::from(at)).max(0) as usize;
+  let (x0, x1) = (
+    x0.max(from(area_left, left)),
+    x1.min(from(area_right, left)),
+  );
+  let (y0, y1) = (y0.max(from(area_top, top)), y1.min(from(area_bottom, top)));
+  if x0 >= x1 || y0 >= y1 {
+    return;
+  }
   let stride = pixmap.width() as usize;
   let data = pixmap.data_mut();
   let source = picture.data();

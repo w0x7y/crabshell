@@ -8,7 +8,7 @@ use std::path::Path;
 use crabshell_ui::{Mask, NodeView, Rect, Region, RegionOp, RegionShape, Shadow, Style};
 use tiny_skia::{FillRule, MaskType, Paint, PathBuilder, Pixmap, PixmapMut, Transform};
 
-use super::{Corners, Grid, LAYER_MARGIN, Painter, fit, mul, rounded_rect};
+use super::{Corners, Grid, LAYER_MARGIN, Painter, fit, mul, rounded_rect, straight_inside};
 
 impl Painter<'_> {
   /// Keeps `layer` only where `mask`, laid over `rect`, is opaque, its
@@ -677,6 +677,24 @@ fn shape_cover(width: u32, height: u32, area: tiny_skia::Rect, corners: Option<C
   };
   if whole {
     return Cover::Whole;
+  }
+  if let Some([left, top, right, bottom]) =
+    corners.and_then(|corners| straight_inside((width, height), area, corners))
+  {
+    // The path would fill that rectangle whole and nothing else.
+    let Some(mut mask) = tiny_skia::Mask::new(width, height) else {
+      return Cover::Clear;
+    };
+    let (columns, stride) = (left as usize..right as usize, width as usize);
+    for row in mask
+      .data_mut()
+      .chunks_exact_mut(stride)
+      .take(bottom as usize)
+      .skip(top as usize)
+    {
+      row[columns.clone()].fill(255);
+    }
+    return Cover::Part(mask);
   }
   let path = match corners {
     Some(corners) => {

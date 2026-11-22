@@ -1200,10 +1200,9 @@ impl Painter<'_> {
       draw(&mut inner, pixmap);
       return;
     }
-    let (Some(mut mask), Some((x, y, layer_width, layer_height))) = (
-      Mask::new(pixmap.width(), pixmap.height()),
-      self.grid.cover(cover, pixmap.width(), pixmap.height()),
-    ) else {
+    let Some((x, y, layer_width, layer_height)) =
+      self.grid.cover(cover, pixmap.width(), pixmap.height())
+    else {
       return;
     };
     let Some(mut layer) = Pixmap::new(layer_width, layer_height) else {
@@ -1213,13 +1212,29 @@ impl Painter<'_> {
     let mut inner = self.on(self.grid.moved(x, y));
     inner.extent = extent;
     draw(&mut inner, &mut layer.as_mut());
-    let mut path = PathBuilder::new();
-    rounded_rect(&mut path, shape, corners);
-    let Some(path) = path.finish() else {
-      return;
-    };
-    mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
-    composite(pixmap, (x as i32, y as i32), &layer, 1.0, Some(&mask));
+    let at = (x as i32, y as i32);
+    let size = (pixmap.width(), pixmap.height());
+    if let Some(inside) = straight_inside(size, shape, corners) {
+      // The mask would keep that rectangle whole and nothing else.
+      transition::blit_within(pixmap, at, &layer, inside);
+    } else if let Some(mut mask) = Mask::new(size.0, size.1) {
+      let mut path = PathBuilder::new();
+      rounded_rect(&mut path, shape, corners);
+      if let Some(path) = path.finish() {
+        mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
+        let (width, height) = size;
+        match straight_rows(size, shape, corners) {
+          // Between its corners' rows, the mask keeps the rectangle whole.
+          Some([left, top, right, bottom]) => {
+            composite_within(pixmap, at, &layer, 1.0, Some(&mask), [0, 0, width, top]);
+            transition::blit_within(pixmap, at, &layer, [left, top, right, bottom]);
+            let below = [0, bottom, width, height];
+            composite_within(pixmap, at, &layer, 1.0, Some(&mask), below);
+          }
+          None => composite(pixmap, at, &layer, 1.0, Some(&mask)),
+        }
+      }
+    }
   }
 
   /// A widget's rectangle on the pixel grid and each corner's radius in
@@ -1453,10 +1468,10 @@ impl Painter<'_> {
     if shadow.color.a == 0 || !numbers.iter().all(|n| n.is_finite()) {
       return;
     }
-    let Some((area, corners)) = self.box_shape(rect, style) else {
+    let Some((area, box_corners)) = self.box_shape(rect, style) else {
       return;
     };
-    if shadow.cut_out && covers(pixmap, area, corners) {
+    if shadow.cut_out && covers(pixmap, area, box_corners) {
       return;
     }
     // The shape in buffer pixels.
@@ -1469,15 +1484,27 @@ impl Painter<'_> {
     ) else {
       return;
     };
-    let corners = fit(spread_corners(corners, spread), shape);
-    // A cut-out shadow leaves clear what the box's background covers.
-    let cut = if shadow.cut_out {
+    let corners = fit(spread_corners(box_corners, spread), shape);
+    // CSS draws a blur as a Gaussian of half its length.
+    let sigma = shadow.blur.max(0.0) * scale / 2.0;
+    // A cut-out shadow leaves clear what the box's background covers: a
+    // rectangle where no curve of the box's own corners reaches this
+    // pixmap, else a mask.
+    let straight = shadow
+      .cut_out
+      .then(|| straight_inside((pixmap.width(), pixmap.height()), area, box_corners))
+      .flatten()
+      .filter(|_| sigma >= 0.25);
+    let cut = if shadow.cut_out && straight.is_none() {
       self.box_mask(pixmap, rect, style)
     } else {
       None
     };
-    // CSS draws a blur as a Gaussian of half its length.
-    let sigma = shadow.blur.max(0.0) * scale / 2.0;
+    // Between the corners' rows, the box covers a span whole and the rest
+    // not at all, so those rows need no mask.
+    let straight_rows = cut
+      .as_ref()
+      .and_then(|_| straight_rows((pixmap.width(), pixmap.height()), area, box_corners));
     if sigma < 0.25 {
       let mut path = PathBuilder::new();
       let Some(shape) = shape.transform(Transform::from_translate(-left, -top)) else {
@@ -1512,27 +1539,41 @@ impl Painter<'_> {
       .is_none()
       .then(|| BlurredBox::new(shape, corners, sigma));
     let stride = pixmap.width() as usize;
-    // A cut-out shadow leaves a column the box covers in every row clear,
-    // so only the runs of columns between them are worked out.
-    let clear = |column: u32| {
-      cut.as_ref().is_some_and(|cut| {
-        let at = |row: u32| row as usize * stride + column as usize;
-        rows.clone().all(|row| cut.data()[at(row)] == 255)
-      })
-    };
-    let mut start = columns.start;
-    while start < columns.end {
-      if clear(start) {
-        start += 1;
-        continue;
-      }
-      let end = (start + 1..columns.end)
-        .find(|&column| clear(column))
-        .unwrap_or(columns.end);
-      let run = start..end;
-      start = end;
-      let mut mask = Vec::with_capacity(run.len() * rows.len());
-      for row in rows.clone() {
+    let mut mask = Vec::with_capacity(columns.len());
+    for row in rows {
+      // A cut-out shadow leaves what the box covers whole clear, so only
+      // the runs of columns between are worked out.
+      let band = straight_rows.filter(|&[_, top, _, bottom]| (top..bottom).contains(&row));
+      let cut = cut
+        .as_ref()
+        .filter(|_| band.is_none())
+        .map(|cut| &cut.data()[row as usize * stride..][..stride]);
+      let inside = straight
+        .or(band)
+        .filter(|&[_, top, _, bottom]| (top..bottom).contains(&row))
+        .map(|[left, _, right, _]| left..right);
+      let clear = |column: u32| {
+        inside
+          .as_ref()
+          .is_some_and(|inside| inside.contains(&column))
+          || cut.is_some_and(|cut| cut[column as usize] == 255)
+      };
+      let mut start = columns.start;
+      while start < columns.end {
+        if let Some(inside) = inside.as_ref().filter(|inside| inside.contains(&start)) {
+          start = inside.end;
+          continue;
+        }
+        if clear(start) {
+          start += 1;
+          continue;
+        }
+        let end = (start + 1..columns.end)
+          .find(|&column| clear(column))
+          .unwrap_or(columns.end);
+        let run = start..end;
+        start = end;
+        mask.clear();
         match (patch, &blurred) {
           (Some(patch), _) => {
             // The grid's corner is a whole pixel.
@@ -1545,21 +1586,23 @@ impl Painter<'_> {
           }
           (None, None) => {}
         }
-      }
-      if let Some(cut) = &cut {
-        let under = rows.clone().flat_map(|row| {
-          run
-            .clone()
-            .map(move |column| row as usize * stride + column as usize)
-        });
-        for (alpha, at) in mask.iter_mut().zip(under) {
-          *alpha = mul(*alpha, 255 - cut.data()[at]);
+        if let Some(cut) = cut {
+          let under = &cut[run.start as usize..run.end as usize];
+          for (alpha, &covered) in mask.iter_mut().zip(under) {
+            *alpha = mul(*alpha, 255 - covered);
+          }
         }
+        let width = run.len() as u32;
+        blend_mask(
+          pixmap,
+          run.start as i32,
+          row as i32,
+          width,
+          1,
+          &mask,
+          shadow.color,
+        );
       }
-      let width = run.len() as u32;
-      let height = rows.len() as u32;
-      let (x, y) = (run.start as i32, rows.start as i32);
-      blend_mask(pixmap, x, y, width, height, &mask, shadow.color);
     }
   }
 
@@ -1998,9 +2041,59 @@ impl Painter<'_> {
 fn covers(pixmap: &PixmapMut<'_>, shape: tiny_skia::Rect, corners: Corners) -> bool {
   let (width, height) = (pixmap.width() as f32, pixmap.height() as f32);
   let (left, top, right, bottom) = (shape.left(), shape.top(), shape.right(), shape.bottom());
-  if !(left <= 0.0 && top <= 0.0 && right >= width && bottom >= height) {
-    return false;
+  let size = (pixmap.width(), pixmap.height());
+  left <= 0.0 && top <= 0.0 && right >= width && bottom >= height && straight(size, shape, corners)
+}
+
+/// Where in a `width` by `height` pixmap the rectangle `shape` with
+/// `corners` covers pixels whole, as left, top, right and bottom pixel
+/// edges, when it covers the rest not at all: its edges lie on whole
+/// pixels and no corner's curve reaches into the pixmap. A mask filled
+/// with it would be that.
+pub(crate) fn straight_inside(
+  (width, height): (u32, u32),
+  shape: tiny_skia::Rect,
+  corners: Corners,
+) -> Option<[u32; 4]> {
+  let sides = [shape.left(), shape.top(), shape.right(), shape.bottom()];
+  if !(sides.iter().all(|side| side.fract() == 0.0) && straight((width, height), shape, corners)) {
+    return None;
   }
+  let limits = [width, height, width, height];
+  // `as` saturates, so an edge far outside lands on the pixmap's.
+  Some(std::array::from_fn(|index| {
+    (sides[index].max(0.0) as u32).min(limits[index])
+  }))
+}
+
+/// The rows of a `width` by `height` pixmap no curve of `shape`'s
+/// `corners` reaches, with the shape's left and right edges, as left,
+/// top, right and bottom pixel edges, when its edges lie on whole pixels:
+/// in those rows the shape covers pixels whole between its edges and not
+/// at all outside them.
+pub(crate) fn straight_rows(
+  (width, height): (u32, u32),
+  shape: tiny_skia::Rect,
+  [top_left, top_right, bottom_right, bottom_left]: Corners,
+) -> Option<[u32; 4]> {
+  let sides = [shape.left(), shape.top(), shape.right(), shape.bottom()];
+  if !sides.iter().all(|side| side.fract() == 0.0) {
+    return None;
+  }
+  let (width, height) = (width as f32, height as f32);
+  // `as` saturates, so an edge far outside lands on the pixmap's.
+  let row = |y: f32| y.clamp(0.0, height) as u32;
+  let top = row((shape.top() + top_left.max(top_right).max(0.0)).ceil());
+  let bottom = row((shape.bottom() - bottom_left.max(bottom_right).max(0.0)).floor());
+  let column = |x: f32| x.clamp(0.0, width) as u32;
+  (top < bottom).then(|| [column(shape.left()), top, column(shape.right()), bottom])
+}
+
+/// Whether no curve of `shape`'s `corners` reaches into a `width` by
+/// `height` pixmap.
+fn straight((width, height): (u32, u32), shape: tiny_skia::Rect, corners: Corners) -> bool {
+  let (width, height) = (width as f32, height as f32);
+  let (left, top, right, bottom) = (shape.left(), shape.top(), shape.right(), shape.bottom());
   // Each corner's curve stays inside the square of its radius.
   corners.iter().enumerate().all(|(index, &radius)| {
     let x = if matches!(index, 0 | 3) {
@@ -2104,7 +2197,7 @@ fn inset(corners: Corners, by: f32) -> Corners {
 
 /// Adds a rectangle with circular `corners` to `path`, clockwise from
 /// the end of its top-left one.
-fn rounded_rect(path: &mut PathBuilder, rect: tiny_skia::Rect, corners: Corners) {
+pub(crate) fn rounded_rect(path: &mut PathBuilder, rect: tiny_skia::Rect, corners: Corners) {
   if corners.iter().all(|&radius| radius <= 0.0) {
     path.push_rect(rect);
     return;
@@ -2277,6 +2370,29 @@ fn blend_scaled(pixmap: &mut PixmapMut<'_>, layer: &Pixmap, at: Transform, opaci
   }
 }
 
+/// The premultiplied pixel `from` over `to`, as little-endian words of
+/// RGBA bytes: each channel of `from` plus `to`'s times 255 less `from`'s
+/// alpha over 255, rounded, saturated, as [`over`] gives, two channels a
+/// multiply.
+pub(crate) fn over_word(to: u32, from: u32) -> u32 {
+  let rest = 255 - (from >> 24);
+  // Two channels times `rest`, each rounded over 255 in its 16 bits: a
+  // product plus 128, at most 65153, plus its high byte, shifted down.
+  let times_rest = |pair: u32| {
+    let product = (pair & 0x00ff_00ff) * rest + 0x0080_0080;
+    ((product + ((product >> 8) & 0x00ff_00ff)) >> 8) & 0x00ff_00ff
+  };
+  // A sum past 255 sets its ninth bit, which turns it into 255.
+  let saturated = |a: u32, b: u32| {
+    let sum = a + b;
+    let over = sum & 0x0100_0100;
+    (sum | (over - (over >> 8))) & 0x00ff_00ff
+  };
+  let even = saturated(from & 0x00ff_00ff, times_rest(to));
+  let odd = saturated((from >> 8) & 0x00ff_00ff, times_rest(to >> 8));
+  even | odd << 8
+}
+
 /// Blends the premultiplied `layer` over the pixmap with its corner at
 /// `left`, `top`, at `opacity` and through `mask`, which is the pixmap's
 /// size. tiny-skia's `draw_pixmap` gives the same within a level at a
@@ -2284,19 +2400,44 @@ fn blend_scaled(pixmap: &mut PixmapMut<'_>, layer: &Pixmap, at: Transform, opaci
 /// which a layer the size of the screen notices.
 pub(crate) fn composite(
   pixmap: &mut PixmapMut<'_>,
-  (left, top): (i32, i32),
+  at: (i32, i32),
   layer: &Pixmap,
   opacity: f32,
   mask: Option<&Mask>,
 ) {
+  let whole = [0, 0, pixmap.width(), pixmap.height()];
+  composite_within(pixmap, at, layer, opacity, mask, whole);
+}
+
+/// [`composite`] of only what lands within `area` of the pixmap: its
+/// left, top, right and bottom pixel edges.
+pub(crate) fn composite_within(
+  pixmap: &mut PixmapMut<'_>,
+  (left, top): (i32, i32),
+  layer: &Pixmap,
+  opacity: f32,
+  mask: Option<&Mask>,
+  [area_left, area_top, area_right, area_bottom]: [u32; 4],
+) {
   if opacity >= 1.0 && mask.is_none() {
-    transition::blit(pixmap, (left, top), layer);
+    let area = [area_left, area_top, area_right, area_bottom];
+    transition::blit_within(pixmap, (left, top), layer, area);
     return;
   }
   let width = layer.width() as usize;
   let Some((x0, x1, y0, y1)) = overlap(pixmap, left, top, layer.width(), layer.height()) else {
     return;
   };
+  // The layer's pixels that land in the area.
+  let from = |edge: u32, at: i32| (i64::from(edge) - i64::from(at)).max(0) as usize;
+  let (x0, x1) = (
+    x0.max(from(area_left, left)),
+    x1.min(from(area_right, left)),
+  );
+  let (y0, y1) = (y0.max(from(area_top, top)), y1.min(from(area_bottom, top)));
+  if x0 >= x1 || y0 >= y1 {
+    return;
+  }
   // In 65536ths, so an opacity near 0 or 1 isn't rounded a level off.
   let scale = (opacity.clamp(0.0, 1.0) * 65536.0).round() as u32;
   let stride = pixmap.width() as usize;
@@ -2309,8 +2450,7 @@ pub(crate) fn composite(
     pixel.map(|channel| mul(((u32::from(channel) * scale + 32768) >> 16) as u8, coverage))
   };
   let blend = |to: &mut [u8; 4], from: [u8; 4]| {
-    let rest = 255 - from[3];
-    *to = std::array::from_fn(|channel| from[channel].saturating_add(mul(to[channel], rest)));
+    *to = over_word(u32::from_le_bytes(*to), u32::from_le_bytes(from)).to_le_bytes();
   };
   for y in y0..y1 {
     // `overlap` keeps these inside the pixmap.
@@ -2320,6 +2460,14 @@ pub(crate) fn composite(
     let row = source[(y * width + x0) * 4..(y * width + x1) * 4]
       .as_chunks::<4>()
       .0;
+    // A clear row blends as nothing; ORed whole, which vectorizes.
+    if row
+      .iter()
+      .fold(0, |all, pixel| all | u32::from_le_bytes(*pixel))
+      == 0
+    {
+      continue;
+    }
     let target = data[start * 4..end * 4].as_chunks_mut::<4>().0;
     match mask {
       Some(mask) => {
@@ -2377,12 +2525,17 @@ fn blend_mask(
   };
   let stride = pixmap.width() as usize;
   let data = pixmap.data_mut();
+  // Without branches, so the loop vectorizes; a coverage of 0 blends as
+  // nothing.
   for row in rows..rows_end {
-    for column in columns..columns_end {
-      let coverage = mask[row * width as usize + column];
-      if coverage == 0 {
-        continue;
-      }
+    let y = (i64::from(top) + row as i64) as usize;
+    let x = (i64::from(left) + columns as i64) as usize;
+    let at = (y * stride + x) * 4;
+    let target = data[at..at + (columns_end - columns) * 4]
+      .as_chunks_mut::<4>()
+      .0;
+    let coverage = &mask[row * width as usize + columns..row * width as usize + columns_end];
+    for (to, &coverage) in target.iter_mut().zip(coverage) {
       let alpha = mul(color.a, coverage);
       let source = [
         mul(color.r, alpha),
@@ -2390,9 +2543,7 @@ fn blend_mask(
         mul(color.b, alpha),
         alpha,
       ];
-      let x = (i64::from(left) + column as i64) as usize;
-      let y = (i64::from(top) + row as i64) as usize;
-      over(data, (y * stride + x) * 4, source);
+      *to = over_word(u32::from_le_bytes(*to), u32::from_le_bytes(source)).to_le_bytes();
     }
   }
 }
