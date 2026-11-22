@@ -1003,3 +1003,15 @@ fn absolute_children_can_leave_a_row_that_ends_empty_or_hidden() {
   h.frame(&window);
   assert_eq!(node_at(window.view().root(), &[0]).children().count(), 0);
 }
+
+// Rounded from where the parent lies before rounding, as taffy rounds.
+#[test]
+fn a_child_is_rounded_from_its_parents_unrounded_corner() {
+  let mut h = Harness::new();
+  let child = Row::new().style(Style::new().left(0.4).top(0.4).width(5.0).height(5.0));
+  let parent = Row::new()
+    .style(Style::new().left(0.4).top(0.4).width(20.0).height(20.0))
+    .child(child);
+  let window = h.window(h.panel().child(parent), 100.0, 30.0);
+  assert_eq!(rect_at(&window, &[0, 0]), Rect::new(1.0, 1.0, 5.0, 5.0));
+}
