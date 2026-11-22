@@ -241,3 +241,30 @@ fn a_crop_draws_that_part_of_the_frame_into_the_box() {
     );
   }
 }
+
+#[test]
+fn a_crop_at_its_boxs_size_draws_the_frames_pixels_as_they_are() {
+  let mut scene = Scene::new();
+  let view = ScreencopyView::new(CaptureSource::Output(String::from("DP-2")))
+    .crop(Some(Rect::new(3.0, 2.0, 5.0, 4.0)))
+    .style(Style::new().width(5.0).height(4.0));
+  let window = scene.window(scene.panel().child(view), 5.0, 4.0);
+  let pixel = |x: u32, y: u32| [(x * 20) as u8, (y * 40) as u8, 90, 255];
+  let frame = CaptureFrame {
+    width: 10,
+    height: 8,
+    logical_width: 10,
+    logical_height: 8,
+    rgba: Rc::from(
+      (0..80u32)
+        .flat_map(|at| pixel(at % 10, at / 10))
+        .collect::<Vec<u8>>(),
+    ),
+  };
+  window.show_capture(window.captures()[0].id, frame);
+  scene.frame(&window);
+  let drawn = scene.full(&window, 1.0);
+  for (x, y) in (0..5).flat_map(|x| (0..4).map(move |y| (x, y))) {
+    assert_eq!(drawn.pixel(x, y), pixel(x + 3, y + 2), "at {x},{y}");
+  }
+}

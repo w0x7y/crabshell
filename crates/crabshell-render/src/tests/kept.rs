@@ -743,3 +743,137 @@ fn a_capture_in_a_kept_layer_stays_cached_through_a_long_fade_or_move() {
     );
   }
 }
+
+#[test]
+fn a_move_from_rest_keeps_its_layer_from_its_first_moving_frame() {
+  for scale in SCALES {
+    let mut scene = Scene::new();
+    let knobs = Knobs::new(&scene);
+    knobs.opacity.set(1.0);
+    let window = window(&mut scene, knobs);
+    let mut history = DamageHistory::new();
+    let mut buffer = Buffer::new(&window, scale);
+    draw_and_compare(&mut scene, &window, &mut history, &mut buffer, "at rest");
+    assert_eq!(scene.renderer.kept_bytes(), 0, "at rest at {scale}");
+    for shrunk in [0.95, 0.9] {
+      knobs.scale.set(shrunk);
+      let label = format!("shrunk to {shrunk} at {scale}");
+      draw_and_compare(&mut scene, &window, &mut history, &mut buffer, &label);
+      assert!(scene.renderer.kept_bytes() > 0, "{label}: kept");
+    }
+    // Back at rest it is drawn as usual again.
+    knobs.scale.set(1.0);
+    draw_and_compare(&mut scene, &window, &mut history, &mut buffer, "settled");
+    assert_eq!(scene.renderer.kept_bytes(), 0, "settled at {scale}");
+  }
+}
+
+#[test]
+fn a_widget_that_changes_as_it_starts_moving_is_drawn_again() {
+  let mut scene = Scene::new();
+  let knobs = Knobs::new(&scene);
+  knobs.opacity.set(1.0);
+  let window = window(&mut scene, knobs);
+  let mut history = DamageHistory::new();
+  let mut buffer = Buffer::new(&window, 1.25);
+  draw_and_compare(&mut scene, &window, &mut history, &mut buffer, "at rest");
+  knobs.scale.set(0.9);
+  knobs.shade.set(200);
+  draw_and_compare(
+    &mut scene,
+    &window,
+    &mut history,
+    &mut buffer,
+    "moved and shaded",
+  );
+  assert_eq!(scene.renderer.kept_bytes(), 0, "its revision moved");
+}
+
+#[test]
+fn large_buffers_are_kept_spare_zeroed_charged_and_let_go_each_draw() {
+  let budget = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+  let held = || budget.load(std::sync::atomic::Ordering::Relaxed);
+  let mut kept = crate::draw::Kept::default();
+  kept.start(&budget, 0);
+  let big = 3 << 20;
+  kept.spare(vec![255; big]);
+  kept.spare(vec![255; 1000]);
+  assert_eq!(kept.spare_buffers(), (1, big), "only a large one is kept");
+  assert_eq!(held(), big as u64, "charged to the renderer's budget");
+  let reused = kept.buffer(2 << 20);
+  assert_eq!(
+    (reused.len(), reused.capacity()),
+    (2 << 20, 2 << 20),
+    "cut to what was asked"
+  );
+  assert!(reused.iter().all(|&byte| byte == 0), "zeroed");
+  assert_eq!(
+    (kept.spare_buffers().0, held()),
+    (0, 0),
+    "taken, no longer charged"
+  );
+  for _ in 0..8 {
+    kept.spare(vec![1; big]);
+  }
+  assert_eq!(kept.spare_buffers(), (5, 5 * big), "at most 16 MiB");
+  kept.end();
+  assert_eq!(
+    (kept.spare_buffers().0, held()),
+    (0, 0),
+    "let go as the draw ends"
+  );
+  budget.store(
+    crate::draw::KEPT_LIMIT - 1000,
+    std::sync::atomic::Ordering::Relaxed,
+  );
+  kept.spare(vec![1; big]);
+  assert_eq!(kept.spare_buffers().0, 0, "no room left in the budget");
+}
+
+#[test]
+fn fills_in_one_draw_share_their_scratch_and_none_is_kept_after_it() {
+  // Two large clipped boxes that start shrinking in the same draw: the
+  // second fill takes the clip layer and masks the first let go.
+  let mut scene = Scene::new();
+  let scale = scene.cx.signal(1.0);
+  let boxes = (0..2).fold(Stack::new(), |stack, index| {
+    stack.child(
+      Stack::new()
+        .style(move || {
+          Style::new()
+            .left(20.0 + 620.0 * index as f32)
+            .top(20.0)
+            .width(600.0)
+            .height(560.0)
+            .scale(scale.get())
+        })
+        .child(
+          Row::new()
+            .style(Style::new().radius(16.0).clip(true))
+            .child(
+              Row::new().style(
+                Style::new()
+                  .width(600.0)
+                  .height(560.0)
+                  .background(Color::rgb(90, 140, 200)),
+              ),
+            ),
+        ),
+    )
+  });
+  let window = scene.window(scene.panel().child(boxes), 1260.0, 600.0);
+  let mut history = DamageHistory::new();
+  let mut buffer = Buffer::new(&window, 1.0);
+  for shrunk in [1.0, 0.95, 0.9] {
+    scale.set(shrunk);
+    scene.frame(&window);
+    scene.draw(&window, &mut history, &mut buffer);
+    let spare = history.kept.spare_buffers().0;
+    assert_eq!(spare, 0, "nothing spare after the draw at {shrunk}");
+  }
+  assert!(scene.renderer.kept_bytes() > 0, "both kept");
+  assert!(
+    history.kept.reused() > 0,
+    "the second fill took the first's scratch"
+  );
+}

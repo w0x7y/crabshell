@@ -1300,7 +1300,13 @@ impl Icons {
           Some(crop) => source
             .clone_rect(crop)
             .ok_or_else(|| format!("a crop of {crop:?} outside the frame"))
-            .and_then(|part| crate::images::scale(part.as_ref(), width, height, fit)),
+            .and_then(
+              |part| match (part.width(), part.height()) == (width, height) {
+                // Already the box's size, as `scale` would copy it.
+                true => Ok(part),
+                false => crate::images::scale(part.as_ref(), width, height, fit),
+              },
+            ),
           None => crate::images::scale(source, width, height, fit),
         });
       if let Err(error) = &scaled {

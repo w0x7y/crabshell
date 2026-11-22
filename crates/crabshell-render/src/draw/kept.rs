@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crabshell_ui::Affine;
-use tiny_skia::Pixmap;
+use tiny_skia::{Mask, Pixmap};
 
 use super::patched::{Key, Patch};
 
@@ -30,7 +30,21 @@ pub(crate) struct Kept {
   /// The small blurred boxes large shadows are drawn from, with the draw
   /// that last used each.
   pub(super) patches: HashMap<Key, (u64, Patch)>,
+  /// Large buffers this draw let go of, for its next large layer or
+  /// mask, each held against the budget: a fresh one costs a page fault
+  /// every 4 KiB as it is first written. Dropped as the draw ends, so an
+  /// idle window holds none.
+  spare: Vec<(Vec<u8>, Held)>,
+  /// How many large buffers came from the spare ones, for tests.
+  #[cfg(test)]
+  reused: usize,
 }
+
+/// The least bytes a buffer needs to be kept spare.
+const SPARE_FROM: usize = 1 << 20;
+
+/// The most bytes a draw keeps spare.
+const SPARE_LIMIT: usize = 16 << 20;
 
 impl std::fmt::Debug for Kept {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -38,8 +52,9 @@ impl std::fmt::Debug for Kept {
     let patches = self.patches.len();
     write!(
       f,
-      "Kept {{ layers: {}, patches: {patches} }}",
-      layers.count()
+      "Kept {{ layers: {}, patches: {patches}, spare: {} }}",
+      layers.count(),
+      self.spare.len()
     )
   }
 }
@@ -47,7 +62,7 @@ impl std::fmt::Debug for Kept {
 impl Kept {
   /// Starts a draw, counting what it keeps against `budget`. A layer
   /// drawn before the icon theme's `theme`th change is dropped.
-  pub(super) fn start(&mut self, budget: &Arc<AtomicU64>, theme: u64) {
+  pub(crate) fn start(&mut self, budget: &Arc<AtomicU64>, theme: u64) {
     self.frame += 1;
     self.budget = Arc::clone(budget);
     if self.theme != theme {
@@ -56,11 +71,78 @@ impl Kept {
     }
   }
 
-  /// Ends a draw: what it didn't visit is dropped.
-  pub(super) fn end(&mut self) {
+  /// Ends a draw: what it didn't visit is dropped, and every spare buffer.
+  pub(crate) fn end(&mut self) {
     let frame = self.frame;
     self.seen.retain(|_, seen| seen.frame == frame);
     self.patches.retain(|_, (used, _)| *used == frame);
+    self.spare.clear();
+  }
+
+  /// `bytes` zeroed bytes, from a spare buffer when they are many.
+  pub(crate) fn buffer(&mut self, bytes: usize) -> Vec<u8> {
+    let fits = (bytes >= SPARE_FROM)
+      .then(|| {
+        let spare = self.spare.iter().enumerate();
+        let fitting = spare.filter(|(_, (data, _))| data.capacity() >= bytes);
+        fitting
+          .min_by_key(|(_, (data, _))| data.capacity())
+          .map(|(index, _)| index)
+      })
+      .flatten();
+    let Some(index) = fits else {
+      return vec![0; bytes];
+    };
+    let (mut data, _held) = self.spare.swap_remove(index);
+    #[cfg(test)]
+    {
+      self.reused += 1;
+    }
+    data.clear();
+    // No larger than asked, so a layer holds only what it is charged for.
+    data.shrink_to(bytes);
+    data.resize(bytes, 0);
+    data
+  }
+
+  /// Keeps `data` spare for [`buffer`](Self::buffer) until the draw
+  /// ends, if it is large and there is room in the draw's limit and the
+  /// renderer's budget.
+  pub(crate) fn spare(&mut self, data: Vec<u8>) {
+    let kept: usize = self.spare.iter().map(|(data, _)| data.capacity()).sum();
+    if data.capacity() < SPARE_FROM || kept + data.capacity() > SPARE_LIMIT {
+      return;
+    }
+    if let Some(held) = self.hold(data.capacity() as u64) {
+      self.spare.push((data, held));
+    }
+  }
+
+  /// How many large buffers came from spare ones, for tests.
+  #[cfg(test)]
+  pub(crate) fn reused(&self) -> usize {
+    self.reused
+  }
+
+  /// How many buffers are spare and their bytes, for tests.
+  #[cfg(test)]
+  pub(crate) fn spare_buffers(&self) -> (usize, usize) {
+    let bytes = self.spare.iter().map(|(data, _)| data.capacity()).sum();
+    (self.spare.len(), bytes)
+  }
+
+  /// A clear `width` by `height` pixmap, from a spare buffer when large.
+  pub(super) fn pixmap(&mut self, width: u32, height: u32) -> Option<Pixmap> {
+    let size = tiny_skia::IntSize::from_wh(width, height)?;
+    let bytes = usize::try_from(u64::from(width) * u64::from(height) * 4).ok()?;
+    Pixmap::from_vec(self.buffer(bytes), size)
+  }
+
+  /// A clear `width` by `height` mask, from a spare buffer when large.
+  pub(super) fn mask(&mut self, width: u32, height: u32) -> Option<Mask> {
+    let size = tiny_skia::IntSize::from_wh(width, height)?;
+    let bytes = usize::try_from(u64::from(width) * u64::from(height)).ok()?;
+    Mask::from_vec(self.buffer(bytes), size)
   }
 
   /// The small box a large shadow of `key` is drawn from, worked out on

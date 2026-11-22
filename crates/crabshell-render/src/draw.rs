@@ -698,6 +698,9 @@ impl Painter<'_> {
       self.skip(node);
       return;
     }
+    if node.transform().is_none() && opacity >= 1.0 {
+      self.still(node, &style);
+    }
     if let Some(transform) = node.transform() {
       self.transformed(pixmap, node, &style, transform, opacity);
     } else if opacity < 1.0
@@ -866,6 +869,33 @@ impl Painter<'_> {
     kept
   }
 
+  /// Notes, once a draw, that `node` was drawn as it is, with no layer,
+  /// when its style moves it by nothing, so a draw that then moves or
+  /// fades it keeps its layer from the first frame that does: an
+  /// animation that starts from rest is moving by then.
+  fn still(&mut self, node: NodeView<'_>, style: &Style) {
+    let moves = style.translate.is_some() || style.scale.is_some() || style.rotate.is_some();
+    let frame = self.kept.frame;
+    if !moves
+      || self.clip.is_none()
+      || self
+        .kept
+        .seen
+        .get(node.path())
+        .is_some_and(|seen| seen.frame == frame)
+    {
+      return;
+    }
+    let seen = Seen {
+      frame,
+      revision: node.revision(),
+      opacity: 1.0,
+      transform: None,
+      layer: None,
+    };
+    self.kept.seen.insert(node.path().to_owned(), seen);
+  }
+
   /// Whether anything inside `node` has a transform of its own, and
   /// whether `node` or anything inside it is a playing GIF or a
   /// transitioning image, which a kept layer would stop or evict.
@@ -921,7 +951,7 @@ impl Painter<'_> {
       at: (window.scale, window.zoom),
     };
     let fill = |painter: &mut Painter<'_>, _: Area| {
-      let mut kept = Pixmap::new(width, height)?;
+      let mut kept = painter.kept.pixmap(width, height)?;
       let side = tile_side();
       for row in y / side..=(y + height - 1) / side {
         for column in x / side..=(x + width - 1) / side {
@@ -1088,7 +1118,7 @@ impl Painter<'_> {
     area: Area,
     (linear, zoom, layer_scale): (Affine, f32, f32),
   ) -> Option<Pixmap> {
-    let mut layer = Pixmap::new(area.width, area.height)?;
+    let mut layer = self.kept.pixmap(area.width, area.height)?;
     self.work.layer_pixels += u64::from(area.width) * u64::from(area.height);
     let (width, height) = if zoom == self.grid.zoom {
       (self.grid.width, self.grid.height)
@@ -1205,7 +1235,7 @@ impl Painter<'_> {
     else {
       return;
     };
-    let Some(mut layer) = Pixmap::new(layer_width, layer_height) else {
+    let Some(mut layer) = self.kept.pixmap(layer_width, layer_height) else {
       return;
     };
     self.work.layer_pixels += u64::from(layer_width) * u64::from(layer_height);
@@ -1217,7 +1247,7 @@ impl Painter<'_> {
     if let Some(inside) = straight_inside(size, shape, corners) {
       // The mask would keep that rectangle whole and nothing else.
       transition::blit_within(pixmap, at, &layer, inside);
-    } else if let Some(mut mask) = Mask::new(size.0, size.1) {
+    } else if let Some(mut mask) = self.kept.mask(size.0, size.1) {
       let mut path = PathBuilder::new();
       rounded_rect(&mut path, shape, corners);
       if let Some(path) = path.finish() {
@@ -1234,7 +1264,9 @@ impl Painter<'_> {
           None => composite(pixmap, at, &layer, 1.0, Some(&mask)),
         }
       }
+      self.kept.spare(mask.take());
     }
+    self.kept.spare(layer.take());
   }
 
   /// A widget's rectangle on the pixel grid and each corner's radius in
@@ -1496,7 +1528,8 @@ impl Painter<'_> {
       .flatten()
       .filter(|_| sigma >= 0.25);
     let cut = if shadow.cut_out && straight.is_none() {
-      self.box_mask(pixmap, rect, style)
+      let mask = self.kept.mask(pixmap.width(), pixmap.height());
+      mask.and_then(|mask| self.fill_box(mask, rect, style))
     } else {
       None
     };
@@ -1603,6 +1636,9 @@ impl Painter<'_> {
           shadow.color,
         );
       }
+    }
+    if let Some(cut) = cut {
+      self.kept.spare(cut.take());
     }
   }
 
@@ -1717,10 +1753,14 @@ impl Painter<'_> {
   /// How much of each of this pixmap's pixels the box `rect` with
   /// `style`'s corners covers, as its background fills it.
   fn box_mask(&self, pixmap: &PixmapMut<'_>, rect: Rect, style: &Style) -> Option<Mask> {
+    self.fill_box(Mask::new(pixmap.width(), pixmap.height())?, rect, style)
+  }
+
+  /// [`box_mask`](Self::box_mask) filled into the clear `mask`.
+  fn fill_box(&self, mut mask: Mask, rect: Rect, style: &Style) -> Option<Mask> {
     let (area, corners) = self.box_shape(rect, style)?;
     let mut path = PathBuilder::new();
     rounded_rect(&mut path, area, corners);
-    let mut mask = Mask::new(pixmap.width(), pixmap.height())?;
     let (rule, at) = (FillRule::Winding, Transform::identity());
     mask.fill_path(&path.finish()?, rule, true, at);
     Some(mask)
