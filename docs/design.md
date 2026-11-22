@@ -32,7 +32,7 @@ Nothing from Quickshell carries over. Users write their shell as a Rust crate th
 
 ### Worse than Quickshell
 
-- **Reload is slower.** Quickshell reloads QML in well under a second. Here every edit costs a rebuild plus a restart, measured at 0.7 to 0.9 s for a one-line edit (see Performance targets).
+- **Reload is slower.** Quickshell reloads QML in well under a second. Here every edit costs a rebuild plus a restart, measured at 1.0 s for a one-line edit (see Performance targets).
 - **Configs need Rust.** That is a higher bar than QML for users, and for you while you learn.
 - **No ecosystem.** There are no existing configs to copy from.
 
@@ -439,6 +439,10 @@ API rules settled in 0.9.3:
 - An `Image` at opacity 0, or cut out by its mask region, still loads its picture at its drawn size, status or not, so binding opacity keeps pictures warm; `visible(false)` loads nothing without a status.
 - A sequence's leading steps of 0 ms and no delay land in the flush that starts its play, so a jump-then-slide never shows the old value for a frame. A play of no time never turns `running()` true.
 
+API rules settled in 0.9.4:
+
+- `Image::decode_size((w, h))` caps the size a picture is made at in logical pixels (multiplied by the output scale) before filters run, then stretches it up to the box bilinearly, like Qt's `sourceSize`. A side of 0 leaves that side uncapped, a size at least the box's changes nothing, and `None`, the default, makes the picture at the box's size. The file is still read whole and the cache keeps the picture at the box's size, so it saves time, not memory.
+
 ## Process model and reload
 
 Two processes run. The `crabshell` CLI, installed once per machine, is the supervisor. The shell is the user's own compiled binary, which links the `crabshell` library.
@@ -578,30 +582,30 @@ More required tests:
 
 v0.1 shipped ten widgets, Phase 7 added five, Phase 10 one, Phase 15 three, Phase 16 one, Phase 17 one, and the phases after it add the rest a full shell needs (see "Beyond v0.1"). All but one are in `crabshell-ui`. `Tray` is in `crabshell-services`, because it needs the tray service and `crabshell-ui` can't depend on services; the prelude re-exports it. Users build everything else by combining them.
 
-| Widget           | What it does                                                                                                                                                                   |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `PanelWindow`    | A layer-shell surface on one output with anchors, size, exclusive zone, layer, margins, keyboard focus and an input mask.                                                      |
-| `FloatingWindow` | An ordinary `xdg_toplevel` window with a title, size limits, maximized, fullscreen, `visible` and an input mask, shown with `cx.floating`.                                     |
-| `PopupWindow`    | An `xdg_popup` anchored to a widget's rectangle, with an input mask. Tray menus use it.                                                                                        |
-| `Row`, `Column`  | Flex layout with `gap`, `padding`, `align`, `justify`, `wrap` and `reverse`.                                                                                                   |
-| `Stack`          | Children drawn on top of each other in one cell, or placed absolutely by their style's insets.                                                                                 |
-| `Grid`           | Children row by row in equal columns, spanning cells by their style.                                                                                                           |
-| `Spacer`         | Takes the leftover space in a `Row` or `Column`.                                                                                                                               |
-| `Text`           | One line by default, with `elide` at the start, middle or end, `max_lines` and `selectable`, or styled spans with `rich` and links through `on_link`.                          |
-| `Icon`           | A freedesktop icon name, an SVG or PNG path, or raw ARGB pixels from a tray item, tinted or as it is.                                                                          |
-| `Button`         | A clickable box with hover, pressed and focus styles, a cursor and `enabled`, plus click, drag, long-press, wheel, key and drop handlers.                                      |
-| `Image`          | A PNG, JPEG, GIF, WebP or SVG file in its box, filled, contained or covered, with filters, an animated GIF playing and transitions between sources.                            |
-| `Canvas`         | A box a paint closure draws paths, arcs, curves and dashed strokes in, cut to its corners.                                                                                     |
-| `ScrollView`     | Shows part of a taller or wider child, or both, cut to its box, scrolled by the wheel, the touchpad, a drag, its scroll bars or its offset signals, with flings and overshoot. |
-| `ListView`       | A scrolling list, down or across, that builds only the rows in view, with rows of any height, a `current` row kept in view and a highlight.                                    |
-| `GridView`       | A scrolling grid of cells of one size, down or across, that builds only the rows in view, with a `current` cell and a highlight, for pickers.                                  |
-| `TextInput`      | A one-line text field with a caret, drag-select, placeholder, password dots, the clipboard and input methods.                                                                  |
-| `TextArea`       | A multi-line editor that wraps or runs sideways, with the field's caret, selection, keys, clipboard and input methods.                                                         |
-| `Slider`         | A handle on a track that writes back a value in a range, dragged, scrolled or moved by keys.                                                                                   |
-| `Menu`           | A vertical list of buttons built from a DBusMenu layout, with separators, checkmarks and submenus as nested popups.                                                            |
-| `Tray`           | One icon button per tray item, each opening its `Menu`. Built only from the widgets above.                                                                                     |
-| `ScreencopyView` | An output or a window, captured once or live, sized by its style.                                                                                                              |
-| `SessionLock`    | A lock screen with a surface on every output while `locked`, shown with `cx.session_lock`.                                                                                     |
+| Widget           | What it does                                                                                                                                                                            |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PanelWindow`    | A layer-shell surface on one output with anchors, size, exclusive zone, layer, margins, keyboard focus and an input mask.                                                               |
+| `FloatingWindow` | An ordinary `xdg_toplevel` window with a title, size limits, maximized, fullscreen, `visible` and an input mask, shown with `cx.floating`.                                              |
+| `PopupWindow`    | An `xdg_popup` anchored to a widget's rectangle, with an input mask. Tray menus use it.                                                                                                 |
+| `Row`, `Column`  | Flex layout with `gap`, `padding`, `align`, `justify`, `wrap` and `reverse`.                                                                                                            |
+| `Stack`          | Children drawn on top of each other in one cell, or placed absolutely by their style's insets.                                                                                          |
+| `Grid`           | Children row by row in equal columns, spanning cells by their style.                                                                                                                    |
+| `Spacer`         | Takes the leftover space in a `Row` or `Column`.                                                                                                                                        |
+| `Text`           | One line by default, with `elide` at the start, middle or end, `max_lines` and `selectable`, or styled spans with `rich` and links through `on_link`.                                   |
+| `Icon`           | A freedesktop icon name, an SVG or PNG path, or raw ARGB pixels from a tray item, tinted or as it is.                                                                                   |
+| `Button`         | A clickable box with hover, pressed and focus styles, a cursor and `enabled`, plus click, drag, long-press, wheel, key and drop handlers.                                               |
+| `Image`          | A PNG, JPEG, GIF, WebP or SVG file, or an `IconSource`, in its box, filled, contained or covered, with filters, `decode_size`, an animated GIF playing and transitions between sources. |
+| `Canvas`         | A box a paint closure draws paths, arcs, curves and dashed strokes in, cut to its corners.                                                                                              |
+| `ScrollView`     | Shows part of a taller or wider child, or both, cut to its box, scrolled by the wheel, the touchpad, a drag, its scroll bars or its offset signals, with flings and overshoot.          |
+| `ListView`       | A scrolling list, down or across, that builds only the rows in view, with rows of any height, a `current` row kept in view and a highlight.                                             |
+| `GridView`       | A scrolling grid of cells of one size, down or across, that builds only the rows in view, with a `current` cell and a highlight, for pickers.                                           |
+| `TextInput`      | A one-line text field with a caret, drag-select, placeholder, password dots, the clipboard and input methods.                                                                           |
+| `TextArea`       | A multi-line editor that wraps or runs sideways, with the field's caret, selection, keys, clipboard and input methods.                                                                  |
+| `Slider`         | A handle on a track that writes back a value in a range, dragged, scrolled or moved by keys.                                                                                            |
+| `Menu`           | A vertical list of buttons built from a DBusMenu layout, with separators, checkmarks and submenus as nested popups.                                                                     |
+| `Tray`           | One icon button per tray item, each opening its `Menu`. Built only from the widgets above.                                                                                              |
+| `ScreencopyView` | An output or a window, captured once or live, sized by its style.                                                                                                                       |
+| `SessionLock`    | A lock screen with a surface on every output while `locked`, shown with `cx.session_lock`.                                                                                              |
 
 ### Layout
 
@@ -1199,7 +1203,7 @@ v0.1 had four services in `crabshell-services`, and Phase 9 added six; the phase
 | Network           | `wifi_enabled()`, `connectivity()`, `devices()` with kind, state, connection, last failure, Wi-Fi mode and cable link, `wifi_networks()` with SSID, strength, secured, security, connected, `saved_connections()` with uuid, id, kind and settings. `set_wifi_enabled`, `scan`, `connect`, `disconnect`, `forget`, `clear_secrets`, and since Phase 19 `add_connection`, `update_connection` and `scanner()`, and each device's connection uuid, hardware and IPv4 address. | NetworkManager on the system bus                                            | `zbus`                        |
 | PipeWire          | `nodes()`, `links()`, `link_groups()`, `screencasts()`, and `node_links(node)`.                                                                                                                                                                                                                                                                                                                                                                                             | PipeWire's native protocol on `pipewire-0`                                  | none                          |
 | Media players     | `players()` gives `Player`s with status, track, artists, art, length, position and what each can do. `play_pause`, `next`, `previous`, `seek`, `set_position`, `set_volume`, `set_shuffle`, `set_loop`, `raise`.                                                                                                                                                                                                                                                            | MPRIS on the session bus                                                    | `zbus`                        |
-| Notifications     | `list()`, the history, and `popups()`, the ones still showing. `dismiss`, `invoke`, `clear`, `on_closed(handler)`, and since 0.9 `on_notification(handler)`, `set_default_timeout`, `hold_popup`, `hide_popup` and `popup_time_left`.                                                                                                                                                                                                                                       | The shell serves `org.freedesktop.Notifications` on the session bus         | `zbus`                        |
+| Notifications     | `list()`, the history, and `popups()`, the ones still showing. `dismiss`, `invoke`, `clear`, `on_closed(handler)`, and since 0.9 `on_notification(handler)`, `set_default_timeout`, `hold_popup`, `restart_popup`, `hide_popup` and `popup_time_left`.                                                                                                                                                                                                                      | The shell serves `org.freedesktop.Notifications` on the session bus         | `zbus`                        |
 | Desktop entries   | `applications()` gives `DesktopEntry`s with name, comment, icon, exec, categories, keywords, actions, `no_display` and `dbus_activatable`. `lookup(app_id)`, `launch(id)`, `launch_action(id, action)`.                                                                                                                                                                                                                                                                     | `.desktop` files in the XDG data directories                                | `inotify`, `rustix`           |
 | Programs          | `cx.process(command)` gives a `Process`: `running`, `exit_status`, `stdout`, `stderr`, `on_line`, `on_split`, `stopped`, `write`, `close_stdin`, `kill`, `restart`. `cx.exec_detached(command)`.                                                                                                                                                                                                                                                                            | Programs the shell starts                                                   | `rustix`                      |
 | PAM               | `cx.pam(service)` gives a `Pam`: `state()` and `messages()`. `start(user)`, `respond(text)`, `abort()`.                                                                                                                                                                                                                                                                                                                                                                     | libpam, a thread per attempt                                                | `nonstick`                    |
@@ -1419,16 +1423,16 @@ The baseline is Quickshell running the same bar, with workspaces, tray, volume a
 
 | Metric                                          | Target                                                     | Measured                                                                     | How to measure                                                      |
 | ----------------------------------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| Idle memory (RSS), v0.1 bar on one 1080p output | 30 MB or less, and at most a quarter of Quickshell's       | 22.2 MiB, 18% of Quickshell's 125.2 MiB; the counter example 19.9 MiB        | `ps -o rss= -p <pid>` after 60 s idle                               |
+| Idle memory (RSS), v0.1 bar on one 1080p output | 30 MB or less, and at most a quarter of Quickshell's       | 22.4 MiB, 18% of Quickshell's 125.2 MiB; the counter example 19.7 MiB        | `ps -o rss= -p <pid>` after 60 s idle                               |
 | Idle wakeups                                    | 1 per minute with a minute clock and nothing else changing | The bar: 2 context switches at the minute boundary, none between. Counter: 0 | `perf stat -e 'syscalls:sys_exit_epoll_wait' -p <pid> -- sleep 300` |
-| Startup to first frame                          | 100 ms or less                                             | 12 to 18 ms for the counter, counted from the first start                    | The shell logs the time from `main` to its first committed buffer   |
-| Workspace switch to screen                      | Within one frame, 16 ms at 60 Hz                           | Median 0.6 ms, slowest 0.8 ms                                                | The shell logs the time from the IPC event to the commit            |
+| Startup to first frame                          | 100 ms or less                                             | 13.4 ms for the counter, counted from the first start                        | The shell logs the time from `main` to its first committed buffer   |
+| Workspace switch to screen                      | Within one frame, 16 ms at 60 Hz                           | Median 0.5 ms, slowest 0.7 ms                                                | The shell logs the time from the IPC event to the commit            |
 | Rebuild after a one-line edit                   | 10 s or less                                               | 1.0 s                                                                        | The supervisor logs each build's duration                           |
 | Time a reload leaves the screen without a bar   | 200 ms or less                                             | None: 107 screenshots through a reload all show it                           | The CLI's exit check screenshots the private Sway through a reload  |
 | Back after `kill -9`                            | 2 s or less                                                | 1.03 s                                                                       | `crates/crabshell-cli/tests/exit_check.rs`                          |
 | Supervisor RSS with the shell up                | No target                                                  | 5.6 MiB                                                                      | `ps -o rss= -p <pid>`                                               |
 
-Memory rows measured on 2026-11-20 in release builds on headless Sway, at 0.9; the others on 2026-11-18, after Phase 19. The counter's 19.9 MiB is up from 19.5 MiB at 0.8.2, run back to back, mostly the larger `Style` (a gradient holds eight colors, a center and a radius) and a mask region on every widget; it was 18.0 MiB at 0.7, before reading whether a screen reader is on. The memory, wakeup and first-frame rows come from `measure_the_counter_bar` on one 1920×1080 output at scale 1. The last four rows are the template bar under `crabshell run`, from the CLI's exit check. Phase 0 was the go/no-go gate: the spike used 13.2 MiB against Quickshell 0.3.2's 125.2 MiB for the same bar, with the full data in `spike/RESULTS.md`.
+Memory, wakeup, first-frame and workspace-switch rows measured on 2026-11-22 in release builds on headless Sway, at 0.9.5; the last four rows on 2026-11-18, after Phase 19. The counter's 19.7 MiB is down slightly from 19.9 MiB at 0.9 and up from 19.5 MiB at 0.8.2, mostly the larger `Style` (a gradient holds eight colors, a center and a radius) and a mask region on every widget; it was 18.0 MiB at 0.7, before reading whether a screen reader is on. The memory, wakeup, first-frame and workspace-switch rows come from `measure_the_counter_bar` on one 1920×1080 output at scale 1. The last four rows are the template bar under `crabshell run`, from the CLI's exit check. Phase 0 was the go/no-go gate: the spike used 13.2 MiB against Quickshell 0.3.2's 125.2 MiB for the same bar, with the full data in `spike/RESULTS.md`.
 
 This table holds the latest numbers. A change that moves one updates its row; older runs are in git history.
 
@@ -1502,7 +1506,7 @@ The hand checks are tracked in [issue #2](https://github.com/w0x7y/crabshell/iss
 - 0.9 limits: `Tray` has no `mask_region`, since it isn't built from the widgets' shared methods; a popup made in the turn an image's source changes loads that image at one pixel before its first configure, a wasted decode for a large file; and a status told by the last draw of a loop turn runs its effects before the loop sleeps, but a window those effects change waits for its next wakeup to draw.
 - cosmic-text 0.19 keeps the leading space on an elided wrapped line. Crabshell works around it until an upgrade fixes it upstream.
 - ttf-parser 0.25.1, which cosmic-text 0.19 pulls in through fontdb 0.23, is marked unmaintained (RUSTSEC-2026-0192). cosmic-text's main branch already moved to fontdb 0.24, which drops it, so the advisory is ignored in `deny.toml` until a cosmic-text release does.
-- Settled limits: window views pair windows by app id and title, the most the protocols give; neither `geometry` nor `mapped_geometry` can say where a window is on its output, which Wayland doesn't tell a client; Hyprland 0.42 and later are supported; and the dashboard's 37 MiB with a 1080p wallpaper is no breach of rule 1, whose cap is for the counter bar, since a 1080p picture and its window buffer take about 16 MiB.
+- Settled limits: window views pair windows by app id and title, the most the protocols give; neither `geometry` nor `mapped_geometry` can say where a window is on its output, which Wayland doesn't tell a client; Hyprland 0.42 and later are supported; and the dashboard's 38.6 MiB with a 1080p wallpaper is no breach of rule 1, whose cap is for the counter bar, since a 1080p picture and its window buffer take about 16 MiB.
 - Crabshell has no wrapper widgets, since a `Stack` or `Button` with a padded style covers `WrapperItem`, `WrapperRectangle` and `WrapperMouseArea`, and `Style::clip` covers `ClippingRectangle`.
 
 ### Breaking changes in 0.9
@@ -1516,13 +1520,17 @@ The gaps found porting a Quickshell config shipped as 0.9. Against 0.8:
 
 0.9.1 fixes a layout bug: an absolute child with `right` or `bottom`, or two opposite insets, inside a parent smaller than the window now sits in that parent's padding box, where 0.9 and earlier measured from the window.
 
+0.9.4 adds a public `decode_size` field to `ImageFilters`, which breaks struct literals that don't use `..ImageFilters::default()`.
+
+0.9.5 fixes a layout crash in taffy 0.15.1's rounding pass when a container becomes empty or hidden after holding absolute children by rounding layouts in place in `place`, and speeds up layered and masked animations (kept layers from the first moving frame, large buffer reuse within a draw, straight-edge mask skipping, and word and byte blending).
+
 ## Rules for AI agents
 
 They live in [AGENTS.md](../AGENTS.md), with the commands that test a change.
 
 ## Risks and open questions
 
-The biggest risk is the reload loop. A rebuild per edit, 0.7 to 0.9 s for a one-line change, is the price of compiled configs, still slower than Quickshell's QML reload. The second is the size of the goal: Quickshell exposes about 240 QML types, so full parity is many phases past v0.1.
+The biggest risk is the reload loop. A rebuild per edit, 1.0 s for a one-line change, is the price of compiled configs, still slower than Quickshell's QML reload. The second is the size of the goal: Quickshell exposes about 240 QML types, so full parity is many phases past v0.1.
 
 | Risk                                      | Why it matters                                                              | Mitigation                                                                                            |
 | ----------------------------------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |

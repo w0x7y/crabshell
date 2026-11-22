@@ -6,7 +6,7 @@
     <title>Compositors and windows | Crabshell docs</title>
     <meta
       name="description"
-      content="Workspaces on Sway, Hyprland and ext-workspace compositors, other programs&#x27; windows, live window pictures, global shortcuts, and the protocol each feature needs."
+      content="Workspaces on Sway, Hyprland, niri and ext-workspace compositors, other programs&#x27; windows, live window pictures, global shortcuts, and the protocol each feature needs."
     />
     <script>
       try {
@@ -259,12 +259,12 @@ let toplevels = hyprland.toplevels();</code></pre>
 })</code></pre>
         <div class="warn">
           <p>
-            **Be careful with <code>dispatch</code>.** When Hyprland's config is
-            Lua, which it can be from 0.55 and always is from 0.57, the command
-            is a Lua expression that runs inside the compositor. Never build one
-            from a window title, a class or a workspace name, since those come
-            from other programs. <code>focus_workspace</code> quotes names for
-            you.
+            <strong>Be careful with <code>dispatch</code>.</strong> When
+            Hyprland's config is Lua, which it can be from 0.55 and always is
+            from 0.57, the command is a Lua expression that runs inside the
+            compositor. Never build one from a window title, a class or a
+            workspace name, since those come from other programs.
+            <code>focus_workspace</code> quotes names for you.
           </p>
         </div>
         <p>

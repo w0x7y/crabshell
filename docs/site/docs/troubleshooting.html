@@ -37,15 +37,18 @@
         <pre><code class="sh">$ CRABSHELL_LOG=debug crabshell run</code></pre>
         <h2 id="build">It doesn't build</h2>
         <p>
-          **The first build fails in a <code>-sys</code> crate or says a library
-          wasn't found.** A system library's development files are missing.
+          <strong
+            >The first build fails in a <code>-sys</code> crate or says a
+            library wasn't found.</strong
+          >
+          A system library's development files are missing.
           <a href="install.html#requirements">Install and run</a> has the
           package names.
         </p>
         <p>
-          **<code>crabshell run</code> says it can't find cargo.** Cargo isn't
-          on the <code>PATH</code> of the session that started it, which is
-          common when a display manager starts the compositor. Set
+          <strong><code>crabshell run</code> says it can't find cargo.</strong>
+          Cargo isn't on the <code>PATH</code> of the session that started it,
+          which is common when a display manager starts the compositor. Set
           <code>PATH</code> where the session reads it, or set
           <code>CARGO</code> to cargo's full path.
         </p>
@@ -270,7 +273,7 @@ cx.effect(move || if is_open.get() { build() });</code></pre>
         </ul>
         <p>
           For memory, <code>ps -o rss= -p $(pgrep -n my-shell)</code> prints the
-          resident size in KiB. The template bar uses about 21 MiB.
+          resident size in KiB. The template bar uses about 22 MiB.
         </p>
         <h2 id="stuck">Still stuck</h2>
         <p>

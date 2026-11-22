@@ -68,7 +68,7 @@ every widget property takes a value or a closure. a closure runs again when a si
 
 ### numbers
 
-on headless sway with one 1920×1080 output, the counter example uses 19.9 MiB and draws its first frame in 12 to 18 ms, and the v0.1 bar uses 22.2 MiB. neither wakes while idle, except the bar's clock once a minute. on a 1280×720 output, a reload rebuilds a one-line edit in 1.0 s and never leaves the screen without a bar. quickshell drawing the [phase 0 test bar](spike/RESULTS.md) used 125 MiB and took 219 ms to its first frame. the [design doc](docs/design.md#performance-targets) has the latest numbers
+on headless sway with one 1920×1080 output, the counter example uses 19.7 MiB and draws its first frame in 13.4 ms, and the v0.1 bar uses 22.4 MiB. neither wakes while idle, except the bar's clock once a minute. on a 1280×720 output, a reload rebuilds a one-line edit in 1.0 s and never leaves the screen without a bar. quickshell drawing the [phase 0 test bar](spike/RESULTS.md) used 125 MiB and took 219 ms to its first frame. the [design doc](docs/design.md#performance-targets) has the latest numbers
 
 ### crates
 

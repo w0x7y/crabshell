@@ -235,6 +235,9 @@ Icon::new(icon).size(20)</code></pre>
         <p>
           <code>Image::new(path)</code> shows a PNG, JPEG, GIF, WebP or SVG
           file, chosen by its extension, in a box of the size you give it.
+          <a href="widgets.html#image"><code>Image::from_source</code></a> takes
+          an <code>IconSource</code> instead: raw pixels, a file or a theme icon
+          name.
         </p>
         <pre><code class="rs">Image::new(move || art_path.get())
   .width(96)
@@ -337,6 +340,13 @@ Image::new(picture)
           Filters run once on the scaled picture, and the result is cached. A
           blurred GIF shows its first frame, still. A blur here is twice as
           strong as the same number in a <code>Shadow</code>.
+        </p>
+        <p>
+          For a large blurred picture such as a lock-screen wallpaper,
+          <code>decode_size((w, h))</code> caps the size the picture is made at
+          in logical pixels (multiplied by the output scale) before filters run,
+          then stretches the result up to the box bilinearly. A side of 0 leaves
+          that side uncapped.
         </p>
         <h3 id="gifs">Animated GIFs</h3>
         <p>

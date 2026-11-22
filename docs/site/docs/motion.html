@@ -311,7 +311,10 @@ Row::new().style(move || DOT.translate(0.0, 4.0 * (time.get().as_secs_f32() * 6.
           with a fading hover on a 1920-pixel bar takes 0.31 ms a frame at scale
           1. Move things with <code>translate</code>, <code>scale</code> and
           <code>rotate</code> where you can, since animating a
-          <code>width</code> lays the window out on every frame.
+          <code>width</code> lays the window out on every frame. While only a
+          widget's opacity or transform changes and nothing inside it changes,
+          its layer is kept between frames from its first moving frame instead
+          of redrawing its children.
         </p>
       </article>
     </main>
