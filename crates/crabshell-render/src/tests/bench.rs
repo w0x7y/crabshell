@@ -1,6 +1,7 @@
 //! How long draws of the rime port's animated windows take, at 1920 by
 //! 1080 and scale 1: a dashboard opening, the click catcher with its
-//! shadow, a workspace bloom and a lock screen fading in. Each scene copies
+//! shadow, a workspace bloom and a lock screen fading in, and the
+//! workspace bloom as the port builds it, frame by frame at 60 Hz. Each scene copies
 //! the styles the port uses, not its exact layout. A full draw of each at
 //! a few points of its animation is timed, and then the animation itself,
 //! frame after frame into one buffer as the platform draws it: the first
@@ -36,14 +37,19 @@ fn time(scene: &mut Scene, window: &Window) -> f64 {
 }
 
 /// The window's animation drawn frame after frame into one buffer, with
-/// `progress` stepping from 0.05 to 0.95: the first frame's time, then
-/// the median and the slowest of the rest, in ms.
-fn animate(scene: &mut Scene, window: &Window, progress: Signal<f32>) -> (f64, f64, f64) {
+/// `progress` stepping through `steps`: the first frame's time, then the
+/// median and the slowest of the rest, in ms.
+fn animate(
+  scene: &mut Scene,
+  window: &Window,
+  progress: Signal<f32>,
+  steps: impl Iterator<Item = f32>,
+) -> (f64, f64, f64) {
   let mut history = DamageHistory::new();
   let mut buffer = Buffer::new(window, 1.0);
-  let mut times: Vec<f64> = (0..16)
+  let mut times: Vec<f64> = steps
     .map(|step| {
-      progress.set(0.05 + 0.06 * step as f32);
+      progress.set(step);
       scene.frame(window);
       let start = std::time::Instant::now();
       scene.draw(window, &mut history, &mut buffer);
@@ -261,6 +267,171 @@ fn bloom(
   scene.panel().child(stack)
 }
 
+/// The windows a switch leaves and opens in the rime bloom, as x, y,
+/// width and height: two side by side on each workspace, under a 44
+/// pixel bar, as sway tiles them in the headless measurement.
+const NEWS: [(f32, f32, f32, f32); 2] = [(0.0, 0.0, 960.0, 1036.0), (960.0, 0.0, 960.0, 1036.0)];
+
+/// How far below the screen's top the bloom's window starts, under the bar.
+const INSET: f32 = 44.0;
+
+/// When old window `index` starts shrinking, in ms after the switch.
+fn old_start(index: usize) -> f32 {
+  (index as f32 * 40.0).min(160.0)
+}
+
+/// When new window `index` starts opening, in ms after the switch.
+fn new_start(index: usize) -> f32 {
+  50.0 + (index as f32 * 50.0).min(200.0)
+}
+
+/// How long the rime bloom of [`NEWS`] leaving and opening plays, in ms.
+const BLOOM_MS: f32 = 380.0;
+
+fn ease_quart(x: f32) -> f32 {
+  1.0 - (1.0 - x.clamp(0.0, 1.0)).powi(4)
+}
+
+/// New window `index`'s hole at `ms`: from 0.6 of its size to all of it.
+fn rime_hole(index: usize, ms: f32) -> Rect {
+  let progress = ease_quart((ms - new_start(index)) / 280.0);
+  hole(NEWS[index], progress)
+}
+
+/// How far new window `index`'s hole has faded in at `ms`.
+fn hole_strength(index: usize, ms: f32) -> f32 {
+  ((ms - new_start(index)) / (280.0 * 0.35)).clamp(0.0, 1.0)
+}
+
+/// A shadow box around `rect`, cut out, faded by `strength`, as rime's
+/// `panel_shadow` draws one.
+fn panel_shadow(
+  rect: impl Fn() -> Rect + 'static,
+  focused: bool,
+  strength: impl Fn() -> f32 + 'static,
+) -> Row {
+  let color = Color::rgb(0, 0, 0).with_alpha(if focused { 0.6 } else { 0.36 });
+  Row::new().style(move || {
+    let rect = rect();
+    Style::new()
+      .left(rect.x)
+      .top(rect.y)
+      .width(rect.width)
+      .height(rect.height)
+      .radius(10.0)
+      .shadow(Shadow::new(0.0, 6.0, 24.0, color).cut_out())
+      .opacity(strength())
+  })
+}
+
+/// The rime port's workspace bloom `ms` after the switch, built as its
+/// `workspace_switch.rs` builds it: the wallpaper with growing holes, each
+/// hole's wallpaper fading out in a clip, a shadow around each hole fading
+/// in, and the old windows cut from the screenshot shrinking and fading
+/// one after another, each with its shadow.
+fn rime_bloom(scene: &Scene, wallpaper: &std::path::Path, ms: Signal<f32>) -> PanelWindow {
+  let full = Style::new()
+    .left(0.0)
+    .top(-INSET)
+    .width(1920.0)
+    .height(1080.0);
+  let wall = || {
+    Image::new(wallpaper.to_owned())
+      .width(1920)
+      .height(1080)
+      .fit(Fit::Cover)
+  };
+  let cover = wall().style(full).mask_region(move || {
+    let ms = ms.get();
+    let all = Region::rect(0, 0, 1920, 1080);
+    Some(
+      (0..NEWS.len())
+        .filter(|&index| ms >= new_start(index))
+        .fold(all, |region, index| {
+          let hole = rime_hole(index, ms);
+          region.subtract(
+            Region::rect(
+              hole.x.round() as i32,
+              (hole.y + INSET).round() as i32,
+              hole.width.round() as u32,
+              hole.height.round() as u32,
+            )
+            .radius(10.0),
+          )
+        }),
+    )
+  });
+  let fading = (0..NEWS.len()).fold(Row::new(), |row, index| {
+    row.child(
+      Row::new()
+        .visible(move || hole_strength(index, ms.get()) < 1.0)
+        .style(move || {
+          let hole = rime_hole(index, ms.get());
+          Style::new()
+            .left(hole.x)
+            .top(hole.y)
+            .width(hole.width)
+            .height(hole.height)
+            .clip(true)
+            .opacity(1.0 - hole_strength(index, ms.get()))
+        })
+        .child(wall().style(move || {
+          let hole = rime_hole(index, ms.get());
+          Style::new()
+            .left(-hole.x)
+            .top(-hole.y - INSET)
+            .width(1920.0)
+            .height(1080.0)
+        })),
+    )
+  });
+  let new_shadows = (0..NEWS.len()).fold(Row::new(), |row, index| {
+    row.child(panel_shadow(
+      move || rime_hole(index, ms.get()),
+      index == 0,
+      move || hole_strength(index, ms.get()),
+    ))
+  });
+  let olds = NEWS
+    .iter()
+    .enumerate()
+    .fold(Row::new(), |row, (index, &(x, y, width, height))| {
+      let eased = move || ease_quart((ms.get() - old_start(index)) / 220.0);
+      let shot = ScreencopyView::new(CaptureSource::Output(String::from("DP-1")))
+        .crop(Some(Rect::new(x, y + INSET, width, height)))
+        .style(Style::new().width(width).height(height));
+      row.child(
+        Stack::new()
+          .style(move || {
+            Style::new()
+              .left(x)
+              .top(y)
+              .width(width)
+              .height(height)
+              .scale(1.0 - 0.4 * eased())
+              .opacity(1.0 - eased())
+          })
+          .child(panel_shadow(
+            move || Rect::new(0.0, 0.0, width, height),
+            index == 0,
+            || 1.0,
+          ))
+          .child(
+            Row::new()
+              .style(Style::new().radius(10.0).clip(true))
+              .child(shot),
+          ),
+      )
+    });
+  scene.panel().child(
+    Stack::new()
+      .child(Row::new().child(cover))
+      .child(fading)
+      .child(new_shadows)
+      .child(olds),
+  )
+}
+
 /// The lock screen `fade` of the way in: one full-screen layer holding
 /// the blurred wallpaper, a translucent scrim and the clock, which with
 /// `rising` fades in and rises over the same time, as the port's does.
@@ -356,7 +527,8 @@ fn time_the_animated_scenes() {
   let frames = |name: &str, size: (f32, f32), build: Build<'_>| {
     let mut scene = Scene::new();
     let (window, progress) = open(&mut scene, size, build, 0.0);
-    let (first, median, worst) = animate(&mut scene, &window, progress);
+    let steps = (0..16).map(|step| 0.05 + 0.06 * step as f32);
+    let (first, median, worst) = animate(&mut scene, &window, progress, steps);
     println!(
       "{name} frames: first {first:.1} ms, then median {median:.1} ms, slowest {worst:.1} ms"
     );
@@ -400,6 +572,34 @@ fn time_the_animated_scenes() {
   frames("lock fade", screen, &fading);
   let rising = |scene: &Scene, fade| lock(scene, &wallpaper, fade, true);
   frames("lock fade with the clock rising", screen, &rising);
+  // The rime bloom as it plays, a frame every 16.7 ms, its screenshot the
+  // whole output's. The wallpaper is decoded first, as the shell's own
+  // wallpaper window has it cached; the screenshot comes in fresh.
+  let mut scene = Scene::new();
+  let ms = scene.cx.signal(0.0);
+  let window = scene.window(rime_bloom(&scene, &wallpaper, ms), 1920.0, 1036.0);
+  scene.full(&window, 1.0);
+  let screen_frame = CaptureFrame {
+    height: 1080,
+    logical_height: 1080,
+    rgba: Rc::from(
+      (0..1920u32 * 1080)
+        .flat_map(|at| [(at % 251) as u8, (at % 241) as u8, 90, 255])
+        .collect::<Vec<u8>>(),
+    ),
+    ..frame.clone()
+  };
+  for capture in window.captures() {
+    window.show_capture(capture.id, screen_frame.clone());
+  }
+  scene.frame(&window);
+  let steps = (0..)
+    .map(|frame| frame as f32 * 1000.0 / 60.0)
+    .take_while(|&ms| ms < BLOOM_MS);
+  let (first, median, worst) = animate(&mut scene, &window, ms, steps);
+  println!(
+    "rime bloom frames: first {first:.1} ms, then median {median:.1} ms, slowest {worst:.1} ms"
+  );
   // The bloom's first frame: a new screenshot every draw, kept again.
   let mut scene = Scene::new();
   let panel = still(&scene);
