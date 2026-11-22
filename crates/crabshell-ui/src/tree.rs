@@ -594,6 +594,8 @@ impl Tree {
     path: Rc<str>,
   ) -> Tree {
     let mut taffy = TaffyTree::new();
+    // Rounded in `place` instead; see `layout::rounded`.
+    taffy.disable_rounding();
     let anchor = cx.anchor.clone();
     let access = cx.service::<Accessibility>().map(|access| {
       let window = access.register(this.clone());

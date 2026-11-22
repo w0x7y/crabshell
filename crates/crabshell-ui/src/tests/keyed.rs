@@ -5,12 +5,12 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use super::{Counter, Harness, capture_logs, node_at, paths};
+use super::{Counter, Harness, capture_logs, node_at, paths, rect_at};
 use crabshell_reactive::{ReadSignal, Signal};
 
 use crate::{
-  Button, Content, Cx, Easing, Element, Icon, Row, Spring, Style, Text, Transition, Widget, Window,
-  advance_animations, animating, fire_timers, next_timer,
+  Button, Content, Cx, Easing, Element, Icon, Rect, Row, Spring, Style, Text, Transition, Widget,
+  Window, advance_animations, animating, fire_timers, next_timer,
 };
 
 /// The text of each child of the window's row.
@@ -963,4 +963,43 @@ fn a_spring_holds_a_leaving_child_until_it_rests() {
   }
   assert!(ms > 160);
   assert_eq!(texts(&window), ["1"]);
+}
+
+// taffy 0.15 keeps each container's list of absolute children from its
+// last layout as one with children, and its rounding pass reads that list.
+#[test]
+fn absolute_children_can_leave_a_row_that_ends_empty_or_hidden() {
+  let mut h = Harness::new();
+  let items = h.cx.signal(vec![1, 2]);
+  let shown = h.cx.signal(true);
+  let row = Row::new().visible(move || shown.get()).children_keyed(
+    move || items.get(),
+    |n| *n,
+    |_cx, n| {
+      Row::new().style(move || {
+        let n = n.get() as f32;
+        Style::new()
+          .left(10.0 * n + 0.4)
+          .top(0.6)
+          .width(5.3)
+          .height(5.0)
+      })
+    },
+  );
+  let window = h.window(h.panel().child(row), 400.0, 30.0);
+  assert_eq!(rect_at(&window, &[0, 1]), Rect::new(20.0, 1.0, 6.0, 5.0));
+
+  items.set(Vec::new());
+  h.frame(&window);
+  items.set(vec![3]);
+  h.frame(&window);
+  assert_eq!(rect_at(&window, &[0, 0]), Rect::new(30.0, 1.0, 6.0, 5.0));
+
+  shown.set(false);
+  h.frame(&window);
+  items.set(Vec::new());
+  h.frame(&window);
+  shown.set(true);
+  h.frame(&window);
+  assert_eq!(node_at(window.view().root(), &[0]).children().count(), 0);
 }

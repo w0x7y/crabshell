@@ -63,7 +63,13 @@ impl Tree {
     // its button off a still pointer would unhover it, move it back and
     // hover it again for as long as the pointer stays.
     if self.needs_place && !self.needs_layout {
-      self.place(root, Point::default(), &mut Vec::new(), text.font_system());
+      self.place(
+        root,
+        Point::default(),
+        Point::default(),
+        &mut Vec::new(),
+        text.font_system(),
+      );
       self.needs_place = false;
       // Scrolled content moved under the pointer, as a layout would.
       if std::mem::take(&mut self.scrolled) {
@@ -115,7 +121,13 @@ impl Tree {
       return;
     }
 
-    self.place(root, Point::default(), &mut Vec::new(), fonts);
+    self.place(
+      root,
+      Point::default(),
+      Point::default(),
+      &mut Vec::new(),
+      fonts,
+    );
     self.reveal_caret(fonts);
     if font_added {
       let whole = Rect::new(0.0, 0.0, self.size.width, self.size.height);
@@ -173,7 +185,13 @@ impl Tree {
       }
       if moved {
         let root = self.root;
-        self.place(root, Point::default(), &mut Vec::new(), fonts);
+        self.place(
+          root,
+          Point::default(),
+          Point::default(),
+          &mut Vec::new(),
+          fonts,
+        );
       }
     }
   }
@@ -203,10 +221,10 @@ impl Tree {
         });
     match (measured, self.taffy.layout(root)) {
       // At least 1 px a side: xdg_positioner refuses an empty size.
-      (Ok(()), Ok(layout)) => crate::Size::new(
-        layout.size.width.ceil().max(1.0),
-        layout.size.height.ceil().max(1.0),
-      ),
+      (Ok(()), Ok(layout)) => {
+        let layout = rounded(layout, Point::default());
+        crate::Size::new(layout.size.width.max(1.0), layout.size.height.max(1.0))
+      }
       (Err(error), _) => {
         tracing::error!(%error, "taffy failed to measure a popup");
         self.size
@@ -260,6 +278,7 @@ impl Tree {
 
   /// The third pass: turns taffy's layout of `id`, relative to its
   /// parent's corner `origin`, into window coordinates, and records damage.
+  /// `cumulative` is where taffy put the parent's corner before rounding.
   /// `chain` holds the ancestors' transforms and content shadows,
   /// outermost first. Returns the bounds of `id` and its descendants, in
   /// its parent's coordinates.
@@ -267,6 +286,7 @@ impl Tree {
     &mut self,
     id: NodeId,
     origin: Point,
+    cumulative: Point,
     chain: &mut Vec<Step>,
     fonts: &mut FontSystem,
   ) -> Rect {
@@ -274,9 +294,14 @@ impl Tree {
       self.unplace(id);
       return Rect::default();
     }
-    let Ok(&layout) = self.taffy.layout(id) else {
+    let Ok(&unrounded) = self.taffy.layout(id) else {
       return Rect::default();
     };
+    let layout = rounded(&unrounded, cumulative);
+    let cumulative = Point::new(
+      cumulative.x + unrounded.location.x,
+      cumulative.y + unrounded.location.y,
+    );
     let rect = Rect::new(
       origin.x + layout.location.x,
       origin.y + layout.location.y,
@@ -303,6 +328,7 @@ impl Tree {
         .unwrap_or_default()
         .into_iter()
         .filter_map(|child| self.taffy.layout(child).ok())
+        .map(|child| rounded(child, cumulative))
         .fold((0.0_f32, 0.0_f32), |(right, bottom), child| {
           (
             right.max(
@@ -366,7 +392,7 @@ impl Tree {
     chain.extend(content_shadows(node));
     let mut children = Rect::default();
     for child in self.taffy.children(id).unwrap_or_default() {
-      children = children.union(self.place(child, origin, chain, fonts));
+      children = children.union(self.place(child, origin, cumulative, chain, fonts));
     }
     self.place_bar(id, rect, chain);
     let bounds = self.finish_place(id, rect, content, children, (chain, own), fonts);
@@ -568,6 +594,34 @@ pub(crate) enum Step {
   /// A shadow cast by what the node and its children draw, which reaches
   /// past what casts it.
   Shadow(Shadow),
+}
+
+/// Rounds `layout` as taffy's own rounding would, from `cumulative`, where
+/// taffy put its parent's corner. taffy's pass is off: in 0.15.1 it reads
+/// absolute children a container no longer has and panics.
+fn rounded(layout: &taffy::Layout, cumulative: Point) -> taffy::Layout {
+  let round = |value: f32| (value + 0.5).floor();
+  let (x, y) = (
+    cumulative.x + layout.location.x,
+    cumulative.y + layout.location.y,
+  );
+  let (width, height) = (layout.size.width, layout.size.height);
+  let start = |at: f32, by: f32| round(at + by) - round(at);
+  let end = |at: f32, length: f32, by: f32| round(at + length) - round(at + length - by);
+  let mut out = *layout;
+  out.location.x = round(x) - round(cumulative.x);
+  out.location.y = round(y) - round(cumulative.y);
+  out.size.width = start(x, width);
+  out.size.height = start(y, height);
+  out.border.left = start(x, layout.border.left);
+  out.border.right = end(x, width, layout.border.right);
+  out.border.top = start(y, layout.border.top);
+  out.border.bottom = end(y, height, layout.border.bottom);
+  out.padding.left = start(x, layout.padding.left);
+  out.padding.right = end(x, width, layout.padding.right);
+  out.padding.top = start(y, layout.padding.top);
+  out.padding.bottom = end(y, height, layout.padding.bottom);
+  out
 }
 
 /// The content shadows `node` casts, a fading one's too, as steps out
