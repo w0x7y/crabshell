@@ -25,7 +25,14 @@ fn filled((width, height): (u32, u32), shape: tiny_skia::Rect, corners: [f32; 4]
 fn a_straight_shape_covers_what_its_filled_mask_does_in_every_tile() {
   let (mut whole, mut banded, mut curved) = (0, 0, 0);
   for scale in SCALES {
-    for radii in [[0.0; 4], [3.3; 4], [10.0; 4], [22.5, 0.0, 7.0, 15.0]] {
+    for radii in [
+      [0.0; 4],
+      [1.9; 4],
+      [2.9, 0.0, 0.0, 0.0],
+      [3.3; 4],
+      [10.0; 4],
+      [22.5, 0.0, 7.0, 15.0],
+    ] {
       // A box laid out in logical pixels, snapped to the pixel grid.
       let (x, y, w, h) = (7.3_f32, 5.6_f32, 190.2_f32, 130.7_f32);
       let edges = [x, y, x + w, y + h].map(|edge| (edge * scale).round());

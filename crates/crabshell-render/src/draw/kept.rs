@@ -113,7 +113,7 @@ impl Kept {
     if data.capacity() < SPARE_FROM || kept + data.capacity() > SPARE_LIMIT {
       return;
     }
-    if let Some(held) = self.hold(data.capacity() as u64) {
+    if let Some(held) = self.charge(data.capacity() as u64) {
       self.spare.push((data, held));
     }
   }
@@ -167,8 +167,17 @@ impl Kept {
     self.seen.get(path)?.layer.as_ref()
   }
 
+  /// Counts `bytes` against the budget, letting the spare buffers go
+  /// first if they are what is in the way, or `None` if they don't fit.
+  pub(super) fn hold(&mut self, bytes: u64) -> Option<Held> {
+    if self.budget.load(Ordering::Relaxed) + bytes > KEPT_LIMIT {
+      self.spare.clear();
+    }
+    self.charge(bytes)
+  }
+
   /// Counts `bytes` against the budget, or `None` if they don't fit.
-  pub(super) fn hold(&self, bytes: u64) -> Option<Held> {
+  fn charge(&self, bytes: u64) -> Option<Held> {
     let total = self.budget.fetch_add(bytes, Ordering::Relaxed) + bytes;
     let held = Held {
       bytes,

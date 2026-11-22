@@ -408,6 +408,7 @@ fn a_scaled_layer_blends_within_a_level_of_the_float_blend_it_replaced() {
   };
   let (width, height) = (53u32, 41u32);
   let mut worst = 0;
+  let (mut bias, mut channels) = (0_i64, 0_i64);
   for case in 0..300 {
     // Premultiplied pixels of every alpha, a clear margin on some.
     let pixels: Vec<u8> = (0..width * height)
@@ -457,8 +458,15 @@ fn a_scaled_layer_blends_within_a_level_of_the_float_blend_it_replaced() {
     float_blend(&mut pixmap, &layer, at, opacity);
     let differs = ours.iter().zip(&theirs).map(|(a, b)| a.abs_diff(*b));
     worst = worst.max(differs.max().unwrap_or(0));
+    for (a, b) in ours.iter().zip(&theirs) {
+      bias += i64::from(*a) - i64::from(*b);
+    }
+    channels += ours.len() as i64;
   }
   assert!(worst <= 1, "off by {worst}");
+  // Rounded to the nearest level, so no darker or lighter on the whole.
+  let mean = bias as f64 / channels as f64;
+  assert!(mean.abs() < 0.05, "biased by {mean}");
 }
 
 #[test]

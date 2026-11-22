@@ -877,3 +877,51 @@ fn fills_in_one_draw_share_their_scratch_and_none_is_kept_after_it() {
     "the second fill took the first's scratch"
   );
 }
+
+#[test]
+fn spare_buffers_give_way_to_layers_that_start_moving_together() {
+  // Four large clipped boxes that start shrinking in the same draw fill
+  // about 27 of the 32 MiB: the scratch the first fills let go must not
+  // crowd the last out.
+  let mut scene = Scene::new();
+  let scale = scene.cx.signal(1.0);
+  let boxes = (0..4).fold(Stack::new(), |stack, _| {
+    stack.child(
+      Stack::new()
+        .style(move || {
+          Style::new()
+            .left(20.0)
+            .top(20.0)
+            .width(1800.0)
+            .height(1000.0)
+            .scale(scale.get())
+        })
+        .child(
+          Row::new()
+            .style(Style::new().radius(16.0).clip(true))
+            .child(
+              Row::new().style(
+                Style::new()
+                  .width(1800.0)
+                  .height(1000.0)
+                  .background(Color::rgb(90, 140, 200)),
+              ),
+            ),
+        ),
+    )
+  });
+  let window = scene.window(scene.panel().child(boxes), 1840.0, 1040.0);
+  let mut history = DamageHistory::new();
+  let mut buffer = Buffer::new(&window, 1.0);
+  for shrunk in [1.0, 0.95] {
+    scale.set(shrunk);
+    scene.frame(&window);
+    scene.draw(&window, &mut history, &mut buffer);
+  }
+  let layer = 1800 * 1000 * 4;
+  assert!(
+    scene.renderer.kept_bytes() >= 4 * layer,
+    "all four kept: {} bytes",
+    scene.renderer.kept_bytes()
+  );
+}
