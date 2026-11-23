@@ -160,7 +160,10 @@
         <p>
           For a one-line edit to the template bar, the build takes 1.0 s and the
           bar never leaves the screen. A build that produces the same program as
-          before doesn't reload. A config can ask for a reload itself with
+          before doesn't reload. If the shell holds a session lock,
+          <code>crabshell run</code> builds the edit as usual and defers the
+          swap until the session unlocks, so a reload never drops the lock
+          screen. A config can ask for a reload itself with
           <code>cx.reload()</code>.
         </p>
         <h3 id="crash">On a crash</h3>

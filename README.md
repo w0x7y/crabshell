@@ -30,7 +30,7 @@ to start it with sway, add `exec ~/.cargo/bin/crabshell run` to your sway config
 
 ### edit it
 
-change `~/.config/crabshell/src/main.rs` while `crabshell run` runs. each save rebuilds it and swaps the bar in about a second. if the edit doesn't build, the old bar stays and the error shows in the terminal and a notification. a crashing bar restarts, and after three quick crashes `crabshell run` goes back to the last build that worked. `crabshell check` checks a config without running it
+change `~/.config/crabshell/src/main.rs` while `crabshell run` runs. each save rebuilds it and swaps the bar in about a second (or waits until unlock if the session is locked). if the edit doesn't build, the old bar stays and the error shows in the terminal and a notification. a crashing bar restarts, and after three quick crashes `crabshell run` goes back to the last build that worked. `crabshell check` checks a config without running it
 
 ### a config
 
@@ -59,7 +59,7 @@ fn bar(cx: &Cx, output: &Output) -> PanelWindow {
 }
 ```
 
-every widget property takes a value or a closure. a closure runs again when a signal it reads changes, and only what changed is redrawn. `per_output` builds windows for every monitor, now and later. the [examples](crates/crabshell/examples/) show the rest. from a clone, `cargo run --release -p crabshell --example launcher` runs one, and so do `counter`, `bar`, `effects`, `desktop`, `motion`, `control`, `dashboard` and `notes`
+every widget property takes a value or a closure. a closure runs again when a signal it reads changes, and only what changed is redrawn. `per_output` builds windows for every monitor, now and later. the [examples](crates/crabshell/examples/) show the rest. from a clone, `cargo run --release -p crabshell --example launcher` runs one, and so do `counter`, `bar`, `hyprland`, `effects`, `desktop`, `motion`, `control`, `dashboard`, `notes`, `system`, `overview`, `lock` and `greeter`
 
 ### docs
 

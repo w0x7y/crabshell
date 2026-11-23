@@ -224,7 +224,8 @@ cx.effect(move || if is_open.get() { build() });</code></pre>
           <strong>Saving doesn't reload.</strong>
           <code>crabshell run</code> watches only <code>Cargo.toml</code> and
           <code>src/</code> in the config directory. A save that changes nothing
-          isn't swapped in.
+          isn't swapped in, and while the session is locked the swap waits until
+          you unlock.
         </p>
         <p>
           <strong>The shell went back to an older version.</strong> The new

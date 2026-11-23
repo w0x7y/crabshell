@@ -167,7 +167,7 @@ Row::new().gap(4).children_keyed(
         <pre><code class="rs">let mode = cx.signal(String::from("default"));
 cx.sway().on_event(&amp;[SwayEventKind::Mode], move |event| {
   // event.data is Sway's JSON for the event.
-  if let Ok(json) = serde_json::from_str::&lt;serde_json::Value&gt;(&amp;event.data) {
+  if let Ok(json) = crabshell::serde_json::from_str::&lt;crabshell::serde_json::Value&gt;(&amp;event.data) {
     mode.set(json["change"].as_str().unwrap_or("default").to_owned());
   }
 });</code></pre>
@@ -177,8 +177,8 @@ cx.sway().on_event(&amp;[SwayEventKind::Mode], move |event| {
           <code>Binding</code>, <code>Shutdown</code>, <code>Tick</code>,
           <code>BarStateUpdate</code> and <code>Input</code>. Sway is asked only
           for the kinds some handler wants. The handler lives as long as the
-          context <code>cx.sway()</code> was called on. This example needs
-          <code>serde_json</code> in the config's own <code>Cargo.toml</code>.
+          context <code>cx.sway()</code> was called on. Parse the JSON with
+          <code>crabshell::serde_json</code>.
         </p>
         <h2 id="hyprland">Hyprland</h2>
         <pre><code class="rs">let hyprland = cx.hyprland();

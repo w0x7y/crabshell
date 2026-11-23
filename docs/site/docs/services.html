@@ -442,8 +442,9 @@ notifications.on_notification(move |notification| {
         </p>
         <p>
           A reload keeps the history and the popups showing, with the time each
-          had left, so apps' ids go on. A notification sent in the moment the
-          shells swap is still lost.
+          had left, so apps' ids go on. The new shell takes over from the old
+          one before the old one exits, so notifications arriving during the
+          swap aren't lost or doubled.
         </p>
         <p>
           <code>actions</code> is a list of <code>(key, label)</code> pairs.
@@ -505,7 +506,10 @@ Text::new(move || {
           For art on disk, <code>art_url</code> is a
           <code>file://</code> address, which you turn into a path for an
           <a href="drawing.html#images"><code>Image</code></a
-          >. Art served over https isn't fetched.
+          >. For art served over <code>https:</code>, pass
+          <code>art_url</code> to
+          <a href="system.html#http"><code>cx.cover_art</code></a
+          >.
         </p>
         <h2 id="network">Network</h2>
         <p><code>cx.network()</code> reads NetworkManager.</p>

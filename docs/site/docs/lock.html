@@ -115,9 +115,12 @@ cx.session_lock(
 })</code></pre>
         <h3 id="stay-locked">Stay locked through a crash</h3>
         <p>
-          A lock screen that dies leaves the session locked. The compositor
-          keeps the screen covered until a program unlocks it, so your shell
-          must remember it was locked when it comes back.
+          <code>crabshell run</code> defers reloads while the session is locked
+          and swaps the shell once you unlock, so saving an edit never drops the
+          lock screen. A lock screen that crashes, however, still leaves the
+          session locked: the compositor keeps the screen covered until a
+          program unlocks it, so your shell must remember it was locked when it
+          comes back.
         </p>
         <p>
           A plain signal forgets on every restart, and

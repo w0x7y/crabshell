@@ -187,8 +187,7 @@ x.value();     // the ReadSignal&lt;f32&gt;
 x.running();   // true until the value rests</code></pre>
         <p>
           It gives an <code>Animation&lt;f32&gt;</code>, as
-          <code>cx.animation</code> does. A 0.5 config that read the spring
-          straight reads <code>x.value()</code> now.
+          <code>cx.animation</code> does.
         </p>
         <h2 id="cycles">Cycles</h2>
         <p>
@@ -225,9 +224,11 @@ Row::new().style(move || PILL.translate(shake.value().get(), 0.0))</code></pre>
           is, and <code>Step::hold(ms)</code> waits. A hold lets the shell sleep
           instead of drawing frames. The trigger's first value plays nothing,
           and a new one mid-play starts over from where the value is. It gives
-          an <code>Animation</code>, so an effect on <code>running()</code>
-          runs what comes after the last step, holds included, such as an
-          unlock.
+          an <code>Animation</code>, so an effect on <code>running()</code> runs
+          what comes after the last step, holds included, such as an unlock. A 0
+          ms sequence never turns <code>running()</code> true, so read its
+          trigger inside that effect too when the durations can be 0 (for
+          example in a reduced-motion or power-saver mode).
         </p>
         <h3 id="sequence-loop">Looping sequences</h3>
         <p>

@@ -462,7 +462,7 @@ What `crabshell run` does:
 2. Listens on a Unix socket in `$XDG_RUNTIME_DIR/crabshell/`, then starts the built binary with the socket's path in `CRABSHELL_CONTROL`. The shell connects and writes `ready` once every panel it shows has committed its first frame, or, with none shown, once its startup judgement passed. (A path rather than an inherited descriptor: adopting a raw descriptor number is `unsafe` in Rust, and the crates forbid `unsafe`.)
 3. Watches `src/` and `Cargo.toml` with the `inotify` crate, debounced by 300 ms. (`notify` is CC0-1.0, which the license policy doesn't allow.)
 4. On a change, runs `cargo build` again. If the build fails, the running shell stays up. The supervisor prints the full error and sends the first error line as a desktop notification over `org.freedesktop.Notifications`.
-5. If the build succeeds, the supervisor writes `handoff` to the socket. The shell writes every `cx.persist` value to `$XDG_RUNTIME_DIR/crabshell/state.json`, answers `saved` and keeps running. The supervisor starts the new binary beside it, which reads that file, and once the new shell says `ready` writes `exit` to the old one. The new shell gets 10 s to say `ready`; if it ends or misses that, the old one keeps running and the supervisor sends a notification, as for a failed build. Once the old shell has gone, the supervisor writes `alone` to the new one.
+5. If the build succeeds, the supervisor writes `handoff` to the socket. The shell writes every `cx.persist` value to `$XDG_RUNTIME_DIR/crabshell/state.json`, answers `saved` and keeps running. The supervisor starts the new binary beside it, which reads that file, and once the new shell says `ready` writes `exit` to the old one. The new shell gets 10 s to say `ready`; if it ends or misses that, the old one keeps running and the supervisor sends a notification, as for a failed build. Once the old shell has gone, the supervisor writes `alone` to the new one. If the shell holds a session lock, the swap waits until the session unlocks.
 6. If the shell exits with any other code or dies from a signal, the supervisor restarts it after 1 s, doubling the wait each time up to 30 s. Three crashes within 60 s of a new build make it start `~/.cache/crabshell/last-good` instead and send a notification.
 7. A binary that has run for 60 s after it said `ready` is copied to `last-good`. A lock-only config or a hidden launcher says `ready` once its startup judgement passes. A shell that never says it, such as one waiting for its first output, is never copied.
 
@@ -514,6 +514,7 @@ Rules settled for the reload handoff (Phase 19):
 - The new shell says `ready` only once it has taken the notifications over, so none is lost or doubled. SIGTERM during a swap ends both shells, then `run`.
 - Told to stop, the supervisor sends each shell SIGTERM and SIGKILL 5 s later. If the old shell exits while the new one is being replaced, the newest build starts at once rather than as a crash's restart.
 - A program `cx.process` starts in the new shell waits for `alone` too, so the old shell's run is never doubled.
+- A shell reports `locked` and `unlocked` on the control socket as a session lock begins (`State::Asked` / `State::Locked`) and once the compositor confirms its unlock (`wl_display.sync`). While locked, the shell refuses `handoff` and `exit` by answering `locked`, and the supervisor cancels any reload kill timer and defers the reload (or ends an unready new shell quietly without notifying, or holds `exit` if the new shell is already ready) until `unlocked`. Legacy `save` keeps its exit-at-once behavior for pre-0.8 supervisors.
 
 Panic handling inside the shell:
 
@@ -1184,6 +1185,7 @@ Rules settled while building `crabshell-wayland` (0.9 gap fixes):
 - A new size, from a configure, a popup's layout or a panel's resize, cuts the masks and the blur region again, and the frame drawn at that size commits them.
 - Whenever `image_sources_changed` says an image's status waits, the platform has the renderer load each window's waiting images, drawn or not, at the window's scale. After the draws and loads, a status that changed runs the reactive flush before the loop sleeps, so effects that read it run in the iteration that loaded the picture.
 - A lock's `refused` signal turns `true` when the compositor sends `finished` (refused, or ended while `locked` is true) or lacks ext-session-lock-v1, only while the config still wants it locked. It turns `false` once `locked` turns false. A lock that takes never writes it.
+- `Platform::session_locked()` is `true` while any lock is `Asked` or `Locked` or has an `unlock_and_destroy` `wl_display.sync` still in flight, so the shell never claims unlocked before the compositor processes the unlock.
 
 ## Services
 
@@ -1524,6 +1526,8 @@ The gaps found porting a Quickshell config shipped as 0.9. Against 0.8:
 
 0.9.5 fixes a layout crash in taffy 0.15.1's rounding pass when a container becomes empty or hidden after holding absolute children by rounding layouts in place in `place`, and speeds up layered and masked animations (kept layers from the first moving frame, large buffer reuse within a draw, straight-edge mask skipping, and word and byte blending).
 
+0.9.6 defers `crabshell run` hot reloads while the shell holds an `ext-session-lock` session lock, resuming the pending rebuild and handoff once the compositor confirms unlock.
+
 ## Rules for AI agents
 
 They live in [AGENTS.md](../AGENTS.md), with the commands that test a change.
@@ -1534,21 +1538,21 @@ The biggest risk is the reload loop. A rebuild per edit, 1.0 s for a one-line ch
 
 | Risk                                      | Why it matters                                                              | Mitigation                                                                                            |
 | ----------------------------------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| Reload misses the goal                    | A rebuild per edit, against Quickshell's QML reload                         | Fast dev profile, a small config crate, build time measured in Phase 5. Phase 19 removes the blink.   |
+| Reload misses the goal                    | A rebuild per edit, against Quickshell's QML reload                         | Fast dev profile, a small config crate (1.0 s rebuild), and Phase 19's overlap removes the blink      |
 | You review Rust you can't fully judge yet | Bugs in the reactive core or event loop hide well                           | Small changes, required tests, headless Sway screenshots, and plain-language explanations from agents |
-| Tray apps bend the spec                   | Electron, Qt and Ayatana apps each implement StatusNotifierItem differently | Phase 4 gets 4-6 weeks and tests real apps                                                            |
-| Text looks worse than Qt's                | v0.1 has grayscale antialiasing only                                        | Compared side by side in Phase 0                                                                      |
+| Tray apps bend the spec                   | Electron, Qt and Ayatana apps each implement StatusNotifierItem differently | Tested in Phase 4 against fake and real Electron, Qt and Ayatana apps                                 |
+| Text looks worse than Qt's                | Grayscale antialiasing only                                                 | Compared side by side in Phase 0                                                                      |
 | Font loading slows startup                | Scanning every system font can blow the 100 ms target                       | Load only the files fontconfig matches                                                                |
 | Sway-first shrinks the audience           | Most Quickshell users run Hyprland or niri                                  | Hyprland came in Phase 12, niri's IPC in Phase 18                                                     |
 | Configs need a Rust toolchain             | A higher entry bar and a slow first build                                   | Template and README, with the full first run timed in Phase 6                                         |
-| No accessibility in v0.1                  | Screen readers can't read the shell                                         | Add AccessKit (AT-SPI) in Phase 19                                                                    |
+| Accessibility                             | Screen readers need to read the shell                                       | AccessKit (AT-SPI) added in Phase 19                                                                  |
 
-Open questions:
+Settled architectural choices (originally open questions):
 
 - [x] Project name: Crabshell.
 - [x] Which other wlroots compositors to test: Sway (SwayFX included) and labwc; river and Wayfire go untested and are reached through the same protocols.
-- [x] Should a reload start the new shell before stopping the old one, to remove the blink? Yes; Phase 19 builds it.
-- [x] Stay on libpulse or switch to native PipeWire? libpulse stays for volume, sinks and meters; Phase 19 adds native PipeWire only for the link graph and video nodes.
+- [x] Should a reload start the new shell before stopping the old one, to remove the blink? Yes; built in Phase 19.
+- [x] Stay on libpulse or switch to native PipeWire? libpulse stays for volume, sinks and meters; native PipeWire added in Phase 19 for the link graph and video nodes.
 - [x] When to add Hyprland and niri: Hyprland came in Phase 12, and niri's IPC in Phase 18.
 - [x] Should the shell exit with 1 when `f` panics for every output at startup? Yes, so the supervisor falls back to `last-good`.
 - [x] Install cargo-deny and add a deny.toml: done, and CI runs it.
