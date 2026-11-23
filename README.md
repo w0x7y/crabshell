@@ -2,7 +2,7 @@
 
 # crabshell
 
-a rust replacement for quickshell: your whole desktop shell is a rust crate, and every quickshell type has a crabshell counterpart. v0.9 is on crates.io, with bars, launchers, lock screens, notifications, the clipboard, http, pipewire's link graph, a screen reader, screen captures, keyframe animation and drawing for sway, hyprland, niri and other wlroots compositors, and reloads that never blank the bar. [the design doc](docs/design.md) has every decision, and [the site](docs/site/index.html) has the full docs
+a rust replacement for quickshell: your whole desktop shell is a rust crate, and every quickshell type has a crabshell counterpart. v0.9.6 is on crates.io, with bars, launchers, lock screens, notifications, the clipboard, http, pipewire's link graph, a screen reader, screen captures, keyframe animation and drawing for sway, hyprland, niri and other wlroots compositors, and reloads that never blank the bar. [the design doc](docs/design.md) has every decision, and [the site](docs/site/index.html) has the full docs
 
 ### ai disclosure
 
