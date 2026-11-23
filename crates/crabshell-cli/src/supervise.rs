@@ -61,6 +61,8 @@ enum Ending {
   Late,
   /// A newer build starts in its place.
   Replaced,
+  /// The old shell locked the session before this one was ready.
+  Deferred,
 }
 
 /// The shell a reload replaces, running beside the new one until that
@@ -80,6 +82,11 @@ struct Old {
   /// descriptors are closed, though the kernel may take tens of ms more
   /// to end the process.
   hung_up: bool,
+  /// It holds a session lock: exiting now would leave the compositor locked.
+  locked: bool,
+  /// The new shell is already ready and waits for this one to unlock
+  /// before telling it to exit.
+  exit_when_unlocked: bool,
 }
 
 /// The longest line read from the shell; a longer one is cut.
@@ -111,6 +118,8 @@ struct Supervisor {
   can_hand_off: bool,
   /// The running shell was told `alone`.
   told_alone: bool,
+  /// The running shell holds a session lock: reloads wait until it unlocks.
+  locked: bool,
   /// The shell being replaced, while the new one starts.
   old: Option<Old>,
   /// An edit or `cx.reload()` came while a new shell started beside the
@@ -281,6 +290,7 @@ pub(crate) fn run(config: &Path, target: &Path) -> Result<(), String> {
     control: None,
     can_hand_off: false,
     told_alone: false,
+    locked: false,
     old: None,
     reload_again: false,
     healthy_timer: None,
@@ -438,6 +448,7 @@ impl Supervisor {
     self.healthy_due = None;
     self.control = None;
     self.can_hand_off = false;
+    self.locked = false;
     let waited = child.wait();
     let status = waited
       .as_ref()
@@ -469,6 +480,12 @@ impl Supervisor {
           self.restore_old();
           self.reload();
         }
+        Some(Ending::Deferred) => {
+          self.restore_old();
+          if std::mem::take(&mut self.reload_again) {
+            self.reload();
+          }
+        }
         Some(Ending::Late) => self.failed_reload(&format!(
           "the new shell wasn't ready within {} s",
           READY_LIMIT.as_secs()
@@ -476,7 +493,7 @@ impl Supervisor {
         None => self.failed_reload(&format!("the new shell ended ({status})")),
       };
     }
-    if ending == Some(Ending::Replaced) {
+    if matches!(ending, Some(Ending::Replaced | Ending::Deferred)) {
       // The old shell went first: nothing is left to save, so the newest
       // build simply starts. Not a crash.
       if let Some(timer) = self.ready_deadline.take() {
@@ -487,6 +504,9 @@ impl Supervisor {
     }
     // A new build that ended before `ready` didn't reload.
     self.reload_gap = None;
+    if self.old.is_none() {
+      self.reload_again = false;
+    }
     match waited {
       Ok(status) => self.ended(
         Exit::from_code(status.code()),
@@ -505,8 +525,8 @@ impl Supervisor {
       return;
     };
     // The new shell is the only one now, however long it takes, unless
-    // it is being replaced: then its kill stays due.
-    if self.ending != Some(Ending::Replaced)
+    // it is being replaced or deferred: then its kill stays due.
+    if !matches!(self.ending, Some(Ending::Replaced | Ending::Deferred))
       && let Some(timer) = self.ready_deadline.take()
     {
       self.handle.remove(timer);
@@ -566,6 +586,7 @@ impl Supervisor {
     self.can_hand_off = true;
     // It held everything all along.
     self.told_alone = true;
+    self.locked = old.locked;
     if let Some(due) = old.healthy_due {
       self.time_healthy(due);
     }
@@ -647,38 +668,87 @@ impl Supervisor {
         ended.elapsed().as_millis()
       ));
     }
-    if let Some(old) = self.old.as_mut().filter(|old| old.exiting.is_none()) {
-      log(&format!(
-        "reloaded with no gap: the new shell was ready {} ms after the old one saved; \
-         telling the old one to exit",
-        old.saved.elapsed().as_millis()
-      ));
-      let told = old
-        .control
-        .as_mut()
-        .is_some_and(|stream| stream.write_all(b"exit\n").is_ok());
-      if !told {
-        let pid = Pid::from_child(&old.child);
-        let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
+    if let Some(old) = self
+      .old
+      .as_mut()
+      .filter(|old| old.exiting.is_none() && !old.exit_when_unlocked)
+    {
+      if old.locked {
+        log(&format!(
+          "the new shell was ready {} ms after the old one saved, \
+           but the session is locked; waiting for it to unlock",
+          old.saved.elapsed().as_millis()
+        ));
+        old.exit_when_unlocked = true;
+      } else {
+        log(&format!(
+          "reloaded with no gap: the new shell was ready {} ms after the old one saved; \
+           telling the old one to exit",
+          old.saved.elapsed().as_millis()
+        ));
+        self.tell_old_to_exit();
       }
-      let timer = Timer::from_duration(SAVE_LIMIT);
-      let timer = self.handle.insert_source(timer, |_, _, supervisor| {
-        if let Some(old) = supervisor.old.as_mut() {
-          log(&format!(
-            "the old shell didn't exit within {} s; killing it",
-            SAVE_LIMIT.as_secs()
-          ));
-          old.exiting = Some(None);
-          let _ = old.child.kill();
-        }
-        TimeoutAction::Drop
-      });
-      old.exiting = Some(timer.ok());
     }
     let Some(due) = self.policy.ready(Instant::now()) else {
       return;
     };
     self.time_healthy(due);
+  }
+
+  /// Tells the old shell of a reload to exit, killing it if it takes
+  /// longer than [`SAVE_LIMIT`].
+  fn tell_old_to_exit(&mut self) {
+    let Some(old) = self.old.as_mut().filter(|old| old.exiting.is_none()) else {
+      return;
+    };
+    let told = old
+      .control
+      .as_mut()
+      .is_some_and(|stream| stream.write_all(b"exit\n").is_ok());
+    if !told {
+      let pid = Pid::from_child(&old.child);
+      let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
+    }
+    let timer = Timer::from_duration(SAVE_LIMIT);
+    let timer = self.handle.insert_source(timer, |_, _, supervisor| {
+      if let Some(old) = supervisor.old.as_mut() {
+        log(&format!(
+          "the old shell didn't exit within {} s; killing it",
+          SAVE_LIMIT.as_secs()
+        ));
+        old.exiting = Some(None);
+        let _ = old.child.kill();
+      }
+      TimeoutAction::Drop
+    });
+    old.exiting = Some(timer.ok());
+  }
+
+  /// Ends a new shell that started beside the old one before it was
+  /// ready, sending SIGTERM and killing it after [`SAVE_LIMIT`].
+  fn end_new_shell(&mut self, reason: Ending) {
+    let Some((child, _)) = &self.shell else {
+      return;
+    };
+    self.ending = Some(reason);
+    let _ = rustix::process::kill_process(Pid::from_child(child), rustix::process::Signal::TERM);
+    // In place of the ready deadline, which would call it late.
+    if let Some(timer) = self.ready_deadline.take() {
+      self.handle.remove(timer);
+    }
+    let timer = Timer::from_duration(SAVE_LIMIT);
+    self.ready_deadline = self
+      .handle
+      .insert_source(timer, |_, _, supervisor| {
+        supervisor.ready_deadline = None;
+        if matches!(supervisor.ending, Some(Ending::Replaced | Ending::Deferred))
+          && let Some((child, _)) = supervisor.shell.as_mut()
+        {
+          let _ = child.kill();
+        }
+        TimeoutAction::Drop
+      })
+      .ok();
   }
 
   /// Counts the running shell healthy at `due`.
@@ -833,39 +903,25 @@ impl Supervisor {
       return;
     }
     if let Some(old) = &self.old {
-      if old.exiting.is_some() {
+      if old.exiting.is_some() || old.exit_when_unlocked {
         self.reload_again = true;
-      } else if let Some((child, _)) = &self.shell
-        && self.ending.is_none()
-      {
+      } else if self.shell.is_some() && self.ending.is_none() {
         // Not ready yet: the old shell saves again once it has gone, and
         // the newest build starts in its place.
         log("ending the new shell, which isn't ready yet, for the newer build");
-        self.ending = Some(Ending::Replaced);
-        let _ =
-          rustix::process::kill_process(Pid::from_child(child), rustix::process::Signal::TERM);
-        // In place of the ready deadline, which would call it late.
-        if let Some(timer) = self.ready_deadline.take() {
-          self.handle.remove(timer);
-        }
-        let timer = Timer::from_duration(SAVE_LIMIT);
-        self.ready_deadline = self
-          .handle
-          .insert_source(timer, |_, _, supervisor| {
-            supervisor.ready_deadline = None;
-            if supervisor.ending == Some(Ending::Replaced)
-              && let Some((child, _)) = supervisor.shell.as_mut()
-            {
-              let _ = child.kill();
-            }
-            TimeoutAction::Drop
-          })
-          .ok();
-      } else if self.ending == Some(Ending::Late) {
-        // Being killed for being late: the old shell stays, and then this
-        // edit reloads it.
+        self.end_new_shell(Ending::Replaced);
+      } else if matches!(self.ending, Some(Ending::Late | Ending::Deferred)) {
+        // Being ended already: once the old shell is back, this edit
+        // reloads it (or waits if still locked).
         self.reload_again = true;
       }
+      return;
+    }
+    if self.locked {
+      if !self.reload_again {
+        log("the session is locked; deferring the reload until it unlocks");
+      }
+      self.reload_again = true;
       return;
     }
     let Some((child, _)) = &self.shell else {
@@ -916,7 +972,7 @@ impl Supervisor {
 
   /// The running shell said `saved`: the new build starts beside it.
   fn saved(&mut self, pid: Option<u32>) {
-    if !self.is_current(pid) || !self.can_hand_off || self.stopping {
+    if !self.is_current(pid) || !self.can_hand_off || self.stopping || self.locked {
       return;
     }
     let Some(timer) = self.reloading.take() else {
@@ -936,9 +992,81 @@ impl Supervisor {
       healthy_due: self.healthy_due.take(),
       exiting: None,
       hung_up: false,
+      locked: false,
+      exit_when_unlocked: false,
     });
     self.can_hand_off = false;
     self.start_beside();
+  }
+
+  /// Shell `pid` holds a session lock: cancel any reload kill timer and
+  /// defer swapping or exiting until it says `unlocked`.
+  fn locked(&mut self, pid: Option<u32>) {
+    if self.is_current(pid) {
+      self.locked = true;
+      if let Some(timer) = self.reloading.take() {
+        self.handle.remove(timer);
+        if !self.reload_again {
+          log("the session is locked; deferring the reload until it unlocks");
+        }
+        self.reload_again = true;
+      }
+      return;
+    }
+    let is_old = self
+      .old
+      .as_ref()
+      .is_some_and(|old| Some(old.child.id()) == pid);
+    if !is_old {
+      return;
+    }
+    let (exiting, exit_when_unlocked) = {
+      let old = self.old.as_mut().expect("checked above");
+      old.locked = true;
+      (old.exiting.take(), old.exit_when_unlocked)
+    };
+    if let Some(timer) = exiting {
+      if let Some(timer) = timer {
+        self.handle.remove(timer);
+      }
+      if let Some(old) = self.old.as_mut() {
+        old.exit_when_unlocked = true;
+      }
+      log("the old shell locked the session; waiting for it to unlock before exiting");
+    } else if !exit_when_unlocked {
+      self.reload_again = true;
+      if self.shell.is_some() && self.ending.is_none() {
+        log(
+          "the old shell locked the session before the new shell was ready; \
+           deferring the reload until it unlocks",
+        );
+        self.end_new_shell(Ending::Deferred);
+      }
+    }
+  }
+
+  /// Shell `pid` finished unlocking: resume any deferred reload or exit.
+  fn unlocked(&mut self, pid: Option<u32>) {
+    if self.is_current(pid) {
+      self.locked = false;
+      if !self.stopping && std::mem::take(&mut self.reload_again) {
+        log("the session unlocked; starting the deferred reload");
+        self.reload();
+      }
+      return;
+    }
+    let should_exit = self
+      .old
+      .as_mut()
+      .filter(|old| Some(old.child.id()) == pid)
+      .map(|old| {
+        old.locked = false;
+        std::mem::take(&mut old.exit_when_unlocked)
+      });
+    if !self.stopping && should_exit == Some(true) {
+      log("the session unlocked; telling the old shell to exit");
+      self.tell_old_to_exit();
+    }
   }
 
   /// SIGINT or SIGTERM: ends the shells, then `run`.
@@ -1031,6 +1159,8 @@ fn listen(
                 b"ready" => supervisor.ready(pid),
                 b"saved" => supervisor.saved(pid),
                 b"reload" => supervisor.asked_reload(pid),
+                b"locked" => supervisor.locked(pid),
+                b"unlocked" => supervisor.unlocked(pid),
                 b"can-hand-off" if supervisor.is_current(pid) => {
                   supervisor.can_hand_off = true;
                   supervisor.tell_alone();

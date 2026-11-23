@@ -25,6 +25,9 @@ pub(crate) struct Locks {
   manager: Option<ExtSessionLockManagerV1>,
   held: Vec<Held>,
   next: u64,
+  /// Unlocks sent whose `wl_display.sync` hasn't come back yet, so the
+  /// compositor may still hold the session locked.
+  unlocking: usize,
   /// Whether a lock asked without the protocol, which is logged once.
   warned: bool,
 }
@@ -35,6 +38,7 @@ impl Locks {
       manager,
       held: Vec::new(),
       next: 0,
+      unlocking: 0,
       warned: false,
     }
   }
@@ -132,6 +136,18 @@ impl Platform {
   /// included, as tests check they end.
   pub fn session_locks(&self) -> usize {
     self.locks.held.len()
+  }
+
+  /// Whether any session lock holds the session, asked to, or waits for
+  /// the compositor to confirm its unlock. Exiting while `true` would
+  /// leave the compositor locked.
+  pub fn session_locked(&self) -> bool {
+    self.locks.unlocking > 0
+      || self
+        .locks
+        .held
+        .iter()
+        .any(|held| !matches!(held.state, State::Unlocked { .. }))
   }
 
   /// Locks or unlocks each lock whose `locked` changed. Returns whether
@@ -248,6 +264,7 @@ impl Platform {
     match std::mem::replace(&mut held.state, State::Unlocked { refused }) {
       State::Locked(session) => {
         session.unlock_and_destroy();
+        self.locks.unlocking += 1;
         // A config may exit as soon as it hears, which must not leave the
         // unlock unsent; the protocol asks for this sync.
         self.connection.display().sync(&self.qh, Unlocked(held.id));
@@ -363,15 +380,17 @@ impl Dispatch<WlCallback, Unlocked> for Platform {
     _: &Connection,
     _: &QueueHandle<Platform>,
   ) {
-    if let wl_callback::Event::Done { .. } = event
-      && let Some(held) = platform
+    if let wl_callback::Event::Done { .. } = event {
+      platform.locks.unlocking = platform.locks.unlocking.saturating_sub(1);
+      if let Some(held) = platform
         .locks
         .held
         .iter()
         .find(|held| held.id == unlocked.0)
-      && let Some(lock) = &held.lock
-    {
-      lock.set_locked(false);
+        && let Some(lock) = &held.lock
+      {
+        lock.set_locked(false);
+      }
     }
   }
 }

@@ -1,11 +1,12 @@
 //! The supervisor's control socket, named by `CRABSHELL_CONTROL`, one
-//! line per message. The shell says `can-hand-off` when it connects, and
-//! `ready` once each of its windows has drawn a frame. Told `handoff`, it
-//! saves its persisted values and says `saved`, and runs on until the new
-//! shell is ready and it is told `exit`. Told `save`, as a supervisor
-//! from before the handoff says, it saves and exits at once. Told
-//! `alone`, it takes what only one process can hold, which a shell saved
-//! for a handoff waits for.
+//! line per message. The shell says `can-hand-off` when it connects,
+//! `ready` once each of its windows has drawn a frame, and `locked` /
+//! `unlocked` while it holds a session lock so reloads wait until it
+//! unlocks. Told `handoff`, it saves its persisted values and says
+//! `saved`, and runs on until the new shell is ready and it is told
+//! `exit`. Told `save`, as a supervisor from before the handoff says,
+//! it saves and exits at once. Told `alone`, it takes what only one
+//! process can hold, which a shell saved for a handoff waits for.
 //! `cx.reload()` says `reload`.
 
 use std::io::{ErrorKind, Read, Write};

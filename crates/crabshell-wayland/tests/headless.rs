@@ -4406,9 +4406,11 @@ fn locking_covers_every_output_and_unlocking_shows_the_bars_again() {
   shell.runtime.flush();
   let nodes = shell.runtime.node_count();
 
+  assert!(!shell.event_loop.platform().session_locked());
   locker.on.set(true);
   let took = wait_locked(&mut shell.event_loop, locker, true);
   eprintln!("the compositor locked {took:?} after the shell asked");
+  assert!(shell.event_loop.platform().session_locked());
   let platform = shell.event_loop.platform();
   let surfaces = lock_surfaces(platform);
   let names: Vec<&str> = surfaces.iter().map(|(name, _)| name.as_str()).collect();
@@ -4436,6 +4438,7 @@ fn locking_covers_every_output_and_unlocking_shows_the_bars_again() {
 
   locker.on.set(false);
   wait_locked(&mut shell.event_loop, locker, false);
+  assert!(!shell.event_loop.platform().session_locked());
   assert!(lock_surfaces(shell.event_loop.platform()).is_empty());
   wait_for_color(
     &sway,

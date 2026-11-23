@@ -314,17 +314,46 @@ fn main() {
       if mode.trim() == "reload" && first {
         say(&mut control, b"reload\n");
       }
+      if mode.trim() == "lock" {
+        let dir = dir.to_path_buf();
+        let mut watch = control.as_ref().map(|stream| stream.try_clone().expect("a writer"));
+        std::thread::spawn(move || {
+          let mut was = false;
+          loop {
+            let now = dir.join("lock").exists();
+            if now != was {
+              was = now;
+              if now && dir.join("silent-lock").exists() {
+                // Simulates locking while the supervisor was blocked in a build.
+              } else {
+                let line: &[u8] = if now { b"locked\n" } else { b"unlocked\n" };
+                if let Some(stream) = watch.as_mut() {
+                  let _ = stream.write_all(line);
+                }
+              }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+          }
+        });
+      }
       let reader = control.as_ref().map(|stream| stream.try_clone().expect("a reader"));
       for line in reader.iter().flat_map(|stream| std::io::BufReader::new(stream).lines()) {
         let pid = std::process::id();
+        let locked = mode.trim() == "lock" && dir.join("lock").exists();
         match line.as_deref().unwrap_or_default() {
           "save" => {
             append(dir.join("saves"), format!("{pid}\n"));
             std::process::exit(0);
           }
+          "handoff" if locked => {
+            say(&mut control, b"locked\n");
+          }
           "handoff" if mode.trim() != "old" => {
             append(dir.join("saves"), format!("{pid}\n"));
             say(&mut control, b"saved\n");
+          }
+          "exit" if locked => {
+            say(&mut control, b"locked\n");
           }
           "exit" => {
             append(dir.join("exits"), format!("{pid} {}\n", now()));
@@ -1313,4 +1342,161 @@ fn a_shell_that_ignores_sigterm_is_killed_when_run_stops() {
   let (code, log) = supervised.wait(Duration::from_secs(8));
   assert_eq!(code, Some(0), "{log}");
   assert!(log.contains("killing it"), "{log}");
+}
+
+/// An edit saved while the shell holds a session lock builds as usual,
+/// defers the reload without killing the locked shell, and reloads as
+/// soon as the shell unlocks.
+#[test]
+fn an_edit_while_locked_waits_until_unlocked_to_reload() {
+  let home = Home::new("lock-defer");
+  home.fake_config("lock");
+  let supervised = home.supervise();
+  let first = home.wait_for_starts(1, Duration::from_secs(60))[0].1;
+  std::fs::write(home.config().join("lock"), "").expect("locked");
+  std::thread::sleep(Duration::from_millis(150));
+
+  home.edit(|code| code + "// edit while locked\n");
+  wait_in_log(
+    &supervised,
+    "deferring the reload until it unlocks",
+    Duration::from_secs(60),
+  );
+  // Still running and untouched past SAVE_LIMIT.
+  std::thread::sleep(Duration::from_secs(6));
+  assert!(alive(first), "the locked shell stays up");
+  assert_eq!(home.starts().len(), 1, "no new shell started while locked");
+
+  std::fs::remove_file(home.config().join("lock")).expect("unlocked");
+  let starts = home.wait_for_starts(2, Duration::from_secs(15));
+  assert_eq!(starts.len(), 2, "{starts:?}\n{}", supervised.log());
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(5));
+  assert_eq!(code, Some(0), "{log}");
+  assert!(log.contains("starting the deferred reload"), "{log}");
+  assert!(!log.contains("killing it"), "{log}");
+}
+
+/// Locking while the supervisor was blocked in a build (so `handoff`
+/// already went out before `locked` was read) cancels the 5 s kill timer
+/// and reloads once unlocked.
+#[test]
+fn locking_during_a_handoff_cancels_the_kill_timer_and_reloads_on_unlock() {
+  let home = Home::new("lock-race-handoff");
+  home.fake_config("lock");
+  let supervised = home.supervise();
+  let first = home.wait_for_starts(1, Duration::from_secs(60))[0].1;
+  // Hold back the unsolicited `locked` line so the supervisor still sends
+  // `handoff` first; the shell then answers `locked`.
+  std::fs::write(home.config().join("silent-lock"), "").expect("silent");
+  std::fs::write(home.config().join("lock"), "").expect("locked");
+  std::thread::sleep(Duration::from_millis(100));
+
+  home.edit(|code| code + "// edit racing lock\n");
+  wait_in_log(
+    &supervised,
+    "deferring the reload until it unlocks",
+    Duration::from_secs(60),
+  );
+  std::thread::sleep(Duration::from_secs(6));
+  assert!(alive(first), "SAVE_LIMIT kill timer was cancelled");
+  assert_eq!(home.starts().len(), 1);
+
+  std::fs::remove_file(home.config().join("lock")).expect("unlocked");
+  let starts = home.wait_for_starts(2, Duration::from_secs(15));
+  assert_eq!(starts.len(), 2, "{starts:?}\n{}", supervised.log());
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(5));
+  assert_eq!(code, Some(0), "{log}");
+  assert!(!log.contains("killing it"), "{log}");
+}
+
+/// Locking while the new shell is still starting beside the old one ends
+/// the unready new shell quietly (no failure notification), restores the
+/// old shell, and reloads once it unlocks.
+#[test]
+fn locking_while_the_new_shell_is_starting_defers_without_notifying() {
+  let home = Home::new("lock-mid-start");
+  home.fake_config("lock");
+  let bus = PrivateBus::start(&home);
+  let supervised = home.supervise_on(Some(&bus));
+  let first = home.wait_for_starts(1, Duration::from_secs(60))[0].1;
+  // Make the next build wait before saying `ready`.
+  std::fs::write(home.config().join("slow"), "").expect("slow");
+  home.edit(|code| code.replace("Duration::from_millis(300)", "Duration::from_secs(30)"));
+  wait_in_log(
+    &supervised,
+    "starting the new build beside it",
+    Duration::from_secs(60),
+  );
+  // Lock on the old shell before the new one is ready.
+  std::fs::write(home.config().join("lock"), "").expect("locked");
+  wait_in_log(
+    &supervised,
+    "before the new shell was ready; deferring the reload until it unlocks",
+    Duration::from_secs(15),
+  );
+  assert!(alive(first), "the locked old shell stays up");
+  // Let the subsequent deferred reload become ready promptly once unlocked.
+  std::fs::remove_file(home.config().join("slow")).expect("fast again");
+  std::fs::remove_file(home.config().join("lock")).expect("unlocked");
+  let starts = home.wait_for_starts(2, Duration::from_secs(15));
+  assert_eq!(starts.len(), 2, "{starts:?}\n{}", supervised.log());
+  assert!(
+    bus.notifications().is_empty(),
+    "deferring shouldn't notify as a crash: {:?}",
+    bus.notifications()
+  );
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(5));
+  assert_eq!(code, Some(0), "{log}");
+  assert!(!log.contains("wasn't ready"), "{log}");
+}
+
+/// If the old shell locks right as the new shell says `ready` and
+/// receives `exit` while locked, the supervisor cancels the 5 s exit
+/// kill timer and waits for `unlocked` before asking it to exit again.
+#[test]
+fn locking_as_the_new_shell_is_ready_holds_exit_until_unlocked() {
+  let home = Home::new("lock-race-exit");
+  home.fake_config("lock");
+  let supervised = home.supervise();
+  let first = home.wait_for_starts(1, Duration::from_secs(60))[0].1;
+  std::fs::write(home.config().join("slow"), "").expect("slow");
+  std::fs::write(home.config().join("silent-lock"), "").expect("silent");
+  home.edit(|code| code + "// edit racing exit\n");
+  wait_in_log(
+    &supervised,
+    "starting the new build beside it",
+    Duration::from_secs(60),
+  );
+  // Lock silently during the 300 ms window before the new shell says `ready`,
+  // so the supervisor writes `exit` and the old shell answers `locked`.
+  std::fs::write(home.config().join("lock"), "").expect("locked");
+  wait_in_log(
+    &supervised,
+    "waiting for it to unlock before exiting",
+    Duration::from_secs(15),
+  );
+  std::thread::sleep(Duration::from_secs(6));
+  assert!(
+    alive(first),
+    "old shell stays alive while locked past SAVE_LIMIT"
+  );
+  assert!(
+    !home.config().join("alones").exists()
+      || std::fs::read_to_string(home.config().join("alones"))
+        .unwrap_or_default()
+        .lines()
+        .count()
+        < 2,
+    "new shell doesn't go alone before the old shell exits"
+  );
+
+  std::fs::remove_file(home.config().join("lock")).expect("unlocked");
+  wait_in_log(&supervised, "the old shell ended", Duration::from_secs(10));
+  supervised.signal("-TERM");
+  let (code, log) = supervised.wait(Duration::from_secs(5));
+  assert_eq!(code, Some(0), "{log}");
+  assert!(!log.contains("killing it"), "{log}");
 }

@@ -1745,6 +1745,10 @@ fn run_as_child() {
         locked.set(true);
         Ok(String::new())
       });
+      cx.ipc("lock", "off", move |_| {
+        locked.set(false);
+        Ok(String::new())
+      });
       let shown = cx.session_lock(lock_screen(move || locked.get()));
       cx.effect(move || eprintln!("the session is locked: {}", shown.get()));
       cx.per_output(counter::bar);
@@ -2116,11 +2120,29 @@ fn accept_ready(listener: &std::os::unix::net::UnixListener) -> std::os::unix::n
   stream
     .set_read_timeout(Some(Duration::from_secs(10)))
     .expect("a read timeout");
-  let mut said = [0_u8; 19];
-  stream
-    .read_exact(&mut said)
-    .expect("the shell says something");
-  assert_eq!(&said, b"can-hand-off\nready\n");
+  let read_line = |stream: &mut std::os::unix::net::UnixStream| {
+    let mut line = Vec::new();
+    let mut byte = [0_u8; 1];
+    loop {
+      stream
+        .read_exact(&mut byte)
+        .expect("the shell says something");
+      if byte[0] == b'\n' {
+        return String::from_utf8(line).expect("UTF-8");
+      }
+      line.push(byte[0]);
+    }
+  };
+  assert_eq!(read_line(&mut stream), "can-hand-off");
+  // A shell that starts locked (e.g. from persisted state) may tell
+  // `locked` before its first bar frame commits `ready`.
+  loop {
+    match read_line(&mut stream).as_str() {
+      "ready" => break,
+      "locked" => {}
+      other => panic!("unexpected line before ready: {other:?}"),
+    }
+  }
   stream
 }
 
@@ -3861,6 +3883,58 @@ fn a_shell_reloaded_while_locked_locks_again_from_its_persisted_value() {
   let _supervisor = accept_ready(&listener);
   let line = second.wait_for("the session is locked: true");
   eprintln!("the next shell: {line}");
+}
+
+/// While a shell holds a session lock, it tells the supervisor `locked`,
+/// refuses `handoff` and `exit` instead of leaving the compositor locked,
+/// tells `unlocked` once the compositor confirms the unlock, and only
+/// then hands off and exits.
+#[test]
+#[ignore = "needs headless Sway"]
+fn a_locked_shell_tells_the_supervisor_and_defers_handoff_until_unlocked() {
+  use std::io::{BufRead, BufReader, Write};
+
+  run_as_child();
+  let sway = Sway::start();
+  let socket = sway.runtime_dir().join("control.sock");
+  let listener = std::os::unix::net::UnixListener::bind(&socket).expect("the control socket");
+  let control = socket.to_str().expect("a UTF-8 path");
+  let test = "a_locked_shell_tells_the_supervisor_and_defers_handoff_until_unlocked";
+  let env = [(CHILD, "lock"), ("CRABSHELL_CONTROL", control)];
+
+  let mut shell = ExampleBar::spawn(&sway, this_as_shell(test), &env);
+  let mut supervisor = accept_ready(&listener);
+  supervisor
+    .set_read_timeout(Some(Duration::from_secs(5)))
+    .expect("timeout");
+  let mut lines = BufReader::new(supervisor.try_clone().expect("clone")).lines();
+  let mut next_line = || lines.next().expect("a line").expect("readable");
+
+  assert_eq!(ipc_call(&sway, "lock", "on"), "{\"ok\":\"\"}\n");
+  shell.wait_for("the session is locked: true");
+  assert_eq!(next_line(), "locked");
+
+  // Both `handoff` and `exit` are deferred while locked.
+  supervisor.write_all(b"handoff\n").expect("sent handoff");
+  assert_eq!(next_line(), "locked");
+  supervisor.write_all(b"exit\n").expect("sent exit");
+  assert_eq!(next_line(), "locked");
+  assert_eq!(
+    ipc_call(&sway, "lock", "off"),
+    "{\"ok\":\"\"}\n",
+    "shell is still alive and serving IPC while locked"
+  );
+  shell.wait_for("the session is locked: false");
+  assert_eq!(next_line(), "unlocked");
+
+  // Unlocked: handoff and exit now succeed normally.
+  supervisor.write_all(b"handoff\n").expect("sent handoff");
+  assert_eq!(next_line(), "saved");
+  supervisor.write_all(b"exit\n").expect("sent exit");
+  assert_eq!(
+    shell.exit_status().and_then(|status| status.code()),
+    Some(0)
+  );
 }
 
 /// Phase 11's exit check: the lock example, locked over IPC, matches its

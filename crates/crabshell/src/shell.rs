@@ -177,6 +177,8 @@ pub struct Shell {
   switches: SwitchLog,
   /// The shell has told the supervisor it is ready.
   said_ready: bool,
+  /// What the shell last told the supervisor about its session lock.
+  session_locked: bool,
   /// Whether the config showed anything at startup.
   pub(crate) startup: Startup,
   /// Follow the accessibility status once the first frame is shown, so
@@ -268,6 +270,7 @@ impl Shell {
       window_manager: Cell::new(None),
       clipboard: Cell::new(None),
       control: OnceCell::new(),
+      locked: Cell::new(false),
       alone: Cell::new(!beside),
       until_alone: RefCell::default(),
     });
@@ -306,6 +309,7 @@ impl Shell {
       first_frame: false,
       switches: SwitchLog::default(),
       said_ready: false,
+      session_locked: false,
       startup: Startup::Waiting,
       accessibility: false,
       cx,
@@ -345,6 +349,7 @@ impl Shell {
     self.judge_startup();
     self.log_switch(commits);
     self.tell_ready();
+    self.tell_locked();
     Ok(())
   }
 
@@ -401,6 +406,18 @@ impl Shell {
     control::listen(&self.event_loop.handle(), stream, move |command| {
       match command {
         control::Command::Handoff => {
+          if cx
+            .service::<Service>()
+            .is_some_and(|service| service.locked.get())
+          {
+            if let Some(service) = cx.service::<Service>()
+              && let Some(writer) = service.control.get()
+            {
+              control::send(writer, "locked");
+            }
+            tracing::info!("the session is locked; deferring the reload until it unlocks");
+            return;
+          }
           save(&cx);
           if let Some(service) = cx.service::<Service>()
             && let Some(writer) = service.control.get()
@@ -422,6 +439,18 @@ impl Shell {
           tracing::info!("the supervisor asked for a reload; exiting");
         }
         control::Command::Exit => {
+          if cx
+            .service::<Service>()
+            .is_some_and(|service| service.locked.get())
+          {
+            if let Some(service) = cx.service::<Service>()
+              && let Some(writer) = service.control.get()
+            {
+              control::send(writer, "locked");
+            }
+            tracing::info!("the session is locked; deferring exit until it unlocks");
+            return;
+          }
           stop_services(&cx);
           tracing::info!("the new shell is ready; exiting");
         }
@@ -498,6 +527,23 @@ impl Shell {
     if control::ready(panels, self.startup == Startup::Passed, taking_over) {
       control::send(writer, "ready");
       self.said_ready = true;
+    }
+  }
+
+  /// Tells the supervisor when a session lock begins or finishes
+  /// unlocking, so a reload waits rather than exiting while locked.
+  fn tell_locked(&mut self) {
+    let locked = self.event_loop.platform().session_locked();
+    if locked == self.session_locked {
+      return;
+    }
+    self.session_locked = locked;
+    let Some(service) = self.cx.service::<Service>() else {
+      return;
+    };
+    service.locked.set(locked);
+    if let Some(writer) = service.control.get() {
+      control::send(writer, if locked { "locked" } else { "unlocked" });
     }
   }
 
@@ -609,6 +655,9 @@ struct Service {
   clipboard: Cell<Option<Clipboard>>,
   /// The supervisor's socket, to write to, under `crabshell run`.
   control: OnceCell<UnixStream>,
+  /// Whether any session lock holds the compositor, asked to, or waits
+  /// for an unlock to finish.
+  locked: Cell<bool>,
   /// False while the shell runs beside the one a reload replaces, until
   /// the supervisor says `alone`.
   alone: Cell<bool>,
