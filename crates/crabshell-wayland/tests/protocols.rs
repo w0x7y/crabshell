@@ -112,6 +112,83 @@ fn buffers(event_loop: &mut EventLoop, id: WindowId) -> usize {
   info.expect("the window").buffers
 }
 
+/// At 60 Hz each frame of an animation is drawn when the compositor's
+/// frame callback comes, at the time it came: a clock of its own would
+/// drift across the vblanks, drawing some times a frame late and showing
+/// one frame twice where it crosses one.
+#[test]
+fn an_animation_draws_each_vblank_at_the_time_its_callback_came() {
+  let vblank = Duration::from_micros(16_667);
+  let globals = Globals {
+    vblank: Some(vblank),
+    ..Globals::default()
+  };
+  let (fake, mut event_loop) = connect(globals);
+  let cx = Cx::new(Runtime::current().new_owner());
+  let running = cx.signal(false);
+  let time = cx.frames(move || running.get());
+  let panel = PanelWindow::new(&Output::new("FAKE-1"))
+    .anchors(Edge::Top | Edge::Left)
+    .width(200)
+    .height(20)
+    .child(Row::new().style(move || {
+      let ms = time.get().as_secs_f32() * 1000.0;
+      Style::new()
+        .width(1.0 + ms % 199.0)
+        .height(20.0)
+        .background(Color::rgb(200, 0, 0))
+    }));
+  let id = event_loop.platform().add_window(Window::new(&cx, panel));
+  frames(&mut event_loop, id, 1);
+  let commits = |event_loop: &mut EventLoop| {
+    let info = event_loop.platform().window_info(id);
+    info.expect("the panel").commits
+  };
+  running.set(true);
+  let mut drawn: Vec<(Instant, Duration)> = Vec::new();
+  let mut last = commits(&mut event_loop);
+  let until = Instant::now() + Duration::from_secs(2);
+  while Instant::now() < until {
+    event_loop
+      .dispatch(Some(Duration::from_millis(5)))
+      .expect("the connection works");
+    let now = commits(&mut event_loop);
+    if now != last {
+      drawn.push((Instant::now(), time.get_untracked()));
+      last = now;
+    }
+  }
+  running.set(false);
+  let vblanks = fake.vblanks();
+  let before = |at: Instant| {
+    let index = vblanks.iter().rposition(|vblank| *vblank <= at);
+    index.expect("a vblank before each frame")
+  };
+  // Past the first frames, which start the clock: each vblank shows a
+  // frame, drawn from the callback that vblank sent.
+  let steady = &drawn[3..];
+  let (first, first_time) = steady[0];
+  let first = before(first);
+  let mut off = Vec::new();
+  for pair in steady.windows(2) {
+    assert_ne!(
+      before(pair[0].0),
+      before(pair[1].0),
+      "two frames in one vblank"
+    );
+  }
+  for (at, shown) in steady {
+    let vblank = before(*at);
+    let since = vblanks[vblank] - vblanks[first];
+    let moved = shown.saturating_sub(first_time);
+    off.push((since.as_secs_f32() - moved.as_secs_f32()) * 1000.0);
+  }
+  let spread =
+    off.iter().copied().fold(f32::MIN, f32::max) - off.iter().copied().fold(f32::MAX, f32::min);
+  assert!(steady.len() >= 100, "{} frames in 2 s", steady.len());
+  assert!(spread < 4.0, "frames off their vblanks by {off:?} ms");
+}
+
 /// The fake reads a buffer until the next commit, as compositors that
 /// keep shm buffers do, so each new frame lands in the buffer it read
 /// before. The spare is never emptied there, or every frame would be

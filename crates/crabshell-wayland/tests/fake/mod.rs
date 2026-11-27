@@ -9,7 +9,8 @@
 //! or activation
 //! tokens. Each layer surface is configured at its first
 //! commit, at the size it asked for or the output's, and each frame
-//! callback is answered at the next commit, so windows draw freely. The
+//! callback is answered at the next commit, so windows draw freely, or
+//! at the next of a test's vblanks. The
 //! requests a test checks are written to a log as short lines, such as
 //! `blur 0,0,200,30` or `deactivate two`. Drags are in `dnd.rs`.
 
@@ -19,7 +20,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use wayland_protocols::ext::background_effect::v1::server::{
   ext_background_effect_manager_v1::{self, Capability, ExtBackgroundEffectManagerV1},
@@ -85,6 +86,9 @@ pub struct Globals {
   pub activation: bool,
   /// `wl_data_device_manager` 3, for drags.
   pub data_device: bool,
+  /// Answers frame callbacks only at vblanks this far apart, as a screen
+  /// does, instead of at the next commit.
+  pub vblank: Option<Duration>,
 }
 
 /// Something the test runs on the fake's thread, with its state.
@@ -93,6 +97,7 @@ type Command = Box<dyn FnOnce(&mut State) + Send>;
 /// A running fake. Dropping it stops the thread.
 pub struct Fake {
   log: Arc<Mutex<Vec<String>>>,
+  vblanks: Arc<Mutex<Vec<Instant>>>,
   commands: Option<Sender<Command>>,
   thread: Option<JoinHandle<()>>,
 }
@@ -103,9 +108,12 @@ impl Fake {
   pub fn start(globals: Globals) -> (Fake, UnixStream) {
     let (ours, theirs) = UnixStream::pair().expect("a socket pair");
     let log = Arc::new(Mutex::new(Vec::new()));
+    let vblanks = Arc::new(Mutex::new(Vec::new()));
     let (commands, received) = mpsc::channel();
     let state = State {
       log: Arc::clone(&log),
+      vblanks: Arc::clone(&vblanks),
+      held: Vec::new(),
       globals,
       outputs: Vec::new(),
       late: Vec::new(),
@@ -121,6 +129,7 @@ impl Fake {
     let thread = std::thread::spawn(move || serve(ours, state, received));
     let fake = Fake {
       log,
+      vblanks,
       commands: Some(commands),
       thread: Some(thread),
     };
@@ -130,6 +139,11 @@ impl Fake {
   /// The lines logged so far.
   pub fn log(&self) -> Vec<String> {
     self.log.lock().expect("the log").clone()
+  }
+
+  /// When each vblank answered the callbacks held, oldest first.
+  pub fn vblanks(&self) -> Vec<Instant> {
+    self.vblanks.lock().expect("the vblanks").clone()
   }
 
   /// Empties the log.
@@ -186,6 +200,7 @@ fn serve(stream: UnixStream, mut state: State, commands: Receiver<Command>) {
   handle
     .insert_client(stream, Arc::new(Gone))
     .expect("the client");
+  let mut next_vblank = Instant::now();
   loop {
     loop {
       match commands.try_recv() {
@@ -203,6 +218,19 @@ fn serve(stream: UnixStream, mut state: State, commands: Receiver<Command>) {
     if display.dispatch_clients(&mut state).is_err() {
       return;
     }
+    if let Some(period) = state.globals.vblank
+      && Instant::now() >= next_vblank
+    {
+      next_vblank += period;
+      for callback in std::mem::take(&mut state.held) {
+        callback.done(0);
+      }
+      state
+        .vblanks
+        .lock()
+        .expect("the vblanks")
+        .push(Instant::now());
+    }
     let _ = display.flush_clients();
     let pause = if state.late.is_empty() { 1 } else { 100 };
     std::thread::sleep(Duration::from_millis(pause));
@@ -219,6 +247,9 @@ impl ClientData for Gone {
 /// What the fake keeps of the client's objects.
 pub struct State {
   log: Arc<Mutex<Vec<String>>>,
+  vblanks: Arc<Mutex<Vec<Instant>>>,
+  /// Frame callbacks waiting for the next vblank.
+  held: Vec<WlCallback>,
   globals: Globals,
   outputs: Vec<WlOutput>,
   /// `FAKE-2`, bound and not described yet.
@@ -562,6 +593,9 @@ impl Dispatch<WlSurface, Mutex<Surface>> for State {
           && let Some(copied) = ours.shown.take()
         {
           copied.release();
+        }
+        if state.globals.vblank.is_some() {
+          state.held.append(&mut ours.callbacks);
         }
         for callback in ours.callbacks.drain(..) {
           callback.done(0);

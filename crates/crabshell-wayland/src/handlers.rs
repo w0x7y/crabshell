@@ -132,6 +132,7 @@ impl CompositorHandler for Platform {
     {
       ours.frames.pacing.frame_done();
       window.frame_presented();
+      self.called_back = true;
     }
   }
 

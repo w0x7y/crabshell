@@ -375,8 +375,10 @@ pub struct Platform {
   pub(crate) last_input: Option<((WlSeat, u32, WindowId), Instant)>,
   /// Activation tokens for the programs the shell starts.
   pub(crate) activation: Activation,
-  /// Whether the animation timer is in the loop.
-  ticking: bool,
+  /// The animation timer, while it is in the loop.
+  ticking: Option<RegistrationToken>,
+  /// Whether a frame callback came in this dispatch.
+  pub(crate) called_back: bool,
   /// The one calloop timer for the config's timers and the deadline it is
   /// armed at, in the loop only while one of them runs.
   timers: Option<(RegistrationToken, Instant)>,
@@ -507,7 +509,8 @@ impl Platform {
       button_held: false,
       last_input: None,
       activation,
-      ticking: false,
+      ticking: None,
+      called_back: false,
       timers: None,
       images: None,
       decodes: None,
@@ -529,28 +532,55 @@ impl Platform {
   }
 
   /// Starts the animation timer if an animation runs and it isn't
-  /// running: it fires once a frame of the fastest output, advances the
-  /// animations, and leaves the loop once none runs, so a shell where
-  /// nothing moves isn't woken.
+  /// running. Frame callbacks move the animations while they come, so
+  /// each frame shows the time the compositor asked for it; the timer
+  /// stands in, once a frame of the fastest output, when none came for
+  /// a frame and a half, as for an animation that draws nothing. It
+  /// leaves the loop once none runs, so a shell where nothing moves
+  /// isn't woken.
   fn tick_animations(&mut self) {
-    if self.ticking || !crabshell_ui::animating() {
-      return;
+    if self.ticking.is_none() && crabshell_ui::animating() {
+      self.arm_animations(Instant::now());
+    }
+  }
+
+  /// Puts the animation timer in the loop for `deadline`, in place of
+  /// the one there.
+  fn arm_animations(&mut self, deadline: Instant) {
+    if let Some(token) = self.ticking.take() {
+      self.handle.remove(token);
     }
     let frame = self.frame_interval();
-    let ticked =
-      self
-        .handle
-        .insert_source(Timer::immediate(), move |_, _, platform: &mut Platform| {
-          if crabshell_ui::advance_animations(Instant::now()) {
-            TimeoutAction::ToDuration(frame)
-          } else {
-            platform.ticking = false;
-            TimeoutAction::Drop
-          }
-        });
+    let ticked = self.handle.insert_source(
+      Timer::from_deadline(deadline),
+      move |_, _, platform: &mut Platform| {
+        if crabshell_ui::advance_animations(Instant::now()) {
+          TimeoutAction::ToDuration(frame)
+        } else {
+          platform.ticking = None;
+          TimeoutAction::Drop
+        }
+      },
+    );
     match ticked {
-      Ok(_) => self.ticking = true,
+      Ok(token) => self.ticking = Some(token),
       Err(error) => tracing::warn!(%error, "couldn't start the animation timer"),
+    }
+  }
+
+  /// Moves the animations to now if a frame callback came in this
+  /// dispatch, before the flush, so the windows it freed draw that time,
+  /// and puts the timer off by a frame and a half.
+  fn advance_at_callback(&mut self) {
+    if !std::mem::take(&mut self.called_back) || self.ticking.is_none() {
+      return;
+    }
+    let now = Instant::now();
+    if crabshell_ui::advance_animations(now) {
+      let frame = self.frame_interval();
+      self.arm_animations(now + frame + frame / 2);
+    } else if let Some(token) = self.ticking.take() {
+      self.handle.remove(token);
     }
   }
 
@@ -894,6 +924,7 @@ impl Platform {
     self.stats.iterations += 1;
     self.report_toplevels();
     self.report_windowsets();
+    self.advance_at_callback();
     // Effects created in a flush run in it, so every popup opened so far,
     // by a handler or an effect, has its bindings run.
     self.runtime.flush();
