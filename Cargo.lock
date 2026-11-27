@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "crabshell"
-version = "0.9.6"
+version = "0.9.7"
 dependencies = [
  "calloop",
  "cosmic-text",
@@ -199,7 +199,7 @@ dependencies = [
 
 [[package]]
 name = "crabshell-cli"
-version = "0.9.6"
+version = "0.9.7"
 dependencies = [
  "calloop",
  "crabshell-services",
@@ -214,7 +214,7 @@ dependencies = [
 
 [[package]]
 name = "crabshell-reactive"
-version = "0.9.6"
+version = "0.9.7"
 dependencies = [
  "slotmap",
  "tracing",
@@ -223,7 +223,7 @@ dependencies = [
 
 [[package]]
 name = "crabshell-render"
-version = "0.9.6"
+version = "0.9.7"
 dependencies = [
  "cosmic-text",
  "crabshell-reactive",
@@ -240,7 +240,7 @@ dependencies = [
 
 [[package]]
 name = "crabshell-services"
-version = "0.9.6"
+version = "0.9.7"
 dependencies = [
  "calloop",
  "crabshell-reactive",
@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "crabshell-ui"
-version = "0.9.6"
+version = "0.9.7"
 dependencies = [
  "cosmic-text",
  "crabshell-reactive",
@@ -290,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "crabshell-wayland"
-version = "0.9.6"
+version = "0.9.7"
 dependencies = [
  "calloop",
  "crabshell-reactive",
