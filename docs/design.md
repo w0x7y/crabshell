@@ -804,6 +804,10 @@ Rules settled while building `crabshell-ui` (0.9 gap fixes):
 - A play's leading steps of 0 ms and no delay land in the flush that starts it, so that turn's layout and draw already show them. A play of no time ends in that flush and never starts the clock. A 0 ms transition with no delay on `cx.animate` lands the same way.
 - Every node has a `revision` (`NodeView::revision`) that changes whenever anything it or its subtree draws changes, including text reshaped for an inherited style or added font, while its own opacity and transform leave it unchanged.
 
+Rules settled while building `crabshell-ui` (0.9.7, the workspace switch):
+
+- Every easing returns exactly 0 at 0 and exactly 1 at 1, as a formula or a Bézier's search misses its ends by a hair, so a value eased to its end lands on it.
+
 ## Rendering
 
 v0.1 draws on the CPU with `tiny-skia`, straight into shared-memory buffers, and repaints only what changed. For a bar that uses less memory than a GPU context. A 1920×30 bar buffer is 225 KiB.
@@ -962,6 +966,11 @@ Rules settled while building `crabshell-render` (0.9.5, the workspace bloom):
 - `composite`, a glyph or shadow mask and a scaled layer blend over what is there on whole 32-bit words, two channels a multiply, to the bit of the per-channel blend. A layer's clear rows are skipped.
 - Large layers and masks, 1 MiB or more, that a draw lets go of are kept for its next large one, up to 16 MiB a draw, each charged to the 32 MiB that kept layers and shadow patches share and let go before a kept layer or patch would be refused it. A reused one is cut to the size asked for, and every spare is dropped as the draw ends, so an idle window holds none. Fresh memory page-faults every 4 KiB as it is first written, since the shell fixes glibc's mmap threshold at 128 KiB: about 3,750 faults for one 1080p piece of the rime bloom.
 - A crop already at its box's size is kept as cut, not copied a second time.
+
+Rules settled while building `crabshell-render` (0.9.7, the workspace switch):
+
+- A crop within a pixel of its box, as rounding leaves one at the frame's own scale, is cut at the box's size and kept in the frame, not scaled whole for that pixel.
+- An image whose picture loads while it isn't drawn counts that picture as shown, so a reveal at another size, as after a new scale, draws it stretched while the new size decodes.
 
 ## Wayland platform
 
@@ -1186,6 +1195,10 @@ Rules settled while building `crabshell-wayland` (0.9 gap fixes):
 - Whenever `image_sources_changed` says an image's status waits, the platform has the renderer load each window's waiting images, drawn or not, at the window's scale. After the draws and loads, a status that changed runs the reactive flush before the loop sleeps, so effects that read it run in the iteration that loaded the picture.
 - A lock's `refused` signal turns `true` when the compositor sends `finished` (refused, or ended while `locked` is true) or lacks ext-session-lock-v1, only while the config still wants it locked. It turns `false` once `locked` turns false. A lock that takes never writes it.
 - `Platform::session_locked()` is `true` while any lock is `Asked` or `Locked` or has an `unlock_and_destroy` `wl_display.sync` still in flight, so the shell never claims unlocked before the compositor processes the unlock.
+
+Rules settled while building `crabshell-wayland` (0.9.7, the workspace switch):
+
+- Animations advance at frame callbacks: a dispatch that brought one moves the animation clock to that moment before the flush, so each frame draws the time the compositor asked for it. The animation timer is put off to a frame and a half after each such step and fires only when no callback comes, as for an animation that draws nothing; it leaves the loop when the animations end. This replaces Phase 8's timer that fired once a frame, which drifted against vblank and repeated a frame at each wrap.
 
 ## Services
 
@@ -1527,6 +1540,8 @@ The gaps found porting a Quickshell config shipped as 0.9. Against 0.8:
 0.9.5 fixes a layout crash in taffy 0.15.1's rounding pass when a container becomes empty or hidden after holding absolute children by rounding layouts in place in `place`, and speeds up layered and masked animations (kept layers from the first moving frame, large buffer reuse within a draw, straight-edge mask skipping, and word and byte blending).
 
 0.9.6 defers `crabshell run` hot reloads while the shell holds an `ext-session-lock` session lock, resuming the pending rebuild and handoff once the compositor confirms unlock.
+
+0.9.7 advances animations at frame callbacks instead of a free-running timer, makes every easing exact at 0 and 1, and keeps cropped screencopy views and images revealed at a new scale from stalling at fractional scales.
 
 ## Rules for AI agents
 
