@@ -146,6 +146,43 @@ fn a_large_skipped_image_is_decoded_once_on_the_worker() {
   assert_eq!(scene.renderer.decoded_off_thread(), 1, "decoded once");
 }
 
+/// A window whose scale changes while an image is skipped, as one on a
+/// fractional output does once it hears its scale, reveals the picture
+/// it loaded at the old scale, stretched, until the new size decodes.
+#[test]
+fn a_skipped_image_revealed_at_a_new_scale_shows_its_picture_while_that_decodes() {
+  let mut scene = Scene::new();
+  scene.renderer.decode_off_thread();
+  let shown = scene.cx.signal(false);
+  let opacity = opacity(shown);
+  let image = Image::new(fixture("stripes.png"))
+    .width(300)
+    .height(300)
+    .fit(Fit::Fill)
+    .style(move || Style::new().opacity(opacity()));
+  let row = Row::new().align(Align::Start).child(image);
+  let window = scene.window(scene.panel().child(row), 300.0, 300.0);
+  let mut history = crate::DamageHistory::new();
+  let mut buffer = Buffer::new(&window, 2.0);
+  scene.draw(&window, &mut history, &mut buffer);
+  let (sender, woken) = mpsc::channel();
+  scene.renderer.wake_when_decoded(move || {
+    let _ = sender.send(());
+  });
+  woken
+    .recv_timeout(Duration::from_secs(20))
+    .expect("the worker wakes the loop");
+  scene.renderer.take_decoded();
+
+  shown.set(true);
+  scene.frame(&window);
+  let mut history = crate::DamageHistory::new();
+  let mut buffer = Buffer::new(&window, 1.5);
+  scene.draw(&window, &mut history, &mut buffer);
+  assert!(scene.renderer.decoding(), "the new size decodes");
+  assert!(shows_pixels(&buffer), "the old size shows meanwhile");
+}
+
 #[test]
 fn a_skipped_subtree_is_looked_through_once_a_draw_and_not_without_images() {
   for with_image in [false, true] {

@@ -487,10 +487,13 @@ impl Icons {
         Ok(_) => ImageStatus::Ready,
         Err(_) => ImageStatus::Failed,
       };
-      self.store(key, frames, || format!("image {path}"));
+      self.store(key.clone(), frames, || format!("image {path}"));
       // Told now, as an image that isn't drawn would never tell it.
       for (id, source) in &images {
         crabshell_ui::image_status(*id, source, status);
+        if status == ImageStatus::Ready {
+          self.unshown(*id, &key);
+        }
       }
     }
     ready.sort_unstable();
@@ -816,6 +819,9 @@ impl Icons {
         None => ImageStatus::Failed,
       };
       crabshell_ui::image_status(image.id, image.source, status);
+      if status == ImageStatus::Ready {
+        self.unshown(image.id, &key);
+      }
     }
   }
 
@@ -985,6 +991,14 @@ impl Icons {
       self.cache.remove(&key);
       self.memo = None;
     }
+  }
+
+  /// Takes `key`, loaded for image `id` without being drawn, as what it
+  /// shows if it shows nothing yet, so a reveal at another size, as after
+  /// a new scale, draws this while that one decodes.
+  fn unshown(&mut self, id: u64, key: &Key) {
+    let frame = self.frame;
+    self.shows.entry(id).or_insert_with(|| (key.clone(), frame));
   }
 
   /// Records that image `id` drew the picture under `key` as its own.
@@ -1298,7 +1312,11 @@ impl Icons {
         .and_then(|source| match crop {
           // The crop is cut to the frame, so the part is never empty.
           Some(crop) => source
-            .clone_rect(crop)
+            .clone_rect(box_sized(
+              crop,
+              (width, height),
+              (frame.width, frame.height),
+            ))
             .ok_or_else(|| format!("a crop of {crop:?} outside the frame"))
             .and_then(
               |part| match (part.width(), part.height()) == (width, height) {
@@ -1489,6 +1507,20 @@ fn bytes(key: &Key, entry: &Entry) -> usize {
     Key::Picture { data, .. } => frames + data.0.len(),
     _ => frames,
   }
+}
+
+/// `crop` cut at the box's size when it is at most a pixel off, as
+/// rounding leaves a crop at the frame's own scale, so it is copied as it
+/// is instead of the whole part scaled for that pixel. Kept in the frame.
+fn box_sized(crop: IntRect, (width, height): (u32, u32), frame: (u32, u32)) -> IntRect {
+  if crop.width().abs_diff(width) > 1 || crop.height().abs_diff(height) > 1 {
+    return crop;
+  }
+  let (width, height) = (width.min(frame.0), height.min(frame.1));
+  let x = (crop.x().max(0) as u32).min(frame.0 - width);
+  let y = (crop.y().max(0) as u32).min(frame.1 - height);
+  // Within the frame, at most 8192 pixels a side, so `as` keeps them.
+  IntRect::from_xywh(x as i32, y as i32, width, height).unwrap_or(crop)
 }
 
 /// Where `data` is, which tells allocations apart while they live.
