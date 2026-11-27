@@ -107,6 +107,10 @@ impl Easing {
     const C1: f32 = 1.70158;
     const C2: f32 = C1 * 1.525;
     let t = if t.is_nan() { 1.0 } else { t.clamp(0.0, 1.0) };
+    // Some formulas, and a Bézier's search, miss their ends by a hair.
+    if t == 0.0 || t == 1.0 {
+      return t;
+    }
     match self {
       Easing::Linear => t,
       Easing::InQuad => t * t,
@@ -128,8 +132,6 @@ impl Easing {
       Easing::OutQuint => 1.0 - (1.0 - t).powi(5),
       Easing::InOutQuint if t < 0.5 => 16.0 * t.powi(5),
       Easing::InOutQuint => 1.0 - (-2.0 * t + 2.0).powi(5) / 2.0,
-      // The formulas miss their ends by 2^-10, so the ends are exact.
-      Easing::InExpo | Easing::OutExpo | Easing::InOutExpo if t == 0.0 || t == 1.0 => t,
       Easing::InExpo => 2_f32.powf(10.0 * t - 10.0),
       Easing::OutExpo => 1.0 - 2_f32.powf(-10.0 * t),
       Easing::InOutExpo if t < 0.5 => 2_f32.powf(20.0 * t - 10.0) / 2.0,

@@ -22,9 +22,17 @@ fn easings_start_at_0_end_at_1_and_bend_their_way() {
     Easing::OutCubic,
     Easing::InOutCubic,
     Easing::Bezier(0.25, 0.1, 0.25, 1.0),
+    Easing::Bezier(0.25, 1.0, 0.5, 1.0),
+    Easing::InBack,
+    Easing::OutExpo,
+    Easing::Spline(&[
+      [0.05, 0.0, 0.133333, 0.06, 0.166666, 0.4],
+      [0.208333, 0.82, 0.25, 1.0, 1.0, 1.0],
+    ]),
   ] {
-    assert!(close(easing.value_at(0.0), 0.0), "{easing:?} at 0");
-    assert!(close(easing.value_at(1.0), 1.0), "{easing:?} at 1");
+    // Exact, so a finished animation rests on its target.
+    assert_eq!(easing.value_at(0.0), 0.0, "{easing:?} at 0");
+    assert_eq!(easing.value_at(1.0), 1.0, "{easing:?} at 1");
     assert!(close(easing.value_at(-3.0), 0.0) && close(easing.value_at(f32::NAN), 1.0));
   }
   assert!(close(Easing::Linear.value_at(0.3), 0.3));
