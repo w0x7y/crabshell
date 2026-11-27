@@ -1005,7 +1005,7 @@ Rules settled while building `crabshell-render` (0.9.7, the workspace switch):
 Each iteration of the loop:
 
 1. Dispatch every ready source: Wayland, timers, D-Bus, the Sway IPC socket and the audio channel.
-2. Run `runtime.flush()` so queued effects run.
+2. If a frame callback arrived, move the animation clock to now, then run `runtime.flush()` so queued effects run.
 3. Lay out every window marked for layout.
 4. Draw each window that is dirty and has received its frame callback.
 5. Flush the Wayland connection and sleep until a source is ready.
@@ -1093,7 +1093,7 @@ Rules settled while building `crabshell-wayland` (Phase 7):
 
 Rules settled while building `crabshell-wayland` (Phase 8):
 
-- The animation clock ticks from a calloop `Timer` that is in the loop only while something animates, once a frame of the fastest output, or at 60 Hz without one.
+- The animation clock ticks from a calloop `Timer` that is in the loop only while something animates, once a frame of the fastest output, or at 60 Hz without one. Since 0.9.7 frame callbacks drive it and the timer only stands in (see the 0.9.7 rules below).
 - Blur binds `ext_background_effect_manager_v1` version 1. A surface gets its effect object the first time it asks, and the region is cut to the surface's size and sent before the commit that applies it, and again when the size changes, as the mask is. Without the protocol, or with the compositor's blur off, a window that asks is logged once per shell and shows unblurred. Blur that turns on later shows from each window's next frame. The region goes out in surface pixels, only once while unchanged even when other settings are sent, and as none when the style drops it. No compositor here has the protocol, so the fake compositor tests it.
 - `Stats::drawing` adds up the time spent drawing frames.
 

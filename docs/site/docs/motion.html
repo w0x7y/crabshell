@@ -30,8 +30,10 @@
       <article>
         <h1>Timers and motion</h1>
         <p class="lede">
-          Motion runs on one clock that ticks only while something moves. When
-          the last animation settles, the shell goes back to sleep.
+          Motion runs on one clock that ticks only while something moves. It
+          steps when the compositor asks for a frame, so each frame shows the
+          moment it is drawn for. When the last animation settles, the shell
+          goes back to sleep.
         </p>
         <h2 id="timers">Timers</h2>
         <pre><code class="rs">let hide = cx.after(Duration::from_millis(1500), move || shown.set(false));
@@ -136,7 +138,7 @@ const LATE: Transition = Transition::new(200).delay(100);</code></pre>
           <code>Bezier(x1, y1, x2, y2)</code> is a CSS
           <code>cubic-bezier</code>, and
           <code>Spline(&amp;[[c1x, c1y, c2x, c2y, x, y], ...])</code> joins
-          several segments.
+          several segments. Every curve lands exactly on 0 and 1 at its ends.
         </p>
         <h2 id="animate">Animated values</h2>
         <p>

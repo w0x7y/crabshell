@@ -84,7 +84,10 @@
             Dispatch every source that is ready: Wayland events, timers, D-Bus,
             the compositor's IPC socket, the audio channel.
           </li>
-          <li>Run the effects those events queued.</li>
+          <li>
+            If a frame callback arrived, move the animation clock to now, then
+            run the effects those events queued.
+          </li>
           <li>Lay out every window marked for layout.</li>
           <li>
             Draw each window that is dirty and whose frame callback has arrived.
