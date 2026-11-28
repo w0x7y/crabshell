@@ -356,3 +356,28 @@ fn a_decode_size_makes_the_picture_small_then_scales_it_up() {
   });
   assert_ne!(sizes[0], sizes[1], "cached apart");
 }
+
+#[test]
+fn a_symlink_without_an_extension_decodes_by_its_targets_extension() {
+  let dir = scratch("symlink-no-ext");
+  let png_link = dir.join("wallpaper");
+  std::os::unix::fs::symlink(fixture("stripes.png"), &png_link).expect("png symlink");
+  let image = rasterize(&png_link, 40, 20, Fit::Fill).expect("decoded through symlink");
+  assert_pixel(&image, (4, 10), RED, "symlink png red");
+  assert_pixel(&image, (20, 10), GREEN, "symlink png green");
+  assert_pixel(&image, (35, 10), BLUE, "symlink png blue");
+
+  let gif_link = dir.join("animated-wallpaper");
+  std::os::unix::fs::symlink(fixture("partial.gif"), &gif_link).expect("gif symlink");
+  let frames = crate::animation::frames(
+    &gif_link,
+    (40, 20),
+    Fit::Fill,
+    &ImageFilters::default(),
+    1.0,
+    crate::images::MAX_BYTES as usize,
+  )
+  .expect("gif decoded through symlink");
+  assert_pixel(&frames.frames[0].pixmap, (10, 10), RED, "symlink gif");
+  let _ = std::fs::remove_dir_all(&dir);
+}

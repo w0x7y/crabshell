@@ -972,6 +972,12 @@ Rules settled while building `crabshell-render` (0.9.7, the workspace switch):
 - A crop within a pixel of its box, as rounding leaves one at the frame's own scale, is cut at the box's size and kept in the frame, not scaled whole for that pixel.
 - An image whose picture loads while it isn't drawn counts that picture as shown, so a reveal at another size, as after a new scale, draws it stretched while the new size decodes.
 
+Rules settled while building `crabshell-render` (0.9.8, image loading):
+
+- An image or icon file whose own path has no extension (such as a symlink like `/etc/greetd/wallpaper`) resolves its target's extension through `std::fs::canonicalize` before format dispatch, for still images, animated GIFs and file icons alike.
+- While an `Image` with `ImageTransition::None` waits on the worker for its new source at a new size, `Icons::waiting` draws the largest already-cached copy of that same file, fit and filters before falling back to the image's previous source, so moving a cached picture into a larger or smaller slot never shows the slot's earlier picture.
+- The decode worker pops the smallest waiting file first (by file bytes, then drawn pixel area, then arrival order) so thumbnails and icons don't stall behind large wallpapers queued ahead of them.
+
 ## Wayland platform
 
 `crabshell-wayland` uses `smithay-client-toolkit` (sctk) on a single-threaded `calloop` event loop. Everything that touches widgets or signals runs on that one thread.
@@ -1542,6 +1548,8 @@ The gaps found porting a Quickshell config shipped as 0.9. Against 0.8:
 0.9.6 defers `crabshell run` hot reloads while the shell holds an `ext-session-lock` session lock, resuming the pending rebuild and handoff once the compositor confirms unlock.
 
 0.9.7 advances animations at frame callbacks instead of a free-running timer, makes every easing exact at 0 and 1, and keeps cropped screencopy views and images revealed at a new scale from stalling at fractional scales.
+
+0.9.8 follows symlinks when reading an image's file extension, draws a cached copy of an image's new source while its new size decodes instead of showing the slot's previous picture, and decodes smaller files ahead of large ones on the image worker.
 
 ## Rules for AI agents
 

@@ -136,13 +136,21 @@ impl Picture {
   }
 }
 
+/// The lowercased file extension of `path`, following symlinks when `path`
+/// itself has none (such as `/etc/greetd/wallpaper` pointing to a `.png`).
+pub(crate) fn extension(path: &Path) -> Option<String> {
+  let ext = |p: &Path| {
+    p.extension()
+      .and_then(|extension| extension.to_str())
+      .map(str::to_ascii_lowercase)
+  };
+  ext(path).or_else(|| std::fs::canonicalize(path).ok().and_then(|p| ext(&p)))
+}
+
 /// Reads and decodes the file at `path` under the caps. The format comes
 /// from the extension.
 pub(crate) fn decode(path: &Path) -> Result<Picture, String> {
-  let extension = path
-    .extension()
-    .and_then(|extension| extension.to_str())
-    .map(str::to_ascii_lowercase);
+  let extension = extension(path);
   let image = match extension.as_deref() {
     Some("svg") => {
       let tree = svg_tree(&read_capped(path, MAX_SVG_BYTES)?)?;

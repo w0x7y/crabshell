@@ -85,10 +85,7 @@ pub(crate) fn frames_within(
   scale: f32,
   limits: Limits,
 ) -> Result<Frames, String> {
-  let is_gif = path
-    .extension()
-    .and_then(|extension| extension.to_str())
-    .is_some_and(|extension| extension.eq_ignore_ascii_case("gif"));
+  let is_gif = crate::images::extension(path).as_deref() == Some("gif");
   // The blur is for still pictures: blurring every frame would stall the
   // first draw.
   if !is_gif || filters.blur > 0.0 {

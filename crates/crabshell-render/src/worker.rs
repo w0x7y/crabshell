@@ -15,6 +15,8 @@ use crate::animation::Frames;
 /// draws it.
 pub(crate) struct Job {
   pub(crate) path: PathBuf,
+  /// File size in bytes, used to decode smaller files ahead of large ones.
+  pub(crate) bytes: u64,
   pub(crate) size: (u32, u32),
   pub(crate) fit: Fit,
   pub(crate) filters: ImageFilters,
@@ -110,12 +112,25 @@ impl Worker {
   }
 }
 
-/// Decodes every job waiting, in order, and returns once none is left.
+/// Decodes every job waiting, smallest file first so thumbnails don't stall
+/// behind large wallpapers, and returns once none is left.
 fn work(queue: &Mutex<Queue>) {
   loop {
     let Some((number, job)) = ({
       let mut queue = lock(queue);
-      let next = queue.waiting.pop_front();
+      let pick = queue
+        .waiting
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, (num, job))| {
+          (
+            job.bytes,
+            u64::from(job.size.0) * u64::from(job.size.1),
+            *num,
+          )
+        })
+        .map(|(index, _)| index);
+      let next = pick.and_then(|index| queue.waiting.remove(index));
       if next.is_none() {
         queue.running = false;
       }
@@ -125,6 +140,7 @@ fn work(queue: &Mutex<Queue>) {
     };
     let Job {
       path,
+      bytes: _,
       size,
       fit,
       filters,

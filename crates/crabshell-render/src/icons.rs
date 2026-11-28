@@ -941,10 +941,52 @@ impl Icons {
     }
   }
 
+  /// The largest already-cached size of the same image file, fit and filters
+  /// as `key`, so a slot taking a picture cached at another size draws that
+  /// picture stretched instead of the previous source's pixels.
+  fn cached_other_size(&self, key: &Key) -> Option<Key> {
+    let Key::Image {
+      path,
+      modified,
+      fit,
+      filters,
+      ..
+    } = key
+    else {
+      return None;
+    };
+    self
+      .cache
+      .iter()
+      .filter_map(|(other, entry)| {
+        let frames = entry.frames.as_ref()?;
+        if frames.frames.is_empty() {
+          return None;
+        }
+        match other {
+          Key::Image {
+            path: other_path,
+            modified: other_modified,
+            width,
+            height,
+            fit: other_fit,
+            filters: other_filters,
+          } if (other_path, other_modified, other_fit, other_filters)
+            == (path, modified, fit, filters) =>
+          {
+            Some((u64::from(*width) * u64::from(*height), other))
+          }
+          _ => None,
+        }
+      })
+      .max_by_key(|(pixels, _)| *pixels)
+      .map(|(_, other)| other.clone())
+  }
+
   /// What `image` draws while `key`, its picture, is decoded: the
-  /// picture its transition leaves, or else the one it drew before,
-  /// stretched to the box when its size changed; nothing if neither is
-  /// cached.
+  /// picture its transition leaves, or else another cached size of `key`,
+  /// or else the one it drew before, stretched to the box when its size
+  /// changed; nothing if none is cached.
   fn waiting(
     &mut self,
     image: &ImageView<'_>,
@@ -965,7 +1007,9 @@ impl Icons {
       shown.window = self.window;
       self.leaving(image, key, size, scale).flatten()
     };
-    let before = left.or_else(|| self.shows.get(&image.id).map(|(shown, _)| shown.clone()))?;
+    let before = left
+      .or_else(|| self.cached_other_size(key))
+      .or_else(|| self.shows.get(&image.id).map(|(shown, _)| shown.clone()))?;
     self.cache.get_mut(&before)?.used = self.frame;
     frame(&self.cache, &before, 0).map(Drawn::One)
   }
@@ -1114,6 +1158,7 @@ impl Icons {
         let (_, images) = self.pending.entry(key.clone()).or_insert_with(|| {
           let job = Job {
             path: path.clone(),
+            bytes: length,
             size,
             fit: image.fit,
             filters: image.filters,
@@ -1547,10 +1592,7 @@ fn describe(source: &IconSource) -> String {
 /// can come from other programs, so only regular files under a size cap are
 /// read.
 fn rasterize_file(path: &Path, side: u32) -> Result<Pixmap, String> {
-  let extension = path
-    .extension()
-    .and_then(|extension| extension.to_str())
-    .map(str::to_ascii_lowercase);
+  let extension = crate::images::extension(path);
   match extension.as_deref() {
     Some("svg") => rasterize_svg(&read_capped(path, MAX_SVG_BYTES)?, side),
     Some("png") => {

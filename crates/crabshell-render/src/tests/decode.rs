@@ -304,3 +304,119 @@ fn a_transition_waits_at_its_start_until_its_picture_comes_in() {
   assert_eq!(leaving(&window), Some(0.5), "halfway once it came in");
   assert!(!advance_animations(start + ms(700)));
 }
+
+/// A solid `color` PNG in the temp dir, removed when the test ends.
+fn solid_picture(name: &str, color: [u8; 4], side: u32) -> super::Removed {
+  let path = std::env::temp_dir().join(format!(
+    "crabshell-decode-{}-{name}.png",
+    std::process::id()
+  ));
+  let pixels = color.repeat((side * side) as usize);
+  super::write_png(&path, &pixels, side, side);
+  super::Removed(path)
+}
+
+#[test]
+fn waiting_draws_a_cached_copy_of_the_new_source_before_the_old_image() {
+  let red = solid_picture("cached-red", [255, 0, 0, 255], 4);
+  let green = solid_picture("cached-green", [0, 255, 0, 255], 4);
+  let mut scene = scene();
+  let hero_source = scene.cx.signal(red.to_path_buf());
+  let side_path = green.to_path_buf();
+  // Hero (300x300) shows red while side (200x200, decoded at once) caches green.
+  let row = Row::new()
+    .align(Align::Start)
+    .child(
+      Image::new(move || hero_source.get())
+        .width(300)
+        .height(300)
+        .fit(Fit::Fill),
+    )
+    .child(Image::new(side_path).width(200).height(200).fit(Fit::Fill));
+  let window = scene.window(scene.panel().child(row), 500.0, 300.0);
+  scene.full(&window, 1.0);
+  wait(&mut scene);
+  let hero_id = image_id(&window, &[0, 0]);
+  assert!(window.repaint_image(hero_id));
+  let initial = scene.full(&window, 1.0);
+  assert_eq!(initial.pixel(150, 150), [255, 0, 0, 255], "hero starts red");
+  assert_eq!(initial.pixel(400, 100), [0, 255, 0, 255], "side is green");
+
+  // Moving green into the hero slot queues 300x300 on the worker; while it
+  // decodes, the hero stretches green's cached 200x200 copy instead of red.
+  hero_source.set(green.to_path_buf());
+  scene.frame(&window);
+  let while_decoding = scene.full(&window, 1.0);
+  assert!(scene.renderer.decoding(), "hero's 300x300 green is queued");
+  assert_eq!(
+    while_decoding.pixel(150, 150),
+    [0, 255, 0, 255],
+    "hero shows green stretched from cache instead of stale red"
+  );
+  assert_eq!(wait(&mut scene), [hero_id]);
+}
+
+#[test]
+fn smaller_files_waiting_on_the_worker_decode_before_larger_ones() {
+  // Make a noisy 512x512 PNG so its file size is much larger than the tiny 4x4 PNG.
+  let big_path =
+    std::env::temp_dir().join(format!("crabshell-decode-{}-big.png", std::process::id()));
+  let mut noisy = vec![0_u8; 512 * 512 * 4];
+  let mut state: u32 = 0x1234_5678;
+  for chunk in noisy.as_chunks_mut::<4>().0 {
+    state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+    chunk[0] = (state >> 24) as u8;
+    chunk[1] = (state >> 16) as u8;
+    chunk[2] = (state >> 8) as u8;
+    chunk[3] = 255;
+  }
+  super::write_png(&big_path, &noisy, 512, 512);
+  let big = super::Removed(big_path);
+  let small = solid_picture("tiny-priority", [0, 0, 255, 255], 4);
+
+  let mut scene = scene();
+  // First keep the worker busy on a large blur so both queued files wait together.
+  let busy = Image::new(fixture("stripes.jpg"))
+    .width(400)
+    .height(400)
+    .blur(30.0);
+  let busy_win = scene.window(scene.panel().child(busy), 400.0, 400.0);
+  scene.full(&busy_win, 1.0);
+  let busy_id = image_id(&busy_win, &[0]);
+
+  let row = Row::new()
+    .align(Align::Start)
+    .child(
+      Image::new(big.to_path_buf())
+        .width(300)
+        .height(300)
+        .fit(Fit::Fill),
+    )
+    .child(
+      Image::new(small.to_path_buf())
+        .width(300)
+        .height(300)
+        .fit(Fit::Fill),
+    );
+  let window = scene.window(scene.panel().child(row), 600.0, 300.0);
+  scene.full(&window, 1.0);
+  let (big_id, small_id) = (image_id(&window, &[0, 0]), image_id(&window, &[0, 1]));
+
+  let mut order = Vec::new();
+  while scene.renderer.decoding() {
+    order.extend(wait(&mut scene));
+  }
+  let pos_small = order
+    .iter()
+    .position(|&id| id == small_id)
+    .expect("small decoded");
+  let pos_big = order
+    .iter()
+    .position(|&id| id == big_id)
+    .expect("big decoded");
+  assert!(order.contains(&busy_id));
+  assert!(
+    pos_small < pos_big,
+    "small file ({small_id}) should finish before large file ({big_id}); order={order:?}"
+  );
+}
